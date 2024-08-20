@@ -1,0 +1,20 @@
+FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS build-backend
+WORKDIR /src
+COPY ./src/Sporer.sln .
+COPY ./src/Sporer.Api ./Sporer.Api
+
+RUN dotnet restore Sporer.sln
+RUN dotnet build -c Release --no-restore
+RUN dotnet publish ./Sporer.Api/Sporer.Api.csproj -c Release -o /app --no-restore --no-build
+
+FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS runtime
+ENV ASPNETCORE_URLS=http://+:80
+ENV ASPNETCORE_ENVIRONMENT=Production
+WORKDIR /app
+
+COPY --from=build-backend /app ./
+ENTRYPOINT ["dotnet", "Sporer.Api.dll"]
+
+LABEL org.opencontainers.image.source=https://github.com/ldellisola/sporer
+LABEL org.opencontainers.image.description="Sporer is a (very) simple alternative to google Timelines"
+LABEL org.opencontainers.image.licenses=MIT
