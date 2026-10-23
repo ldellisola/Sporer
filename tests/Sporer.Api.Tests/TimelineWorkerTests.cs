@@ -411,6 +411,63 @@ public class TimelineWorkerTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task A_dirty_range_longer_than_a_backfill_step_is_processed_in_bounded_pieces_oldest_first()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = new FakeTimeProvider(new DateTimeOffset(T(0, 0, 100)));
+        await using var h = Start(cs, clock); // BackfillChunkDays is 7
+        await FinishBackfillAsync(h.Worker); // empty database: nothing to backfill
+        var old = clock.GetUtcNow().UtcDateTime.AddMinutes(-5);
+        await AddDirtyAsync(cs, T(8, 0), T(8, 0, 30), old);       // 30 days: four pieces of a week and one of two days
+        await AddDirtyAsync(cs, T(8, 0, 40), T(8, 0, 47), old);   // exactly a week: one piece
+        await AddDirtyAsync(cs, T(8, 0, 60), T(8, 30, 60), old);  // half an hour: one piece, as before
+
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+
+        Assert.Equal(
+            [
+                (T(8, 0), T(8, 0, 7)), (T(8, 0, 7), T(8, 0, 14)), (T(8, 0, 14), T(8, 0, 21)), (T(8, 0, 21), T(8, 0, 28)), (T(8, 0, 28), T(8, 0, 30)),
+                (T(8, 0, 40), T(8, 0, 47)),
+                (T(8, 0, 60), T(8, 30, 60)),
+            ],
+            h.Processor.Calls.ToArray());
+        Assert.Empty(await DirtyAsync(cs)); // every row is done once all the pieces of its range are
+    }
+
+    [Fact]
+    public async Task A_failing_piece_fails_the_whole_range_and_the_retry_starts_again_from_the_oldest_piece()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = new FakeTimeProvider(new DateTimeOffset(T(0, 0, 100)));
+        await using var h = Start(cs, clock);
+        await FinishBackfillAsync(h.Worker);
+        var old = clock.GetUtcNow().UtcDateTime.AddMinutes(-5);
+        await AddDirtyAsync(cs, T(8, 0), T(8, 0, 30), old);
+        await AddDirtyAsync(cs, T(8, 0, 30).AddMinutes(30), T(8, 0, 31), old); // within an hour of the first: one group, two rows
+        h.Processor.FailWhen((from, _) => from == T(8, 0, 14));
+
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+
+        // Up to the third piece, which fails; the later ones are left for the retry. Both rows of the group fail with it.
+        Assert.Equal([T(8, 0), T(8, 0, 7), T(8, 0, 14)], h.Processor.TakeCalls().Select(c => c.From));
+        var rows = await DirtyAsync(cs);
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r =>
+        {
+            Assert.Equal(1, r.Attempts);
+            Assert.Contains("this range cannot be processed", r.LastError);
+        });
+
+        h.Processor.FailWhen(null);
+        clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+        Assert.Equal(
+            [T(8, 0), T(8, 0, 7), T(8, 0, 14), T(8, 0, 21), T(8, 0, 28)],
+            h.Processor.TakeCalls().Select(c => c.From));
+        Assert.Empty(await DirtyAsync(cs));
+    }
+
+    [Fact]
     public async Task Changed_threshold_triggers_backfill()
     {
         var cs = await db.CreateDatabaseAsync(Ct);

@@ -18,7 +18,7 @@ public sealed record ProcessingOptions
     /// </summary>
     public TimeSpan Debounce { get; init; } = TimeSpan.FromSeconds(60);
 
-    /// <summary>The length of one backfill step.</summary>
+    /// <summary>The length of one backfill step, and the longest range one rebuild is asked for: a dirty range longer than this is processed in pieces of it, oldest first.</summary>
     public int BackfillChunkDays { get; init; } = 7;
 
     /// <summary>The wait after each backfill step, so a backfill leaves the database free for ingest and reads.</summary>

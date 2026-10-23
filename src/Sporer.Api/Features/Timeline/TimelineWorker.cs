@@ -62,7 +62,11 @@ public sealed class TimelineWorker(
             didWork = true;
             try
             {
-                await processor.ReprocessAsync(range.FromUtc, range.ToUtc, ct);
+                // A range can be as long as the history (a client sending a year of points at once), and a rebuild loads
+                // what it covers: in pieces no longer than a backfill step, oldest first, so memory stays bounded. The rows
+                // are done, or failed, together.
+                foreach (var (from, to) in Pieces(range.FromUtc, range.ToUtc, ChunkLength))
+                    await processor.ReprocessAsync(from, to, ct);
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
@@ -81,8 +85,7 @@ public sealed class TimelineWorker(
         {
             var cursor = state.BackfillCursor!.Value;
             var backfillTo = state.BackfillTo!.Value;
-            var chunk = TimeSpan.FromDays(Math.Clamp(options.BackfillChunkDays, 1, 36_500));
-            var chunkEnd = backfillTo - cursor <= chunk ? backfillTo : cursor + chunk;
+            var chunkEnd = backfillTo - cursor <= ChunkLength ? backfillTo : cursor + ChunkLength;
 
             didWork = true;
             try
@@ -182,6 +185,23 @@ public sealed class TimelineWorker(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Could not record the error in processing_state");
+        }
+    }
+
+    /// <summary>The longest range one rebuild is asked for: a backfill step.</summary>
+    private TimeSpan ChunkLength => TimeSpan.FromDays(Math.Clamp(options.BackfillChunkDays, 1, 36_500));
+
+    /// <summary><paramref name="from"/> to <paramref name="to"/> as consecutive ranges of at most <paramref name="length"/>, oldest first (one, for a range that is not longer).</summary>
+    private static IEnumerable<(DateTime From, DateTime To)> Pieces(DateTime from, DateTime to, TimeSpan length)
+    {
+        var start = from;
+        while (true)
+        {
+            var end = to - start <= length ? to : start + length;
+            yield return (start, end);
+            if (end >= to)
+                yield break;
+            start = end;
         }
     }
 
