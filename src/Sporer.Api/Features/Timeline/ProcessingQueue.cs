@@ -10,6 +10,15 @@ namespace Sporer.Api.Features.Timeline;
 /// </summary>
 public sealed record DueRange(DateTime FromUtc, DateTime ToUtc, IReadOnlyList<long> Ids);
 
+/// <summary>A dirty range whose processing failed <paramref name="Attempts"/> times, and why the last time. All times are UTC.</summary>
+public sealed record FailedRange(DateTime FromUtc, DateTime ToUtc, int Attempts, string? LastError);
+
+/// <summary>
+/// What waits in the queue: <paramref name="Pending"/> is every dirty range (the failed ones too: they are still unprocessed),
+/// <paramref name="Failed"/> those that have been tried and failed, in time order.
+/// </summary>
+public sealed record ProcessingBacklog(long Pending, IReadOnlyList<FailedRange> Failed);
+
 /// <summary>The single row of <c>processing_state</c>. All times are UTC.</summary>
 public sealed record ProcessingState(
     string? AlgorithmVersion,
@@ -133,6 +142,22 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
             cancellationToken: ct));
     }
 
+    /// <summary>How many dirty ranges wait, and which of them have failed. Reads only; whether a range is due does not matter.</summary>
+    public async Task<ProcessingBacklog> GetBacklogAsync(CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var grid = await connection.QueryMultipleAsync(new CommandDefinition(
+            """
+            select count(*) from dirty_range;
+            select from_utc as FromUtc, to_utc as ToUtc, attempts as Attempts, last_error as LastError
+            from dirty_range where attempts > 0 order by from_utc, id;
+            """, cancellationToken: ct));
+
+        var pending = await grid.ReadSingleAsync<long>();
+        var failed = (await grid.ReadAsync<FailedRow>()).Select(r => new FailedRange(AsUtc(r.FromUtc), AsUtc(r.ToUtc), r.Attempts, r.LastError));
+        return new ProcessingBacklog(pending, [.. failed]);
+    }
+
     public async Task<ProcessingState> GetStateAsync(CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
@@ -230,6 +255,14 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
         public long Id { get; set; }
         public DateTime FromUtc { get; set; }
         public DateTime ToUtc { get; set; }
+    }
+
+    private sealed class FailedRow
+    {
+        public DateTime FromUtc { get; set; }
+        public DateTime ToUtc { get; set; }
+        public int Attempts { get; set; }
+        public string? LastError { get; set; }
     }
 
     private sealed class AttemptsRow

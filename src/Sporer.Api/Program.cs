@@ -71,7 +71,7 @@ if (nominatimEnabled && !nominatimUserAgentSet)
 }
 
 if (string.IsNullOrEmpty(app.Services.GetRequiredService<IOptions<OverlandOptions>>().Value.Token))
-    app.Logger.LogWarning("Overland ingest is open; set OVERLAND_TOKEN");
+    app.Logger.LogWarning("{Warning}", OverlandOptions.OpenIngestWarning);
 
 app
     .UseFastEndpoints(t=>

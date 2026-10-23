@@ -4,6 +4,9 @@ namespace Sporer.Api.Configuration;
 
 public sealed class OverlandOptions
 {
+    /// <summary>What is said, in the log at start-up and in the status, when no token is set.</summary>
+    public const string OpenIngestWarning = "Overland ingest is open; set OVERLAND_TOKEN";
+
     /// <summary>Shared secret Overland must send. Empty means the ingest endpoint is open.</summary>
     public string? Token { get; set; }
 }
