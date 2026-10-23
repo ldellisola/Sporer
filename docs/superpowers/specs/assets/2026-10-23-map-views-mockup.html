@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map view mockups</title>
+<style>
+  :root {
+    --walk:#34C759; --cycle:#30B0C7; --drive:#007AFF; --train:#AF52DE; --flight:#FF9500; --pin:#FF375F;
+    --ink:#1C1C1E; --sub:#8E8E93; --line:#E5E5EA;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px 16px 48px; background:#F5F5F7; color:var(--ink);
+         font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",Roboto,sans-serif; }
+  header { max-width:1100px; margin:0 auto 8px; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  .note { color:#6e6e73; font-size:14px; margin:0 0 4px; line-height:1.45; }
+  section { max-width:1100px; margin:28px auto 0; }
+  h2 { font-size:17px; margin:0 0 4px; }
+  h2 .tag { display:inline-block; font-size:12px; font-weight:700; background:#1C1C1E; color:#fff; border-radius:6px; padding:2px 7px; margin-right:6px; vertical-align:2px; }
+  .cap { font-size:13.5px; color:#6e6e73; margin:0 0 14px; max-width:720px; line-height:1.45; }
+  .row-of { display:flex; flex-wrap:wrap; gap:28px; align-items:flex-start; }
+  .opt { display:flex; flex-direction:column; gap:10px; }
+  .opt-label { font-size:14px; font-weight:600; }
+  .opt-label small { display:block; font-weight:400; color:#6e6e73; font-size:12.5px; max-width:340px; margin-top:2px; }
+
+  /* phone frame */
+  .phone { width:340px; height:716px; border-radius:54px; background:#111; padding:10px; box-shadow:0 20px 50px rgba(0,0,0,.18), inset 0 0 0 2px #2a2a2a; flex:none; }
+  .screen { position:relative; width:320px; height:696px; border-radius:44px; overflow:hidden; background:#F3F1EC; }
+  .screen.dark { background:#20242C; color:#fff; }
+  .island { position:absolute; top:11px; left:50%; transform:translateX(-50%); width:100px; height:30px; background:#000; border-radius:20px; z-index:20; }
+  .status { position:absolute; top:15px; left:34px; right:28px; display:flex; justify-content:space-between; font-size:14px; font-weight:600; z-index:19; }
+  .mapsvg { position:absolute; top:0; left:0; width:320px; height:470px; display:block; }
+
+  /* floating controls */
+  .ctrl { position:absolute; top:54px; left:12px; right:12px; z-index:10; border-radius:18px; padding:8px;
+          background:rgba(255,255,255,.82); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px);
+          box-shadow:0 4px 18px rgba(0,0,0,.10); }
+  .dark .ctrl { background:rgba(30,30,32,.78); }
+  .seg { display:flex; background:rgba(118,118,128,.14); border-radius:9px; padding:2px; }
+  .seg div { flex:1; text-align:center; font-size:12px; font-weight:600; padding:5px 0; border-radius:7px; color:#3a3a3c; }
+  .dark .seg div { color:#d1d1d6; }
+  .seg .on { background:#fff; color:#000; box-shadow:0 1px 3px rgba(0,0,0,.12); }
+  .dark .seg .on { background:#636366; color:#fff; }
+  .date { display:flex; align-items:center; justify-content:space-between; padding:8px 6px 2px; font-size:15px; font-weight:600; }
+  .date .chev { color:var(--drive); font-size:20px; line-height:1; padding:0 6px; }
+  .back { color:var(--drive); font-size:14px; font-weight:500; padding:2px 4px 6px; }
+  .ttl { font-size:17px; font-weight:700; padding:0 4px; }
+  .ttl-sub { font-size:12.5px; color:var(--sub); padding:2px 4px 4px; }
+  .pill { display:inline-block; font-size:11px; font-weight:600; color:#0a7a32; background:#e4f8ea; border-radius:6px; padding:1px 6px; margin-left:4px; }
+
+  .mapbtns { position:absolute; right:14px; top:354px; z-index:9; display:flex; flex-direction:column; border-radius:12px; overflow:hidden;
+             background:rgba(255,255,255,.85); backdrop-filter:blur(16px); box-shadow:0 2px 10px rgba(0,0,0,.12); }
+  .mapbtns div { width:38px; height:38px; display:flex; align-items:center; justify-content:center; font-size:16px; color:#3a3a3c; }
+  .mapbtns div + div { border-top:1px solid rgba(0,0,0,.08); }
+  .dark .mapbtns { background:rgba(44,44,46,.85); } .dark .mapbtns div { color:#e5e5ea; } .dark .mapbtns div + div { border-top-color:rgba(255,255,255,.08); }
+
+  /* bottom sheet */
+  .sheet { position:absolute; left:0; right:0; top:440px; bottom:0; z-index:12; background:#fff; border-radius:22px 22px 0 0;
+           box-shadow:0 -4px 22px rgba(0,0,0,.10); padding:8px 16px 0; overflow:hidden; }
+  .dark .sheet { background:#1C1C1E; }
+  .grab { width:38px; height:5px; border-radius:3px; background:#D1D1D6; margin:0 auto 10px; }
+  .dark .grab { background:#48484A; }
+  .sum { display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap; }
+  .chip { font-size:12px; font-weight:600; background:#F2F2F7; border-radius:8px; padding:4px 8px; color:#3a3a3c; }
+  .dark .chip { background:#2C2C2E; color:#e5e5ea; }
+  .h3 { font-size:13px; font-weight:700; color:var(--sub); text-transform:uppercase; letter-spacing:.4px; margin:2px 0 8px; }
+
+  /* timeline */
+  .tl { position:relative; }
+  .tl::before { content:""; position:absolute; left:11px; top:12px; bottom:-20px; width:2px; background:var(--line); }
+  .r { position:relative; display:flex; align-items:center; gap:10px; }
+  .r.v { padding:4px 0; }
+  .r.m { padding:3px 0; }
+  .r .ic { width:24px; height:24px; border-radius:50%; background:var(--pin); color:#fff; font-size:12px; font-weight:700;
+           display:flex; align-items:center; justify-content:center; flex:none; box-shadow:0 0 0 3px #fff; }
+  .r.m .ic { width:4px; height:24px; border-radius:2px; margin:0 10px; box-shadow:none; }
+  .r .tx { flex:1; min-width:0; }
+  .r.v .tx b { display:block; font-size:14.5px; }
+  .r.v .tx span { font-size:12px; color:var(--sub); }
+  .r.m .tx { font-size:12.5px; color:#48484a; }
+  .r .du { font-size:12.5px; color:var(--sub); font-variant-numeric:tabular-nums; }
+
+  /* bars (month A) */
+  .bar-row { display:flex; align-items:center; gap:10px; margin:0 0 9px; font-size:13.5px; }
+  .bar-row .nm { width:74px; font-weight:600; }
+  .bar-row .bar { flex:1; height:8px; border-radius:4px; background:#F2F2F7; overflow:hidden; }
+  .bar-row .bar i { display:block; height:100%; background:var(--pin); border-radius:4px; }
+  .bar-row .hr { width:44px; text-align:right; color:var(--sub); font-size:12.5px; font-variant-numeric:tabular-nums; }
+
+  /* calendar (month B) */
+  .cal { display:grid; grid-template-columns:repeat(7,1fr); gap:5px; }
+  .cal .dow { font-size:10.5px; color:#8e8e93; text-align:center; font-weight:600; }
+  .cal .d { height:28px; border-radius:7px; font-size:11px; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:600; }
+  .cal .d.sel { outline:2px solid #fff; outline-offset:-2px; }
+  .hint { font-size:11.5px; color:#8e8e93; margin-top:8px; text-align:center; }
+
+  /* trip */
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:12px; }
+  .stat { background:#F2F2F7; border-radius:10px; padding:7px 4px; text-align:center; }
+  .stat b { display:block; font-size:16px; }
+  .stat span { font-size:10.5px; color:var(--sub); }
+  .day { display:flex; gap:10px; padding:7px 0; border-top:1px solid #F2F2F7; font-size:13px; align-items:baseline; }
+  .day .dd { width:48px; font-weight:700; color:var(--sub); font-size:12px; flex:none; }
+  .day .dx { flex:1; }
+  .day .dx small { color:var(--sub); }
+
+  /* desktop */
+  .desk-wrap { overflow-x:auto; padding-bottom:6px; }
+  .desk { width:960px; height:580px; border-radius:12px; overflow:hidden; background:#fff; box-shadow:0 20px 50px rgba(0,0,0,.16); display:flex; flex-direction:column; }
+  .chrome { height:36px; background:#ECECEE; display:flex; align-items:center; gap:7px; padding:0 14px; border-bottom:1px solid #dcdcde; flex:none; }
+  .chrome i { width:12px; height:12px; border-radius:50%; display:inline-block; }
+  .chrome .url { margin-left:18px; flex:0 1 380px; background:#fff; border-radius:7px; height:22px; font-size:12px; color:#6e6e73; display:flex; align-items:center; padding:0 10px; }
+  .dbody { flex:1; display:flex; min-height:0; }
+  .side { width:320px; flex:none; padding:14px 16px; border-right:1px solid #e5e5ea; overflow:hidden; }
+  .side .seg { margin-bottom:4px; }
+  .side .date { padding:8px 2px 10px; }
+  .dmap { position:relative; flex:1; background:#F3F1EC; }
+  .dmap svg { position:absolute; inset:0; width:100%; height:100%; }
+  .dmap .mapbtns { top:16px; right:16px; }
+</style>
+</head>
+<body>
+
+<!-- Shared drawn maps (made up, not real places) -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <radialGradient id="heat" r="50%">
+      <stop offset="0" stop-color="#FFF6C2"/>
+      <stop offset=".25" stop-color="#FFC233"/>
+      <stop offset=".6" stop-color="#FF5A1F" stop-opacity=".75"/>
+      <stop offset="1" stop-color="#FF2D55" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur6"><feGaussianBlur stdDeviation="6"/></filter>
+    <filter id="blur3"><feGaussianBlur stdDeviation="3"/></filter>
+  </defs>
+
+  <!-- DAY: city scale -->
+  <symbol id="daymap" viewBox="0 0 440 440">
+    <rect width="440" height="440" fill="#F3F1EC"/>
+    <path d="M290 0 C 310 60, 370 95, 440 105 L440 0 Z" fill="#A9D3F2"/>
+    <path d="M0 372 C 50 360, 92 388, 112 440 L0 440 Z" fill="#A9D3F2"/>
+    <ellipse cx="150" cy="190" rx="38" ry="24" fill="#D3ECC6"/>
+    <ellipse cx="345" cy="300" rx="28" ry="18" fill="#D3ECC6"/>
+    <g stroke="#fff" stroke-width="4" fill="none" stroke-linecap="round">
+      <path d="M40 0 L52 440"/><path d="M105 0 L98 440"/><path d="M168 0 L180 440"/><path d="M250 0 L238 440"/><path d="M318 0 L330 440"/><path d="M392 0 L384 440"/>
+      <path d="M0 62 L440 52"/><path d="M0 132 L440 140"/><path d="M0 202 L440 196"/><path d="M0 272 L440 282"/><path d="M0 344 L440 336"/><path d="M0 412 L440 420"/>
+      <path d="M60 60 L230 290"/><path d="M260 60 L410 250"/>
+    </g>
+    <g fill="none" stroke-linecap="round">
+      <path d="M0 252 C 120 232, 260 212, 440 162" stroke="#EAC56B" stroke-width="9"/>
+      <path d="M0 252 C 120 232, 260 212, 440 162" stroke="#FCE7A8" stroke-width="6"/>
+      <path d="M205 0 C 214 120, 192 262, 230 440" stroke="#EAC56B" stroke-width="9"/>
+      <path d="M205 0 C 214 120, 192 262, 230 440" stroke="#FCE7A8" stroke-width="6"/>
+    </g>
+    <g font-size="9" font-weight="600" letter-spacing="2" fill="#A39E94">
+      <text x="268" y="128">SENTRUM</text><text x="60" y="300">OLD TOWN</text><text x="330" y="396">HARBOUR</text>
+    </g>
+    <!-- routes -->
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <g stroke="#fff" stroke-width="8">
+        <path d="M120 360 C 128 340, 140 322, 150 312 S 160 296, 165 290"/>
+        <path d="M165 290 C 190 270, 200 252, 230 242 S 280 222, 300 210"/>
+        <path d="M300 210 C 332 240, 322 290, 300 310 S 282 325, 270 330"/>
+        <path d="M270 330 C 240 352, 200 377, 160 373 S 130 366, 120 360"/>
+      </g>
+      <path d="M120 360 C 128 340, 140 322, 150 312 S 160 296, 165 290" stroke="#34C759" stroke-width="4.5" stroke-dasharray="1 7"/>
+      <path d="M120 360 C 128 340, 140 322, 150 312 S 160 296, 165 290" stroke="#34C759" stroke-width="4.5" opacity=".55"/>
+      <path d="M165 290 C 190 270, 200 252, 230 242 S 280 222, 300 210" stroke="#30B0C7" stroke-width="4.5"/>
+      <path d="M300 210 C 332 240, 322 290, 300 310 S 282 325, 270 330" stroke="#007AFF" stroke-width="4.5"/>
+      <path d="M270 330 C 240 352, 200 377, 160 373 S 130 366, 120 360" stroke="#007AFF" stroke-width="4.5"/>
+    </g>
+    <!-- visit pins -->
+    <g font-size="11" font-weight="700" text-anchor="middle" fill="#fff">
+      <circle cx="120" cy="360" r="12" fill="#FF375F" stroke="#fff" stroke-width="3"/><text x="120" y="364">⌂</text>
+      <circle cx="165" cy="290" r="12" fill="#FF375F" stroke="#fff" stroke-width="3"/><text x="165" y="294">1</text>
+      <circle cx="300" cy="210" r="12" fill="#FF375F" stroke="#fff" stroke-width="3"/><text x="300" y="214">2</text>
+      <circle cx="270" cy="330" r="12" fill="#FF375F" stroke="#fff" stroke-width="3"/><text x="270" y="334">3</text>
+    </g>
+    <g font-size="11" font-weight="700" fill="#1C1C1E" stroke="#fff" stroke-width="3" style="paint-order:stroke">
+      <text x="136" y="383">Home</text><text x="181" y="285">Café</text><text x="316" y="206">Office</text><text x="286" y="345">Gym</text>
+    </g>
+  </symbol>
+
+  <!-- MONTH A: routes + places, light -->
+  <symbol id="monthA" viewBox="0 0 440 440">
+    <rect width="440" height="440" fill="#F3F1EC"/>
+    <path d="M0 330 C 80 302, 160 352, 222 332 S 330 300, 440 342 L440 440 L0 440 Z" fill="#A9D3F2"/>
+    <ellipse cx="300" cy="392" rx="40" ry="14" fill="#F3F1EC"/>
+    <ellipse cx="96" cy="120" rx="34" ry="22" fill="#D3ECC6"/>
+    <ellipse cx="370" cy="180" rx="40" ry="28" fill="#D3ECC6"/>
+    <g stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round">
+      <path d="M0 80 L440 64"/><path d="M0 150 L440 160"/><path d="M0 222 L440 212"/><path d="M0 290 L440 278"/>
+      <path d="M60 0 L70 330"/><path d="M140 0 L130 340"/><path d="M215 0 L226 330"/><path d="M300 0 L292 310"/><path d="M380 0 L388 320"/>
+    </g>
+    <g fill="none" stroke-linecap="round">
+      <path d="M0 238 C 140 210, 280 200, 440 140" stroke="#FCE7A8" stroke-width="5"/>
+      <path d="M200 0 C 210 110, 186 230, 210 330" stroke="#FCE7A8" stroke-width="5"/>
+    </g>
+    <g fill="none" stroke="#007AFF" stroke-width="2.4" stroke-linecap="round" opacity=".38">
+      <path d="M170 250 C 200 230, 250 200, 290 170"/>
+      <path d="M170 250 C 205 240, 255 196, 290 170"/>
+      <path d="M170 250 C 185 215, 240 190, 290 170"/>
+      <path d="M290 170 C 300 210, 270 250, 250 262"/>
+      <path d="M250 262 C 220 270, 190 262, 170 250"/>
+      <path d="M170 250 C 130 230, 100 180, 90 150"/>
+      <path d="M90 150 C 140 150, 160 200, 170 250"/>
+      <path d="M290 170 C 320 140, 340 125, 360 120"/>
+      <path d="M170 250 C 150 270, 130 285, 120 290"/>
+      <path d="M170 250 C 210 280, 300 290, 330 280"/>
+      <path d="M170 250 C 120 240, 80 236, 60 230"/>
+      <path d="M290 170 C 270 140, 245 120, 230 110"/>
+      <path d="M230 110 C 300 90, 380 160, 400 220"/>
+      <path d="M170 250 C 180 236, 188 222, 195 215"/>
+    </g>
+    <g fill="#FF375F" stroke="#fff" stroke-width="2.5">
+      <circle cx="170" cy="250" r="16"/><circle cx="290" cy="170" r="12"/><circle cx="250" cy="262" r="7"/><circle cx="195" cy="215" r="5"/>
+      <circle cx="90" cy="150" r="6"/><circle cx="360" cy="120" r="4"/><circle cx="330" cy="280" r="4"/><circle cx="120" cy="290" r="4"/>
+      <circle cx="60" cy="230" r="3.5"/><circle cx="400" cy="220" r="3.5"/><circle cx="230" cy="110" r="3.5"/>
+    </g>
+    <g font-size="11" font-weight="700" fill="#1C1C1E" stroke="#fff" stroke-width="3" style="paint-order:stroke">
+      <text x="134" y="276">Home</text><text x="306" y="166">Office</text><text x="262" y="276">Gym</text><text x="58" y="141">Parents</text>
+    </g>
+  </symbol>
+
+  <!-- MONTH B: heat, dark -->
+  <symbol id="monthB" viewBox="0 0 440 440">
+    <rect width="440" height="440" fill="#20242C"/>
+    <path d="M0 330 C 80 302, 160 352, 222 332 S 330 300, 440 342 L440 440 L0 440 Z" fill="#0F1A2B"/>
+    <ellipse cx="300" cy="392" rx="40" ry="14" fill="#20242C"/>
+    <ellipse cx="96" cy="120" rx="34" ry="22" fill="#1E2B24"/>
+    <ellipse cx="370" cy="180" rx="40" ry="28" fill="#1E2B24"/>
+    <g stroke="#2F3541" stroke-width="2.5" fill="none" stroke-linecap="round">
+      <path d="M0 80 L440 64"/><path d="M0 150 L440 160"/><path d="M0 222 L440 212"/><path d="M0 290 L440 278"/>
+      <path d="M60 0 L70 330"/><path d="M140 0 L130 340"/><path d="M215 0 L226 330"/><path d="M300 0 L292 310"/><path d="M380 0 L388 320"/>
+      <path d="M0 238 C 140 210, 280 200, 440 140" stroke="#3A404D" stroke-width="5"/>
+      <path d="M200 0 C 210 110, 186 230, 210 330" stroke="#3A404D" stroke-width="5"/>
+    </g>
+    <g fill="none" stroke="#FF7A1A" stroke-width="5" stroke-linecap="round" opacity=".45" filter="url(#blur3)">
+      <path d="M170 250 C 200 230, 250 200, 290 170"/>
+      <path d="M290 170 C 300 210, 270 250, 250 262"/>
+      <path d="M250 262 C 220 270, 190 262, 170 250"/>
+      <path d="M170 250 C 130 230, 100 180, 90 150"/>
+      <path d="M290 170 C 320 140, 340 125, 360 120"/>
+      <path d="M170 250 C 210 280, 300 290, 330 280"/>
+      <path d="M230 110 C 300 90, 380 160, 400 220"/>
+    </g>
+    <g filter="url(#blur6)">
+      <circle cx="170" cy="250" r="44" fill="url(#heat)"/>
+      <circle cx="290" cy="170" r="34" fill="url(#heat)"/>
+      <circle cx="250" cy="262" r="18" fill="url(#heat)" opacity=".8"/>
+      <circle cx="90" cy="150" r="18" fill="url(#heat)" opacity=".8"/>
+      <circle cx="195" cy="215" r="12" fill="url(#heat)" opacity=".7"/>
+      <circle cx="360" cy="120" r="10" fill="url(#heat)" opacity=".6"/>
+      <circle cx="330" cy="280" r="10" fill="url(#heat)" opacity=".6"/>
+    </g>
+  </symbol>
+
+  <!-- TRIP: region scale -->
+  <symbol id="tripmap" viewBox="0 0 440 440">
+    <rect width="440" height="440" fill="#F3F1EC"/>
+    <path d="M0 0 L122 0 C 112 60, 132 110, 117 170 C 102 230, 72 262, 96 300 C 110 330, 82 380, 72 440 L0 440 Z" fill="#A9D3F2"/>
+    <path d="M336 0 C 314 80, 346 160, 324 240 S 344 380, 334 440" fill="none" stroke="#B9B3A7" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <g fill="none" stroke="#B7D9F0" stroke-width="2"><path d="M117 150 C 180 140, 260 160, 336 130"/><path d="M98 312 C 160 300, 240 290, 330 300"/></g>
+    <g stroke="#fff" stroke-width="2" fill="none"><path d="M150 120 C 170 180, 170 240, 118 318"/><path d="M118 318 L330 360"/><path d="M150 120 L330 90"/><path d="M175 195 L330 210"/></g>
+    <g font-size="9" font-weight="600" letter-spacing="2" fill="#A39E94"><text x="350" y="250">SPAIN</text><text x="16" y="230">ATLANTIC</text></g>
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M440 46 Q 300 120 118 318" stroke="#FF9500" stroke-width="2.5" stroke-dasharray="7 6"/>
+      <path d="M150 120 Q 300 40 440 24" stroke="#FF9500" stroke-width="2.5" stroke-dasharray="7 6"/>
+      <g stroke="#fff" stroke-width="7">
+        <path d="M118 318 C 150 328, 190 334, 220 345"/><path d="M220 345 C 190 355, 150 342, 118 322"/>
+        <path d="M118 318 C 140 262, 165 212, 175 195 S 160 140, 150 120"/>
+      </g>
+      <path d="M118 318 C 150 328, 190 334, 220 345" stroke="#007AFF" stroke-width="4"/>
+      <path d="M220 345 C 190 355, 150 342, 118 322" stroke="#007AFF" stroke-width="4"/>
+      <path d="M118 318 C 140 262, 165 212, 175 195 S 160 140, 150 120" stroke="#AF52DE" stroke-width="4"/>
+    </g>
+    <text x="300" y="98" font-size="15" fill="#FF9500" transform="rotate(-18 300 98)">✈</text>
+    <g fill="#FF375F" stroke="#fff" stroke-width="2.5">
+      <circle cx="118" cy="318" r="11"/><circle cx="150" cy="120" r="10"/><circle cx="220" cy="345" r="7"/><circle cx="175" cy="195" r="4"/>
+    </g>
+    <g font-weight="700" fill="#1C1C1E" stroke="#fff" stroke-width="3" style="paint-order:stroke">
+      <text x="134" y="312" font-size="13">Lisbon</text><text x="134" y="327" font-size="10" fill="#6e6e73" font-weight="600">4 nights</text>
+      <text x="166" y="116" font-size="13">Porto</text><text x="166" y="131" font-size="10" fill="#6e6e73" font-weight="600">3 nights</text>
+      <text x="232" y="349" font-size="12">Évora</text><text x="232" y="362" font-size="10" fill="#6e6e73" font-weight="600">day trip</text>
+      <text x="184" y="199" font-size="10" fill="#6e6e73">Coimbra</text>
+    </g>
+  </symbol>
+</svg>
+
+<header>
+  <h1>Map view: rough mockups</h1>
+  <p class="note">The maps are drawn by hand and the data is made up. The real app would use real, zoomable vector maps (MapLibre + OpenStreetMap) in light and dark. These are about layout and what you see at each time scale, not final polish.</p>
+  <p class="note">Route colours: <b style="color:var(--walk)">walk</b> · <b style="color:var(--cycle)">cycle</b> · <b style="color:var(--drive)">drive</b> · <b style="color:var(--train)">train</b> · <b style="color:var(--flight)">flight</b>. Pink dots are places you stopped.</p>
+</header>
+
+<!-- 1. DAY -->
+<section>
+  <h2><span class="tag">1</span>A day</h2>
+  <p class="cap">Map fills the screen. Day / Week / Month / Year switch at the top, arrows (or swipe) to step through time. The sheet at the bottom is the day's timeline; drag it up for the full list, down to see more map. Tapping a row flies the map to that stop or route.</p>
+  <div class="row-of">
+    <div class="phone"><div class="screen">
+      <div class="island"></div>
+      <div class="status"><span>9:41</span><span>●●● 100%</span></div>
+      <svg class="mapsvg" viewBox="75 -20 320 470" preserveAspectRatio="xMidYMid slice"><use href="#daymap" width="440" height="440"/></svg>
+      <div class="ctrl">
+        <div class="seg"><div class="on">Day</div><div>Week</div><div>Month</div><div>Year</div><div>Range</div></div>
+        <div class="date"><span class="chev">‹</span><span>Thursday 22 October</span><span class="chev">›</span></div>
+      </div>
+      <div class="mapbtns"><div>◎</div><div>◐</div></div>
+      <div class="sheet">
+        <div class="grab"></div>
+        <div class="sum"><span class="chip">4 places</span><span class="chip">13.2 km</span><span class="chip">47 min moving</span></div>
+        <div class="tl">
+          <div class="r v"><div class="ic">⌂</div><div class="tx"><b>Home</b><span>until 08:32</span></div><div class="du">8h 32m</div></div>
+          <div class="r m"><div class="ic" style="background:var(--walk)"></div><div class="tx">🚶 Walk · 1.1 km</div><div class="du">14 min</div></div>
+          <div class="r v"><div class="ic">1</div><div class="tx"><b>Café</b><span>08:46 – 09:10</span></div><div class="du">24m</div></div>
+          <div class="r m"><div class="ic" style="background:var(--cycle)"></div><div class="tx">🚲 Cycle · 3.4 km</div><div class="du">13 min</div></div>
+          <div class="r v"><div class="ic">2</div><div class="tx"><b>Office</b><span>09:23 – 17:41</span></div><div class="du">8h 18m</div></div>
+          <div class="r m"><div class="ic" style="background:var(--drive)"></div><div class="tx">🚗 Drive · 4.8 km</div><div class="du">11 min</div></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- 2. MONTH -->
+<section>
+  <h2><span class="tag">2</span>A week or a month</h2>
+  <p class="cap">Zoomed out, a day-by-day list stops being useful, so the map has to summarise. Two different ways to do it below; Week would look the same, just closer in.</p>
+  <div class="row-of">
+    <div class="opt">
+      <div class="opt-label">A · Routes + places<small>Every route you took, faint and overlapping, so busy corridors get darker. Places are dots sized by time spent. Sheet ranks where your time went.</small></div>
+      <div class="phone"><div class="screen">
+        <div class="island"></div>
+        <div class="status"><span>9:41</span><span>●●● 100%</span></div>
+        <svg class="mapsvg" viewBox="40 -40 320 470" preserveAspectRatio="xMidYMid slice"><use href="#monthA" width="440" height="440"/></svg>
+        <div class="ctrl">
+          <div class="seg"><div>Day</div><div>Week</div><div class="on">Month</div><div>Year</div><div>Range</div></div>
+          <div class="date"><span class="chev">‹</span><span>October 2026</span><span class="chev">›</span></div>
+        </div>
+        <div class="mapbtns"><div>◎</div><div>◐</div></div>
+        <div class="sheet">
+          <div class="grab"></div>
+          <div class="sum"><span class="chip">38 places</span><span class="chip">412 km</span><span class="chip">61 trips</span></div>
+          <div class="h3">Where your time went</div>
+          <div class="bar-row"><span class="nm">Home</span><span class="bar"><i style="width:100%"></i></span><span class="hr">412h</span></div>
+          <div class="bar-row"><span class="nm">Office</span><span class="bar"><i style="width:37%"></i></span><span class="hr">151h</span></div>
+          <div class="bar-row"><span class="nm">Gym</span><span class="bar"><i style="width:6%"></i></span><span class="hr">18h</span></div>
+          <div class="bar-row"><span class="nm">Parents</span><span class="bar"><i style="width:4%"></i></span><span class="hr">14h</span></div>
+          <div class="bar-row"><span class="nm">Café</span><span class="bar"><i style="width:3%"></i></span><span class="hr">9h</span></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="opt">
+      <div class="opt-label">B · Heat + calendar<small>A glow where you spend time (shown in dark mode). Sheet is the month as a calendar, shaded by how far you travelled each day; tap a day to jump into it.</small></div>
+      <div class="phone"><div class="screen dark">
+        <div class="island"></div>
+        <div class="status"><span>9:41</span><span>●●● 100%</span></div>
+        <svg class="mapsvg" viewBox="40 -40 320 470" preserveAspectRatio="xMidYMid slice"><use href="#monthB" width="440" height="440"/></svg>
+        <div class="ctrl">
+          <div class="seg"><div>Day</div><div>Week</div><div class="on">Month</div><div>Year</div><div>Range</div></div>
+          <div class="date"><span class="chev">‹</span><span>October 2026</span><span class="chev">›</span></div>
+        </div>
+        <div class="mapbtns"><div>◎</div><div>◐</div></div>
+        <div class="sheet">
+          <div class="grab"></div>
+          <div class="cal" id="cal"></div>
+          <div class="hint">Darker = more distance that day · tap a day to open it</div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 3. TRIP -->
+<section>
+  <h2><span class="tag">3</span>A trip</h2>
+  <p class="cap">A stretch of days away from home, shown as one map: flights as arcs, ground travel as routes, cities sized by nights spent. The sheet gives the trip's numbers and a day-by-day summary; tap a day to open it like view 1.</p>
+  <div class="row-of">
+    <div class="phone"><div class="screen">
+      <div class="island"></div>
+      <div class="status"><span>9:41</span><span>●●● 100%</span></div>
+      <svg class="mapsvg" viewBox="50 -55 320 470" preserveAspectRatio="xMidYMid slice"><use href="#tripmap" width="440" height="440"/></svg>
+      <div class="ctrl">
+        <div class="back">‹ Trips</div>
+        <div class="ttl">Lisbon &amp; Porto</div>
+        <div class="ttl-sub">12 – 19 Sep 2026 · 8 days <span class="pill">auto-detected</span></div>
+      </div>
+      <div class="mapbtns"><div>◎</div><div>◐</div></div>
+      <div class="sheet">
+        <div class="grab"></div>
+        <div class="stats">
+          <div class="stat"><b>2</b><span>flights</span></div>
+          <div class="stat"><b>3</b><span>cities</span></div>
+          <div class="stat"><b>31</b><span>places</span></div>
+          <div class="stat"><b>940</b><span>km ground</span></div>
+        </div>
+        <div class="day"><span class="dd">Sat 12</span><span class="dx">Flew to Lisbon <small>· Alfama, Time Out Market</small></span></div>
+        <div class="day"><span class="dd">Sun 13</span><span class="dx">Lisbon <small>· 7 places · 11 km walked</small></span></div>
+        <div class="day"><span class="dd">Mon 14</span><span class="dx">Day trip to Évora <small>· 268 km driven</small></span></div>
+        <div class="day"><span class="dd">Wed 16</span><span class="dx">Train to Porto <small>· 3h 05m</small></span></div>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- 4. DESKTOP -->
+<section>
+  <h2><span class="tag">4</span>Desktop</h2>
+  <p class="cap">Same app, laid out wide: the timeline moves to a sidebar, the map gets the rest of the window. Everything else behaves the same.</p>
+  <div class="desk-wrap">
+    <div class="desk">
+      <div class="chrome"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i><div class="url">sporer · Thursday 22 October</div></div>
+      <div class="dbody">
+        <div class="side">
+          <div class="seg"><div class="on">Day</div><div>Week</div><div>Month</div><div>Year</div><div>Range</div></div>
+          <div class="date"><span class="chev">‹</span><span>Thursday 22 October</span><span class="chev">›</span></div>
+          <div class="sum"><span class="chip">4 places</span><span class="chip">13.2 km</span><span class="chip">47 min moving</span></div>
+          <div class="tl">
+            <div class="r v"><div class="ic">⌂</div><div class="tx"><b>Home</b><span>until 08:32</span></div><div class="du">8h 32m</div></div>
+            <div class="r m"><div class="ic" style="background:var(--walk)"></div><div class="tx">🚶 Walk · 1.1 km</div><div class="du">14 min</div></div>
+            <div class="r v"><div class="ic">1</div><div class="tx"><b>Café</b><span>08:46 – 09:10</span></div><div class="du">24m</div></div>
+            <div class="r m"><div class="ic" style="background:var(--cycle)"></div><div class="tx">🚲 Cycle · 3.4 km</div><div class="du">13 min</div></div>
+            <div class="r v"><div class="ic">2</div><div class="tx"><b>Office</b><span>09:23 – 17:41</span></div><div class="du">8h 18m</div></div>
+            <div class="r m"><div class="ic" style="background:var(--drive)"></div><div class="tx">🚗 Drive · 4.8 km</div><div class="du">11 min</div></div>
+            <div class="r v"><div class="ic">3</div><div class="tx"><b>Gym</b><span>17:52 – 19:05</span></div><div class="du">1h 13m</div></div>
+            <div class="r m"><div class="ic" style="background:var(--drive)"></div><div class="tx">🚗 Drive · 3.9 km</div><div class="du">9 min</div></div>
+            <div class="r v"><div class="ic">⌂</div><div class="tx"><b>Home</b><span>from 19:14</span></div><div class="du"></div></div>
+          </div>
+        </div>
+        <div class="dmap">
+          <svg viewBox="0 0 440 440" preserveAspectRatio="xMidYMid slice"><use href="#daymap"/></svg>
+          <div class="mapbtns"><div>＋</div><div>－</div><div>◎</div><div>◐</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  // Month B calendar: made-up km per day, October 2026 starts on a Thursday
+  const km = [12,9,31,4,14,13,15,2,11,46,8,13,12,14,16,3,58,7,13,12,13,15,0,0,0,0,0,0,0,0,0];
+  const cal = document.getElementById('cal');
+  ['M','T','W','T','F','S','S'].forEach(d => cal.insertAdjacentHTML('beforeend', `<div class="dow">${d}</div>`));
+  for (let i = 0; i < 3; i++) cal.insertAdjacentHTML('beforeend', '<div></div>');
+  km.forEach((k, i) => {
+    const day = i + 1, future = day > 22;
+    const a = future ? 0.06 : Math.min(1, 0.15 + k / 60);
+    const bg = future ? 'rgba(255,255,255,.06)' : `rgba(255,122,26,${a.toFixed(2)})`;
+    cal.insertAdjacentHTML('beforeend', `<div class="d${day === 22 ? ' sel' : ''}" style="background:${bg};${future ? 'color:#636366' : ''}">${day}</div>`);
+  });
+</script>
+</body>
+</html>
