@@ -24,6 +24,26 @@ public sealed record StoredSegment(
     string? GeometryCoarseJson,
     int PointCount);
 
+/// <summary>
+/// A segment as the day view needs it. <paramref name="Place"/> is the surviving place of a stay (never a merged-away one),
+/// null for other kinds and for a stay without a place. <paramref name="GeometryDetailJson"/> is the stored
+/// <c>[[lon,lat],...]</c> text of a move, or the two end positions of a gap.
+/// </summary>
+public sealed record DaySegment(
+    long Id,
+    string Kind,
+    DateTime StartUtc,
+    DateTime EndUtc,
+    string StartTz,
+    string EndTz,
+    string? Mode,
+    double? DistanceM,
+    string? GeometryDetailJson,
+    DayPlace? Place);
+
+/// <summary>A place as shown on a stay: <see cref="Name"/> is the owner's name, else the one from OpenStreetMap, else null.</summary>
+public sealed record DayPlace(long Id, string? Name, string? City, string? Country, double Latitude, double Longitude);
+
 /// <summary>Reads and rewrites the derived timeline in <c>segment</c>.</summary>
 public sealed class SegmentStore(NpgsqlDataSource dataSource)
 {
@@ -92,7 +112,64 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
         await transaction.CommitAsync(ct);
     }
 
+    /// <summary>
+    /// The segments that touch the local calendar day <paramref name="date"/> (the one the segment's own zone says), in
+    /// time order: those that start on or before it and end on or after it, so a stay that crosses midnight is on both
+    /// days. Uses <c>ix_segment_local_dates</c>. A stay's place is resolved through <c>merged_into_id</c> to the place that
+    /// survives (a merged place never shows its own identity); a chain is followed to its end, up to 32 links.
+    /// </summary>
+    public async Task<IReadOnlyList<DaySegment>> FindDayAsync(DateOnly date, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var rows = await connection.QueryAsync<DayRow>(new CommandDefinition(
+            """
+            select s.id as Id, s.kind as Kind, s.start_utc as StartUtc, s.end_utc as EndUtc, s.start_tz as StartTz, s.end_tz as EndTz,
+                   s.mode as Mode, s.distance_m as DistanceM, s.geometry_detail::text as GeometryDetailJson,
+                   p.id as PlaceId, coalesce(p.user_name, p.osm_name) as PlaceName, p.city as PlaceCity,
+                   p.country as PlaceCountry, p.latitude as PlaceLatitude, p.longitude as PlaceLongitude
+            from segment s
+            left join lateral (
+                with recursive chain as (
+                    select id, merged_into_id, user_name, osm_name, city, country, latitude, longitude, 0 as depth
+                    from place where id = s.place_id
+                    union all
+                    select next.id, next.merged_into_id, next.user_name, next.osm_name, next.city, next.country,
+                           next.latitude, next.longitude, chain.depth + 1
+                    from chain join place next on next.id = chain.merged_into_id
+                    where chain.depth < 32
+                )
+                select * from chain where merged_into_id is null
+            ) p on true
+            where s.local_start_date <= @Date and s.local_end_date >= @Date
+            order by s.start_utc, s.id
+            """,
+            new { Date = date }, cancellationToken: ct));
+
+        return rows.Select(r => new DaySegment(
+            r.Id, r.Kind, AsUtc(r.StartUtc), AsUtc(r.EndUtc), r.StartTz, r.EndTz, r.Mode, r.DistanceM, r.GeometryDetailJson,
+            r.PlaceId is { } id && r.PlaceLatitude is { } lat && r.PlaceLongitude is { } lon
+                ? new DayPlace(id, r.PlaceName, r.PlaceCity, r.PlaceCountry, lat, lon)
+                : null)).ToList();
+    }
+
+    /// <summary>
+    /// The time zone of the latest stay that ended before the local day <paramref name="date"/>, or null when there is
+    /// none: where the person was when the day began, for a day without segments of its own.
+    /// </summary>
+    public async Task<string?> FindZoneBeforeAsync(DateOnly date, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        return await connection.QuerySingleOrDefaultAsync<string?>(new CommandDefinition(
+            "select end_tz from segment where kind = 'stay' and local_end_date < @Date order by start_utc desc limit 1",
+            new { Date = date }, cancellationToken: ct));
+    }
+
     private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
     private sealed record AnchorRow(DateTime? T0, DateTime? T1);
+
+    private sealed record DayRow(
+        long Id, string Kind, DateTime StartUtc, DateTime EndUtc, string StartTz, string EndTz,
+        string? Mode, double? DistanceM, string? GeometryDetailJson,
+        long? PlaceId, string? PlaceName, string? PlaceCity, string? PlaceCountry, double? PlaceLatitude, double? PlaceLongitude);
 }

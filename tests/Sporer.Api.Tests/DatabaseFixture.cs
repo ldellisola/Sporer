@@ -9,8 +9,10 @@ namespace Sporer.Api.Tests;
 /// </summary>
 public sealed class DatabaseFixture : IAsyncLifetime
 {
+    // Every test gets its own database and so its own connection pool, and a pool keeps its idle connections for minutes:
+    // across a whole run they add up to more than PostgreSQL's default of 100 connections.
     private readonly PostgreSqlContainer _container =
-        new PostgreSqlBuilder("timescale/timescaledb:2.17.2-pg16").Build();
+        new PostgreSqlBuilder("timescale/timescaledb:2.17.2-pg16").WithCommand("-c", "max_connections=1000").Build();
 
     public async ValueTask InitializeAsync() => await _container.StartAsync();
 

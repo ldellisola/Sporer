@@ -86,6 +86,24 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
         return merged;
     }
 
+    /// <summary>
+    /// Whether something that can still change the stored timeline between <paramref name="fromUtc"/> (inclusive) and
+    /// <paramref name="toUtc"/> (exclusive) is waiting: a dirty range that overlaps it, however it is scheduled (a range
+    /// deferred after a failure is unprocessed too), or a backfill that has not finished and whose cursor has not reached
+    /// <paramref name="toUtc"/> yet.
+    /// </summary>
+    public async Task<bool> HasPendingWorkAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        return await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            """
+            select exists (select 1 from dirty_range where from_utc < @To and to_utc >= @From)
+                or exists (select 1 from processing_state
+                           where id = 1 and backfill_cursor < backfill_to and backfill_cursor < @To)
+            """,
+            new { From = AsUtc(fromUtc), To = AsUtc(toUtc) }, cancellationToken: ct));
+    }
+
     /// <summary>The rows are done with: they are removed.</summary>
     public async Task CompleteAsync(IReadOnlyList<long> ids, CancellationToken ct = default)
     {
