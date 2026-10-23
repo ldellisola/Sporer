@@ -10,7 +10,9 @@ public interface ITimelineProcessor
     /// <summary>
     /// Reprocesses <paramref name="fromUtc"/> to <paramref name="toUtc"/> and returns how many segments were written.
     /// The range is widened to the stays around it (see <see cref="SegmentStore.FindAnchorsAsync"/>), so the result is
-    /// the same as processing all the data at once.
+    /// the same as processing all the data at once. Where no stay follows and nothing later is stored, the rebuild stops
+    /// at the first point after the range, so the last segments may be cut short until a later run (which starts at the
+    /// last stay before it) completes them.
     /// </summary>
     Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct);
 }
@@ -43,8 +45,14 @@ public sealed class TimelineProcessor(
         {
             var (t0, t1) = await segments.FindAnchorsAsync(from, to, ct);
 
-            // Without a later stay the rebuild runs to the end of the data: no upper bound, and no next point to add.
-            var loaded = await points.LoadAsync(t0, t1, includeNextPoint: t1 is not null, ct);
+            // Load up to the closing stay's end (T1). Without a later stay there is no such edge, and loading to the end of
+            // the data would segment the whole history on a first backfill: load up to the range's end instead, or up to
+            // the end of what is stored when that is later (a late point in the middle of a stored move must not cut
+            // the rebuild short: everything stored after T0 is deleted, so everything stored has to be rebuilt).
+            // The first point after the bound comes along so the last stay or move is closed by real data; a chunk
+            // that ends in the middle of one leaves it cut, and the next chunk starts again at the last stay before it.
+            var upper = t1 ?? Latest(to, await segments.FindLastEndAsync(ct));
+            var loaded = await points.LoadAsync(t0, upper, includeNextPoint: true, ct);
             var split = Segmenter.Split(PointCleaner.Clean(loaded, options), options);
 
             // What starts at the closing stay's end (the move leaving it) is stored already and is not rewritten.
@@ -93,6 +101,8 @@ public sealed class TimelineProcessor(
         matcher.Add(created, centre); // only fresh ids: the matcher throws on a duplicate
         return created;
     }
+
+    private static DateTime Latest(DateTime a, DateTime? b) => b is { } later && later > a ? later : a;
 
     private static bool IsPosition(GeoPoint p)
         => double.IsFinite(p.Latitude) && double.IsFinite(p.Longitude) && p.Latitude is >= -90 and <= 90;

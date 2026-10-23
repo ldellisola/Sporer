@@ -203,6 +203,112 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
             Assert.True(after[k].StartUtc >= after[k - 1].EndUtc - TimeSpan.FromSeconds(1), $"segment {k} overlaps the one before");
     }
 
+    /// <summary>
+    /// The rows of <c>segment</c> without ids, with place ids replaced by the order places first appear in: two runs agree
+    /// when they put the same stays in the same places, even if a place's centre differs by a few metres (a place is
+    /// created from the first stay that needs it, which a chunk edge may have cut short).
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> CanonicalRowsAsync(string cs)
+    {
+        var rows = await Sql.QueryAsync(cs,
+            "select (to_jsonb(s) - 'id' - 'place_id')::text as json, place_id from segment s order by start_utc, id", ct: Ct);
+        var ordinals = new Dictionary<long, int>();
+        return rows.Select(r =>
+        {
+            if ((long?)r.place_id is not { } id)
+                return $"{(string)r.json} no place";
+            if (!ordinals.TryGetValue(id, out var ordinal))
+                ordinals[id] = ordinal = ordinals.Count;
+            return $"{(string)r.json} place#{ordinal}";
+        }).ToList();
+    }
+
+    private static List<TrackPoint> FiveCommuteDays()
+        => [.. Enumerable.Range(0, 5).SelectMany(day => CommuteDay(day))];
+
+    /// <summary>Processes the days in the given oldest-first chunks on one database and in one run on another; the rows must agree.</summary>
+    private async Task AssertChunksMatchFullRunAsync(IReadOnlyList<DateTime> edges)
+    {
+        var track = FiveCommuteDays();
+
+        var fullCs = await db.CreateDatabaseAsync(Ct);
+        await using var fullApi = new ApiFactory(fullCs);
+        var full = Processor(fullApi);
+        await PointSeeder.InsertAsync(fullCs, track, Ct);
+        await full.ReprocessAsync(edges[0], edges[^1], Ct);
+
+        var chunkedCs = await db.CreateDatabaseAsync(Ct);
+        await using var chunkedApi = new ApiFactory(chunkedCs);
+        var chunked = Processor(chunkedApi);
+        await PointSeeder.InsertAsync(chunkedCs, track, Ct);
+        for (var k = 0; k + 1 < edges.Count; k++)
+            await chunked.ReprocessAsync(edges[k], edges[k + 1], Ct);
+
+        var expected = await CanonicalRowsAsync(fullCs);
+        Assert.True(expected.Count > 25, "five commute days should give plenty of segments");
+        Assert.Equal(expected, await CanonicalRowsAsync(chunkedCs));
+        Assert.Equal(await CountAsync(fullCs, "place"), await CountAsync(chunkedCs, "place"));
+    }
+
+    [Fact] // edges mid-stay overnight (03:00), mid-stay at home (07:30), mid-cycle (08:42) and mid-gap (06:30)
+    public async Task Oldest_first_chunks_with_edges_inside_stays_and_moves_match_a_full_run()
+        => await AssertChunksMatchFullRunAsync([T(0, 0), T(3, 0, 1), T(7, 30, 2), T(8, 42, 3), T(6, 30, 4), T(0, 0, 5)]);
+
+    [Fact] // 26 chunks of 4 h 37 min: edges land everywhere, including mid-walk and in the middle of a cafe stay
+    public async Task Oldest_first_irregular_chunks_match_a_full_run()
+        => await AssertChunksMatchFullRunAsync(
+            [.. Enumerable.Range(0, 27).Select(k => T(0, 0).AddMinutes(k * 277)).Append(T(0, 0, 6))]);
+
+    [Fact]
+    public async Task Without_a_later_stay_only_the_range_and_the_next_point_are_loaded()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var processor = Processor(api); // starting the host runs the migrations
+        await PointSeeder.InsertAsync(cs, FiveCommuteDays(), Ct); // data goes on for days after the range
+
+        // 12:00 is in the middle of the first office stay (08:47 to 16:47).
+        await processor.ReprocessAsync(T(0, 0), T(12, 0), Ct);
+
+        var firstAfter = await Sql.ScalarAsync<DateTime>(cs,
+            "select min(time) from locationlog where time > @to", new { to = T(12, 0) }, Ct);
+        Assert.InRange(firstAfter, T(12, 0), T(12, 3));
+        var segments = await SegmentsAsync(cs);
+        Assert.Equal(new[] { "stay", "move", "stay", "move", "stay" }, segments.Select(s => s.Kind));
+        Assert.Equal(firstAfter, segments[^1].EndUtc); // the office stay is cut at the next point, not carried to the end of the data
+        Assert.DoesNotContain(segments, s => s.StartUtc > firstAfter);
+    }
+
+    [Fact]
+    public async Task Late_point_inside_a_stored_move_does_not_leave_a_hole_after_it()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var processor = Processor(api); // starting the host runs the migrations
+        // Home 06:00 to 09:00, then a drive east at 40 km/h until 12:30; no stay after it.
+        var track = new TrackBuilder(T(6, 0), Spots.Home)
+            .Stay(TimeSpan.FromHours(3), Every2min)
+            .Travel(Geo.Offset(Spots.Home, 0, 140_000), 40, TimeSpan.FromSeconds(30))
+            .Build();
+        await PointSeeder.InsertAsync(cs, track, Ct);
+        await processor.ReprocessAsync(T(0, 0), T(23, 0), Ct);
+        var stored = await SegmentsAsync(cs);
+        Assert.Equal(new[] { "stay", "move" }, stored.Select(s => s.Kind));
+        Assert.Equal(track[^1].TimeUtc, stored[^1].EndUtc);
+        Assert.InRange(stored[^1].EndUtc, T(12, 29), T(12, 31));
+
+        // A second device reports a fix on the road at 10:00:15, long after the data was processed.
+        var onTheRoad = track.First(p => p.TimeUtc > T(10, 0).AddSeconds(15)) with { Device = "watch", TimeUtc = T(10, 0).AddSeconds(15) };
+        await PointSeeder.InsertAsync(cs, [onTheRoad], Ct);
+        await processor.ReprocessAsync(T(10, 0), T(10, 0), Ct);
+
+        var after = await SegmentsAsync(cs);
+        Assert.Equal(new[] { "stay", "move" }, after.Select(s => s.Kind));
+        Assert.Equal(stored[0].StartUtc, after[0].StartUtc);
+        Assert.Equal(track[^1].TimeUtc, after[^1].EndUtc); // rebuilt through the end of what was stored, not just up to 10:00
+        Assert.Equal(stored[^1].StartUtc, after[^1].StartUtc);
+    }
+
     [Fact]
     public async Task Stay_crossing_midnight_has_two_local_dates()
     {

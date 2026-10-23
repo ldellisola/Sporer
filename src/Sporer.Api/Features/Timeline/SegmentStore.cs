@@ -32,7 +32,8 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
     /// Stays are fixed points of the timeline (they start at a logged point and are found greedily from it), so the
     /// rebuild starts at a stay and stops at the end of one: <c>T0</c> is the start of the last stored stay that starts
     /// before <paramref name="fromUtc"/> (or <paramref name="fromUtc"/> itself when there is none), <c>T1</c> the end of the
-    /// first stored stay that starts after <paramref name="toUtc"/> (or null when there is none: the end of the data).
+    /// first stored stay that starts after <paramref name="toUtc"/> (or null when there is none: the processor then
+    /// bounds the rebuild itself, see <see cref="FindLastEndAsync"/>).
     /// </summary>
     public async Task<(DateTime T0, DateTime? T1)> FindAnchorsAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct = default)
     {
@@ -46,6 +47,18 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
             new { FromUtc = fromUtc, ToUtc = toUtc }, cancellationToken: ct));
 
         return (anchors.T0 is { } t0 ? AsUtc(t0) : fromUtc, anchors.T1 is { } t1 ? AsUtc(t1) : null);
+    }
+
+    /// <summary>
+    /// When the last stored segment ends, or null when nothing is stored. Segments do not overlap, so the one that starts
+    /// last ends last.
+    /// </summary>
+    public async Task<DateTime?> FindLastEndAsync(CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var end = await connection.QuerySingleOrDefaultAsync<DateTime?>(new CommandDefinition(
+            "select end_utc from segment order by start_utc desc limit 1", cancellationToken: ct));
+        return end is { } value ? AsUtc(value) : null;
     }
 
     /// <summary>
