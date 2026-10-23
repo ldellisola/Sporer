@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using Sporer.Api.Database;
 
 namespace Sporer.Api.Tests;
@@ -136,5 +137,24 @@ public class MigrationTests(DatabaseFixture db)
         Assert.Equal(
             new[] { "time", "longitude", "latitude", "device", "speed", "altitude", "horizontal_accuracy", "motion" },
             await ColumnNames(cs, "locationlog"));
+    }
+
+    [Fact]
+    public async Task Inspection_failures_become_warnings_instead_of_throwing()
+    {
+        // Without the timescaledb extension there are no timescaledb_information views, like on a
+        // TimescaleDB version whose catalog differs: every check fails. The test image installs the
+        // extension in template1, so a new database has it and the test drops it (throwaway DB only).
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await Sql.ExecAsync(cs, "DROP EXTENSION IF EXISTS timescaledb", ct: Ct);
+        Assert.False(await Sql.ScalarAsync<bool>(cs, "select to_regnamespace('timescaledb_information') is not null", ct: Ct));
+        await using var dataSource = NpgsqlDataSource.Create(cs);
+
+        var warnings = await DatabaseInspector.InspectAsync(dataSource, Ct);
+
+        Assert.Equal(2, warnings.Count);
+        Assert.Contains(warnings, w => w.StartsWith("Could not check retention", StringComparison.Ordinal));
+        Assert.Contains(warnings, w => w.StartsWith("Could not check compression", StringComparison.Ordinal));
+        Assert.All(warnings, w => Assert.Contains("timescaledb_information", w));
     }
 }
