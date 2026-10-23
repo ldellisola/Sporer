@@ -206,6 +206,55 @@ public class OverlandIngestTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task Ingest_stores_a_large_mixed_batch_point_for_point()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var start = new DateTime(2026, 10, 22, 6, 0, 0, DateTimeKind.Utc);
+
+        // 1000 points, each field missing, negative, zero or present in turn, and every shape of motion a client may send.
+        double? Speed(int i) => (i % 5) switch { 0 => null, 1 => -1, 2 => 0, _ => i * 0.01 };
+        double? Altitude(int i) => i % 7 == 0 ? null : i * 0.5;
+        double? Accuracy(int i) => i % 3 == 0 ? null : 5 + i % 40;
+        string[]? Motion(int i) => (i % 6) switch
+        {
+            0 => null,
+            1 => [],
+            2 => ["walking"],
+            3 => ["driving", "stationary"],
+            4 => ["cycling", null!],
+            _ => ["running", "walking", "stationary"],
+        };
+
+        // Interleaved from both ends (999, 0, 998, 1, ...), so the stored rows cannot depend on the order they arrive in.
+        var order = Enumerable.Range(0, 1000).Select(k => k % 2 == 0 ? 999 - k / 2 : k / 2).ToArray();
+        var res = await PostAsync(api.CreateClient(), Payload.Many([.. order.Select(i => Payload.Point(
+            start.AddSeconds(i).ToString("yyyy-MM-ddTHH:mm:ssZ"), 10 + i / 1000.0, 59 + i / 2000.0, Speed(i), Altitude(i),
+            i % 2 == 0 ? "phone" : "watch", Accuracy(i), Motion(i)))]));
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal("""{"result":"ok"}""", await res.Content.ReadAsStringAsync(Ct));
+        var rows = await Sql.QueryAsync(cs,
+            "select time, longitude, latitude, device, speed, altitude, horizontal_accuracy, motion from locationlog order by time", ct: Ct);
+        Assert.Equal(1000, rows.Count);
+        for (var i = 0; i < 1000; i++)
+        {
+            var row = rows[i];
+            Assert.Equal(start.AddSeconds(i), (DateTime)row.time);
+            Assert.Equal(10 + i / 1000.0, (double)row.longitude);
+            Assert.Equal(59 + i / 2000.0, (double)row.latitude);
+            Assert.Equal(i % 2 == 0 ? "phone" : "watch", (string)row.device);
+            Assert.Equal(Speed(i) is < 0 ? null : Speed(i), (double?)row.speed);
+            Assert.Equal((decimal)(Altitude(i) ?? 0), (decimal)row.altitude);
+            Assert.Equal(Accuracy(i), (double?)row.horizontal_accuracy);
+            Assert.Equal(Motion(i), (string[]?)row.motion);
+        }
+
+        var range = await Sql.SingleAsync(cs, "select from_utc, to_utc from dirty_range", ct: Ct);
+        Assert.Equal((start, start.AddSeconds(999)), ((DateTime)range.from_utc, (DateTime)range.to_utc));
+    }
+
+    [Fact]
     public async Task Ingest_keeps_points_when_secondary_writes_fail()
     {
         var cs = await db.CreateDatabaseAsync(Ct);

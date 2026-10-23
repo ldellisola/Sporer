@@ -5,6 +5,7 @@ using Dapper;
 using FastEndpoints;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using NpgsqlTypes;
 using Sporer.Api.Configuration;
 
 namespace Sporer.Api.Features.Overland;
@@ -35,34 +36,22 @@ internal sealed class ConsumeEndpoint(
             return;
         }
 
-        var rows = req.Locations.Select(l => new
-        {
-            Timestamp = l.Properties.Timestamp.ToUniversalTime(),
-            Longitude = l.Geometry.Coordinates[0],
-            Latitude = l.Geometry.Coordinates[1],
-            DeviceId = l.Properties.DeviceId,
-            Speed = l.Properties.Speed is < 0 ? null : l.Properties.Speed,
-            Altitude = l.Properties.Altitude,
-            HorizontalAccuracy = l.Properties.HorizontalAccuracy,
-            Motion = l.Properties.Motion
-        }).ToList();
+        var batch = Batch.From(req.Locations);
 
         await using var connection = await dataSource.OpenConnectionAsync(ct);
 
-        // 1. The raw points. Committed on their own: nothing below can undo or block them.
+        // 1. The raw points, all of them in one statement (a batch can be hundreds of points, and a statement per point is a
+        // round trip per point). Committed on their own: nothing below can undo or block them.
         await using (var transaction = await connection.BeginTransactionAsync(ct))
         {
-            await connection.ExecuteAsync(new CommandDefinition(
-                """
-                Insert into locationlog (time, longitude, latitude, device, speed, altitude, horizontal_accuracy, motion)
-                values (@Timestamp, @Longitude, @Latitude, @DeviceId, @Speed, @Altitude, @HorizontalAccuracy, @Motion)
-                """,
-                rows, transaction, cancellationToken: ct));
+            await using var insert = new NpgsqlCommand(Batch.Insert, connection, transaction);
+            batch.AddParameters(insert);
+            await insert.ExecuteNonQueryAsync(ct);
             await transaction.CommitAsync(ct);
         }
 
         // 2. Best effort: tell the timeline processing which time range has new points.
-        await RecordDirtyRangeAsync(connection, rows.Min(r => r.Timestamp), rows.Max(r => r.Timestamp), rows.Count);
+        await RecordDirtyRangeAsync(connection, batch.Times.Min(), batch.Times.Max(), batch.Times.Length);
 
         await Send.OkAsync(new Response(), ct);
     }
@@ -99,5 +88,82 @@ internal sealed class ConsumeEndpoint(
             supplied = header.Parameter ?? string.Empty;
 
         return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(supplied), Encoding.UTF8.GetBytes(expected));
+    }
+
+    /// <summary>
+    /// A batch as columns, to be inserted with one <c>unnest</c> statement. Each point's motion array is a slice of
+    /// <see cref="MotionValues"/>: where it starts and how long it is, or null for a point without motion (which stays
+    /// null, while an empty array stays empty).
+    /// </summary>
+    private sealed class Batch
+    {
+        public const string Insert =
+            """
+            insert into locationlog (time, longitude, latitude, device, speed, altitude, horizontal_accuracy, motion)
+            select p.time, p.longitude, p.latitude, p.device, p.speed, p.altitude, p.horizontal_accuracy,
+                   case when p.motion_length is null then null
+                        else @motion_values[p.motion_start + 1 : p.motion_start + p.motion_length] end
+            from unnest(@times, @longitudes, @latitudes, @devices, @speeds, @altitudes, @accuracies, @motion_starts, @motion_lengths)
+                 as p(time, longitude, latitude, device, speed, altitude, horizontal_accuracy, motion_start, motion_length)
+            """;
+
+        public required DateTime[] Times { get; init; }
+        public required double[] Longitudes { get; init; }
+        public required double[] Latitudes { get; init; }
+        public required string?[] Devices { get; init; }
+        public required double?[] Speeds { get; init; }
+        public required double[] Altitudes { get; init; }
+        public required double?[] Accuracies { get; init; }
+        public required int?[] MotionStarts { get; init; }
+        public required int?[] MotionLengths { get; init; }
+        public required string?[] MotionValues { get; init; }
+
+        public static Batch From(Location[] locations)
+        {
+            var count = locations.Length;
+            var motionStarts = new int?[count];
+            var motionLengths = new int?[count];
+            var motionValues = new List<string?>();
+            for (var i = 0; i < count; i++)
+            {
+                if (locations[i].Properties.Motion is not { } motion)
+                    continue;
+
+                motionStarts[i] = motionValues.Count;
+                motionLengths[i] = motion.Length;
+                motionValues.AddRange(motion);
+            }
+
+            return new Batch
+            {
+                Times = [.. locations.Select(l => l.Properties.Timestamp.ToUniversalTime())],
+                Longitudes = [.. locations.Select(l => l.Geometry.Coordinates[0])],
+                Latitudes = [.. locations.Select(l => l.Geometry.Coordinates[1])],
+                Devices = [.. locations.Select(l => l.Properties.DeviceId)],
+                Speeds = [.. locations.Select(l => l.Properties.Speed is < 0 ? null : l.Properties.Speed)],
+                Altitudes = [.. locations.Select(l => l.Properties.Altitude)],
+                Accuracies = [.. locations.Select(l => l.Properties.HorizontalAccuracy)],
+                MotionStarts = motionStarts,
+                MotionLengths = motionLengths,
+                MotionValues = [.. motionValues],
+            };
+        }
+
+        public void AddParameters(NpgsqlCommand command)
+        {
+            Add(command, "times", NpgsqlDbType.TimestampTz, Times);
+            Add(command, "longitudes", NpgsqlDbType.Double, Longitudes);
+            Add(command, "latitudes", NpgsqlDbType.Double, Latitudes);
+            Add(command, "devices", NpgsqlDbType.Text, Devices);
+            Add(command, "speeds", NpgsqlDbType.Double, Speeds);
+            Add(command, "altitudes", NpgsqlDbType.Double, Altitudes);
+            Add(command, "accuracies", NpgsqlDbType.Double, Accuracies);
+            Add(command, "motion_starts", NpgsqlDbType.Integer, MotionStarts);
+            Add(command, "motion_lengths", NpgsqlDbType.Integer, MotionLengths);
+            Add(command, "motion_values", NpgsqlDbType.Text, MotionValues);
+        }
+
+        private static void Add(NpgsqlCommand command, string name, NpgsqlDbType elementType, Array values)
+            => command.Parameters.Add(new NpgsqlParameter(name, NpgsqlDbType.Array | elementType) { Value = values });
     }
 }
