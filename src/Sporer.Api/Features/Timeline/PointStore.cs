@@ -33,6 +33,15 @@ public sealed class PointStore(NpgsqlDataSource dataSource)
         return result;
     }
 
+    /// <summary>The time of the oldest point, or null when there are none.</summary>
+    public async Task<DateTime?> FindFirstTimeAsync(CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var first = await connection.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
+            "select min(time) from locationlog", cancellationToken: ct));
+        return first is { } time ? DateTime.SpecifyKind(time, DateTimeKind.Utc) : null;
+    }
+
     private const string Select =
         "select time as Time, device as Device, latitude as Latitude, longitude as Longitude, speed as Speed, "
         + "horizontal_accuracy as HorizontalAccuracy, motion as Motion from locationlog";

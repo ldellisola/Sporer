@@ -20,6 +20,13 @@ builder.Services.AddSingleton<PointStore>();
 builder.Services.AddSingleton<PlaceStore>();
 builder.Services.AddSingleton<SegmentStore>();
 builder.Services.AddSingleton<ITimelineProcessor, TimelineProcessor>();
+builder.Services.AddSingleton(sp =>
+    sp.GetRequiredService<IConfiguration>().GetSection("Processing").Get<ProcessingOptions>() ?? new ProcessingOptions());
+builder.Services.AddSingleton<ProcessingQueue>();
+builder.Services.AddSingleton<TimelineWorker>();
+// Always registered, so tests can drive it by hand; it runs in the background only when processing is enabled.
+if (builder.Configuration.GetValue("Processing:Enabled", true))
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<TimelineWorker>());
 builder.Services
     .AddFastEndpoints([Sporer.Api.DiscoveredTypes.All])
     .SwaggerDocument();
