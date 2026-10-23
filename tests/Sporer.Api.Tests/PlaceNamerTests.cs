@@ -133,7 +133,7 @@ public class PlaceNamerTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task Failed_place_waits_out_its_backoff_which_doubles_with_each_failure()
+    public async Task Failed_place_is_retried_with_a_backoff_that_doubles_with_each_failure()
     {
         await using var h = await StartAsync();
         var id = await AddPlaceAsync(h.Cs, Spots.Home);
@@ -142,23 +142,189 @@ public class PlaceNamerTests(DatabaseFixture db)
         h.Nominatim.ReplyJson(CafeJson);
 
         Assert.True(await h.Namer.RunOnceAsync(Ct));
-        h.Clock.Advance(TimeSpan.FromMinutes(2) - TimeSpan.FromTicks(1));
-        Assert.False(await h.Namer.RunOnceAsync(Ct)); // not yet due
+        var first = await PlaceAsync(h.Cs, id);
+        Assert.Equal((1, "failed"), (first.GeocodeAttempts, first.GeocodeState));
+        Assert.Equal(Start.UtcDateTime + TimeSpan.FromMinutes(2), first.GeocodeNextAttemptAt);
+
+        // The place is due again after 2 minutes, but the cool-down (5 minutes after a first failure) still holds requests back.
+        h.Clock.Advance(PlaceNamer.CoolDown(1) - TimeSpan.FromTicks(1));
+        Assert.False(await h.Namer.RunOnceAsync(Ct));
         Assert.Equal(1, h.Nominatim.Calls);
 
         h.Clock.Advance(TimeSpan.FromTicks(1));
         Assert.True(await h.Namer.RunOnceAsync(Ct));
         var second = await PlaceAsync(h.Cs, id);
         Assert.Equal((2, "failed"), (second.GeocodeAttempts, second.GeocodeState));
-        Assert.Equal(Start.UtcDateTime + TimeSpan.FromMinutes(2) + TimeSpan.FromMinutes(4), second.GeocodeNextAttemptAt);
+        Assert.Equal(Start.UtcDateTime + PlaceNamer.CoolDown(1) + TimeSpan.FromMinutes(4), second.GeocodeNextAttemptAt);
 
-        h.Clock.Advance(TimeSpan.FromMinutes(4));
+        h.Clock.Advance(PlaceNamer.CoolDown(2));
         Assert.True(await h.Namer.RunOnceAsync(Ct));
         var done = await PlaceAsync(h.Cs, id);
         Assert.Equal("done", done.GeocodeState);
         Assert.Null(done.GeocodeNextAttemptAt);
         Assert.Equal("Test Cafe", done.OsmName);
         Assert.Equal(3, h.Nominatim.Calls);
+    }
+
+    // --- The global cool-down after a failure (R21) ------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(1, 5)]
+    [InlineData(2, 10)]
+    [InlineData(3, 20)]
+    [InlineData(4, 40)]
+    [InlineData(5, 60)] // 80 minutes would be more than an hour
+    [InlineData(6, 60)]
+    [InlineData(int.MaxValue, 60)]
+    public void Cool_down_doubles_from_five_minutes_up_to_an_hour(int consecutiveFailures, int minutes)
+        => Assert.Equal(TimeSpan.FromMinutes(minutes), PlaceNamer.CoolDown(consecutiveFailures));
+
+    [Fact]
+    public async Task A_failure_stops_all_requests_for_the_cool_down()
+    {
+        await using var h = await StartAsync();
+        var failing = await AddPlaceAsync(h.Cs, Spots.Home);
+        var other = await AddPlaceAsync(h.Cs, Spots.Cafe); // another key, another place: nothing may be requested for it either
+        h.Nominatim.Reply(HttpStatusCode.TooManyRequests);
+        h.Nominatim.ReplyJson(CafeJson);
+
+        Assert.True(await h.Namer.RunOnceAsync(Ct)); // the first place fails
+
+        h.Clock.Advance(Interval); // the interval is over, and the failed place would be due again in 2 min: the cool-down is not over
+        Assert.False(await h.Namer.RunOnceAsync(Ct));
+        h.Clock.Advance(PlaceNamer.CoolDown(1) - Interval - TimeSpan.FromTicks(1));
+        Assert.False(await h.Namer.RunOnceAsync(Ct));
+        Assert.Equal(1, h.Nominatim.Calls);
+        Assert.Equal("pending", (await PlaceAsync(h.Cs, other)).GeocodeState);
+
+        h.Clock.Advance(TimeSpan.FromTicks(1)); // the cool-down is over: requests resume, oldest due place first
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+        Assert.Equal(2, h.Nominatim.Calls);
+        Assert.Equal("done", (await PlaceAsync(h.Cs, failing)).GeocodeState);
+    }
+
+    [Fact]
+    public async Task The_cool_down_doubles_with_each_consecutive_failure_up_to_an_hour()
+    {
+        await using var h = await StartAsync();
+        await AddPlaceAsync(h.Cs, Spots.Home); // its own backoff (2, 4, 8, 16, 32 min) is shorter than the cool-down each time
+        for (var i = 0; i < 5; i++)
+            h.Nominatim.Reply(HttpStatusCode.ServiceUnavailable);
+
+        var expected = new[] { 5, 10, 20, 40, 60 }; // the fifth would be 80
+        for (var failure = 0; failure < expected.Length; failure++)
+        {
+            var coolDown = TimeSpan.FromMinutes(expected[failure]);
+            Assert.True(await h.Namer.RunOnceAsync(Ct));
+            Assert.Equal(failure + 1, h.Nominatim.Calls);
+
+            h.Clock.Advance(coolDown - TimeSpan.FromTicks(1));
+            Assert.False(await h.Namer.RunOnceAsync(Ct));
+            Assert.Equal(failure + 1, h.Nominatim.Calls);
+            h.Clock.Advance(TimeSpan.FromTicks(1)); // the cool-down is over: the next pass asks again
+        }
+    }
+
+    [Fact]
+    public async Task A_success_resets_the_cool_down()
+    {
+        await using var h = await StartAsync();
+        var first = await AddPlaceAsync(h.Cs, Spots.Home);
+        h.Nominatim.Reply(HttpStatusCode.TooManyRequests); // cool-down 5 min
+        h.Nominatim.Reply(HttpStatusCode.TooManyRequests); // cool-down 10 min
+        h.Nominatim.ReplyJson(CafeJson); // a success
+
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+        h.Clock.Advance(PlaceNamer.CoolDown(1));
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+        h.Clock.Advance(PlaceNamer.CoolDown(2));
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+        Assert.Equal("done", (await PlaceAsync(h.Cs, first)).GeocodeState);
+
+        // A failure now starts from five minutes again, not from twenty.
+        await AddPlaceAsync(h.Cs, Spots.Cafe);
+        h.Nominatim.Reply(HttpStatusCode.TooManyRequests);
+        h.Nominatim.ReplyJson(HouseJson);
+        h.Clock.Advance(Interval);
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+        Assert.Equal(4, h.Nominatim.Calls);
+
+        h.Clock.Advance(PlaceNamer.CoolDown(1) - TimeSpan.FromTicks(1));
+        Assert.False(await h.Namer.RunOnceAsync(Ct));
+        h.Clock.Advance(TimeSpan.FromTicks(1));
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+        Assert.Equal(5, h.Nominatim.Calls);
+    }
+
+    [Fact]
+    public async Task Cached_places_are_still_named_during_a_cool_down()
+    {
+        await using var h = await StartAsync();
+        var cached = await AddPlaceAsync(h.Cs, new GeoPoint(59.92000, 10.75000));
+        var failing = await AddPlaceAsync(h.Cs, Spots.Cafe);
+        var twin = await AddPlaceAsync(h.Cs, new GeoPoint(59.92001, 10.75001)); // the same key as the first
+        h.Nominatim.ReplyJson(CafeJson);
+        h.Nominatim.Reply(HttpStatusCode.TooManyRequests);
+
+        Assert.True(await h.Namer.RunOnceAsync(Ct)); // named, and cached
+        Assert.Equal("done", (await PlaceAsync(h.Cs, cached)).GeocodeState);
+        h.Clock.Advance(Interval);
+        Assert.True(await h.Namer.RunOnceAsync(Ct)); // fails: the cool-down starts
+        Assert.Equal("failed", (await PlaceAsync(h.Cs, failing)).GeocodeState);
+
+        Assert.True(await h.Namer.RunOnceAsync(Ct)); // the twin needs no request
+        Assert.Equal(2, h.Nominatim.Calls);
+        Assert.Equal("Test Cafe", (await PlaceAsync(h.Cs, twin)).OsmName);
+        Assert.False(await h.Namer.RunOnceAsync(Ct)); // and nothing else is to be had without one
+    }
+
+    [Fact]
+    public async Task A_404_is_a_failed_attempt_not_an_answer()
+    {
+        // /reverse says "no result" with a 200; a 404 means the base URL is wrong, and must not finish every place unnamed.
+        await using var h = await StartAsync();
+        var id = await AddPlaceAsync(h.Cs, Spots.Home);
+        h.Nominatim.Reply(HttpStatusCode.NotFound, "");
+
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+
+        var place = await PlaceAsync(h.Cs, id);
+        Assert.Equal(("failed", 1), (place.GeocodeState, place.GeocodeAttempts));
+        Assert.Equal(Start.UtcDateTime + TimeSpan.FromMinutes(2), place.GeocodeNextAttemptAt);
+        Assert.Equal(0, await Sql.ScalarAsync<long>(h.Cs, "select count(*) from geocode_cache", ct: Ct));
+    }
+
+    [Fact]
+    public async Task An_unexpected_error_from_the_http_layer_is_a_failed_attempt_too()
+    {
+        await using var h = await StartAsync();
+        var id = await AddPlaceAsync(h.Cs, Spots.Home);
+        var other = await AddPlaceAsync(h.Cs, Spots.Cafe);
+        h.Nominatim.Throw(new InvalidOperationException("an unexpected bug"));
+
+        Assert.True(await h.Namer.RunOnceAsync(Ct)); // does not throw, and does not leave the place due for the very next pass
+
+        var place = await PlaceAsync(h.Cs, id);
+        Assert.Equal(("failed", 1), (place.GeocodeState, place.GeocodeAttempts));
+        Assert.Equal(Start.UtcDateTime + TimeSpan.FromMinutes(2), place.GeocodeNextAttemptAt);
+        h.Clock.Advance(Interval);
+        Assert.False(await h.Namer.RunOnceAsync(Ct)); // the cool-down holds the other place back too
+        Assert.Equal(1, h.Nominatim.Calls);
+        Assert.Equal("pending", (await PlaceAsync(h.Cs, other)).GeocodeState);
+    }
+
+    [Fact]
+    public async Task A_base_url_that_cannot_be_requested_is_a_failed_attempt()
+    {
+        await using var h = await StartAsync(new Dictionary<string, string?> { ["Nominatim:BaseUrl"] = "nominatim.example.test" }); // no scheme
+        var id = await AddPlaceAsync(h.Cs, Spots.Home);
+
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+
+        Assert.Equal(0, h.Nominatim.Calls);
+        var place = await PlaceAsync(h.Cs, id);
+        Assert.Equal(("failed", 1), (place.GeocodeState, place.GeocodeAttempts));
+        Assert.False(await h.Namer.RunOnceAsync(Ct));
     }
 
     [Fact]
@@ -207,6 +373,7 @@ public class PlaceNamerTests(DatabaseFixture db)
     [InlineData("[1,2")]
     [InlineData("[]")]
     [InlineData("\"just a string\"")]
+    [InlineData("""{"name":"\uD800"}""")] // valid JSON, but the string cannot be read: not an exception that may repeat forever
     public async Task Namer_survives_invalid_json(string body)
     {
         await using var h = await StartAsync();
@@ -235,25 +402,37 @@ public class PlaceNamerTests(DatabaseFixture db)
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.NotFound, "")]
-    [InlineData(HttpStatusCode.OK, """{"error":"Unable to geocode"}""")]
-    [InlineData(HttpStatusCode.OK, "")]
-    public async Task A_spot_nothing_is_known_about_is_done_without_names(HttpStatusCode status, string body)
+    [InlineData("""{"error":"Unable to geocode"}""")]
+    [InlineData("")]
+    public async Task A_spot_nothing_is_known_about_is_done_without_names_and_cached(string body)
     {
         await using var h = await StartAsync();
-        var id = await AddPlaceAsync(h.Cs, Spots.Home);
-        h.Nominatim.Reply(status, body);
+        var id = await AddPlaceAsync(h.Cs, new GeoPoint(59.92000, 10.75000));
+        var twin = await AddPlaceAsync(h.Cs, new GeoPoint(59.92001, 10.75001)); // the same key: must not ask again
+        var other = await AddPlaceAsync(h.Cs, Spots.Cafe);
+        h.Nominatim.ReplyJson(body);
+        h.Nominatim.ReplyJson(CafeJson);
 
         Assert.True(await h.Namer.RunOnceAsync(Ct));
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
 
-        var place = await PlaceAsync(h.Cs, id);
-        Assert.Equal("done", place.GeocodeState);
-        Assert.Null(place.OsmName);
-        Assert.Null(place.Address);
-        Assert.Null(place.City);
-        Assert.Null(place.Country);
-        Assert.False(await h.Namer.RunOnceAsync(Ct)); // not asked again
+        foreach (var placeId in new[] { id, twin })
+        {
+            var place = await PlaceAsync(h.Cs, placeId);
+            Assert.Equal("done", place.GeocodeState);
+            Assert.Null(place.OsmName);
+            Assert.Null(place.Address);
+            Assert.Null(place.City);
+            Assert.Null(place.Country);
+        }
+
         Assert.Equal(1, h.Nominatim.Calls);
+        Assert.Equal(1, await Sql.ScalarAsync<long>(h.Cs, "select count(*) from geocode_cache where response ? 'error'", ct: Ct));
+
+        // An answer of "nothing here" is a good answer: no cool-down follows it.
+        h.Clock.Advance(Interval);
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+        Assert.Equal("Test Cafe", (await PlaceAsync(h.Cs, other)).OsmName);
     }
 
     [Fact]
@@ -279,24 +458,6 @@ public class PlaceNamerTests(DatabaseFixture db)
         Assert.Equal(2, h.Nominatim.Calls);
         Assert.Equal("done", (await PlaceAsync(h.Cs, first)).GeocodeState);
         Assert.Equal("done", (await PlaceAsync(h.Cs, second)).GeocodeState);
-    }
-
-    [Fact]
-    public async Task A_failed_request_counts_toward_the_interval_too()
-    {
-        await using var h = await StartAsync();
-        await AddPlaceAsync(h.Cs, Spots.Home);
-        await AddPlaceAsync(h.Cs, Spots.Cafe);
-        h.Nominatim.Reply(HttpStatusCode.TooManyRequests);
-        h.Nominatim.ReplyJson(CafeJson);
-
-        Assert.True(await h.Namer.RunOnceAsync(Ct)); // the first place fails
-        Assert.False(await h.Namer.RunOnceAsync(Ct)); // the second one still has to wait
-        Assert.Equal(1, h.Nominatim.Calls);
-
-        h.Clock.Advance(Interval);
-        Assert.True(await h.Namer.RunOnceAsync(Ct));
-        Assert.Equal(2, h.Nominatim.Calls);
     }
 
     [Fact]
@@ -353,7 +514,7 @@ public class PlaceNamerTests(DatabaseFixture db)
     {
         // Processing is on, so the only thing keeping the namer out of the hosted services is the missing user agent.
         await using var h = await StartAsync(new Dictionary<string, string?> { ["Processing:Enabled"] = "true", ["Nominatim:UserAgent"] = "" });
-        var id = await AddPlaceAsync(h.Cs, Spots.Home);
+        var id = await AddDuePlaceAfterProcessingSettlesAsync(h);
 
         Assert.DoesNotContain(h.Api.Services.GetServices<IHostedService>(), s => s is PlaceNamer);
         Assert.Contains(DisabledWarning, h.Api.Services.GetRequiredService<DatabaseWarnings>().Items);
@@ -367,7 +528,7 @@ public class PlaceNamerTests(DatabaseFixture db)
     public async Task Switched_off_makes_no_request_and_gives_no_warning()
     {
         await using var h = await StartAsync(new Dictionary<string, string?> { ["Processing:Enabled"] = "true", ["Nominatim:Enabled"] = "false" });
-        var id = await AddPlaceAsync(h.Cs, Spots.Home);
+        var id = await AddDuePlaceAfterProcessingSettlesAsync(h);
 
         Assert.DoesNotContain(h.Api.Services.GetServices<IHostedService>(), s => s is PlaceNamer);
         Assert.DoesNotContain(DisabledWarning, h.Api.Services.GetRequiredService<DatabaseWarnings>().Items);
@@ -397,22 +558,27 @@ public class PlaceNamerTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task The_background_loop_names_places_and_carries_on_after_an_unexpected_error()
+    public async Task The_background_loop_names_places_and_carries_on_after_a_failing_pass()
     {
         await using var h = await StartAsync(new Dictionary<string, string?>
         {
             ["Processing:Enabled"] = "true", ["Nominatim:MinInterval"] = "00:00:00.05",
         }, fakeClock: false);
+        h.Nominatim.ReplyJson(CafeJson); // queued first: the namer polls every 50 ms and must not meet the default 500
 
-        // The processing worker's first pass clears the segments (algorithm version); wait it out before adding one.
-        await WaitForAsync(async () => await Sql.ScalarAsync<string?>(h.Cs, "select algorithm_version from processing_state where id = 1", ct: Ct) is not null, "the processing worker's first pass");
+        // Every pass fails (the cache table is not there) until it is put back; the loop must live through that.
+        await WaitForProcessingToSettleAsync(h.Cs);
+        await Sql.ExecAsync(h.Cs, "alter table geocode_cache rename to geocode_cache_away", ct: Ct);
         var id = await AddPlaceAsync(h.Cs, Spots.Home);
-        h.Nominatim.Throw(new InvalidOperationException("an unexpected bug")); // escapes RunOnceAsync; the loop must survive it
-        h.Nominatim.ReplyJson(CafeJson);
+        await Task.Delay(500, Ct);
+        Assert.Equal("pending", (await PlaceAsync(h.Cs, id)).GeocodeState);
+        Assert.Equal(0, h.Nominatim.Calls);
+
+        await Sql.ExecAsync(h.Cs, "alter table geocode_cache_away rename to geocode_cache", ct: Ct);
 
         await WaitForAsync(async () => (await PlaceAsync(h.Cs, id)).GeocodeState == "done", "the place to be named");
         Assert.Equal("Test Cafe", (await PlaceAsync(h.Cs, id)).OsmName);
-        Assert.Equal(2, h.Nominatim.Calls);
+        Assert.Equal(1, h.Nominatim.Calls);
     }
 
     // --- The client -------------------------------------------------------------------------------------------------
@@ -445,6 +611,7 @@ public class PlaceNamerTests(DatabaseFixture db)
 
     [Theory]
     [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.NotFound)] // /reverse answers "no result" with a 200; a 404 means a wrong base URL
     [InlineData(HttpStatusCode.InternalServerError)]
     [InlineData(HttpStatusCode.BadGateway)]
     [InlineData(HttpStatusCode.ServiceUnavailable)]
@@ -543,14 +710,18 @@ public class PlaceNamerTests(DatabaseFixture db)
     [InlineData("[]")]
     [InlineData("42")]
     [InlineData("\"text\"")]
-    public void Client_rejects_what_is_not_a_json_object(string body)
+    [InlineData("""{"name":"\uD800"}""")] // a lone surrogate: parses, but cannot be read as text
+    [InlineData("""{"address":{"road":"\uDC00"}}""")]
+    public void Client_rejects_what_it_cannot_read(string body)
         => Assert.Throws<NominatimUnavailableException>(() => NominatimClient.Parse(body));
 
-    [Fact]
-    public async Task Client_reads_not_found_as_no_result()
+    [Theory]
+    [InlineData("")]
+    [InlineData("""{"error":"Unable to geocode"}""")]
+    public async Task Client_reads_an_answer_without_a_result_as_null(string body)
     {
         var nominatim = new FakeNominatim();
-        nominatim.Reply(HttpStatusCode.NotFound, "");
+        nominatim.ReplyJson(body);
 
         Assert.Null(await ClientFor(nominatim).ReverseAsync(Spots.Home, Ct));
     }
@@ -615,6 +786,23 @@ public class PlaceNamerTests(DatabaseFixture db)
         var api = new ApiFactory(cs, all, fakeClock ? clock : null, services =>
             services.AddHttpClient<NominatimClient>().ConfigurePrimaryHttpMessageHandler(() => nominatim));
         return new Harness(api, cs, nominatim, clock);
+    }
+
+    /// <summary>
+    /// The processing worker's first pass starts the timeline over and deletes every segment (an algorithm version is
+    /// recorded in the same step); wait for that before adding places, or it could take the segment a place needs away.
+    /// </summary>
+    private static Task WaitForProcessingToSettleAsync(string cs) => WaitForAsync(
+        async () => await Sql.ScalarAsync<string?>(cs, "select algorithm_version from processing_state where id = 1", ct: Ct) is not null,
+        "the processing worker's first pass");
+
+    /// <summary>A place that is due and referenced, so that only the namer's own guard can keep it from being requested.</summary>
+    private static async Task<long> AddDuePlaceAfterProcessingSettlesAsync(Harness h)
+    {
+        await WaitForProcessingToSettleAsync(h.Cs);
+        var id = await AddPlaceAsync(h.Cs, Spots.Home);
+        Assert.Equal(1, await Sql.ScalarAsync<long>(h.Cs, "select count(*) from segment where place_id = @id", new { id }, Ct));
+        return id;
     }
 
     private static async Task WaitForAsync(Func<Task<bool>> condition, string what)

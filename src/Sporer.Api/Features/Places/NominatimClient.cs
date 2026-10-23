@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Net;
 using System.Text;
 using System.Text.Json;
 using Sporer.Api.Configuration;
@@ -23,10 +22,12 @@ public sealed class NominatimUnavailableException(string message, Exception? inn
 public sealed class NominatimClient(HttpClient http, NominatimOptions options)
 {
     /// <summary>
-    /// What Nominatim knows about <paramref name="point"/>, or <c>null</c> when it knows nothing (404, or an answer
-    /// without a result). Throws <see cref="NominatimUnavailableException"/> on 429, 5xx and any other refusal, on
-    /// network failures and timeouts, and on an answer that is not a JSON object; an <see cref="OperationCanceledException"/>
-    /// only when <paramref name="ct"/> is cancelled.
+    /// What Nominatim knows about <paramref name="point"/>, or <c>null</c> when it knows nothing (a 200 that is empty or
+    /// says <c>{"error": ...}</c>: that is how <c>/reverse</c> answers "no result"). Throws
+    /// <see cref="NominatimUnavailableException"/> on every non-success status (429 and 5xx, but also 404, which for
+    /// <c>/reverse</c> can only mean a wrong <see cref="NominatimOptions.BaseUrl"/>), on network failures and timeouts, and
+    /// on an answer that is not a JSON object; an <see cref="OperationCanceledException"/> only when
+    /// <paramref name="ct"/> is cancelled.
     /// </summary>
     public async Task<NominatimResult?> ReverseAsync(GeoPoint point, CancellationToken ct)
     {
@@ -37,8 +38,6 @@ public sealed class NominatimClient(HttpClient http, NominatimOptions options)
         try
         {
             using var response = await http.GetAsync(url, ct);
-            if (response.StatusCode == HttpStatusCode.NotFound)
-                return null;
             if (!response.IsSuccessStatusCode)
                 throw new NominatimUnavailableException($"Nominatim answered {(int)response.StatusCode} {response.ReasonPhrase}");
 
@@ -60,7 +59,7 @@ public sealed class NominatimClient(HttpClient http, NominatimOptions options)
     /// <summary>
     /// Reads a <c>jsonv2</c> answer. <c>null</c> when there is no result (empty, <c>null</c>, or <c>{"error": ...}</c>).
     /// Missing, null, empty and non-string values are all just "not there". Throws <see cref="NominatimUnavailableException"/>
-    /// when <paramref name="json"/> is not a JSON object.
+    /// when <paramref name="json"/> is not a JSON object or holds values that cannot be read.
     /// </summary>
     public static NominatimResult? Parse(string json)
     {
@@ -79,23 +78,35 @@ public sealed class NominatimClient(HttpClient http, NominatimOptions options)
 
         using (document)
         {
-            var root = document.RootElement;
-            if (root.ValueKind == JsonValueKind.Null)
-                return null;
-            if (root.ValueKind != JsonValueKind.Object)
-                throw new NominatimUnavailableException($"Nominatim answered with a JSON {root.ValueKind}, not an object");
-            if (root.TryGetProperty("error", out _))
-                return null; // "Unable to geocode": nothing at this spot
-
-            root.TryGetProperty("address", out var address);
-            var road = Text(address, "road");
-            var houseNumber = Text(address, "house_number");
-            var city = Text(address, "city") ?? Text(address, "town") ?? Text(address, "village") ?? Text(address, "municipality");
-
-            var street = road is null ? null : Join(" ", road, houseNumber); // a house number alone is no name
-            var name = Text(root, "name") ?? street ?? Text(address, "suburb");
-            return new NominatimResult(name, Join(", ", Join(" ", road, houseNumber), city), city, Text(address, "country"), json);
+            try
+            {
+                return Read(document.RootElement, json);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or JsonException)
+            {
+                // For instance a lone surrogate in a string, which parses as JSON but cannot be read as text.
+                throw new NominatimUnavailableException("Nominatim answered with values that cannot be read", ex);
+            }
         }
+    }
+
+    private static NominatimResult? Read(JsonElement root, string json)
+    {
+        if (root.ValueKind == JsonValueKind.Null)
+            return null;
+        if (root.ValueKind != JsonValueKind.Object)
+            throw new NominatimUnavailableException($"Nominatim answered with a JSON {root.ValueKind}, not an object");
+        if (root.TryGetProperty("error", out _))
+            return null; // "Unable to geocode": nothing at this spot
+
+        root.TryGetProperty("address", out var address);
+        var road = Text(address, "road");
+        var houseNumber = Text(address, "house_number");
+        var city = Text(address, "city") ?? Text(address, "town") ?? Text(address, "village") ?? Text(address, "municipality");
+
+        var street = road is null ? null : Join(" ", road, houseNumber); // a house number alone is no name
+        var name = Text(root, "name") ?? street ?? Text(address, "suburb");
+        return new NominatimResult(name, Join(", ", Join(" ", road, houseNumber), city), city, Text(address, "country"), json);
     }
 
     /// <summary>Digits for about a centimetre, always with a point, never in exponent form.</summary>
