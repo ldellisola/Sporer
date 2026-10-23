@@ -17,16 +17,16 @@ public sealed class DatabaseFixture : IAsyncLifetime
     public async ValueTask DisposeAsync() => await _container.DisposeAsync();
 
     /// <summary>Creates a fresh, empty database and returns its connection string.</summary>
-    public async Task<string> CreateDatabaseAsync()
+    public async Task<string> CreateDatabaseAsync(CancellationToken ct = default)
     {
         var name = $"t_{Guid.NewGuid():N}";
 
         await using (var admin = new NpgsqlConnection(_container.GetConnectionString()))
         {
-            await admin.OpenAsync();
+            await admin.OpenAsync(ct);
             await using var command = admin.CreateCommand();
             command.CommandText = $"CREATE DATABASE {name}";
-            await command.ExecuteNonQueryAsync();
+            await command.ExecuteNonQueryAsync(ct);
         }
 
         return new NpgsqlConnectionStringBuilder(_container.GetConnectionString()) { Database = name }

@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.89" />
+    <PackageReference Include="dbup-postgresql" Version="7.0.1" />
     <PackageReference Include="FastEndpoints" Version="8.3.0" />
     <PackageReference Include="FastEndpoints.Generator" Version="8.3.0">
       <PrivateAssets>all</PrivateAssets>
@@ -18,9 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="DB\01-Create-table.sql">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
+    <EmbeddedResource Include="Database\Migrations\*.sql" />
   </ItemGroup>
 
 </Project>
