@@ -116,6 +116,49 @@ public class MigrationTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task Rerunning_every_script_on_a_migrated_database_succeeds_and_changes_nothing()
+    {
+        // DbUp journals scripts by name: if the journal is lost, or a script is renamed, they all run again.
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using (var first = new ApiFactory(cs))
+            _ = first.Services;
+        await Sql.ExecAsync(cs, "insert into locationlog (time, longitude, latitude, device, speed, altitude) values ('2026-01-01T08:00:00Z', 10.1, 59.1, 'phone', 1, 11)", ct: Ct);
+        await Sql.ExecAsync(cs, "update processing_state set algorithm_version = '1:abc', backfill_cursor = '2026-01-01T00:00:00Z', last_error = 'kept'", ct: Ct);
+        var placeId = await Sql.ScalarAsync<long>(cs, "insert into place (latitude, longitude, user_name) values (59.1, 10.1, 'Mine') returning id", ct: Ct);
+        await Sql.ExecAsync(cs,
+            """
+            insert into segment (kind, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date, place_id)
+            values ('stay', '2026-01-01T08:00:00Z', '2026-01-01T09:00:00Z', 'Europe/Oslo', 'Europe/Oslo', '2026-01-01', '2026-01-01', @placeId)
+            """, new { placeId }, Ct);
+        await Sql.ExecAsync(cs, "insert into dirty_range (from_utc, to_utc) values ('2026-01-01T08:00:00Z', '2026-01-01T09:00:00Z')", ct: Ct);
+        var tables = new[] { "locationlog", "dirty_range", "place", "segment", "geocode_cache", "processing_state" };
+        var columns = new Dictionary<string, IReadOnlyList<(string, string, string)>>();
+        var indexes = new Dictionary<string, IReadOnlyList<(string, string)>>();
+        foreach (var table in tables)
+        {
+            columns[table] = await Columns(cs, table);
+            indexes[table] = await Indexes(cs, table);
+        }
+        await Sql.ExecAsync(cs, "delete from schemaversions", ct: Ct);
+
+        await using var second = new ApiFactory(cs);
+        _ = second.Services; // does not throw
+
+        Assert.Equal(3, await Sql.ScalarAsync<int>(cs, "select count(*) from schemaversions", ct: Ct));
+        foreach (var table in tables)
+        {
+            Assert.Equal(columns[table], await Columns(cs, table));
+            Assert.Equal(indexes[table], await Indexes(cs, table));
+        }
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from locationlog", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from place where user_name = 'Mine'", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from segment", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from dirty_range", ct: Ct));
+        var state = await Sql.SingleAsync(cs, "select count(*) over () as n, algorithm_version, last_error from processing_state", ct: Ct);
+        Assert.Equal((1L, "1:abc", "kept"), ((long)state.n, (string)state.algorithm_version, (string)state.last_error)); // still the one row, not reset
+    }
+
+    [Fact]
     public async Task Warns_when_retention_policy_exists()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
