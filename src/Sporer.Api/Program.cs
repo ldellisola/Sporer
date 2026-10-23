@@ -1,11 +1,15 @@
 using FastEndpoints;
 using FastEndpoints.Swagger;
+using Microsoft.Extensions.Options;
+using Npgsql;
 using Sporer.Api.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.ConfigureOptions<DataBaseOptionsSetup>();
+builder.Services.AddSingleton(sp =>
+    NpgsqlDataSource.Create(sp.GetRequiredService<IOptions<DataBaseOptions>>().Value.ConnectionString));
 builder.Services
-    .AddFastEndpoints(t=> t.SourceGeneratorDiscoveredTypes.AddRange(Sporer.Api.DiscoveredTypes.All))
+    .AddFastEndpoints([Sporer.Api.DiscoveredTypes.All])
     .SwaggerDocument();
 var app = builder.Build();
 
@@ -21,3 +25,5 @@ app.UseStaticFiles();
 app.MapFallbackToFile("index.html");
 
 app.Run();
+
+public partial class Program;

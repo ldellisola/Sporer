@@ -1,15 +1,11 @@
 using Dapper;
 using FastEndpoints;
-using Microsoft.Extensions.Options;
 using Npgsql;
-using NpgsqlTypes;
-using Sporer.Api.Configuration;
 
 namespace Sporer.Api.Features.Overland;
 
-internal sealed class ConsumeEndpoint(IOptions<DataBaseOptions> options) : Endpoint<Request,Response>
+internal sealed class ConsumeEndpoint(NpgsqlDataSource dataSource) : Endpoint<Request,Response>
 {
-    private readonly string _connectionString = options.Value.ConnectionString;
     public override void Configure()
     {
         Post("overland");
@@ -18,7 +14,7 @@ internal sealed class ConsumeEndpoint(IOptions<DataBaseOptions> options) : Endpo
 
     public override async Task HandleAsync(Request req, CancellationToken ct)
     {
-        await using var connection = new NpgsqlConnection(_connectionString);
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
         
         await connection.ExecuteAsync(
             """
@@ -35,7 +31,7 @@ internal sealed class ConsumeEndpoint(IOptions<DataBaseOptions> options) : Endpo
                 Altitude = l.Properties.Altitude
             }));
         
-        await SendOkAsync(new Response(), ct);
+        await Send.OkAsync(new Response(), ct);
     }
     
     
