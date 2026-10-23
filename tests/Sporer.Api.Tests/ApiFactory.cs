@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -33,8 +32,11 @@ public sealed class ApiFactory(
             foreach (var (key, value) in settings)
                 values[key] = value;
 
-        // Added last, so they win over environment variables on the machine running the tests.
-        builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(values));
+        // UseSetting values are visible to Program.cs before Build() and win over environment variables
+        // for the keys set here. The token keys default to empty above, so a stray OVERLAND_TOKEN
+        // on the machine running the tests cannot reach the app.
+        foreach (var (key, value) in values)
+            builder.UseSetting(key, value);
 
         if (time is not null)
             builder.ConfigureTestServices(services =>
