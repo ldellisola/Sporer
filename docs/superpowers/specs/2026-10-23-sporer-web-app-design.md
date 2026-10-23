@@ -69,9 +69,18 @@ It is used from the iPhone 17 Pro home screen (full-screen, app-like) and from a
   - Note: the real file is `docker/dockerfile`, lowercase, so that path filter never matches.
 - **Data:**
   - More than two years of points.
+  - **One phone only (owner).** There is one track; no other people's devices and no imports.
   - Historical rows have no accuracy or motion data, and speed only.
   - The volume is unknown. Assume up to roughly 10 million rows and design so it doesn't matter.
-- **Deployment:** the owner self-hosts behind Traefik, reachable only over their VPN. Assume HTTPS via Traefik (call). A home-screen web app needs HTTPS for its offline cache.
+  - **No real data is available to the builder for now (owner).** The owner is away from their computer for a few days. Build and test against synthetic data; tuning against real data happens in the deployed app (§9).
+- **Hosting (owner).**
+  - The app lives at `https://sporer.lud.ar`, at the root of its own hostname.
+  - TLS is terminated at the ingress (Traefik). The app itself serves plain HTTP behind it.
+  - It is reachable only over the owner's VPN.
+- **Release flow (owner).**
+  - The server pulls the `:latest` image once a day.
+  - Per the current workflow (docker/metadata-action defaults, no explicit `flavor`), `:latest` appears to be published only when a `v*.*.*` git tag is pushed. Merges to `main` produce `:main`, not `:latest`. The builder should verify this.
+  - So production is updated only by a deliberate version tag, and each phase can be merged without reaching production until it's tagged.
 
 ## 4. What the owner sees
 
@@ -195,6 +204,12 @@ Actions:
 | Corrections | Rename and merge places; remove coordinate points from the map |
 | What a trip is | Being away from home overnight |
 | What failure looks like | Slow or unstable |
+| Devices | Just one phone |
+| Nights 50+ km from home that aren't trips | Never |
+| Stays of 3+ weeks in one place | Maybe |
+| Real data for the builder | Not for a few days (owner away from their computer) |
+| Hosting | `https://sporer.lud.ar`, TLS terminated at the ingress |
+| Release | Publish a new `:latest` image; the server picks it up once a day. A full backup may be huge. |
 
 ## 6. How the data becomes visits, routes and trips
 
@@ -227,6 +242,7 @@ raw points ─► clean ─► segment into stays & moves ─► assign stays to
 
 ### 6.3 Cleaning
 
+- **One timeline.** All `device` values are treated as a single track (owner: one phone). If the phone was ever replaced, the old and new device IDs simply follow each other in time.
 - **Duplicates.** Drop exact duplicates, meaning the same device and timestamp. Overland can resend a batch.
 - **Accuracy.** When `horizontal_accuracy` is known, drop points worse than about 100 m.
 - **Glitches.** Drop a point when it implies an impossible jump out-and-back: speed to it and away from it both exceed about 300 km/h while its neighbours are close together. Sustained high speed is a flight, not a glitch (§6.4).
@@ -272,7 +288,12 @@ raw points ─► clean ─► segment into stays & moves ─► assign stays to
   - A merge marks the absorbed place as merged into the survivor. Its visits are reassigned, and future stays near either place go to the survivor.
 - **Home.**
   - The home for each night is the place where you were at 03:00 local time: the stay covering 03:00, or the nearest point if none does.
-  - Home over time is the most frequent 03:00 place in a rolling window of about 30 days. This produces home periods, which handle moving house.
+  - **Long stays (owner: "maybe" 3+ weeks in one place).** Home must not flip during a long trip, so home changes need a high bar (call):
+    - A place becomes the new home only after it is the 03:00 place for most nights over a long window, for example 60 of 90 nights.
+    - Because processing is retrospective, the new home period is then backdated to the first night of that run. Moving house is detected late but recorded correctly.
+    - A long stay below the bar stays a trip.
+    - The trade-off: for about two months after a real move, current days can look like one long trip until the owner sets the new home in Settings.
+  - These home periods handle moving house.
   - The owner can override the home, with a date range, in Settings.
 - **Trips (owner: "away from home overnight").**
   - A night counts as *away* when the 03:00 location is at least the threshold distance (default 50 km, call) from the home in effect.
@@ -296,7 +317,19 @@ raw points ─► clean ─► segment into stays & moves ─► assign stays to
 - **Migrations.**
   - Add a migration runner (for example DbUp) that runs on startup.
   - The existing `01-Create-table.sql` has already been applied by hand on the owner's DB. The runner must treat it as the baseline and not fail on an existing `locationLog`.
-  - All new migrations are additive.
+  - **Safe without a full backup** (owner: a backup "might be huge"; call):
+    - Migrations are strictly additive: new tables, plus nullable columns with no default on `locationLog`.
+    - They never update, delete or rewrite existing rows.
+    - Adding a nullable column without a default is a metadata-only change in Postgres.
+    - The README recommends a schema-only `pg_dump` before the first release, which is small. A full data backup is optional.
+  - **Startup checks.** Before migrating, inspect the TimescaleDB setup and log loudly, also showing it in Settings, if:
+    - a retention policy exists on `locationLog`, which would be deleting raw points
+    - compression is enabled, which affects adding columns and late inserts on some TimescaleDB versions
+
+    The builder handles both cases rather than assuming a clean baseline. Production versions are unknown, so support TimescaleDB 2.x generally.
+  - **If a migration fails, the app fails to start.** That is acceptable: Overland keeps unsent points on the phone and retries, so no data is lost while the owner fixes it.
+  - **Database role.** The default connection string uses the `postgres` role. Assume it can run DDL (call).
+  - **Backfill.** After the first release the backfill starts automatically, but it is throttled so it never starves ingest or read requests, and it can be paused from Settings.
 - **Ingest changes (call):**
   - Store `horizontal_accuracy` and `motion` (as `text[]`) in new nullable columns. Old rows stay null.
   - The builder should check the payload field names against Overland's README.
@@ -382,6 +415,8 @@ New regular tables (not hypertables) alongside `locationLog`:
 
 - **Dockerfile.** Add a Node build stage for `web/` and copy its output into the published app's `wwwroot`. Move the base images to .NET 10.
 - **Workflow.** Fix the path filter (`docker/dockerfile`, lowercase) and add `web/**`.
+- **Releases.** A release is a pushed `v*.*.*` tag, which publishes `:latest` (verify, see §3); the server picks it up within a day. Phases merge to `main` freely and are released deliberately.
+- **Behind the ingress.** Serve at the hostname root (`/`). Enable forwarded-headers handling so the app sees the original `https` scheme and host from Traefik. Vite `base`, router, service-worker scope and manifest `start_url` are all `/`.
 - **New configuration:**
   - `OVERLAND_TOKEN`
   - Nominatim contact/User-Agent
@@ -428,7 +463,15 @@ Measured on the owner's iPhone over their VPN, against the real history, after b
   - renaming and merging a place
   - removing and restoring points
   - phone and desktop viewports
-- **Real-data tuning.** Before calling detection done, run it on the owner's history and review several representative days and trips with the owner.
+- **Synthetic data (needed, because there's no real export for now).** Build a generator that produces realistic multi-year tracks for one phone. It should include:
+  - commutes, sparse stationary logging, GPS spikes
+  - flights, multi-night trips and time-zone changes
+  - a long stay of 3+ weeks
+  - a house move
+
+  Use it for tests, local development and the §8 performance checks, at roughly 10 million rows.
+- **Real-data tuning happens in the deployed app.** The owner reviews representative days and trips in the real UI after a release. Thresholds are configuration, and an algorithm-version bump reprocesses everything, so tuning is cheap. The owner may also attach a `locationLog` export later for offline tuning; it must never be committed to the repository.
+- **Acceptance.** The owner signs off detection quality and the §8 targets on their own phone, so the builder provides a short checklist of what to look at.
 
 ## 10. Suggested build order
 
