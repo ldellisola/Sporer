@@ -57,15 +57,16 @@ Results are cached in the database, so a place is looked up once.
 
 ### Background processing (`Processing__*`)
 
-Durations are written `hh:mm:ss`.
+Durations are written `hh:mm:ss`. A duration outside its bounds (below) is moved to the nearest bound, so a typo cannot
+stop the worker.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `Processing__Enabled` | `true` | Whether the background processing runs at all. |
-| `Processing__PollInterval` | `00:00:05` | How long the worker sleeps when a pass found nothing to do. |
-| `Processing__Debounce` | `00:01:00` | New points are processed once the oldest batch of a group of nearby ones has waited this long, and the newer ones are processed with it. While Overland streams, today is rebuilt at most once per debounce. |
+| `Processing__PollInterval` | `00:00:05` | How long the worker sleeps when a pass found nothing to do. 100 ms to 10 minutes. |
+| `Processing__Debounce` | `00:01:00` | New points are processed once the oldest batch of a group of nearby ones has waited this long, and the newer ones are processed with it. While Overland streams, today is rebuilt at most once per debounce. 0 to 1 hour. |
 | `Processing__BackfillChunkDays` | `7` | How many days of history one backfill step processes. Also the longest stretch one rebuild loads: a longer range of new points is processed in pieces of this length, oldest first. |
-| `Processing__BackfillPause` | `00:00:00.2` | The wait after each backfill step, so a backfill leaves the database free for ingest and reads. |
+| `Processing__BackfillPause` | `00:00:00.2` | The wait after each backfill step, so a backfill leaves the database free for ingest and reads. 0 to 10 minutes. |
 
 ### Detection thresholds (`Detection__*`)
 

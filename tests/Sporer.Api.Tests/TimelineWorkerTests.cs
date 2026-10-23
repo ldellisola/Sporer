@@ -771,6 +771,32 @@ public class TimelineWorkerTests(DatabaseFixture db)
         Assert.True(h.Worker.ExecuteTask!.IsCompletedSuccessfully);
     }
 
+    [Theory]
+    [InlineData("Processing:PollInterval", "100.00:00:00")] // more than Task.Delay accepts: it would throw out of the loop
+    [InlineData("Processing:Debounce", "10675199.02:48:05")] // "now - debounce" would not be a date
+    public async Task Out_of_range_durations_do_not_stop_the_loop(string key, string value)
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var h = Start(cs, TimeProvider.System, new Dictionary<string, string?> { [key] = value });
+        await PointSeeder.InsertAsync(cs, new TrackBuilder(DateTime.UtcNow.Date.AddDays(-3).AddHours(7), Spots.Home).Stay(TimeSpan.FromHours(1), Every2min).Build(), Ct);
+        await Sql.ExecAsync(cs, "insert into dirty_range (from_utc, to_utc) values (now() - interval '1 day', now())", ct: Ct);
+
+        await h.Worker.StartAsync(Ct);
+        try
+        {
+            await WaitForAsync(async () => (await Sql.ScalarAsync<DateTime?>(cs, "select last_run_at from processing_state", ct: Ct)) is not null,
+                "the worker to run");
+            await Task.Delay(300, Ct); // the pass that follows is the one that used to fail
+            Assert.False(h.Worker.ExecuteTask!.IsCompleted, "the loop has stopped");
+        }
+        finally
+        {
+            await h.Worker.StopAsync(Ct);
+        }
+
+        Assert.True(h.Worker.ExecuteTask!.IsCompletedSuccessfully);
+    }
+
     [Fact]
     public async Task The_loop_drains_dirty_ranges_and_backfills_in_the_background()
     {
