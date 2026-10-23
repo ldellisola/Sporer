@@ -389,6 +389,71 @@ public class DayEndpointTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task Pending_covers_the_tail_of_a_stay_that_runs_past_the_zone_day()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        // The overnight stay is on 2026-10-22 and on 2026-10-23, so it is on the day's list; its end lies beyond the day
+        // in its zone (Oslo: 2026-10-21T22:00Z to 2026-10-22T22:00Z).
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 20), Utc(10, 23, 6), D(10, 22), D(10, 23));
+
+        var outside = new (DateTime From, DateTime To)[]
+        {
+            (Utc(10, 23, 6), Utc(10, 23, 7)),   // starts where the stay ends
+            (Utc(10, 23, 12), Utc(10, 23, 13)), // well after it
+        };
+        foreach (var (from, to) in outside)
+        {
+            await InsertDirtyRangeAsync(cs, from, to);
+            Assert.Equal("done", await StateAsync(client, "2026-10-22"));
+            await Sql.ExecAsync(cs, "delete from dirty_range", ct: Ct);
+        }
+
+        // It overlaps the tail of the stay and nothing of the zone's day.
+        await InsertDirtyRangeAsync(cs, Utc(10, 23, 2), Utc(10, 23, 3));
+        Assert.Equal("pending", await StateAsync(client, "2026-10-22"));
+    }
+
+    [Fact]
+    public async Task Pending_covers_the_head_of_a_stay_that_began_before_the_zone_day()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        // Oslo's 2026-10-22 begins 2026-10-21T22:00Z; the stay from the evening before began an hour earlier.
+        await InsertSegmentAsync(cs, "stay", Utc(10, 21, 21), Utc(10, 22, 5), D(10, 21), D(10, 22));
+
+        await InsertDirtyRangeAsync(cs, Utc(10, 21, 20), Utc(10, 21, 20, 59)); // before the stay
+        Assert.Equal("done", await StateAsync(client, "2026-10-22"));
+        await Sql.ExecAsync(cs, "delete from dirty_range", ct: Ct);
+
+        await InsertDirtyRangeAsync(cs, Utc(10, 21, 21, 15), Utc(10, 21, 21, 30)); // inside the stay, before the zone's day
+        Assert.Equal("pending", await StateAsync(client, "2026-10-22"));
+    }
+
+    [Fact]
+    public async Task Pending_covers_segments_in_a_zone_west_of_the_days_zone()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        // The day is shown in the zone its first segment starts in (Oslo, UTC+2: until 2026-10-22T22:00Z), but the flight
+        // lands in New York (UTC-4), where the evening of 2026-10-22 lasts until 2026-10-23T04:00Z.
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 6), Utc(10, 22, 9), D(10, 22), D(10, 22), "Europe/Oslo");
+        await InsertSegmentAsync(cs, "move", Utc(10, 22, 9), Utc(10, 22, 17), D(10, 22), D(10, 22), "Europe/Oslo", "America/New_York",
+            mode: "flight", distance: 5_900_000, geometry: "[[10.75,59.92],[-73.78,40.64]]");
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 17), Utc(10, 23, 3), D(10, 22), D(10, 22), "America/New_York");
+
+        await InsertDirtyRangeAsync(cs, Utc(10, 23, 3, 30), Utc(10, 23, 4)); // after the last stay
+        Assert.Equal("done", await StateAsync(client, "2026-10-22"));
+        await Sql.ExecAsync(cs, "delete from dirty_range", ct: Ct);
+
+        await InsertDirtyRangeAsync(cs, Utc(10, 23, 1), Utc(10, 23, 2)); // in the New York evening, past Oslo's midnight
+        Assert.Equal("pending", await StateAsync(client, "2026-10-22"));
+    }
+
+    [Fact]
     public async Task Pending_when_deferred_range_waits_for_retry()
     {
         var cs = await db.CreateDatabaseAsync(Ct);

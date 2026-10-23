@@ -35,6 +35,15 @@ internal sealed class GetDayEndpoint(SegmentStore segments, ProcessingQueue queu
         // The zone the day is shown in: where its first segment starts, else where the latest earlier stay was.
         var zone = stored.Count > 0 ? stored[0].StartTz : await segments.FindZoneBeforeAsync(date, ct);
         var (fromUtc, toUtc) = DaySpan.Of(date, zone);
+
+        // The day's segments can reach past the day in the zone it is shown in: a stay across midnight, or a later segment
+        // in a zone west of the first one. Waiting work on any part of what is served makes the day pending.
+        if (stored.Count > 0)
+        {
+            fromUtc = Min(fromUtc, stored.Min(s => s.StartUtc));
+            toUtc = Max(toUtc, stored.Max(s => s.EndUtc));
+        }
+
         var pending = await queue.HasPendingWorkAsync(fromUtc, toUtc, ct);
 
         await Send.OkAsync(new DayResponse(
@@ -44,6 +53,10 @@ internal sealed class GetDayEndpoint(SegmentStore segments, ProcessingQueue queu
             Summarize(stored),
             [.. stored.Select(Map)]), ct);
     }
+
+    private static DateTime Min(DateTime a, DateTime b) => a <= b ? a : b;
+
+    private static DateTime Max(DateTime a, DateTime b) => a >= b ? a : b;
 
     /// <summary>Distinct places among the stays; distance and time on the move are the stored columns of the moves, summed.</summary>
     private static DaySummary Summarize(IReadOnlyList<DaySegment> stored)
