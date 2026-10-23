@@ -1,7 +1,7 @@
 # Sporer web app: design
 
 - **Date:** 2026-10-23
-- **Status:** draft, awaiting owner approval
+- **Status:** approved by the owner, 2026-10-23
 - **Mockups:** [`assets/2026-10-23-map-views-mockup.html`](assets/2026-10-23-map-views-mockup.html) (hand-drawn maps, made-up data; layout reference only)
 
 Throughout, **(owner)** marks a decision the owner made; **(call)** marks a decision made on the owner's behalf that they can overturn.
@@ -106,6 +106,7 @@ The mockup file shows views 1–4 below.
   - 24-hour clock.
   - Weeks start on Monday.
   - English UI.
+  - **City, country and other place labels on the map are always in English (owner).** This also applies to city and country names the app generates, such as trip names and "Lisbon · 4 nights".
   - Times shown in the local time zone of where you were (see §6.7).
 
 ### 4.2 Day view (mockup 1)
@@ -209,7 +210,10 @@ Actions:
 | Stays of 3+ weeks in one place | Maybe |
 | Real data for the builder | Not for a few days (owner away from their computer) |
 | Hosting | `https://sporer.lud.ar`, TLS terminated at the ingress |
-| Release | Publish a new `:latest` image; the server picks it up once a day. A full backup may be huge. |
+| Release | Publish a new `:latest` image; the server picks it up once a day. A full backup may be huge. Releases go out on version tags (confirmed). |
+| Database changes | Safe without a full backup, as long as the existing `locationLog` table isn't updated |
+| Map labels | Cities on the map are always in English |
+| The other calls in this document | Reviewed and accepted |
 
 ## 6. How the data becomes visits, routes and trips
 
@@ -279,6 +283,7 @@ raw points ─► clean ─► segment into stays & moves ─► assign stays to
   - Places are **never re-created from scratch** on reprocessing, so names and merges survive.
 - **Reverse geocoding.**
   - New places are named via the public Nominatim reverse API, using the POI name if there is one, otherwise a short address.
+  - Requests use `accept-language=en`, so city and country come back in English (owner). A POI with no English name, such as a local café, keeps its local name.
   - The worker respects Nominatim's usage policy: at most 1 request/second, a descriptive `User-Agent` with contact details (from configuration), and results cached in the database.
   - The whole history should need on the order of hundreds to a few thousand lookups, so a one-off backfill of well under an hour at 1/s is acceptable.
   - A failed lookup leaves the place unnamed (show coordinates or "Unnamed place") and is retried later.
@@ -317,21 +322,23 @@ raw points ─► clean ─► segment into stays & moves ─► assign stays to
 - **Migrations.**
   - Add a migration runner (for example DbUp) that runs on startup.
   - The existing `01-Create-table.sql` has already been applied by hand on the owner's DB. The runner must treat it as the baseline and not fail on an existing `locationLog`.
-  - **Safe without a full backup** (owner: a backup "might be huge"; call):
-    - Migrations are strictly additive: new tables, plus nullable columns with no default on `locationLog`.
-    - They never update, delete or rewrite existing rows.
-    - Adding a nullable column without a default is a metadata-only change in Postgres.
+  - **`locationLog` is never changed (owner: safe without a full backup "as long as you don't update the existing table").**
+    - No `ALTER TABLE` on it: no new columns, indexes, constraints, compression or policy changes.
+    - No `UPDATE` or `DELETE` on its rows.
+    - The app only ever `INSERT`s into it (ingest, exactly as today) and `SELECT`s from it.
+    - Every migration creates new objects only.
     - The README recommends a schema-only `pg_dump` before the first release, which is small. A full data backup is optional.
-  - **Startup checks.** Before migrating, inspect the TimescaleDB setup and log loudly, also showing it in Settings, if:
+  - **Startup checks (read-only).** Inspect the TimescaleDB setup and log loudly, also showing it in Settings, if:
     - a retention policy exists on `locationLog`, which would be deleting raw points
-    - compression is enabled, which affects adding columns and late inserts on some TimescaleDB versions
+    - compression is enabled on it, which can affect late inserts on some TimescaleDB versions
 
-    The builder handles both cases rather than assuming a clean baseline. Production versions are unknown, so support TimescaleDB 2.x generally.
+    These checks only read catalog views; they never change the table. Production versions are unknown, so support TimescaleDB 2.x generally.
   - **If a migration fails, the app fails to start.** That is acceptable: Overland keeps unsent points on the phone and retries, so no data is lost while the owner fixes it.
   - **Database role.** The default connection string uses the `postgres` role. Assume it can run DDL (call).
   - **Backfill.** After the first release the backfill starts automatically, but it is throttled so it never starves ingest or read requests, and it can be paused from Settings.
 - **Ingest changes (call):**
-  - Store `horizontal_accuracy` and `motion` (as `text[]`) in new nullable columns. Old rows stay null.
+  - The insert into `locationLog` stays exactly as it is today.
+  - **Extra fields go to a new side table** (because `locationLog` must not change). In the same transaction, ingest also writes `horizontal_accuracy` and `motion` (as `text[]`) into a new hypertable, for example `location_detail(time, device, horizontal_accuracy, motion)`. Processing joins it on `(device, time)`. Historical points simply have no detail row.
   - The builder should check the payload field names against Overland's README.
   - **Ingest token.** When `OVERLAND_TOKEN` is set, require it as a `?token=` query parameter (the pattern other Overland receivers use), and also accept `Authorization: Bearer`. If it isn't set, accept anonymously and log a warning once at startup, so the owner's current setup doesn't break before they update Overland's URL.
   - The response must stay exactly `{"result":"ok"}` on success. Overland deletes its local batch only on that response.
@@ -350,7 +357,13 @@ raw points ─► clean ─► segment into stays & moves ─► assign stays to
 
 ### 7.2 Storage (indicative; the builder finalises)
 
-New regular tables (not hypertables) alongside `locationLog`:
+`locationLog` is left exactly as it is (§7.1). Alongside it, one new hypertable:
+
+- **`location_detail`**
+  - time, device, horizontal_accuracy, motion
+  - Written by ingest from now on.
+
+New regular tables (not hypertables):
 
 - **`place`**
   - id, centre lat/lon, osm_name, user_name, address, city, country
@@ -400,6 +413,8 @@ New regular tables (not hypertables) alongside `locationLog`:
 - **Build.** React + TypeScript + Vite, in a new `web/` folder at the repo root. The production build outputs into the API's `wwwroot`, served by the existing static-file and fallback setup. It is still one Docker image.
 - **Map.** MapLibre GL JS (v5, for globe projection on trips and long ranges) via `react-map-gl`'s MapLibre binding, or used directly.
 - **Map styles.** OpenFreeMap: `liberty` for light. The `dark` style is unfinished upstream, so the builder may need to restyle it or pick another free dark OSM style.
+  - **English labels (owner).** After loading a style, rewrite the `text-field` of its label layers to prefer English, falling back to the local name when no English name exists. In OpenMapTiles-schema tiles that is roughly `coalesce(name:en, name_en, name:latin, name)`. Check the exact property names in the tiles.
+  - This is required for place labels (cities, towns, countries, regions). Street labels may fall back to local names, since streets rarely have English names.
   - No API key needed.
   - Keep OSM attribution visible.
   - The owner accepted the third-party dependency (§5). If OpenFreeMap disappears, the style URL is the only thing to change.
@@ -479,7 +494,7 @@ Each phase leaves the app deployable.
 
 1. **Foundation.**
    - .NET 10 upgrade and migration runner.
-   - Ingest token and new columns.
+   - Ingest token and the `location_detail` side table.
    - `web/` shell with the map rendering, served from the API.
    - Dockerfile and workflow updated.
 2. **Processing.**
