@@ -75,7 +75,7 @@ public static class Geo
         return new GeoPoint(ToDegrees(Math.Atan2(z, Math.Sqrt(x * x + y * y))), ToDegrees(Math.Atan2(y, x)));
     }
 
-    private static double NormalizeLongitude(double lon)
+    internal static double NormalizeLongitude(double lon)
     {
         if (lon is >= -180 and < 180) return lon;
         var wrapped = (lon + 180) % 360;
