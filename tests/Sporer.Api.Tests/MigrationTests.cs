@@ -65,6 +65,9 @@ public class MigrationTests(DatabaseFixture db)
             new[] { "time", "longitude", "latitude", "device", "speed", "altitude", "horizontal_accuracy", "motion" },
             await ColumnNames(cs, "locationlog"));
         Assert.True(await Sql.ScalarAsync<bool>(cs, "select to_regclass('dirty_range') is not null", ct: Ct));
+        foreach (var table in new[] { "place", "segment", "geocode_cache", "processing_state" })
+            Assert.True(await Sql.ScalarAsync<bool>(cs, $"select to_regclass('{table}') is not null", ct: Ct), table);
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from processing_state where id = 1", ct: Ct));
         Assert.Empty(Warnings(api).Items);
     }
 
@@ -103,7 +106,7 @@ public class MigrationTests(DatabaseFixture db)
         await using (var first = new ApiFactory(cs))
             _ = first.Services;
         var applied = await Sql.ScalarAsync<int>(cs, "select count(*) from schemaversions", ct: Ct);
-        Assert.Equal(2, applied);
+        Assert.Equal(3, applied);
 
         await using var second = new ApiFactory(cs);
         _ = second.Services;

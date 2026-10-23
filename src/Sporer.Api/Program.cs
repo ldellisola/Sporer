@@ -4,6 +4,8 @@ using Microsoft.Extensions.Options;
 using Npgsql;
 using Sporer.Api.Configuration;
 using Sporer.Api.Database;
+using Sporer.Api.Features.Timeline;
+using Sporer.Timeline;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.ConfigureOptions<DataBaseOptionsSetup>();
@@ -12,6 +14,12 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(sp =>
     NpgsqlDataSource.Create(sp.GetRequiredService<IOptions<DataBaseOptions>>().Value.ConnectionString));
 builder.Services.AddSingleton<DatabaseWarnings>();
+builder.Services.AddSingleton(sp =>
+    sp.GetRequiredService<IConfiguration>().GetSection("Detection").Get<DetectionOptions>() ?? new DetectionOptions());
+builder.Services.AddSingleton<PointStore>();
+builder.Services.AddSingleton<PlaceStore>();
+builder.Services.AddSingleton<SegmentStore>();
+builder.Services.AddSingleton<ITimelineProcessor, TimelineProcessor>();
 builder.Services
     .AddFastEndpoints([Sporer.Api.DiscoveredTypes.All])
     .SwaggerDocument();
