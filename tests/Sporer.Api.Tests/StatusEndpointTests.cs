@@ -297,7 +297,7 @@ public class StatusEndpointTests(DatabaseFixture db)
 
     private sealed class FailingProcessor : ITimelineProcessor
     {
-        public Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
+        public Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct, DateTime? anchorFloorUtc = null)
             => throw new InvalidOperationException("chunk exploded");
     }
 }

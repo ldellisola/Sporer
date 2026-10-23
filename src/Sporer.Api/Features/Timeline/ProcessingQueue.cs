@@ -142,6 +142,33 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
             cancellationToken: ct));
     }
 
+    /// <summary>
+    /// Sets a backfill step aside after <paramref name="attempts"/> failures so that the backfill can go on: the range
+    /// <paramref name="fromUtc"/> to <paramref name="toUtc"/> becomes a failed dirty range (retried after the usual backoff,
+    /// behind the cursor), and the cursor, which must be at <paramref name="fromUtc"/>, moves to <paramref name="toUtc"/>.
+    /// One transaction: both happen or neither.
+    /// </summary>
+    public async Task SetBackfillStepAsideAsync(
+        DateTime fromUtc, DateTime toUtc, int attempts, string error, DateTime nowUtc, CancellationToken ct = default)
+    {
+        var now = AsUtc(nowUtc);
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            """
+            insert into dirty_range (from_utc, to_utc, created_at, attempts, next_attempt_at, last_error)
+            values (@From, @To, @Now, @Attempts, @NextAttemptAt, @Error)
+            """,
+            new { From = AsUtc(fromUtc), To = AsUtc(toUtc), Now = now, Attempts = attempts, NextAttemptAt = now + Backoff(attempts), Error = error },
+            transaction, cancellationToken: ct));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "update processing_state set backfill_cursor = @To where id = 1 and backfill_cursor = @From",
+            new { From = AsUtc(fromUtc), To = AsUtc(toUtc) }, transaction, cancellationToken: ct));
+
+        await transaction.CommitAsync(ct);
+    }
+
     /// <summary>How many dirty ranges wait, and which of them have failed. Reads only; whether a range is due does not matter.</summary>
     public async Task<ProcessingBacklog> GetBacklogAsync(CancellationToken ct = default)
     {

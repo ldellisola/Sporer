@@ -18,11 +18,20 @@ public sealed class TimelineWorker(
     TimeProvider time,
     ILogger<TimelineWorker> logger) : BackgroundService
 {
+    /// <summary>How many times in a row a backfill step may fail before it is set aside so that the backfill can go on.</summary>
+    private const int MaxBackfillFailures = 3;
+
     // A backfill step that keeps failing is retried with the same growing delay as a dirty range, so a step that cannot
-    // be processed does not repeat its error every poll. Kept in memory: a restart tries again at once.
+    // be processed does not repeat its error every poll, and is set aside after MaxBackfillFailures failures: while the
+    // backfill is open the live ranges wait for it (see RunOnceAsync), so one step that can never succeed would freeze
+    // everything after it. Kept in memory: a restart tries again at once.
     private int _backfillFailures;
     private DateTime _backfillRetryAt = DateTime.MinValue;
     private string? _backfillError;
+
+    // Where the step after a set-aside one begins. Its rebuild must not be widened back to the last stored stay, which lies
+    // before the set-aside step (nothing of that was stored): it would load the same data again and fail on it again.
+    private DateTime? _anchorFloor;
 
     /// <summary>
     /// One pass: starts a backfill if the algorithm version changed, processes the dirty ranges that are due, and does
@@ -78,9 +87,10 @@ public sealed class TimelineWorker(
             didWork = true;
             try
             {
-                await processor.ReprocessAsync(cursor, chunkEnd, ct);
+                await processor.ReprocessAsync(cursor, chunkEnd, ct, _anchorFloor);
                 state = state with { BackfillCursor = chunkEnd };
                 (_backfillFailures, _backfillRetryAt, _backfillError) = (0, DateTime.MinValue, null);
+                _anchorFloor = null;
                 pause = true;
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -89,7 +99,21 @@ public sealed class TimelineWorker(
                 _backfillFailures++;
                 _backfillRetryAt = failedAt + ProcessingQueue.Backoff(_backfillFailures);
                 _backfillError = Describe(ex);
-                logger.LogError(ex, "Backfill of {FromUtc:o} to {ToUtc:o} failed; it will be retried after {RetryAt:o}", cursor, chunkEnd, _backfillRetryAt);
+
+                if (_backfillFailures < MaxBackfillFailures)
+                {
+                    logger.LogError(ex, "Backfill of {FromUtc:o} to {ToUtc:o} failed; it will be retried after {RetryAt:o}", cursor, chunkEnd, _backfillRetryAt);
+                }
+                else
+                {
+                    // Not a transient error. The step becomes a failed dirty range, retried behind the cursor with the usual
+                    // backoff (a fix or a changed setting may let it through), and the backfill goes on after it.
+                    logger.LogError(ex, "Backfill of {FromUtc:o} to {ToUtc:o} failed {Attempts} times; setting it aside to be retried later and going on", cursor, chunkEnd, _backfillFailures);
+                    await queue.SetBackfillStepAsideAsync(cursor, chunkEnd, _backfillFailures, _backfillError, failedAt, ct);
+                    state = state with { BackfillCursor = chunkEnd };
+                    (_backfillFailures, _backfillRetryAt, _backfillError) = (0, DateTime.MinValue, null);
+                    _anchorFloor = chunkEnd;
+                }
             }
         }
 
@@ -142,7 +166,7 @@ public sealed class TimelineWorker(
         DateTime? to = from is null ? null : Now(); // no points, no backfill
         await queue.RestartBackfillAsync(version, from, to, ct);
 
-        (_backfillFailures, _backfillRetryAt, _backfillError) = (0, DateTime.MinValue, null);
+        (_backfillFailures, _backfillRetryAt, _backfillError, _anchorFloor) = (0, DateTime.MinValue, null, null);
         logger.LogInformation(
             "Algorithm version is {Version} (was {Previous}); rebuilding the timeline from {FromUtc:o}",
             version, state.AlgorithmVersion ?? "none", from);

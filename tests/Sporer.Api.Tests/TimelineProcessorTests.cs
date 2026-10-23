@@ -203,6 +203,61 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
             Assert.True(after[k].StartUtc >= after[k - 1].EndUtc - TimeSpan.FromSeconds(1), $"segment {k} overlaps the one before");
     }
 
+    [Fact]
+    public async Task Anchors_widen_to_the_stay_before_the_range_unless_a_floor_stops_them()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var store = api.Services.GetRequiredService<SegmentStore>(); // starting the host runs the migrations
+        await Sql.ExecAsync(cs,
+            """
+            insert into segment (kind, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date)
+            values ('stay', @s1, @e1, 'UTC', 'UTC', '2026-10-23', '2026-10-23'),
+                   ('stay', @s2, @e2, 'UTC', 'UTC', '2026-10-23', '2026-10-23'),
+                   ('stay', @s3, @e3, 'UTC', 'UTC', '2026-10-23', '2026-10-23')
+            """,
+            new { s1 = T(2, 0), e1 = T(4, 0), s2 = T(6, 0), e2 = T(8, 0), s3 = T(20, 0), e3 = T(22, 0) }, Ct);
+        var (from, to) = (T(12, 0), T(14, 0));
+
+        // No floor: the last stay before the range starts the rebuild, the first stay after it ends it.
+        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        // A floor after that stay's start moves the start up to it; one at or before the stay's start changes nothing.
+        Assert.Equal((T(10, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct, T(10, 0)));
+        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct, T(6, 0)));
+        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct, T(5, 0)));
+        // The rebuild never starts after the range: a floor past the start of the range is the start of the range.
+        Assert.Equal((from, T(22, 0)), await store.FindAnchorsAsync(from, to, Ct, T(13, 0)));
+        // With no stay before the range the rebuild starts at the range, floor or not.
+        Assert.Equal((T(1, 0), T(4, 0)), await store.FindAnchorsAsync(T(1, 0), T(1, 30), Ct));
+        Assert.Equal((T(1, 0), T(4, 0)), await store.FindAnchorsAsync(T(1, 0), T(1, 30), Ct, T(0, 30)));
+    }
+
+    [Fact]
+    public async Task A_floor_keeps_the_rebuild_from_reaching_back_into_an_unprocessed_week()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var processor = Processor(api); // starting the host runs the migrations
+        await PointSeeder.InsertAsync(cs, Enumerable.Range(0, 21).SelectMany(day => CommuteDay(day)), Ct);
+        await processor.ReprocessAsync(T(7, 0), T(7, 0, 7), Ct); // week 1; week 2 is not processed
+        var segmentsInWeek2 = () => Sql.ScalarAsync<long>(cs,
+            "select count(*) from segment where start_utc >= @from and start_utc < @to", new { from = T(0, 0, 8), to = T(7, 0, 14) }, Ct);
+        Assert.Equal(0, await segmentsInWeek2());
+
+        // Week 3 with a floor at its start: nothing of week 2 is loaded, so nothing of week 2 is stored...
+        var written = await processor.ReprocessAsync(T(7, 0, 14), T(7, 0, 21), Ct, anchorFloorUtc: T(7, 0, 14));
+        Assert.True(written > 0);
+        Assert.Equal(0, await segmentsInWeek2());
+        Assert.Equal(T(7, 0, 14), await Sql.ScalarAsync<DateTime>(cs, "select min(start_utc) from segment where start_utc >= @from",
+            new { from = T(0, 0, 8) }, Ct)); // ...and week 3 starts at its own first point
+        Assert.Equal(7 * 3, await Sql.ScalarAsync<long>(cs,
+            "select count(*) from segment where kind = 'stay' and start_utc >= @from and start_utc < @to", new { from = T(7, 0, 14), to = T(0, 0, 21) }, Ct));
+
+        // ...whereas without one it is widened back to the last stay of week 1, and rebuilds week 2 on the way.
+        await processor.ReprocessAsync(T(7, 0, 14), T(7, 0, 21), Ct);
+        Assert.True(await segmentsInWeek2() > 0);
+    }
+
     /// <summary>
     /// The rows of <c>segment</c> without ids, with place ids replaced by the order places first appear in: two runs agree
     /// when they put the same stays in the same places, even if a place's centre differs by a few metres (a place is

@@ -12,9 +12,11 @@ public interface ITimelineProcessor
     /// The range is widened to the stays around it (see <see cref="SegmentStore.FindAnchorsAsync"/>), so the result is
     /// the same as processing all the data at once. Where no stay follows and nothing later is stored, the rebuild stops
     /// at the first point after the range, so the last segments may be cut short until a later run (which starts at the
-    /// last stay before it) completes them.
+    /// last stay before it) completes them. With <paramref name="anchorFloorUtc"/> the rebuild starts no earlier than that
+    /// time (see <see cref="SegmentStore.FindAnchorsAsync"/>): the backfill sets a chunk aside after repeated failures, and
+    /// the chunk after it must not reach back into it.
     /// </summary>
-    Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct);
+    Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct, DateTime? anchorFloorUtc = null);
 }
 
 /// <summary>
@@ -33,7 +35,7 @@ public sealed class TimelineProcessor(
     /// </summary>
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public async Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
+    public async Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct, DateTime? anchorFloorUtc = null)
     {
         var from = AsUtc(fromUtc);
         var to = AsUtc(toUtc);
@@ -43,7 +45,7 @@ public sealed class TimelineProcessor(
         await _gate.WaitAsync(ct);
         try
         {
-            var (t0, t1) = await segments.FindAnchorsAsync(from, to, ct);
+            var (t0, t1) = await segments.FindAnchorsAsync(from, to, ct, anchorFloorUtc is { } floor ? AsUtc(floor) : null);
 
             // Load up to the closing stay's end (T1). Without a later stay there is no such edge, and loading to the end of
             // the data would segment the whole history on a first backfill: load up to the range's end instead, or up to

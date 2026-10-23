@@ -130,8 +130,10 @@ the backfill works towards the present, and points that arrive in the meantime w
 background, at about one Nominatim request per second, so their names appear gradually.
 
 Follow the progress at `https://sporer.lud.ar/api/status`: `backfill.percent` goes from 0 to 100, `pendingRanges` falls to
-0, and `failedRanges`, `lastError` and `warnings` say if something needs your attention. The same backfill runs again
-whenever the detection thresholds or the detection code change.
+0, and `failedRanges`, `lastError` and `warnings` say if something needs your attention. A backfill step that fails three
+times in a row is set aside as a failed range (retried later with a growing delay) and the backfill goes on after it,
+so one bad stretch of history does not hold up the rest. The same backfill runs again whenever the detection thresholds
+or the detection code change.
 
 ## Releases
 

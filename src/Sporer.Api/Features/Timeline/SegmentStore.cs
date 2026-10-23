@@ -55,9 +55,12 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
     /// rebuild starts at a stay and stops at the end of one: <c>T0</c> is the start of the last stored stay that starts
     /// before <paramref name="fromUtc"/> (or <paramref name="fromUtc"/> itself when there is none), <c>T1</c> the end of the
     /// first stored stay that starts after <paramref name="toUtc"/> (or null when there is none: the processor then
-    /// bounds the rebuild itself, see <see cref="FindLastEndAsync"/>).
+    /// bounds the rebuild itself, see <see cref="FindLastEndAsync"/>). With <paramref name="floorUtc"/>, <c>T0</c> is not
+    /// earlier than it (and still not later than <paramref name="fromUtc"/>): the rebuild then does not reach back
+    /// across a stretch that was set aside unprocessed, which it would load again and fail on again.
     /// </summary>
-    public async Task<(DateTime T0, DateTime? T1)> FindAnchorsAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct = default)
+    public async Task<(DateTime T0, DateTime? T1)> FindAnchorsAsync(
+        DateTime fromUtc, DateTime toUtc, CancellationToken ct = default, DateTime? floorUtc = null)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         var anchors = await connection.QuerySingleAsync<AnchorRow>(new CommandDefinition(
@@ -68,7 +71,11 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
             """,
             new { FromUtc = fromUtc, ToUtc = toUtc }, cancellationToken: ct));
 
-        return (anchors.T0 is { } t0 ? AsUtc(t0) : fromUtc, anchors.T1 is { } t1 ? AsUtc(t1) : null);
+        var start = anchors.T0 is { } t0 ? AsUtc(t0) : fromUtc;
+        if (floorUtc is { } floor && floor > start)
+            start = floor < fromUtc ? floor : fromUtc;
+
+        return (start, anchors.T1 is { } t1 ? AsUtc(t1) : null);
     }
 
     /// <summary>
