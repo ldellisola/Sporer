@@ -22,4 +22,8 @@
     <EmbeddedResource Include="Database\Migrations\*.sql" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Sporer.Timeline\Sporer.Timeline.csproj" />
+  </ItemGroup>
+
 </Project>

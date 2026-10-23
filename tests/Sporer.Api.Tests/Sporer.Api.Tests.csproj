@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Sporer.Api\Sporer.Api.csproj" />
+    <ProjectReference Include="..\Sporer.Testing\Sporer.Testing.csproj" />
   </ItemGroup>
 
 </Project>
