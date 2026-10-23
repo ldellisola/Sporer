@@ -173,3 +173,19 @@ docker build -f docker/dockerfile -t sporer:dev .
 
 The image builds `src/Sporer.Api` only. The solution also references the test projects, so it is not restored or built
 in the image.
+
+### Synthetic data and performance checks
+
+`tools/Sporer.SyntheticData` writes a fictional person's history (commutes, trips by air, a house move, phone-off gaps,
+GPS spikes) straight into a database's `locationlog`, deterministically for a `--seed`, so that you can develop against
+years of data without real points. Start the API once to create the schema (with `Processing__Enabled=false`), write the
+history, then start the API with processing on: it backfills the timeline from what is there.
+
+```sh
+dotnet run --project tools/Sporer.SyntheticData -c Release -- --connection "<Npgsql connection string>" \
+  --from 2024-06-01 --to 2026-10-22 --moving-interval 5s --seed 42
+```
+
+`5s` gives about a million rows; `500ms` gives 10.7 million. `tools/perf/day-latency.sh` and `tools/perf/ingest-latency.sh`
+time the day view and ingest. The measurements at 10 million rows, and how to repeat them, are in
+`docs/superpowers/plans/2026-10-23-sporer-plan-1-perf.md`.
