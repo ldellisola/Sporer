@@ -7,7 +7,7 @@ public readonly record struct GeoPoint(double Latitude, double Longitude);
 public static class Geo
 {
     /// <summary>Mean Earth radius in metres (IUGG).</summary>
-    private const double EarthRadiusMeters = 6_371_008.8;
+    internal const double EarthRadiusMeters = 6_371_008.8;
 
     /// <summary>Haversine distance in metres.</summary>
     public static double DistanceMeters(GeoPoint a, GeoPoint b)
