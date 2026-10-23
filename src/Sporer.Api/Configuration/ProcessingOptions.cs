@@ -12,7 +12,10 @@ public sealed record ProcessingOptions
     /// <summary>How long the worker sleeps when a pass found nothing to do.</summary>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(5);
 
-    /// <summary>A dirty range is processed only once it has been recorded this long, so a stream of batches is processed together.</summary>
+    /// <summary>
+    /// Recorded points are processed once the oldest of a group of nearby ones has been waiting this long, and the newer ones
+    /// go with it: a stream of batches is processed together, at most once per debounce.
+    /// </summary>
     public TimeSpan Debounce { get; init; } = TimeSpan.FromSeconds(60);
 
     /// <summary>The length of one backfill step.</summary>

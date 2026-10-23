@@ -63,7 +63,7 @@ Durations are written `hh:mm:ss`.
 | --- | --- | --- |
 | `Processing__Enabled` | `true` | Whether the background processing runs at all. |
 | `Processing__PollInterval` | `00:00:05` | How long the worker sleeps when a pass found nothing to do. |
-| `Processing__Debounce` | `00:01:00` | New points are processed once the batch recording them is this old, so a stream of batches is processed together. |
+| `Processing__Debounce` | `00:01:00` | New points are processed once the oldest batch of a group of nearby ones has waited this long, and the newer ones are processed with it. While Overland streams, today is rebuilt at most once per debounce. |
 | `Processing__BackfillChunkDays` | `7` | How many days of history one backfill step processes. |
 | `Processing__BackfillPause` | `00:00:00.2` | The wait after each backfill step, so a backfill leaves the database free for ingest and reads. |
 

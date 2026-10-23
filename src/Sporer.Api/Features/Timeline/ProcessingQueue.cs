@@ -48,19 +48,21 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
     }
 
     /// <summary>
-    /// The ranges to process at <paramref name="nowUtc"/>: rows recorded at least the debounce time ago (so a stream of
-    /// batches is processed together) and not waiting out a backoff, with rows that overlap or lie within an hour of each
-    /// other merged. With <paramref name="endingBeforeUtc"/> only rows that end before it are considered, and rows that do
-    /// not stay untouched (this is how ranges ahead of an unfinished backfill are held back).
+    /// The ranges to process at <paramref name="nowUtc"/>. Rows that are not waiting out a backoff are merged into groups
+    /// (rows that overlap or lie within an hour of each other), and a group is due once its <em>oldest</em> row has been
+    /// recorded for the debounce time; it takes its newer rows with it, however recent. So a stream of batches is processed
+    /// at most once per debounce, instead of every batch becoming due a debounce after it arrived and being processed as
+    /// often as batches come. With <paramref name="endingBeforeUtc"/> only rows that end before it are considered, and rows
+    /// that do not stay untouched (this is how ranges ahead of an unfinished backfill are held back).
     /// </summary>
     public async Task<List<DueRange>> DueRangesAsync(DateTime nowUtc, DateTime? endingBeforeUtc = null, CancellationToken ct = default)
     {
         var now = AsUtc(nowUtc);
         var sql =
             """
-            select id as Id, from_utc as FromUtc, to_utc as ToUtc
+            select id as Id, from_utc as FromUtc, to_utc as ToUtc, created_at as CreatedAt
             from dirty_range
-            where created_at <= @Cutoff and (next_attempt_at is null or next_attempt_at <= @Now)
+            where (next_attempt_at is null or next_attempt_at <= @Now)
             """
             + (endingBeforeUtc is null ? "" : " and to_utc < @EndingBefore")
             + " order by from_utc, id";
@@ -68,29 +70,32 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         var rows = await connection.QueryAsync<RangeRow>(new CommandDefinition(
             sql,
-            new { Cutoff = now - options.Debounce, Now = now, EndingBefore = endingBeforeUtc is { } before ? AsUtc(before) : (DateTime?)null },
+            new { Now = now, EndingBefore = endingBeforeUtc is { } before ? AsUtc(before) : (DateTime?)null },
             cancellationToken: ct));
 
+        var cutoff = now - options.Debounce;
         var merged = new List<DueRange>();
-        DateTime from = default, to = default;
+        DateTime from = default, to = default, oldest = default;
         List<long>? ids = null;
-        foreach (var row in rows) // by start, so a row can only join the range being built
+        foreach (var row in rows) // by start, so a row can only join the group being built
         {
             var rowFrom = AsUtc(row.FromUtc);
             var rowTo = AsUtc(row.ToUtc);
+            var rowCreated = AsUtc(row.CreatedAt);
             if (ids is not null && rowFrom <= to + MergeGap)
             {
                 to = rowTo > to ? rowTo : to;
+                oldest = rowCreated < oldest ? rowCreated : oldest;
                 ids.Add(row.Id);
                 continue;
             }
 
-            if (ids is not null)
+            if (ids is not null && oldest <= cutoff)
                 merged.Add(new DueRange(from, to, ids));
-            (from, to, ids) = (rowFrom, rowTo, [row.Id]);
+            (from, to, oldest, ids) = (rowFrom, rowTo, rowCreated, [row.Id]);
         }
 
-        if (ids is not null)
+        if (ids is not null && oldest <= cutoff)
             merged.Add(new DueRange(from, to, ids));
         return merged;
     }
@@ -282,6 +287,7 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
         public long Id { get; set; }
         public DateTime FromUtc { get; set; }
         public DateTime ToUtc { get; set; }
+        public DateTime CreatedAt { get; set; }
     }
 
     private sealed class FailedRow

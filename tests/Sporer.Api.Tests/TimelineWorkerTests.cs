@@ -346,7 +346,7 @@ public class TimelineWorkerTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task Ranges_recorded_after_the_debounce_cutoff_are_not_taken_with_older_ones()
+    public async Task A_group_is_due_once_its_oldest_range_has_waited_and_takes_the_newer_ones_with_it()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         var clock = ClockAfterThreeWeeks();
@@ -354,12 +354,60 @@ public class TimelineWorkerTests(DatabaseFixture db)
         await FinishBackfillAsync(h.Worker);
         var now = clock.GetUtcNow().UtcDateTime;
         await AddDirtyAsync(cs, T(10, 0), T(10, 30), now.AddSeconds(-60)); // exactly the debounce old: due
-        await AddDirtyAsync(cs, T(10, 20), T(10, 40), now.AddSeconds(-59)); // one second short: it waits, even though it overlaps
+        await AddDirtyAsync(cs, T(10, 20), T(10, 40), now.AddSeconds(-59)); // overlaps it: one second short, but it goes with it
+        await AddDirtyAsync(cs, T(11, 30), T(11, 40), now.AddSeconds(-5));  // within an hour of it: the same group
+        await AddDirtyAsync(cs, T(15, 0), T(15, 10), now.AddSeconds(-59));  // a group of its own, not old enough: it waits
 
         await h.Worker.RunOnceAsync(Ct);
 
-        Assert.Equal([(T(10, 0), T(10, 30))], h.Processor.Calls.ToArray());
-        Assert.Equal(T(10, 20), Assert.Single(await DirtyAsync(cs)).FromUtc);
+        Assert.Equal([(T(10, 0), T(11, 40))], h.Processor.Calls.ToArray());
+        Assert.Equal(T(15, 0), Assert.Single(await DirtyAsync(cs)).FromUtc);
+    }
+
+    [Fact]
+    public async Task A_group_of_ranges_that_have_all_waited_less_than_the_debounce_is_not_due()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = ClockAfterThreeWeeks();
+        await using var h = Start(cs, clock);
+        await FinishBackfillAsync(h.Worker);
+        var now = clock.GetUtcNow().UtcDateTime;
+        await AddDirtyAsync(cs, T(10, 0), T(10, 30), now.AddSeconds(-59));
+        await AddDirtyAsync(cs, T(10, 20), T(10, 40), now.AddSeconds(-1));
+
+        Assert.False(await h.Worker.RunOnceAsync(Ct));
+
+        Assert.Empty(h.Processor.Calls);
+        Assert.Equal(2, (await DirtyAsync(cs)).Count);
+    }
+
+    [Fact]
+    public async Task A_stream_of_batches_is_processed_at_most_once_per_debounce()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = ClockAfterThreeWeeks();
+        await using var h = Start(cs, clock);
+        await FinishBackfillAsync(h.Worker);
+
+        // A batch every 20 seconds for four minutes, all of it near the same time: each one is recorded when it arrives.
+        var processedAt = new List<TimeSpan>();
+        var start = clock.GetUtcNow().UtcDateTime;
+        for (var second = 0; second <= 240; second += 20)
+        {
+            await AddDirtyAsync(cs, T(10, 0).AddSeconds(second), T(10, 0).AddSeconds(second + 20), clock.GetUtcNow().UtcDateTime);
+            if (await h.Worker.RunOnceAsync(Ct))
+                processedAt.Add(clock.GetUtcNow().UtcDateTime - start);
+            clock.Advance(TimeSpan.FromSeconds(20));
+        }
+
+        // At 60 s the first batch has waited a minute, and the group it belongs to goes with it: the batches of 0, 20, 40 and
+        // 60 s. The next group is due a minute after its first batch (80 s), at 140 s, and the next at 220 s. Before, every
+        // batch became due a minute after it arrived: a pass every 20 s, as often as the batches come.
+        Assert.Equal([TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(140), TimeSpan.FromSeconds(220)], processedAt);
+        Assert.Equal(
+            [(T(10, 0), T(10, 0).AddSeconds(80)), (T(10, 0).AddSeconds(80), T(10, 0).AddSeconds(160)), (T(10, 0).AddSeconds(160), T(10, 0).AddSeconds(240))],
+            h.Processor.Calls.ToArray());
+        Assert.Equal(T(10, 0).AddSeconds(240), Assert.Single(await DirtyAsync(cs)).FromUtc); // the last batch is still waiting
     }
 
     [Fact]
