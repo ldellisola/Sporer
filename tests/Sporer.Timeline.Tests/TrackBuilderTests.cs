@@ -130,6 +130,18 @@ public class TrackBuilderTests
     }
 
     [Fact]
+    public void Motion_is_copied_so_neither_the_caller_nor_other_points_share_one_array()
+    {
+        var motion = new[] { "walking" };
+        var track = new TrackBuilder(T0, Spots.Home).WithMotion(motion).Stay(Every10s * 2, Every10s).Build();
+        motion[0] = "driving";
+
+        Assert.Equal(new[] { "walking" }, track[1].Motion);
+        Assert.Equal(new[] { "walking" }, track[2].Motion);
+        Assert.NotSame(track[1].Motion, track[2].Motion);
+    }
+
+    [Fact]
     public void Points_carry_the_device_and_an_unknown_speed()
     {
         var phone = new TrackBuilder(T0, Spots.Home).Stay(Every10s, Every10s).Build();

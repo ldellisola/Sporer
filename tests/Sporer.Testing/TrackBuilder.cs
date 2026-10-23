@@ -109,7 +109,7 @@ public sealed class TrackBuilder
     /// <summary>Overland motion values for the points logged from now on; no values clears it.</summary>
     public TrackBuilder WithMotion(params string[] m)
     {
-        _motion = m.Length == 0 ? null : m;
+        _motion = m.Length == 0 ? null : [.. m];
         return this;
     }
 
@@ -119,5 +119,5 @@ public sealed class TrackBuilder
     private void Log(GeoPoint at) => Log(at, Now);
 
     private void Log(GeoPoint at, DateTime time)
-        => _points.Add(new TrackPoint(time, _device, at.Latitude, at.Longitude, null, _accuracy, _motion));
+        => _points.Add(new TrackPoint(time, _device, at.Latitude, at.Longitude, null, _accuracy, _motion is null ? null : [.. _motion]));
 }

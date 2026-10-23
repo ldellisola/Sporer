@@ -5,7 +5,7 @@ namespace Sporer.Timeline.Tests;
 public class GeoTests
 {
     // The plan's 2_755_000..2_775_000 m range is not reachable with its own coordinates and radius: haversine gives
-    // 2_738_802 m (checked independently with the spherical law of cosines), and Oslo-Lisbon is ~2 740 km by road atlas.
+    // 2_738_802 m (checked independently with the spherical law of cosines), and Oslo-Lisbon is ~2 740 km great-circle.
     [Fact]
     public void Distance_oslo_to_lisbon_is_about_2739_km()
         => Assert.InRange(Geo.DistanceMeters(Spots.Home, Spots.Lisbon), 2_733_000, 2_745_000);
@@ -47,6 +47,7 @@ public class GeoTests
     {
         var arc = Geo.GreatCircle(Spots.Tokyo, Spots.SanFrancisco);
         Assert.Equal(64, arc.Count);
+        Assert.Equal(Spots.SanFrancisco.Longitude + 360, arc[^1].Longitude, 6); // crosses eastwards over the Pacific, not west through Asia
         Assert.All(arc.Zip(arc.Skip(1)), p => Assert.True(Math.Abs(p.First.Longitude - p.Second.Longitude) <= 180));
     }
 
