@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using Sporer.Api.Database;
 
@@ -150,6 +151,7 @@ public class MigrationTests(DatabaseFixture db)
         // extension in template1, so a new database has it and the test drops it (throwaway DB only).
         var cs = await db.CreateDatabaseAsync(Ct);
         await Sql.ExecAsync(cs, "DROP EXTENSION IF EXISTS timescaledb", ct: Ct);
+        await Sql.ExecAsync(cs, "CREATE TABLE locationLog (time timestamptz NOT NULL)", ct: Ct); // there is a table to inspect
         Assert.False(await Sql.ScalarAsync<bool>(cs, "select to_regnamespace('timescaledb_information') is not null", ct: Ct));
         await using var dataSource = NpgsqlDataSource.Create(cs);
 
@@ -159,5 +161,77 @@ public class MigrationTests(DatabaseFixture db)
         Assert.Contains(warnings, w => w.StartsWith("Could not check retention", StringComparison.Ordinal));
         Assert.Contains(warnings, w => w.StartsWith("Could not check compression", StringComparison.Ordinal));
         Assert.All(warnings, w => Assert.Contains("timescaledb_information", w));
+    }
+
+    [Fact]
+    public async Task Inspection_failures_of_any_kind_become_warnings()
+    {
+        // A catalog whose column has another type than expected fails in the driver's conversion, not in the database:
+        // the exception is not an NpgsqlException, and the check must still only warn.
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await Sql.ExecAsync(cs, "DROP EXTENSION IF EXISTS timescaledb", ct: Ct);
+        await Sql.ExecAsync(cs,
+            """
+            CREATE TABLE locationLog (time timestamptz NOT NULL);
+            CREATE SCHEMA timescaledb_information;
+            CREATE VIEW timescaledb_information.jobs AS SELECT 'policy_retention'::text AS proc_name, 'locationlog'::text AS hypertable_name;
+            CREATE VIEW timescaledb_information.hypertables AS SELECT 'locationlog'::text AS hypertable_name, 'perhaps'::text AS compression_enabled;
+            """, ct: Ct);
+        await using var dataSource = NpgsqlDataSource.Create(cs);
+
+        var warnings = await DatabaseInspector.InspectAsync(dataSource, Ct);
+
+        Assert.Equal(2, warnings.Count);
+        Assert.Contains(warnings, w => w.Contains("retention policy exists", StringComparison.OrdinalIgnoreCase)); // the check that worked
+        Assert.Contains(warnings, w => w.StartsWith("Could not check compression", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Inspection_has_nothing_to_say_before_locationlog_exists()
+    {
+        // A new database is inspected before the migrations have created anything, perhaps without even the extension.
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await Sql.ExecAsync(cs, "DROP EXTENSION IF EXISTS timescaledb", ct: Ct);
+        await using var dataSource = NpgsqlDataSource.Create(cs);
+
+        Assert.Empty(await DatabaseInspector.InspectAsync(dataSource, Ct));
+    }
+
+    [Fact]
+    public async Task Warnings_about_locationlog_are_logged_even_when_a_migration_then_fails()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await Sql.ExecAsync(cs, OldCreateTableScript, ct: Ct);
+        await Sql.ExecAsync(cs, "SELECT add_retention_policy('locationlog', INTERVAL '5 years')", ct: Ct);
+        await Sql.ExecAsync(cs, "CREATE TABLE segment (unrelated int)", ct: Ct); // not the table 0003 expects: it cannot index it
+        var log = new CapturingLoggerProvider();
+        await using var api = new ApiFactory(cs, configureServices: services => services.AddSingleton<ILoggerProvider>(log));
+
+        Assert.ThrowsAny<Exception>(() => api.Services); // the app does not start
+
+        Assert.Contains(log.Messages, m => m.Contains("retention", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private sealed class CapturingLoggerProvider : ILoggerProvider
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _messages = new();
+
+        public IEnumerable<string> Messages => _messages;
+
+        public ILogger CreateLogger(string categoryName) => new Capture(_messages);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class Capture(System.Collections.Concurrent.ConcurrentQueue<string> messages) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+                => messages.Enqueue(formatter(state, exception));
+        }
     }
 }

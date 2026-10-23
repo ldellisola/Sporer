@@ -54,14 +54,16 @@ builder.Services
     .SwaggerDocument();
 var app = builder.Build();
 
-// A failing migration throws here, so the app does not start; Overland keeps unsent points and retries.
-DatabaseMigrator.Migrate(app.Services.GetRequiredService<IOptions<DataBaseOptions>>().Value.ConnectionString, app.Logger);
+// The checks of locationLog come first, so that what they find is logged even if a migration then fails.
 var databaseWarnings = app.Services.GetRequiredService<DatabaseWarnings>();
 foreach (var warning in await DatabaseInspector.InspectAsync(app.Services.GetRequiredService<NpgsqlDataSource>()))
 {
     databaseWarnings.Add(warning);
     app.Logger.LogWarning("Database check: {Warning}", warning);
 }
+
+// A failing migration throws here, so the app does not start; Overland keeps unsent points and retries.
+DatabaseMigrator.Migrate(app.Services.GetRequiredService<IOptions<DataBaseOptions>>().Value.ConnectionString, app.Logger);
 
 if (nominatimEnabled && !nominatimUserAgentSet)
 {

@@ -5,9 +5,10 @@ namespace Sporer.Api.Database;
 
 /// <summary>
 /// Looks for TimescaleDB settings on <c>locationLog</c> that could delete or complicate raw points.
-/// Reads catalog views only; it never changes anything. Startup must not depend on it, so a check that
-/// cannot run (another TimescaleDB version, missing views, connection trouble) is reported as a warning
-/// instead of an exception.
+/// Reads catalog views only; it never changes anything. It runs before the migrations, so that what it finds is reported
+/// even if a migration then fails, and startup must not depend on it: a check that cannot run (another TimescaleDB
+/// version, missing views, a column of another type, connection trouble) is reported as a warning instead of an exception.
+/// There is nothing to inspect, and so nothing to report, before <c>locationLog</c> exists (a new database).
 /// </summary>
 public static class DatabaseInspector
 {
@@ -42,7 +43,10 @@ public static class DatabaseInspector
         return warnings;
     }
 
-    /// <summary>Runs one check on its own connection; a database error becomes a warning, never an exception.</summary>
+    /// <summary>
+    /// Runs one check on its own connection; any failure except cancellation becomes a warning, never an exception.
+    /// Skipped when <c>locationLog</c> does not exist.
+    /// </summary>
     private static async Task CheckAsync(
         List<string> warnings,
         string what,
@@ -53,10 +57,13 @@ public static class DatabaseInspector
         try
         {
             await using var connection = await dataSource.OpenConnectionAsync(ct);
+            if (await connection.ExecuteScalarAsync<bool>(new CommandDefinition("select to_regclass('locationlog') is null", cancellationToken: ct)))
+                return;
+
             if (await check(connection) is { } warning)
                 warnings.Add(warning);
         }
-        catch (NpgsqlException ex) // includes PostgresException
+        catch (Exception ex) when (ex is not OperationCanceledException) // a database error, or one from converting what it returned
         {
             warnings.Add($"Could not check {what} on locationLog: {ex.Message}");
         }
