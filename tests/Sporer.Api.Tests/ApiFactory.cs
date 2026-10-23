@@ -8,13 +8,15 @@ namespace Sporer.Api.Tests;
 
 /// <summary>
 /// Hosts the real API against a test database. Background work is switched off and ingest is open by default;
-/// pass <paramref name="settings"/> to override or add configuration values, and
-/// <paramref name="time"/> to replace the app's <see cref="TimeProvider"/> (for example with a fake clock).
+/// pass <paramref name="settings"/> to override or add configuration values,
+/// <paramref name="time"/> to replace the app's <see cref="TimeProvider"/> (for example with a fake clock), and
+/// <paramref name="configureServices"/> to replace services (for example the HTTP handler Nominatim is reached through).
 /// </summary>
 public sealed class ApiFactory(
     string connectionString,
     IDictionary<string, string?>? settings = null,
-    TimeProvider? time = null)
+    TimeProvider? time = null,
+    Action<IServiceCollection>? configureServices = null)
     : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -38,11 +40,15 @@ public sealed class ApiFactory(
         foreach (var (key, value) in values)
             builder.UseSetting(key, value);
 
-        if (time is not null)
-            builder.ConfigureTestServices(services =>
+        builder.ConfigureTestServices(services =>
+        {
+            if (time is not null)
             {
                 services.RemoveAll<TimeProvider>();
                 services.AddSingleton(time);
-            });
+            }
+
+            configureServices?.Invoke(services);
+        });
     }
 }
