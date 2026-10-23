@@ -20,15 +20,18 @@ Sporer needs a TimescaleDB (PostgreSQL) database. The image is published to `ghc
 port 80.
 
 ```sh
-docker run -d --name sporer -p 8080:80 \
+docker run -d --name sporer --restart unless-stopped -p 8080:80 \
   -e TSDB_CONNECTION_STRING="Host=db;Port=5432;Username=postgres;Password=<password>;Database=postgres" \
   -e OVERLAND_TOKEN="<a long random string>" \
   -e Nominatim__UserAgent="Sporer/1.0 (you@example.com)" \
   ghcr.io/ldellisola/sporer:latest
 ```
 
-The database schema is created and upgraded by the app on start-up. If a migration fails the app does not start;
-Overland keeps the points it could not send and retries, so nothing is lost while you fix it.
+The database schema is created and upgraded by the app on start-up. If a migration fails, or the database cannot be
+reached when the app starts, the app exits; Overland keeps the points it could not send and retries, so nothing is lost
+while you fix it. **Run the container with a restart policy** (`--restart unless-stopped` as above, or
+`restart: unless-stopped` in Docker Compose, or the equivalent in your orchestrator), so that it starts again by itself
+once the database is back, for example after the host reboots and the app comes up before the database does.
 
 The image is based on `mcr.microsoft.com/dotnet/aspnet:10.0` (Ubuntu), which ships the time zone database
 (`/usr/share/zoneinfo`) that Sporer needs to convert UTC to local time. If you change the base image, keep tzdata in it.
@@ -42,7 +45,7 @@ Everything is set through environment variables. A `:` in a configuration key is
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `TSDB_CONNECTION_STRING` | none | Npgsql connection string of the TimescaleDB database. Set it: without it the app falls back to `ConnectionStrings__TSDB`, and that falls back to a `localhost` connection string meant for development. |
-| `OVERLAND_TOKEN` | empty | Shared secret that Overland must send, as `?token=<OVERLAND_TOKEN>` or as an `Authorization: Bearer` header. When empty the ingest endpoint is **open** and the app logs a warning (also shown in `/api/status`). Set it. |
+| `OVERLAND_TOKEN` | empty | Shared secret that Overland must send, as `?token=<OVERLAND_TOKEN>` or as an `Authorization: Bearer` header. It can also be set as `Overland__Token` (the `Overland:Token` configuration key); `OVERLAND_TOKEN` is used when both are set. When neither is set the ingest endpoint is **open** and the app logs a warning (also shown in `/api/status`). Set it. |
 | `Nominatim__UserAgent` | empty | Identifies your installation to OpenStreetMap's Nominatim, as its usage policy requires: the app name and a way to reach you, for example `Sporer/1.0 (you@example.com)`. **Places are only named when this is set**; without it Sporer makes no Nominatim requests and warns at start-up. |
 
 ### Place naming (`Nominatim__*`)
@@ -62,7 +65,7 @@ stop the worker.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `Processing__Enabled` | `true` | Whether the background processing runs at all. |
+| `Processing__Enabled` | `true` | Whether the background processing runs at all. `false` stops everything that runs in the background: the timeline is no longer built or updated, **and places are no longer named** (place naming is part of it, whatever `Nominatim__*` says). Ingest is not affected. |
 | `Processing__PollInterval` | `00:00:05` | How long the worker sleeps when a pass found nothing to do. 100 ms to 10 minutes. |
 | `Processing__Debounce` | `00:01:00` | New points are processed once the oldest batch of a group of nearby ones has waited this long, and the newer ones are processed with it. While Overland streams, today is rebuilt at most once per debounce. 0 to 1 hour. |
 | `Processing__BackfillChunkDays` | `7` | How many days of history one backfill step processes. Also the longest stretch one rebuild loads: a longer range of new points is processed in pieces of this length, oldest first. |
@@ -146,8 +149,8 @@ git push origin v1.2.3
 ```
 
 The workflow runs the test suite, then builds the image and publishes it as `ghcr.io/ldellisola/sporer` with the tags
-`1.2.3`, `1.2`, `1` and `latest` (among others). The server pulls `:latest` daily. Pushes to `main` that touch `src/`, `tests/` or
-`docker/dockerfile` build and publish a branch-tagged image; pull requests run the tests and a build without publishing.
+`1.2.3`, `1.2`, `1` and `latest` (among others). The server pulls `:latest` daily. Pushes to `main` that touch `src/`, `tests/`,
+`docker/dockerfile`, `.dockerignore` or the workflow file build and publish a branch-tagged image; pull requests run the tests and a build without publishing.
 
 ## Local development
 

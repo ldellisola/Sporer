@@ -8,6 +8,8 @@ on:
       - src/**
       - tests/**
       - docker/dockerfile
+      - .dockerignore
+      - .github/workflows/docker-publish.yml
   pull_request:
     branches: ["main"]
   workflow_dispatch:
