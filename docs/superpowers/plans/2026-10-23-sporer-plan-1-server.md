@@ -24,7 +24,7 @@
 ## Global Constraints
 
 - Target framework `net10.0` for every project; keep `<Nullable>enable</Nullable>` and `<ImplicitUsings>enable</ImplicitUsings>`.
-- **`locationLog` is never changed.** No `ALTER TABLE`, index, constraint, compression or policy change on it; no `UPDATE`/`DELETE` of its rows. The app only `INSERT`s (ingest, same columns and values as today) and `SELECT`s. Every migration creates new objects only.
+- **Existing `locationLog` rows are never changed.** The table's only schema change is two added nullable columns without defaults (`horizontal_accuracy double precision`, `motion text[]`, migration 0002). No other `ALTER TABLE`, index, constraint, compression or policy change on it; no `UPDATE`/`DELETE` of its rows, ever. The app only `INSERT`s (ingest) and `SELECT`s. All other migrations create new objects only.
 - Ingest success response body is exactly `{"result":"ok"}`.
 - Raw points are never lost: the `locationLog` insert must succeed or fail on its own, independent of every new write.
 - Nominatim: ≤ 1 request/second, descriptive `User-Agent` from configuration, `accept-language=en`, results cached in the database.
@@ -39,7 +39,7 @@
 ## Review Focus
 
 1. **Odd Overland payloads** — missing `speed`/`horizontal_accuracy`/`motion`, negative speed, timestamps with a non-UTC offset: ingest still returns `{"result":"ok"}`, stores the point, and the stored time is the correct instant. (Task 3, test `Ingest_accepts_sparse_and_offset_payloads`.)
-2. **A failure in a new write must not lose points** — if the `location_detail`/`dirty_range` write throws, the `locationLog` row is still committed and Overland still gets `ok`. (Task 3, test `Ingest_keeps_points_when_secondary_writes_fail`.)
+2. **A failure in a new write must not lose points** — if the `dirty_range` write throws, the `locationLog` rows are still committed and Overland still gets `ok`. (Task 3, test `Ingest_keeps_points_when_secondary_writes_fail`.)
 3. **Daylight-saving night** — a stay across the Europe/Oslo DST change (night of 2026-10-24→25) has its true duration and appears on both local dates. (Task 4 `LocalTime_handles_dst_end`; Task 12 `Day_includes_stay_crossing_midnight_on_both_dates`.)
 4. **Flights across the antimeridian** — a Tokyo→San Francisco flight's geometry has no ±360° jumps between consecutive coordinates. (Task 4, test `GreatCircle_is_continuous_across_antimeridian`.)
 5. **Nominatim down, rate-limited or returning junk** — the place stays unnamed, is retried later, and processing is unaffected. (Task 11, tests `Namer_backs_off_on_429` and `Namer_survives_invalid_json`.)
@@ -60,11 +60,11 @@ src/Sporer.Api/Configuration/
     NominatimOptions.cs                           create — BaseUrl, UserAgent, Enabled, MinInterval
 src/Sporer.Api/Database/
     Migrations/0001_baseline.sql                  create — idempotent copy of the old script
-    Migrations/0002_ingest_side_tables.sql        create — location_detail, dirty_range
+    Migrations/0002_ingest_columns.sql            create — two locationLog columns, dirty_range
     Migrations/0003_timeline.sql                  create — place, segment, geocode_cache, processing_state
     DatabaseMigrator.cs                           create — DbUp run
     DatabaseInspector.cs                          create — read-only retention/compression checks
-src/Sporer.Api/Features/Overland/                 modify: token check, side-table writes
+src/Sporer.Api/Features/Overland/                 modify: token check, accuracy/motion columns, dirty ranges
 src/Sporer.Api/Features/Timeline/
     PointStore.cs                                 create — load points for a range
     PlaceStore.cs                                 create — load/create places
@@ -151,7 +151,7 @@ public async Task Ingest_stores_point_like_today()
 ### Task 2: Migrations runner and read-only database inspection
 
 **Files:**
-- Create: `src/Sporer.Api/Database/Migrations/0001_baseline.sql`, `0002_ingest_side_tables.sql`, `src/Sporer.Api/Database/DatabaseMigrator.cs`, `src/Sporer.Api/Database/DatabaseInspector.cs`, `tests/Sporer.Api.Tests/MigrationTests.cs`
+- Create: `src/Sporer.Api/Database/Migrations/0001_baseline.sql`, `0002_ingest_columns.sql`, `src/Sporer.Api/Database/DatabaseMigrator.cs`, `src/Sporer.Api/Database/DatabaseInspector.cs`, `tests/Sporer.Api.Tests/MigrationTests.cs`
 - Modify: `Sporer.Api.csproj` (add `dbup-postgresql 7.0.1`; `<EmbeddedResource Include="Database\Migrations\*.sql" />`; remove the `DB\01-Create-table.sql` item), `Program.cs`, `OverlandIngestTests.cs` (drop the manual table creation)
 - Delete: `src/Sporer.Api/DB/01-Create-table.sql`
 
@@ -169,13 +169,10 @@ CREATE TABLE IF NOT EXISTS locationLog (
     device text NOT NULL, speed DOUBLE PRECISION NULL, altitude numeric NOT NULL);
 SELECT create_hypertable('locationLog', by_range('time'), if_not_exists => TRUE);
 ```
-`0002_ingest_side_tables.sql`:
+`0002_ingest_columns.sql`:
 ```sql
-CREATE TABLE location_detail (
-    time timestamptz NOT NULL, device text NOT NULL,
-    horizontal_accuracy double precision NULL, motion text[] NULL);
-SELECT create_hypertable('location_detail', by_range('time'));
-CREATE UNIQUE INDEX ux_location_detail_device_time ON location_detail (device, time);
+ALTER TABLE locationLog ADD COLUMN IF NOT EXISTS horizontal_accuracy double precision NULL;
+ALTER TABLE locationLog ADD COLUMN IF NOT EXISTS motion text[] NULL;
 CREATE TABLE dirty_range (
     id bigserial PRIMARY KEY, from_utc timestamptz NOT NULL, to_utc timestamptz NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(), attempts int NOT NULL DEFAULT 0,
@@ -187,14 +184,15 @@ CREATE TABLE dirty_range (
 ```csharp
 [Fact] public async Task Migrates_fresh_database()
 {   // start ApiFactory on an empty database, hit GET /swagger or any route to force startup
-    Assert.True(await Sql.ScalarAsync<bool>(cs, "select to_regclass('location_detail') is not null"));
+    Assert.Equal(new[] {"time","longitude","latitude","device","speed","altitude","horizontal_accuracy","motion"}, await ColumnNames(cs, "locationlog"));
     Assert.True(await Sql.ScalarAsync<bool>(cs, "select to_regclass('dirty_range') is not null"));
 }
-[Fact] public async Task Migrates_existing_database_without_touching_locationlog()
-{   // run the OLD script by hand, insert 3 rows, snapshot columns + rows, then start the app
-    Assert.Equal(columnsBefore, await Columns(cs, "locationlog")); // name, type, nullability from information_schema
-    Assert.Equal(indexesBefore, await Indexes(cs, "locationlog")); // pg_indexes
-    Assert.Equal(rowsBefore, await Rows(cs));                      // all 3 rows identical
+[Fact] public async Task Migrates_existing_database_keeping_rows()
+{   // run the OLD script by hand, insert 3 rows, snapshot columns + indexes + rows, then start the app
+    Assert.Equal(columnsBefore.Concat(new[] { ("horizontal_accuracy","double precision","YES"), ("motion","ARRAY","YES") }),
+                 await Columns(cs, "locationlog"));                // name, data_type, is_nullable from information_schema
+    Assert.Equal(indexesBefore, await Indexes(cs, "locationlog")); // pg_indexes unchanged
+    Assert.Equal(rowsBefore, await Rows(cs));                      // original 6 columns of all 3 rows identical; new columns null
 }
 [Fact] public async Task Warns_when_retention_policy_exists()
 {   // old script + SELECT add_retention_policy('locationlog', INTERVAL '5 years'); start app
@@ -217,7 +215,7 @@ CREATE TABLE dirty_range (
 
 ---
 
-### Task 3: Ingest — token, side-table writes, dirty ranges
+### Task 3: Ingest — token, accuracy/motion columns, dirty ranges
 
 **Files:**
 - Create: `src/Sporer.Api/Configuration/OverlandOptions.cs`
@@ -227,7 +225,7 @@ CREATE TABLE dirty_range (
 - Produces:
   - `OverlandOptions { string? Token }` bound from `OVERLAND_TOKEN` (env/config key), falling back to section `Overland:Token`.
   - `Metadata` gains `[JsonPropertyName("horizontal_accuracy")] double? HorizontalAccuracy` and `string[]? Motion`; `Speed` becomes `double?`, `Altitude` stays `double` (default 0 when absent — matches `NOT NULL`).
-  - Ingest writes, in order: (1) the `locationLog` insert in its own transaction — SQL and values unchanged; (2) best-effort in a second transaction: `location_detail` rows (`ON CONFLICT (device, time) DO NOTHING`) for points with accuracy or motion, plus one `dirty_range(from_utc = min time, to_utc = max time, created_at = TimeProvider now)` — times come from the injected `TimeProvider`, never the database's `now()`, so tests control the clock. A failure in (2) is logged at `Error` and does not change the response.
+  - Ingest writes, in order: (1) the `locationLog` insert in its own transaction — today's columns and values plus `horizontal_accuracy` and `motion`; (2) best-effort afterwards: one `dirty_range(from_utc = min time, to_utc = max time, created_at = TimeProvider now)` — times come from the injected `TimeProvider`, never the database's `now()`, so tests control the clock. A failure in (2) is logged at `Error` and does not change the response.
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -235,9 +233,10 @@ CREATE TABLE dirty_range (
 [Fact] public async Task Ingest_is_open_when_no_token_configured()            // 200, row stored
 [Fact] public async Task Ingest_rejects_missing_or_wrong_token()              // settings OVERLAND_TOKEN=s3cret; no token → 401; ?token=nope → 401; nothing stored
 [Fact] public async Task Ingest_accepts_token_in_query_or_bearer_header()     // ?token=s3cret → 200; Authorization: Bearer s3cret → 200
-[Fact] public async Task Ingest_writes_detail_and_dirty_range()
+[Fact] public async Task Ingest_writes_accuracy_motion_and_dirty_range()
 {   // two points 07:00Z and 07:05Z, accuracy 8 and 12, motion ["walking"]
-    Assert.Equal(2, await Sql.ScalarAsync<long>(cs, "select count(*) from location_detail"));
+    Assert.Equal(new double?[] {8, 12}, await Sql.QueryAsync<double?>(cs, "select horizontal_accuracy from locationlog order by time"));
+    Assert.Equal(new[] {"walking"}, await Sql.ScalarAsync<string[]>(cs, "select motion from locationlog order by time limit 1"));
     var r = await Sql.SingleAsync(cs, "select from_utc, to_utc from dirty_range");
     Assert.Equal((Utc(7,0), Utc(7,5)), ((DateTime)r.from_utc, (DateTime)r.to_utc));
 }
@@ -247,7 +246,7 @@ CREATE TABLE dirty_range (
     Assert.Contains(Utc(7,0), times);   // B stored as 07:00Z
 }
 [Fact] public async Task Ingest_keeps_points_when_secondary_writes_fail()
-{   // test drops location_detail (throwaway DB) before posting
+{   // test drops dirty_range (throwaway DB) before posting
     Assert.Equal("""{"result":"ok"}""", body);
     Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from locationlog"));
 }
@@ -260,7 +259,7 @@ CREATE TABLE dirty_range (
 
 - [ ] **Step 4: Run all tests.** `dotnet test src/Sporer.sln` — Expected: PASS.
 
-- [ ] **Step 5: Commit.** `git commit -m "Ingest: optional token, accuracy/motion side table, dirty ranges"`
+- [ ] **Step 5: Commit.** `git commit -m "Ingest: optional token, accuracy/motion columns, dirty ranges"`
 
 ---
 
@@ -505,7 +504,7 @@ INSERT INTO processing_state (id) VALUES (1);
 **Interfaces:**
 - Consumes: `PointCleaner`, `Segmenter`, `ModeClassifier`, `LineSimplifier`, `PlaceMatcher`, `LocalTime`, `Geo`.
 - Produces:
-  - `PointStore.LoadAsync(DateTime fromUtc, DateTime toUtc, bool includeNextPoint) -> Task<List<TrackPoint>>` — `locationlog` left-joined to `location_detail` on `(device, time)`, `time >= from AND time <= to`, ordered by time; with `includeNextPoint` also the first point after `to`.
+  - `PointStore.LoadAsync(DateTime fromUtc, DateTime toUtc, bool includeNextPoint) -> Task<List<TrackPoint>>` — from `locationlog` (including `horizontal_accuracy` and `motion`), `time >= from AND time <= to`, ordered by time; with `includeNextPoint` also the first point after `to`.
   - `SegmentStore.FindAnchorsAsync(DateTime fromUtc, DateTime toUtc) -> Task<(DateTime T0, DateTime? T1)>`: `T0` = start of the last stored stay with `start_utc < from`, else `from`; `T1` = end of the first stored stay with `start_utc > to`, else null (= end of data).
   - `SegmentStore.ReplaceAsync(DateTime t0, DateTime? t1, IReadOnlyList<StoredSegment> segments)` — one transaction: `DELETE FROM segment WHERE start_utc >= t0 AND (t1 IS NULL OR start_utc < t1)`, then insert.
   - `record StoredSegment(string Kind, DateTime StartUtc, DateTime EndUtc, string StartTz, string EndTz, DateOnly LocalStartDate, DateOnly LocalEndDate, long? PlaceId, double? Latitude, double? Longitude, string? Mode, double? DistanceM, string? GeometryDetailJson, string? GeometryCoarseJson, int PointCount)` — geometry JSON is `[[lon,lat],...]` rounded to 6 decimals; flights use `Geo.GreatCircle(first, last)` for both levels.
@@ -525,7 +524,7 @@ INSERT INTO processing_state (id) VALUES (1);
     SegmentStore.Replace(T0, T1, mapped)
     ```
 
-- [ ] **Step 1: Write the failing tests** (`PointSeeder.InsertAsync(cs, IEnumerable<TrackPoint>)` bulk-inserts into `locationlog` and `location_detail` with Npgsql binary `COPY`):
+- [ ] **Step 1: Write the failing tests** (`PointSeeder.InsertAsync(cs, IEnumerable<TrackPoint>)` bulk-inserts into `locationlog` with Npgsql binary `COPY`):
 
 ```csharp
 [Fact] public async Task Processes_a_commute_day()             // seed Task 6 commute; ReprocessAsync(day start, day end)
@@ -707,7 +706,7 @@ INSERT INTO processing_state (id) VALUES (1);
 **Files:** Create `tools/Sporer.SyntheticData/Sporer.SyntheticData.csproj` (console, `net10.0`, references `Sporer.Timeline`), `Program.cs`, `Simulator.cs`; add to `src/Sporer.sln`; Create `docs/superpowers/plans/2026-10-23-sporer-plan-1-perf.md` (results)
 
 **Interfaces:**
-- Produces: `dotnet run --project tools/Sporer.SyntheticData -- --connection "<cs>" --from 2024-06-01 --to 2026-10-22 --moving-interval 5s --seed 42` — writes a fictional person's history straight into `locationlog` (+ `location_detail` for the last 90 days) with binary `COPY`. The simulator covers what spec §9 lists: weekday commutes with walk/cycle/drive, sparse logging while still (one point, then silence), occasional GPS spikes, monthly evening errands, three trips with flights (one crossing time zones, one of 3+ weeks), one house move, and a few phone-off gaps. Deterministic for a given seed. Prints the row count.
+- Produces: `dotnet run --project tools/Sporer.SyntheticData -- --connection "<cs>" --from 2024-06-01 --to 2026-10-22 --moving-interval 5s --seed 42` — writes a fictional person's history straight into `locationlog` with binary `COPY` (accuracy and motion filled only for the last 90 days, like real history). The simulator covers what spec §9 lists: weekday commutes with walk/cycle/drive, sparse logging while still (one point, then silence), occasional GPS spikes, monthly evening errands, three trips with flights (one crossing time zones, one of 3+ weeks), one house move, and a few phone-off gaps. Deterministic for a given seed. Prints the row count.
 
 - [ ] **Step 1: Generate about 10 million rows** into a fresh TimescaleDB container database (tune `--moving-interval` until the printed count is ≥ 10 000 000).
 - [ ] **Step 2: Run the backfill.** Start the API against it with `Processing:Enabled=true`, `Nominatim:Enabled=false`; poll `/api/status` until `percent` is 100. Record the wall-clock time and that `failedRanges` is empty.

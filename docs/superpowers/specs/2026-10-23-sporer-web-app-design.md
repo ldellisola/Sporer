@@ -211,7 +211,7 @@ Actions:
 | Real data for the builder | Not for a few days (owner away from their computer) |
 | Hosting | `https://sporer.lud.ar`, TLS terminated at the ingress |
 | Release | Publish a new `:latest` image; the server picks it up once a day. A full backup may be huge. Releases go out on version tags (confirmed). |
-| Database changes | Safe without a full backup, as long as the existing `locationLog` table isn't updated |
+| Database changes | Safe without a full backup, as long as the existing `locationLog` rows aren't updated. Adding columns to `locationLog` is allowed (owner, after first saying not to alter it). |
 | Map labels | Cities on the map are always in English |
 | The other calls in this document | Reviewed and accepted |
 
@@ -322,23 +322,23 @@ raw points ─► clean ─► segment into stays & moves ─► assign stays to
 - **Migrations.**
   - Add a migration runner (for example DbUp) that runs on startup.
   - The existing `01-Create-table.sql` has already been applied by hand on the owner's DB. The runner must treat it as the baseline and not fail on an existing `locationLog`.
-  - **`locationLog` is never changed (owner: safe without a full backup "as long as you don't update the existing table").**
-    - No `ALTER TABLE` on it: no new columns, indexes, constraints, compression or policy changes.
-    - No `UPDATE` or `DELETE` on its rows.
-    - The app only ever `INSERT`s into it (ingest, exactly as today) and `SELECT`s from it.
-    - Every migration creates new objects only.
+  - **Existing `locationLog` rows are never changed (owner: safe without a full backup "as long as you don't update the existing table"; later: "you may alter the main table").**
+    - The only change to the table: it gains two nullable columns with no default, `horizontal_accuracy double precision` and `motion text[]`. In Postgres that is a metadata-only change: no rows are rewritten, and existing rows read as null.
+    - No other `ALTER TABLE` on it: no indexes, constraints, compression or policy changes.
+    - No `UPDATE` or `DELETE` on its rows, ever.
+    - The app only `INSERT`s into it (ingest) and `SELECT`s from it.
+    - All other migrations create new objects only.
     - The README recommends a schema-only `pg_dump` before the first release, which is small. A full data backup is optional.
   - **Startup checks (read-only).** Inspect the TimescaleDB setup and log loudly, also showing it in Settings, if:
     - a retention policy exists on `locationLog`, which would be deleting raw points
-    - compression is enabled on it, which can affect late inserts on some TimescaleDB versions
+    - compression is enabled on it, which can affect adding columns and late inserts on some TimescaleDB versions
 
     These checks only read catalog views; they never change the table. Production versions are unknown, so support TimescaleDB 2.x generally.
   - **If a migration fails, the app fails to start.** That is acceptable: Overland keeps unsent points on the phone and retries, so no data is lost while the owner fixes it.
   - **Database role.** The default connection string uses the `postgres` role. Assume it can run DDL (call).
   - **Backfill.** After the first release the backfill starts automatically, but it is throttled so it never starves ingest or read requests, and it can be paused from Settings.
 - **Ingest changes (call):**
-  - The insert into `locationLog` stays exactly as it is today.
-  - **Extra fields go to a new side table** (because `locationLog` must not change). In the same transaction, ingest also writes `horizontal_accuracy` and `motion` (as `text[]`) into a new hypertable, for example `location_detail(time, device, horizontal_accuracy, motion)`. Processing joins it on `(device, time)`. Historical points simply have no detail row.
+  - The insert into `locationLog` keeps today's columns and values, and now also fills the two new columns `horizontal_accuracy` and `motion` (as `text[]`). Historical rows stay null.
   - The builder should check the payload field names against Overland's README.
   - **Ingest token.** When `OVERLAND_TOKEN` is set, require it as a `?token=` query parameter (the pattern other Overland receivers use), and also accept `Authorization: Bearer`. If it isn't set, accept anonymously and log a warning once at startup, so the owner's current setup doesn't break before they update Overland's URL.
   - The response must stay exactly `{"result":"ok"}` on success. Overland deletes its local batch only on that response.
@@ -357,11 +357,7 @@ raw points ─► clean ─► segment into stays & moves ─► assign stays to
 
 ### 7.2 Storage (indicative; the builder finalises)
 
-`locationLog` is left exactly as it is (§7.1). Alongside it, one new hypertable:
-
-- **`location_detail`**
-  - time, device, horizontal_accuracy, motion
-  - Written by ingest from now on.
+`locationLog` gains `horizontal_accuracy` and `motion` (§7.1) and is otherwise left as it is.
 
 New regular tables (not hypertables):
 
@@ -494,7 +490,7 @@ Each phase leaves the app deployable.
 
 1. **Foundation.**
    - .NET 10 upgrade and migration runner.
-   - Ingest token and the `location_detail` side table.
+   - Ingest token and the two new `locationLog` columns.
    - `web/` shell with the map rendering, served from the API.
    - Dockerfile and workflow updated.
 2. **Processing.**
