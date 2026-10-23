@@ -151,14 +151,21 @@ public sealed class TimelineProcessor(
         };
     }
 
-    /// <summary>A segment's times, zones and local dates; the caller adds what is particular to its kind.</summary>
+    /// <summary>
+    /// A segment's times, zones and local dates; the caller adds what is particular to its kind. The dates are the two
+    /// ends' local dates, each in its own zone, put in order: a segment that crosses zones westward just after local
+    /// midnight (a flight from Tokyo to San Francisco) ends on an earlier local date than it started on, and the day
+    /// query (<c>local_start_date &lt;= day &lt;= local_end_date</c>) would find it on no day.
+    /// </summary>
     private static StoredSegment Stored(string kind, Segment segment, string startZone, string endZone)
     {
         var start = AsUtc(segment.StartUtc);
         var end = AsUtc(segment.EndUtc);
+        var startDate = LocalTime.LocalDate(start, startZone);
+        var endDate = LocalTime.LocalDate(end, endZone);
         return new StoredSegment(
             kind, start, end, startZone, endZone,
-            LocalTime.LocalDate(start, startZone), LocalTime.LocalDate(end, endZone),
+            startDate <= endDate ? startDate : endDate, startDate <= endDate ? endDate : startDate,
             PlaceId: null, Latitude: null, Longitude: null, Mode: null, DistanceM: null,
             GeometryDetailJson: null, GeometryCoarseJson: null, PointCount: 0);
     }

@@ -32,6 +32,8 @@ public class DayEndpointTests(DatabaseFixture db)
     /// <summary>One stored segment as the tests see it; dates and times as the database holds them.</summary>
     private sealed record Stored(long Id, string Kind, DateTime StartUtc, DateTime EndUtc, long? PlaceId, double? DistanceM, string? GeometryDetail);
 
+    private sealed record LocalDates(string Kind, string StartTz, string EndTz, string LocalStartDate, string LocalEndDate);
+
     private static Task<IReadOnlyList<Stored>> StoredAsync(string cs) => Sql.QueryAsync<Stored>(cs,
         """
         select id as Id, kind as Kind, start_utc as StartUtc, end_utc as EndUtc, place_id as PlaceId,
@@ -182,6 +184,48 @@ public class DayEndpointTests(DatabaseFixture db)
         {
             using var body = await GetDayAsync(client, date);
             Assert.Empty(body.RootElement.GetProperty("segments").EnumerateArray());
+        }
+    }
+
+    [Fact]
+    public async Task Flight_that_lands_on_an_earlier_local_date_is_on_both_dates()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        // Tokyo is UTC+9 and San Francisco UTC-7 in October. The plane leaves at 00:30 on 10 October in Tokyo and lands
+        // about nine hours later: 17:40 on 9 October in San Francisco. It lands on an earlier local date than it left on.
+        var track = new TrackBuilder(Utc(10, 9, 14), Spots.Tokyo)
+            .Stay(TimeSpan.FromMinutes(90), Every2min)
+            .Travel(Spots.SanFrancisco, 900, TimeSpan.FromMinutes(10))
+            .Stay(TimeSpan.FromHours(1), Every2min)
+            .Build();
+        await PointSeeder.InsertAsync(cs, track, Ct);
+        await api.Services.GetRequiredService<ITimelineProcessor>().ReprocessAsync(Utc(10, 9), Utc(10, 11), Ct);
+
+        var stored = await Sql.QueryAsync<LocalDates>(cs,
+            """
+            select kind as Kind, start_tz as StartTz, end_tz as EndTz, local_start_date::text as LocalStartDate, local_end_date::text as LocalEndDate
+            from segment order by start_utc
+            """, ct: Ct);
+        Assert.Equal(["stay", "move", "stay"], stored.Select(s => s.Kind));
+        Assert.Equal(("move", "Asia/Tokyo", "America/Los_Angeles"), (stored[1].Kind, stored[1].StartTz, stored[1].EndTz));
+        // The earlier of the two dates comes first, whichever end of the segment it belongs to.
+        Assert.Equal(("2026-10-09", "2026-10-10"), (stored[1].LocalStartDate, stored[1].LocalEndDate));
+
+        foreach (var (date, kinds) in new[]
+                 {
+                     ("2026-10-09", new[] { "stay", "move", "stay" }), // the evening in Tokyo, the flight, the arrival
+                     ("2026-10-10", new[] { "stay", "move" }),         // the Tokyo stay past midnight, and the flight leaving
+                 })
+        {
+            using var body = await GetDayAsync(client, date);
+            var segments = body.RootElement.GetProperty("segments").EnumerateArray().ToList();
+            Assert.Equal(kinds, Kinds(body.RootElement));
+            var flight = Assert.Single(segments, s => s.GetProperty("kind").GetString() == "move");
+            Assert.Equal("flight", flight.GetProperty("mode").GetString());
+            Assert.Equal("Asia/Tokyo", flight.GetProperty("startTimeZone").GetString());
+            Assert.Equal("America/Los_Angeles", flight.GetProperty("endTimeZone").GetString());
         }
     }
 

@@ -5,7 +5,9 @@ namespace Sporer.Api.Features.Timeline;
 
 /// <summary>
 /// One row of <c>segment</c>. <paramref name="GeometryDetailJson"/> and <paramref name="GeometryCoarseJson"/> are
-/// <c>[[lon,lat],...]</c> with coordinates rounded to 6 decimals; all times are UTC.
+/// <c>[[lon,lat],...]</c> with coordinates rounded to 6 decimals; all times are UTC. <paramref name="LocalStartDate"/> and
+/// <paramref name="LocalEndDate"/> are the first and last local calendar day the segment touches: the dates of its two
+/// ends in their own zones, the earlier one first (a westward flight can land on an earlier date than it left on).
 /// </summary>
 public sealed record StoredSegment(
     string Kind,
