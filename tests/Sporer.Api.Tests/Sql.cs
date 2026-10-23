@@ -25,6 +25,12 @@ public static class Sql
         return await connection.ExecuteScalarAsync<T>(new CommandDefinition(sql, param, cancellationToken: ct));
     }
 
+    public static async Task<IReadOnlyList<T>> QueryAsync<T>(string connectionString, string sql, object? param = null, CancellationToken ct = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        return (await connection.QueryAsync<T>(new CommandDefinition(sql, param, cancellationToken: ct))).AsList();
+    }
+
     public static async Task<IReadOnlyList<dynamic>> QueryAsync(string connectionString, string sql, object? param = null, CancellationToken ct = default)
     {
         await using var connection = new NpgsqlConnection(connectionString);

@@ -7,6 +7,8 @@ using Sporer.Api.Database;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.ConfigureOptions<DataBaseOptionsSetup>();
+builder.Services.ConfigureOptions<OverlandOptionsSetup>();
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(sp =>
     NpgsqlDataSource.Create(sp.GetRequiredService<IOptions<DataBaseOptions>>().Value.ConnectionString));
 builder.Services.AddSingleton<DatabaseWarnings>();
@@ -23,6 +25,9 @@ foreach (var warning in await DatabaseInspector.InspectAsync(app.Services.GetReq
     databaseWarnings.Add(warning);
     app.Logger.LogWarning("Database check: {Warning}", warning);
 }
+
+if (string.IsNullOrEmpty(app.Services.GetRequiredService<IOptions<OverlandOptions>>().Value.Token))
+    app.Logger.LogWarning("Overland ingest is open; set OVERLAND_TOKEN");
 
 app
     .UseFastEndpoints(t=>
