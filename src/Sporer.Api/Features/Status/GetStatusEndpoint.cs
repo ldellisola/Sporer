@@ -27,7 +27,7 @@ internal sealed class GetStatusEndpoint(
     {
         var state = await queue.GetStateAsync(ct);
         var backlog = await queue.GetBacklogAsync(ct);
-        var counts = await places.CountActiveAsync(ct);
+        var counts = await places.CountInUseAsync(ct);
 
         List<string> warnings = [.. databaseWarnings.Items];
         if (string.IsNullOrEmpty(overland.Value.Token))

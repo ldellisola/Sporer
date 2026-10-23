@@ -1,6 +1,7 @@
 using Dapper;
 using Npgsql;
 using Sporer.Api.Configuration;
+using Sporer.Api.Features.Timeline;
 using Sporer.Timeline;
 
 namespace Sporer.Api.Features.Places;
@@ -173,21 +174,20 @@ public sealed class PlaceNamer(
     }
 
     /// <summary>
-    /// The oldest place that is waiting for a name and due. Only places in use: not merged into another and shown on the
-    /// timeline by at least one segment. Orphans (left behind by a reprocessing that moved a stay) would cost public
-    /// requests for nothing.
+    /// The oldest place that is waiting for a name and due. Only places in use (<see cref="PlaceStore.InUse"/>: not merged
+    /// into another and shown on the timeline by at least one segment, the same places the status counts). Orphans (left
+    /// behind by a reprocessing that moved a stay) would cost public requests for nothing.
     /// </summary>
     private async Task<PlaceRow?> FindDueAsync(DateTime nowUtc, CancellationToken ct)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         return await connection.QueryFirstOrDefaultAsync<PlaceRow>(new CommandDefinition(
-            """
+            $"""
             select p.id as Id, p.latitude as Latitude, p.longitude as Longitude, p.geocode_attempts as Attempts
             from place p
             where p.geocode_state in ('pending', 'failed')
-              and p.merged_into_id is null
+              and {PlaceStore.InUse}
               and (p.geocode_next_attempt_at is null or p.geocode_next_attempt_at <= @Now)
-              and exists (select 1 from segment s where s.place_id = p.id)
             order by p.id
             limit 1
             """,

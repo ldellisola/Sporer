@@ -51,7 +51,8 @@ public sealed record FailedRangeDto(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? LastError);
 
 /// <summary>
-/// Places that have not been merged into another: <paramref name="Unnamed"/> are waiting for a name,
+/// The places in use, those that are not merged into another and are shown by a segment (the ones the namer works on;
+/// an orphan left behind by a reprocessing is not counted): <paramref name="Unnamed"/> are waiting for a name,
 /// <paramref name="Failed"/> could not be named.
 /// </summary>
 public sealed record PlaceStatus(long Total, long Unnamed, long Failed);

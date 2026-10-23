@@ -50,6 +50,14 @@ public class StatusEndpointTests(DatabaseFixture db)
             "insert into place (latitude, longitude, geocode_state, merged_into_id) values (@lat, 10.75, @geocodeState, @mergedInto) returning id",
             new { lat, geocodeState, mergedInto }, Ct);
 
+    /// <summary>A stay at <paramref name="placeId"/>, so that the place is shown on the timeline.</summary>
+    private static Task InsertSegmentAsync(string cs, long placeId, int hour = 8) => Sql.ExecAsync(cs,
+        """
+        insert into segment (kind, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date, place_id)
+        values ('stay', @start, @end, 'Europe/Oslo', 'Europe/Oslo', '2026-10-22', '2026-10-22', @placeId)
+        """,
+        new { start = Utc(10, 22, hour), end = Utc(10, 22, hour + 1), placeId }, Ct);
+
     [Fact]
     public async Task Status_reports_backfill_progress()
     {
@@ -176,21 +184,29 @@ public class StatusEndpointTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task Places_are_counted_over_the_active_ones()
+    public async Task Places_are_counted_over_the_places_in_use()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
         var client = api.CreateClient();
+
+        // In use: active and shown by a segment. A place under several segments is still one place.
         var survivor = await InsertPlaceAsync(cs, "done");
-        await InsertPlaceAsync(cs, "done");
-        await InsertPlaceAsync(cs, "pending");
-        await InsertPlaceAsync(cs, "pending");
-        await InsertPlaceAsync(cs, "pending");
-        await InsertPlaceAsync(cs, "failed");
-        // Merged away: whatever their state, they are not places any more.
-        await InsertPlaceAsync(cs, "pending", mergedInto: survivor);
-        await InsertPlaceAsync(cs, "failed", mergedInto: survivor);
-        await InsertPlaceAsync(cs, "done", mergedInto: survivor);
+        await InsertSegmentAsync(cs, survivor);
+        await InsertSegmentAsync(cs, survivor, hour: 12);
+        foreach (var state in new[] { "done", "pending", "pending", "pending", "failed" })
+            await InsertSegmentAsync(cs, await InsertPlaceAsync(cs, state));
+
+        // Orphans, left behind by a reprocessing that moved a stay: the namer never asks about them, so they are not counted.
+        foreach (var state in new[] { "done", "pending", "pending", "failed" })
+            await InsertPlaceAsync(cs, state);
+
+        // Merged away: whatever their state, and even if a segment still points at them, they are not places any more.
+        foreach (var state in new[] { "done", "pending", "failed" })
+        {
+            await InsertSegmentAsync(cs, await InsertPlaceAsync(cs, state, mergedInto: survivor));
+            await InsertPlaceAsync(cs, state, mergedInto: survivor);
+        }
 
         using var body = await GetStatusAsync(client);
 
