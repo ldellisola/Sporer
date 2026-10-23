@@ -212,45 +212,74 @@ public static class Segmenter
     }
 
     /// <summary>
-    /// Mean position of <paramref name="points"/>. Longitudes are averaged as offsets from the first point so that a stay
-    /// straddling the antimeridian does not average to the wrong side of the world.
+    /// Mean position of the points added to it. Longitudes are averaged as offsets from the first point so that a stay
+    /// straddling the antimeridian does not average to the wrong side of the world. The sums can be carried on by adding
+    /// more points: they are added one by one in the order given, so the result is exactly what summing all the points in
+    /// that order in one go would give (a merged stay does not have to be summed again from the start).
     /// </summary>
-    private static GeoPoint Mean(IReadOnlyList<TrackPoint> points)
+    private sealed class Centroid
     {
-        var reference = points[0].Longitude;
-        double latitude = 0, longitudeOffset = 0;
-        foreach (var point in points)
+        private double _reference;
+        private double _latitude;
+        private double _longitudeOffset;
+        private int _count;
+
+        public void Add(TrackPoint point)
         {
-            latitude += point.Latitude;
-            var delta = point.Longitude - reference;
-            longitudeOffset += delta > 180 ? delta - 360 : delta < -180 ? delta + 360 : delta;
+            if (_count == 0)
+                _reference = point.Longitude;
+            _latitude += point.Latitude;
+            var delta = point.Longitude - _reference;
+            _longitudeOffset += delta > 180 ? delta - 360 : delta < -180 ? delta + 360 : delta;
+            _count++;
         }
 
-        var longitude = reference + longitudeOffset / points.Count;
-        return new GeoPoint(latitude / points.Count, longitude >= 180 ? longitude - 360 : longitude < -180 ? longitude + 360 : longitude);
+        public GeoPoint Centre
+        {
+            get
+            {
+                var longitude = _reference + _longitudeOffset / _count;
+                return new GeoPoint(_latitude / _count, longitude >= 180 ? longitude - 360 : longitude < -180 ? longitude + 360 : longitude);
+            }
+        }
     }
 
     /// <summary>A stay while it is being found and merged. <see cref="First"/> and <see cref="Last"/> index the cleaned track.</summary>
     private sealed class Stay(int first, int last, DateTime start, DateTime end, TrackPoint[] points)
     {
         private List<TrackPoint>? _merged;
-        private GeoPoint? _centre;
+        private Centroid? _centroid;
 
         public int First { get; } = first;
         public int Last { get; private set; } = last;
         public DateTime Start { get; } = start;
         public DateTime End { get; private set; } = end;
         public IReadOnlyList<TrackPoint> Points => (IReadOnlyList<TrackPoint>?)_merged ?? points;
-        public GeoPoint Centre => _centre ??= Mean(Points);
+        public GeoPoint Centre => Sums().Centre;
 
         /// <summary>Takes over the later stay: it ends where that one ends and keeps the points of both.</summary>
         public void Absorb(Stay later)
         {
+            // The sums of this stay's own points come first, then the later stay's are added to them: each merge costs the
+            // later stay's points, not all the points so far (a stay that absorbs thousands of drift-split pieces stays cheap).
+            var sums = Sums();
             _merged ??= [.. points];
             _merged.AddRange(later.Points);
+            foreach (var point in later.Points)
+                sums.Add(point);
             Last = later.Last;
             End = later.End;
-            _centre = null;
+        }
+
+        private Centroid Sums()
+        {
+            if (_centroid is null)
+            {
+                _centroid = new Centroid();
+                foreach (var point in Points)
+                    _centroid.Add(point);
+            }
+            return _centroid;
         }
     }
 }

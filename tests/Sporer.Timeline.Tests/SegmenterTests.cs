@@ -183,6 +183,56 @@ public class SegmenterTests
         Assert.True(Geo.DistanceMeters(stay.Centre, Spots.Home) < 1);
     }
 
+    [Fact] // the centre of a stay built of several pieces is the mean of all its points, summed in order
+    public void A_merged_stays_centre_is_exactly_the_mean_of_all_its_points()
+    {
+        // Five pieces of 20 minutes, each a few metres from the last, every one cut off from the next by a GPS blip 150 m away.
+        var builder = new TrackBuilder(T(8, 0), Spots.Home).Stay(TimeSpan.FromMinutes(20), Every2min);
+        for (var piece = 1; piece <= 5; piece++)
+        {
+            builder.Spike(150)
+                .Teleport(Geo.Offset(Spots.Home, 7.3 * piece, 5.1 * piece), Every10s)
+                .Stay(TimeSpan.FromMinutes(20), Every2min);
+        }
+        var track = builder.Build();
+
+        var segs = Segmenter.Split(track, new());
+
+        var stay = (StaySegment)Assert.Single(segs.OfType<StaySegment>());
+        Assert.Equal(["stay"], Kinds(segs));
+        Assert.Equal(track.Count - 5, stay.Points.Count); // the five blips are dropped
+        double latitude = 0, longitude = 0;
+        foreach (var point in stay.Points) // what summing them all in one go gives
+        {
+            latitude += point.Latitude;
+            longitude += point.Longitude - stay.Points[0].Longitude;
+        }
+        Assert.Equal(latitude / stay.Points.Count, stay.Centre.Latitude);
+        Assert.Equal(stay.Points[0].Longitude + longitude / stay.Points.Count, stay.Centre.Longitude);
+    }
+
+    [Fact] // a coarse guard: merging a stay used to cost all the points so far, which made this track take tens of seconds
+    public void A_week_logged_every_second_at_one_place_with_a_blip_every_100_seconds_is_segmented_quickly()
+    {
+        // 6,048 pieces of 99 points (over 30 s, the stay duration used here), each cut off from the next by a blip: one stay
+        // of 600,000 points after 6,047 merges.
+        var options = new DetectionOptions { StayMinDuration = TimeSpan.FromSeconds(30) };
+        var builder = new TrackBuilder(T(0, 0), Spots.Home);
+        for (var piece = 0; piece < 6047; piece++)
+            builder.Stay(TimeSpan.FromSeconds(99), TimeSpan.FromSeconds(1)).Spike(150);
+        var track = builder.Stay(TimeSpan.FromSeconds(99), TimeSpan.FromSeconds(1)).Build();
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var segs = Segmenter.Split(track, options);
+        watch.Stop();
+
+        var stay = Assert.IsType<StaySegment>(Assert.Single(segs));
+        Assert.True(stay.Points.Count > 590_000);
+        Assert.True(Geo.DistanceMeters(stay.Centre, Spots.Home) < 0.01);
+        // A coarse guard, not a benchmark: 0.1 s on a 2 GHz machine in the test's debug build, where summing all the points again on every merge took 28 s.
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"Segmenter.Split took {watch.Elapsed.TotalSeconds:F1} s");
+    }
+
     [Fact]
     public void Return_trip_longer_than_five_minutes_is_not_merged_into_one_stay()
     {
