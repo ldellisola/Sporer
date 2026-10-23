@@ -1,0 +1,8 @@
+# Keeps local build output (which holds absolute paths from the host) and unrelated files out of the build context.
+**/bin/
+**/obj/
+.git/
+.github/
+.superpowers/
+docs/
+tests/
