@@ -98,8 +98,8 @@ test("day_view_row_tap_leaves_the_address_and_a_place_name_opens_the_place", asy
   await expect(page.getByRole("region", { name: "Map view" })).toHaveAttribute("data-map-state", "ready");
   await openTimeline(page);
 
-  // A row is a button, and pressing one is not a move to another address: the day stays. (That the map is taken to the segment is the
-  // next test's, which looks at the map.)
+  // A row is a button, and pressing one is not a move to another address: the day stays. (That the map is taken to the segment is
+  // day_view_row_tap_takes_the_map_to_the_stop_and_brings_a_full_sheet_down_to_half's, which looks at the map.)
   await details(page).getByRole("button", { name: "Show stop 2, Café, on the map" }).click();
   await details(page).getByRole("button", { name: "Show the cycle at 09:10 on the map" }).click();
   await expect(page).toHaveURL(/\/day\/2026-10-22$/);
@@ -154,8 +154,8 @@ test("day_view_row_tap_takes_the_map_to_the_stop_and_brings_a_full_sheet_down_to
   } else {
     await expect.poll(() => visibleSheetHeight(page)).toBe(height / 2);
   }
-  // The middle of what is free, as the map was padded for it; the pin is 12 px across, so a pixel a little to the left of its middle is
-  // in it and clear of the number in the middle.
+  // The middle of what is free, as the map was padded for it. The pin has a radius of 12 px (and a 3 px outline over its edge), so a
+  // pixel 8 px to the left of its middle is in it and clear of the number in the middle.
   const free = await map.evaluate((element) => {
     const read = (side: string) => parseFloat(element.style.getPropertyValue(`--map-padding-${side}`));
     const box = element.getBoundingClientRect();

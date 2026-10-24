@@ -348,10 +348,12 @@ describe("useViewMap onFocus", () => {
     await waitFor(() => expect(result.current.fitTo).not.toBeNull());
     act(() => result.current.onFocus([placePoint((OSLO_DAY.segments[0] as StaySegment).place!)]));
     const tapped = result.current.fitTo;
+    const drawn = result.current.data;
 
     answers["2026-10-22"] = { ...OSLO_DAY, state: "done" };
     await refetch("2026-10-22");
-    await waitFor(() => expect(result.current.data.routes).toBeDefined());
+    // The poll's answer is a day that has changed (it is done now), so the map is given new collections: that is what is waited for.
+    await waitFor(() => expect(result.current.data.routes).not.toBe(drawn.routes));
 
     expect(result.current.fitTo).toBe(tapped); // a poll does not take the map back from the row the owner asked for
   });
