@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { RangeDay, RangePlace, RangeResponse } from "../api/types";
 import october from "../../e2e/fixtures/range-october.json";
 import { RangePanel } from "./RangePanel";
@@ -38,7 +38,7 @@ function mount(from: string, to: string) {
     </QueryClientProvider>
   );
   const view = render(ui(from, to));
-  return { client, show: (a: string, b: string) => view.rerender(ui(a, b)) };
+  return { client, unmount: view.unmount, show: (a: string, b: string) => view.rerender(ui(a, b)) };
 }
 
 const placesList = () => screen.getByRole("list", { name: "Where your time went" });
@@ -96,8 +96,19 @@ const WEEK = period("2026-10-19", "2026-10-25", {
   days: [dayEntry("2026-10-19", 1100, 2), dayEntry("2026-10-20", 3400, 3), dayEntry("2026-10-22", 6900, 2), dayEntry("2026-10-24", 1800, 1)],
 });
 
+/** Noon on a day, in whatever zone the test runs in: what "today" is to the panel, which lists no day after it. */
+const setToday = (year: number, month: number, day: number): void => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(year, month - 1, day, 12, 0, 0));
+};
+
 beforeEach(() => {
   window.history.replaceState(null, "", "/week/2026-10-19");
+  setToday(2026, 12, 1); // after every period of these tests, so that every date of each is a date that has been
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("RangePanel", () => {
@@ -261,7 +272,7 @@ describe("RangePanel days", () => {
     mount("2026-10-19", "2026-10-25");
     await screen.findByRole("list", { name: "Days" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Open Thursday 22 October" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Thu 22 Oct" }));
 
     expect(window.location.pathname).toBe("/day/2026-10-22");
   });
@@ -271,7 +282,7 @@ describe("RangePanel days", () => {
     mount("2026-10-19", "2026-10-25");
     await screen.findByRole("list", { name: "Days" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Open Wednesday 21 October" })); // it has no entry in the API's days
+    fireEvent.click(screen.getByRole("button", { name: "Open Wed 21 Oct" })); // it has no entry in the API's days
 
     expect(window.location.pathname).toBe("/day/2026-10-21");
   });
@@ -283,14 +294,15 @@ describe("RangePanel days", () => {
 
     const buttons = within(daysList()).getAllByRole("button");
 
+    // The name is "Open" and the text of the row that says which day it is: what is said of a button is what is on it.
     expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
-      "Open Monday 19 October",
-      "Open Tuesday 20 October",
-      "Open Wednesday 21 October",
-      "Open Thursday 22 October",
-      "Open Friday 23 October",
-      "Open Saturday 24 October",
-      "Open Sunday 25 October",
+      "Open Mon 19 Oct",
+      "Open Tue 20 Oct",
+      "Open Wed 21 Oct",
+      "Open Thu 22 Oct",
+      "Open Fri 23 Oct",
+      "Open Sat 24 Oct",
+      "Open Sun 25 Oct",
     ]);
     for (const button of buttons) {
       expect(button).toHaveAttribute("type", "button");
@@ -475,5 +487,218 @@ describe("RangePanel states", () => {
     expect(screen.getByText("Loading…")).toBeInTheDocument();
     release(Response.json(WEEK));
     expect(await screen.findByText("3 places")).toBeInTheDocument();
+  });
+});
+
+describe("RangePanel names", () => {
+  test("RangePanel_gives_every_button_a_name_that_holds_the_text_it_shows_to_say_what_it_is", async () => {
+    // Label in name: someone who says what they read ("Thu 22 Oct", "Home") reaches the button that has it.
+    stubApi({
+      "2026-10-19..2026-10-25": period("2026-10-19", "2026-10-25", {
+        places: [place(1, "Home", 9 * HOUR), place(2, null, 2 * HOUR, { city: "Lisbon" }), place(3, null, HOUR)],
+        days: [dayEntry("2026-10-19", 1100, 2)],
+      }),
+    });
+    mount("2026-10-19", "2026-10-25");
+    await screen.findByRole("list", { name: "Days" });
+
+    const buttons = screen.getAllByRole("button");
+
+    expect(buttons).toHaveLength(10); // 3 places and 7 days
+    for (const button of buttons) {
+      const [shown] = parts(button.closest("li")!); // what the row calls itself: the place, the day
+      expect(button.getAttribute("aria-label")!.toLowerCase()).toContain(shown!.toLowerCase());
+    }
+  });
+});
+
+describe("RangePanel future", () => {
+  /** The days of the week before the one that is going on, with movement on two of them. */
+  const entries = [dayEntry("2026-10-19", 1100, 2), dayEntry("2026-10-20", 3400, 3)];
+  const WEEK_SO_FAR = period("2026-10-19", "2026-10-25", { places: [HOME], days: entries });
+  const dates = () => items(daysList()).map((row) => parts(row)[0]);
+
+  test("RangePanel_lists_no_date_after_today_for_the_week_that_is_going_on", async () => {
+    setToday(2026, 10, 21); // a Wednesday
+    stubApi({ "2026-10-19..2026-10-25": WEEK_SO_FAR });
+
+    mount("2026-10-19", "2026-10-25");
+    await screen.findByRole("list", { name: "Days" });
+
+    // Today is listed (the day is still going on), and Thursday on is not a day without movement: it has not been.
+    expect(items(daysList()).map(parts)).toEqual([
+      ["Mon 19 Oct", "1.1 km · 2 places"],
+      ["Tue 20 Oct", "3.4 km · 3 places"],
+      ["Wed 21 Oct", "No movement"],
+    ]);
+  });
+
+  test("RangePanel_lists_no_date_after_today_for_the_month_that_is_going_on", async () => {
+    setToday(2026, 10, 21);
+    stubApi({ "2026-10-01..2026-10-31": period("2026-10-01", "2026-10-31", { places: [HOME], days: entries }) });
+
+    mount("2026-10-01", "2026-10-31");
+    await screen.findByRole("list", { name: "Days" });
+
+    expect(items(daysList())).toHaveLength(21); // the 1st to the 21st
+    expect(dates()[0]).toBe("Thu 1 Oct");
+    expect(dates()[20]).toBe("Wed 21 Oct");
+  });
+
+  test("RangePanel_lists_no_date_after_today_for_a_range_of_up_to_31_dates_that_runs_past_it", async () => {
+    setToday(2026, 10, 21);
+    stubApi({ "2026-10-18..2026-11-10": period("2026-10-18", "2026-11-10", { places: [HOME], days: entries }) }); // 24 dates
+
+    mount("2026-10-18", "2026-11-10");
+    await screen.findByRole("list", { name: "Days" });
+
+    expect(dates()).toEqual(["Sun 18 Oct", "Mon 19 Oct", "Tue 20 Oct", "Wed 21 Oct"]);
+  });
+
+  test("RangePanel_lists_the_days_there_are_for_the_year_that_is_going_on_and_goes_by_the_date_of_today", async () => {
+    setToday(2026, 10, 21);
+    stubApi({
+      "2026-01-01..2026-12-31": period("2026-01-01", "2026-12-31", {
+        places: [HOME],
+        days: [dayEntry("2026-03-02", 1500, 2), dayEntry("2026-10-21", 700, 1)],
+      }),
+    });
+
+    mount("2026-01-01", "2026-12-31");
+    await screen.findByRole("list", { name: "Days" });
+
+    expect(dates()).toEqual(["Mon 2 Mar", "Wed 21 Oct"]); // no date is made up for a year, so there is none to leave out
+  });
+
+  test("RangePanel_lists_a_day_after_today_that_the_API_has_something_on", async () => {
+    // Today is read on the clock of this browser and a day of the timeline on the clock of the zone it was in: a day of a trip
+    // to the other side of the date line can be tomorrow here. It has movement, so it is no day without any.
+    setToday(2026, 10, 21);
+    stubApi({
+      "2026-10-19..2026-10-25": period("2026-10-19", "2026-10-25", { places: [HOME], days: [...entries, dayEntry("2026-10-23", 800, 1)] }),
+    });
+
+    mount("2026-10-19", "2026-10-25");
+    await screen.findByRole("list", { name: "Days" });
+
+    expect(dates()).toEqual(["Mon 19 Oct", "Tue 20 Oct", "Wed 21 Oct", "Fri 23 Oct"]); // and not the Thursday, which no one has been through
+  });
+
+  test("RangePanel_lists_every_date_of_a_week_that_ended_yesterday_and_today_is_the_last_of_the_one_that_ends_today", async () => {
+    stubApi({ "2026-10-19..2026-10-25": WEEK_SO_FAR });
+    setToday(2026, 10, 26); // the Monday after
+    const { unmount } = mount("2026-10-19", "2026-10-25");
+    await screen.findByRole("list", { name: "Days" });
+    expect(items(daysList())).toHaveLength(7);
+    unmount();
+
+    setToday(2026, 10, 25); // the Sunday itself: the week is not over, and its last day is listed
+    mount("2026-10-19", "2026-10-25");
+    await screen.findByRole("list", { name: "Days" });
+    expect(items(daysList())).toHaveLength(7);
+  });
+
+  test("RangePanel_lists_every_date_of_a_week_across_a_year_end", async () => {
+    stubApi({
+      "2025-12-29..2026-01-04": period("2025-12-29", "2026-01-04", { places: [HOME], days: [dayEntry("2025-12-31", 900, 1), dayEntry("2026-01-02", 1200, 2)] }),
+    });
+
+    mount("2025-12-29", "2026-01-04");
+    await screen.findByRole("list", { name: "Days" });
+
+    expect(items(daysList()).map(parts)).toEqual([
+      ["Mon 29 Dec", "No movement"],
+      ["Tue 30 Dec", "No movement"],
+      ["Wed 31 Dec", "900 m · 1 place"],
+      ["Thu 1 Jan", "No movement"],
+      ["Fri 2 Jan", "1.2 km · 2 places"],
+      ["Sat 3 Jan", "No movement"],
+      ["Sun 4 Jan", "No movement"],
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Open Thu 1 Jan" }));
+    expect(window.location.pathname).toBe("/day/2026-01-01"); // the days are of two years, and each opens its own
+  });
+});
+
+describe("RangePanel top places", () => {
+  /** `count` places, the top one at 100 hours and each of the others 3 hours less than the one before it (so there are no ties). */
+  const ranking = (count: number): RangePlace[] => Array.from({ length: count }, (_, i) => place(i + 1, `Place ${i + 1}`, (100 - 3 * i) * HOUR));
+  const buttonNames = () => within(placesList()).getAllByRole("button").map((button) => button.getAttribute("aria-label"));
+  const showAll = (n: number) => screen.queryByRole("button", { name: `Show all ${n} places` });
+
+  test("RangePanel_lists_the_ten_places_with_the_most_time_and_offers_the_rest", async () => {
+    stubApi({ "2026-10-19..2026-10-25": period("2026-10-19", "2026-10-25", { places: ranking(11) }) });
+
+    mount("2026-10-19", "2026-10-25");
+    await screen.findByRole("list", { name: "Where your time went" });
+
+    expect(items(placesList()).map((row) => parts(row)[0])).toEqual(Array.from({ length: 10 }, (_, i) => `Place ${i + 1}`)); // the 11th is not shown
+    expect(showAll(11)).toBeInTheDocument();
+    expect(showAll(11)!.tagName).toBe("BUTTON");
+    expect(items(placesList()).map((row) => row.querySelector("[aria-hidden] > span"))).toHaveLength(10);
+  });
+
+  test("RangePanel_lists_all_of_ten_places_and_offers_no_more", async () => {
+    stubApi({ "2026-10-19..2026-10-25": period("2026-10-19", "2026-10-25", { places: ranking(10) }) });
+
+    mount("2026-10-19", "2026-10-25");
+    await screen.findByRole("list", { name: "Where your time went" });
+
+    expect(items(placesList())).toHaveLength(10);
+    expect(screen.queryByRole("button", { name: /^Show all/ })).not.toBeInTheDocument();
+  });
+
+  test("RangePanel_shows_all_the_places_in_place_when_asked_with_the_bars_still_shares_of_the_top_one", async () => {
+    stubApi({ "2026-10-19..2026-10-25": period("2026-10-19", "2026-10-25", { places: ranking(11) }) });
+    mount("2026-10-19", "2026-10-25");
+    await screen.findByRole("list", { name: "Where your time went" });
+
+    fireEvent.click(showAll(11)!);
+
+    expect(items(placesList())).toHaveLength(11);
+    expect(buttonNames().at(-1)).toBe("Open Place 11");
+    expect(showAll(11)).not.toBeInTheDocument(); // there is no more to show
+    const widths = items(placesList()).map((row) => fillOf(row)!.style.width);
+    expect(widths[0]).toBe("100%");
+    expect(parseFloat(widths[10]!)).toBeCloseTo(70, 5); // the 11th has 70 of the top's 100 hours
+    expect(window.location.pathname).toBe("/week/2026-10-19"); // it is not a move to anywhere
+  });
+
+  test("RangePanel_keeps_the_focus_in_the_list_when_the_rest_is_shown", async () => {
+    // The button that was pressed goes with the click: the focus goes to the first place that was not there.
+    stubApi({ "2026-10-19..2026-10-25": period("2026-10-19", "2026-10-25", { places: ranking(12) }) });
+    mount("2026-10-19", "2026-10-25");
+    await screen.findByRole("list", { name: "Where your time went" });
+    showAll(12)!.focus();
+
+    fireEvent.click(showAll(12)!);
+
+    expect(screen.getByRole("button", { name: "Open Place 11" })).toHaveFocus();
+  });
+
+  test("RangePanel_stays_expanded_while_the_period_is_the_same_and_starts_closed_for_another", async () => {
+    const A = period("2026-10-19", "2026-10-25", { places: ranking(11) });
+    const B = period("2026-10-26", "2026-11-01", { places: ranking(12) });
+    const answers: Record<string, RangeResponse> = { "2026-10-19..2026-10-25": A, "2026-10-26..2026-11-01": B };
+    stubApi(answers);
+    const { show, client } = mount("2026-10-19", "2026-10-25");
+    await screen.findByRole("list", { name: "Where your time went" });
+    fireEvent.click(showAll(11)!);
+    expect(items(placesList())).toHaveLength(11);
+
+    answers["2026-10-19..2026-10-25"] = { ...A, state: "done", places: ranking(11).slice().reverse() }; // a poll: the same period, as it is now
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["range", "2026-10-19", "2026-10-25"] });
+    });
+    expect(items(placesList())).toHaveLength(11); // stays as it was opened
+
+    show("2026-10-26", "2026-11-01"); // the next period
+    expect(await screen.findByRole("button", { name: "Show all 12 places" })).toBeInTheDocument();
+    expect(items(placesList())).toHaveLength(10);
+
+    fireEvent.click(showAll(12)!);
+    show("2026-10-19", "2026-10-25"); // and back: closed again, it is another showing of the period
+    await waitFor(() => expect(showAll(11)).toBeInTheDocument());
+    expect(items(placesList())).toHaveLength(10);
   });
 });

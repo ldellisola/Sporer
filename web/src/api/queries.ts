@@ -1,5 +1,5 @@
 import { keepPreviousData, QueryClient, queryOptions, skipToken, useQuery } from "@tanstack/react-query";
-import { step, periodDays, periodRange } from "../time/dates";
+import { MAX_RANGE_DAYS, step, periodDays, periodRange } from "../time/dates";
 import type { Route } from "../app/router";
 import { ApiError, getJson } from "./client";
 import type {
@@ -14,9 +14,6 @@ import type {
 /** How long an answer counts as fresh, and how often a period that is still being processed is asked for again. */
 const STALE_MS = 30_000;
 const POLL_MS = 30_000;
-
-/** The most days the API lets a range or heat request cover (both ends counted); more is a 400. */
-export const MAX_RANGE_DAYS = 400;
 
 // A day or a range that is "pending" may still change as its points are processed: ask again until it is "done". While
 // the next period loads, the previous one stays on screen (keepPreviousData), so stepping never blanks the view.

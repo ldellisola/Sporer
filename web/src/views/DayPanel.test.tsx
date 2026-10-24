@@ -392,7 +392,7 @@ describe("DayPanel taps", () => {
     ]);
 
     // A move: the map is taken to its route, the line the map draws for it.
-    fireEvent.click(screen.getByRole("button", { name: "Show the walk at 08:32 on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show Walk · 1.1 km at 08:32 on the map" }));
     expect(onFocus).toHaveBeenCalledTimes(2);
     expect(onFocus.mock.lastCall![0]).toEqual([
       { type: "Feature", properties: { id: FLIGHT_WALK.id, mode: "walk" }, geometry: { type: "LineString", coordinates: FLIGHT_WALK.geometry } },
@@ -446,16 +446,34 @@ describe("DayPanel taps", () => {
     // A stay by its number, a move by the time it began on its own clock; none the same as another, though two stays can be at home.
     expect(names).toEqual([
       "Show stop 1, Home, on the map",
-      "Show the walk at 08:32 on the map",
+      "Show Walk · 1.1 km at 08:32 on the map",
       "Show stop 2, Café, on the map",
-      "Show the cycle at 09:10 on the map",
+      "Show Cycle · 3.4 km at 09:10 on the map",
       "Show stop 3, Office, on the map",
-      "Show the drive at 11:41 on the map",
+      "Show Drive · 47.8 km at 11:41 on the map",
       "Show stop 4, unnamed place, on the map",
-      "Show the flight at 12:50 on the map",
+      "Show Flight · 5,900 km at 12:50 on the map",
       "Show stop 5, Hotel Midtown, on the map",
     ]);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  test("DayPanel_gives_every_row_button_a_name_that_holds_what_its_row_calls_itself", async () => {
+    // Label in name: a stop is its number and its name, a move is its mode and its distance, as the row writes them.
+    stubApi({ "2026-10-22": FLIGHT_DAY });
+    mount("2026-10-22");
+    await screen.findByRole("list");
+
+    const checked = rows().flatMap((row) => {
+      const button = within(row).queryAllByRole("button").find((one) => /^Show .* on the map$/.test(one.getAttribute("aria-label") ?? ""));
+      if (button === undefined) return []; // a gap has none
+      const [first, second] = parts(row);
+      const says = row.querySelector(".bar") === null ? [first, second] : [first]; // the number and the name of a stop; "Walk · 1.1 km"
+      return says.map((text) => ({ name: button.getAttribute("aria-label")!.toLowerCase(), text: text!.toLowerCase() }));
+    });
+
+    expect(checked).toHaveLength(14); // 5 stops with two texts, 4 moves with one
+    for (const { name, text } of checked) expect(name).toContain(text);
   });
 
   test("DayPanel_names_a_place_that_has_no_name_in_its_button_too", async () => {

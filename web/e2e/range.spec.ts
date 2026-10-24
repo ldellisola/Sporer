@@ -2,7 +2,17 @@ import type { Locator, Page, Request } from "@playwright/test";
 import { expect, test } from "./base";
 import october from "./fixtures/range-october.json" with { type: "json" };
 import { mockApi, type Reply } from "./mockApi";
-import { pixelAt, sameColour, type Rgb } from "./pixel";
+import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
+
+// The browser is in Oslo, so that "today" is a date that is the same wherever the test is run (see `fixToday`).
+test.use({ timezoneId: "Europe/Oslo" });
+
+/**
+ * Fixes today at Saturday 24 October, in the middle of the month of the fixture: the days of a period that are after today are not
+ * listed, and no date of the fixture is to depend on the clock that the test is run on. Not for the test that looks at the camera of
+ * the map: a fixed clock is the page's clock, and the map's camera moves on it, which would then stand still.
+ */
+const fixToday = (page: Page): Promise<void> => page.clock.setFixedTime(new Date("2026-10-24T08:00:00Z"));
 
 const isWide = (page: Page): boolean => page.viewportSize()!.width >= 900;
 const details = (page: Page): Locator => page.getByRole(isWide(page) ? "complementary" : "region", { name: "Details" });
@@ -53,6 +63,7 @@ const answers = {
 };
 
 test("month_view_and_range_picker", async ({ page }) => {
+  await fixToday(page);
   const api = await mockApi(page, answers);
   await page.goto("/day/2026-10-22");
   await expect(map(page)).toHaveAttribute("data-map-state", "ready");
@@ -79,21 +90,23 @@ test("month_view_and_range_picker", async ({ page }) => {
     "2%",
     "1%",
   ]);
-  // Every date of the month, those with no movement said to have none.
-  await expect(dayRows(page)).toHaveCount(31);
+  // Every date of the month up to today, those with no movement said to have none; the days that are to come are not listed.
+  await expect(dayRows(page)).toHaveCount(24);
   await expect(dayRows(page).first()).toHaveText("Thu 1 Oct No movement", { useInnerText: true });
   await expect(dayRows(page).nth(21)).toHaveText("Thu 22 Oct 6.9 km · 2 places", { useInnerText: true });
+  await expect(dayRows(page).last()).toHaveText("Sat 24 Oct No movement", { useInnerText: true });
+  await expect(details(page).getByRole("button", { name: "Open Sun 25 Oct" })).toHaveCount(0);
 
   // The months either side were asked for as soon as this one was shown, so ‹ and › find them at hand.
   await expect.poll(() => api.requests).toContain("/api/range?from=2026-09-01&to=2026-09-30");
   await expect.poll(() => api.requests).toContain("/api/range?from=2026-11-01&to=2026-11-30");
 
   // A day opens its day, with movement or without; Back is to the month.
-  await details(page).getByRole("button", { name: "Open Friday 2 October" }).click();
+  await details(page).getByRole("button", { name: "Open Fri 2 Oct" }).click();
   await expect(page).toHaveURL(/\/day\/2026-10-02$/);
   await page.goBack();
   await expect(page).toHaveURL(/\/month\/2026-10$/);
-  await details(page).getByRole("button", { name: "Open Thursday 22 October" }).click();
+  await details(page).getByRole("button", { name: "Open Thu 22 Oct" }).click();
   await expect(page).toHaveURL(/\/day\/2026-10-22$/);
   await expect(page.getByRole("heading", { name: "Thursday 22 October", level: 1 })).toBeVisible();
   await page.goBack();
@@ -121,26 +134,46 @@ test("month_view_and_range_picker", async ({ page }) => {
   await expect(dayRows(page).nth(2)).toHaveText("Wed 7 Oct No movement", { useInnerText: true });
 });
 
+// A deep link to a range of more than 400 days, which the API refuses: the address is replaced by the range's first 400 days, and it is
+// those that are asked for (no Retry would ever have loaded the long one).
+test("a_range_deep_linked_longer_than_400_days_is_cut_to_its_first_400", async ({ page }) => {
+  const api = await mockApi(page);
+
+  await page.goto("/range/2025-01-01..2026-12-31");
+
+  await expect(page).toHaveURL(/\/range\/2025-01-01\.\.2026-02-04$/);
+  await expect(page.getByRole("heading", { name: "1 Jan 2025 – 4 Feb 2026", level: 1 })).toBeVisible();
+  await expect(details(page).getByText("No data for this period")).toBeVisible(); // the mock's empty answer, and no error
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(api.requests).toContain("/api/range?from=2025-01-01&to=2026-02-04");
+  expect(api.requests.filter((request) => request.includes("2026-12-31"))).toEqual([]);
+});
+
 const PIN: Rgb = [0xff, 0x37, 0x5f];
 
-// Mockup 2A: a month's routes faint, a dot for each place sized by time, the map brought to all of it. The fixture is laid out round
-// Home, which is the most time spent and the middle of everything drawn, so the middle of what the sheet and the bar leave free of the
-// map lies on its dot: the dot is drawn, it is the biggest, and the camera was brought to the month.
-test("month_view_draws_a_dot_for_the_places_and_brings_the_map_to_the_month", async ({ page }) => {
-  await mockApi(page, answers);
-  await page.goto("/month/2026-10");
-  await expect(map(page)).toHaveAttribute("data-map-state", "ready");
-  await expect(details(page).getByText("6 places", { exact: true })).toBeVisible();
+// The test reads pixels, which is cheaper to ask for at one to a CSS pixel than at the phone's three (see PIXEL_POLL).
+test.describe("the map of a month", () => {
+  test.use({ deviceScaleFactor: 1 });
 
-  const free = await map(page).evaluate((element) => {
-    const read = (side: string) => parseFloat(element.style.getPropertyValue(`--map-padding-${side}`));
-    const box = element.getBoundingClientRect();
-    return {
-      x: box.left + (read("left") + (box.width - read("right"))) / 2,
-      y: box.top + (read("top") + (box.height - read("bottom"))) / 2,
-    };
+  // Mockup 2A: a month's routes faint, a dot for each place sized by time, the map brought to all of it. The fixture is laid out round
+  // Home, which is the most time spent and the middle of everything drawn, so the middle of what the sheet and the bar leave free of
+  // the map lies on its dot: the dot is drawn, it is the biggest, and the camera was brought to the month.
+  test("month_view_draws_a_dot_for_the_places_and_brings_the_map_to_the_month", async ({ page }) => {
+    await mockApi(page, answers);
+    await page.goto("/month/2026-10");
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect(details(page).getByText("6 places", { exact: true })).toBeVisible();
+
+    const free = await map(page).evaluate((element) => {
+      const read = (side: string) => parseFloat(element.style.getPropertyValue(`--map-padding-${side}`));
+      const box = element.getBoundingClientRect();
+      return {
+        x: box.left + (read("left") + (box.width - read("right"))) / 2,
+        y: box.top + (read("top") + (box.height - read("bottom"))) / 2,
+      };
+    });
+
+    // The dot is the pin's pink at 92 % over the flat background of the test style and the faint routes under it, hence the tolerance.
+    await expect.poll(async () => sameColour(await pixelAt(page, Math.round(free.x), Math.round(free.y)), PIN, 30), PIXEL_POLL).toBe(true);
   });
-
-  // The dot is the pin's pink at 92 % over the flat background of the test style and the faint routes under it, hence the tolerance.
-  await expect.poll(async () => sameColour(await pixelAt(page, Math.round(free.x), Math.round(free.y)), PIN, 30)).toBe(true);
 });

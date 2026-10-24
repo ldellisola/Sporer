@@ -7,7 +7,9 @@ import { dateOf } from "../time/dates";
 import { formatCount, formatDistance, formatDuration, formatTime } from "../time/format";
 import { Chip, Chips } from "./Chips";
 import styles from "./DayPanel.module.css";
-import { Empty, ErrorState, Loading, Shown } from "./States";
+import rows from "./Rows.module.css";
+import { Shown } from "./Shown";
+import { Empty, ErrorState, Loading } from "./States";
 import { useKeptData } from "./useKeptData";
 
 type RouteFeature = Feature<LineString, RouteProperties>;
@@ -42,10 +44,11 @@ function stayTimes(stay: StaySegment, day: DayResponse, ongoing: boolean): strin
  * A row of the timeline that takes the map to its segment. The row is a button of its own, laid over the whole row (see the style
  * sheet), and is not the parent of what else in the row can be tapped: a button inside a button is not HTML, and a tap on the name
  * of a place would be a tap on the row too. Its `label` is its only name, so each row's is its own: a stop by its number, a move by
- * when it began.
+ * when it began. It holds what the row says of itself (the number and the name of a stop, the mode and the distance of a move), so
+ * that whoever names a row by what they read on it names its button.
  */
 function FitButton({ label, onClick }: { label: string; onClick: () => void }) {
-  return <button type="button" className={styles.fit} aria-label={label} onClick={onClick} />;
+  return <button type="button" className={`${rows.tap} ${styles.fit}`} aria-label={label} onClick={onClick} />;
 }
 
 function StayRow({ stay, order, when, onFocus }: { stay: StaySegment; order: number | undefined; when: string; onFocus: DayPanelProps["onFocus"] }) {
@@ -64,7 +67,7 @@ function StayRow({ stay, order, when, onFocus }: { stay: StaySegment; order: num
         )}
         <span className={styles.when}>{when}</span>
       </div>
-      <span className={styles.duration}>{formatDuration(secondsOf(stay))}</span>
+      <span className={rows.duration}>{formatDuration(secondsOf(stay))}</span>
       {place !== null && order !== undefined && (
         <FitButton label={`Show stop ${order}, ${place.name ?? "unnamed place"}, on the map`} onClick={() => onFocus([placePoint(place)])} />
       )}
@@ -74,17 +77,14 @@ function StayRow({ stay, order, when, onFocus }: { stay: StaySegment; order: num
 
 function MoveRow({ move, route, onFocus }: { move: MoveSegment; route: RouteFeature | undefined; onFocus: DayPanelProps["onFocus"] }) {
   const mode = move.mode ?? "unknown";
-  const word = MODE_WORDS[mode];
+  const says = `${MODE_WORDS[mode]} · ${formatDistance(move.distanceMeters)}`;
   return (
     <li className={`${styles.row} ${styles.quiet}`}>
       <span className={styles.bar} style={{ backgroundColor: modeColor(mode) }} aria-hidden="true" />
-      <span className={styles.what}>{`${word} · ${formatDistance(move.distanceMeters)}`}</span>
-      <span className={styles.duration}>{formatDuration(secondsOf(move))}</span>
+      <span className={styles.what}>{says}</span>
+      <span className={rows.duration}>{formatDuration(secondsOf(move))}</span>
       {route !== undefined && (
-        <FitButton
-          label={`Show the ${word.toLowerCase()} at ${formatTime(move.start, move.startTimeZone)} on the map`}
-          onClick={() => onFocus([route])}
-        />
+        <FitButton label={`Show ${says} at ${formatTime(move.start, move.startTimeZone)} on the map`} onClick={() => onFocus([route])} />
       )}
     </li>
   );
@@ -96,7 +96,7 @@ function GapRow({ gap }: { gap: GapSegment }) {
     <li className={`${styles.row} ${styles.quiet}`}>
       <span className={styles.dot} aria-hidden="true" />
       <span className={styles.what}>No data</span>
-      <span className={styles.duration}>{formatDuration(secondsOf(gap))}</span>
+      <span className={rows.duration}>{formatDuration(secondsOf(gap))}</span>
     </li>
   );
 }

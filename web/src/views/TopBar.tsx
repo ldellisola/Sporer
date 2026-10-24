@@ -1,7 +1,6 @@
 import { useEffect, useRef, type PointerEvent } from "react";
-import { MAX_RANGE_DAYS } from "../api/queries";
 import { navigate, type PeriodRoute, type Route } from "../app/router";
-import { addDays, isDate, monthOf, periodDays, periodLabel, periodRange, step, today, weekStart } from "../time/dates";
+import { addDays, isDate, MAX_RANGE_DAYS, monthOf, periodDays, periodLabel, periodRange, step, today, weekStart } from "../time/dates";
 import styles from "./TopBar.module.css";
 
 type View = PeriodRoute["view"];

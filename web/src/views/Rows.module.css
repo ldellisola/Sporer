@@ -1,0 +1,34 @@
+/*
+ * What the rows of the panels have in common. A row that can be tapped is a button (the whole of the row, or laid over it) and shows
+ * what a tap is going to do under the finger, under the pointer, and where the keyboard is. The rows say how long in the same way.
+ * A button has `tap` next to the class of its panel, which sets what is its own (where it is, how big): the two share no property.
+ */
+.tap {
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tap:active {
+  background: var(--row-hover);
+}
+
+@media (hover: hover) {
+  .tap:hover {
+    background: var(--row-hover);
+  }
+}
+
+.tap:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.duration {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

@@ -8,15 +8,20 @@
   color: var(--ink-muted);
 }
 
-.list {
+.section {
   margin: 0 0 18px;
+}
+
+.list {
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
 /*
  * A row of either list is one button that is the whole row, and that is all there is to it: unlike a row of the day's timeline it has
- * nothing else in it to tap. It reaches a little past the text on each side, which is what shows under the finger or the pointer.
+ * nothing else in it to tap. It reaches a little past the text on each side, which is what shows under the finger or the pointer
+ * (how it shows is the rows' style sheet's: `tap`, which is on the button with this).
  */
 .row {
   display: grid;
@@ -27,29 +32,16 @@
   min-height: 36px;
   margin: 0 -6px;
   padding: 4px 6px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
   color: var(--ink);
   font: inherit;
   text-align: left;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
 }
 
-.row:active {
-  background: var(--row-hover);
-}
-
-@media (hover: hover) {
-  .row:hover {
-    background: var(--row-hover);
-  }
-}
-
-.row:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: -2px;
+/* "Show all": a row of its own at the end of the ranking (a `row` as well), in the accent colour that a button of this app has. */
+.more {
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 /* The name, the bar and the time: the bar takes what the other two leave. */
@@ -79,12 +71,9 @@
   background: var(--pin);
 }
 
-.duration {
-  font-size: 12.5px;
-  color: var(--ink-muted);
-  font-variant-numeric: tabular-nums;
+/* The time is the rows' (`duration`), at the right of its column. */
+.time {
   text-align: right;
-  white-space: nowrap;
 }
 
 .day {

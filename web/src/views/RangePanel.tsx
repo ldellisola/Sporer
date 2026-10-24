@@ -1,12 +1,14 @@
-import { useId, useMemo } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type Ref } from "react";
 import { useRange } from "../api/queries";
 import type { RangeDay, RangePlace, RangeResponse } from "../api/types";
 import { navigate } from "../app/router";
-import { addDays, periodDays, periodLabel, shortDayLabel } from "../time/dates";
+import { addDays, periodDays, shortDayLabel, today } from "../time/dates";
 import { formatCount, formatDistance, formatDuration } from "../time/format";
 import { Chip, Chips } from "./Chips";
 import styles from "./RangePanel.module.css";
-import { Empty, ErrorState, Loading, Shown } from "./States";
+import rows from "./Rows.module.css";
+import { Shown } from "./Shown";
+import { Empty, ErrorState, Loading } from "./States";
 import { useKeptData } from "./useKeptData";
 
 export interface RangePanelProps {
@@ -16,10 +18,13 @@ export interface RangePanelProps {
 }
 
 /**
- * A period of this many dates or fewer (a week, a month, a range that short) lists every one of its dates. A longer one (a year, a
- * range of months) lists the dates that the API has: three hundred rows of "No movement" would bury the days that there are.
+ * A period of this many dates or fewer (a week, a month, a range that short) lists every one of its dates, up to today. A longer one
+ * (a year, a range of months) lists the dates that the API has: three hundred rows of "No movement" would bury the days that there are.
  */
 const EVERY_DATE_UP_TO = 31;
+
+/** How many places "Where your time went" lists before it offers the rest: the ones the time went to, and not the long tail of them. */
+const TOP_PLACES = 10;
 
 const nameOf = (place: RangePlace): string => place.name ?? place.city ?? "Unnamed place";
 
@@ -58,43 +63,58 @@ interface Listed {
   day: RangeDay | undefined;
 }
 
-/** The dates the list shows (see `EVERY_DATE_UP_TO`), of the period the response is for, which is not always the one asked for. */
-function listDays(range: RangeResponse): Listed[] {
+/**
+ * The dates the list shows (see `EVERY_DATE_UP_TO`), of the period the response is for, which is not always the one asked for.
+ * A day that the API has is always listed. A date it has no day for is listed as a day without movement only up to `today` (a date of
+ * this browser's zone): a date after it has not been, so it is no day without movement. The API's days can run past today here when a
+ * day was in a zone ahead of this one, and then it has movement and is listed.
+ */
+function listDays(range: RangeResponse, today: string): Listed[] {
   const count = periodDays({ view: "range", from: range.from, to: range.to });
   if (count > EVERY_DATE_UP_TO) return range.days.map((day) => ({ date: day.date, day }));
   const byDate = new Map(range.days.map((day) => [day.date, day]));
   return Array.from({ length: count }, (_, i) => {
     const date = addDays(range.from, i);
     return { date, day: byDate.get(date) };
-  });
+  }).filter(({ date, day }) => day !== undefined || date <= today);
 }
 
-function PlaceRow({ ranked }: { ranked: Ranked }) {
+function PlaceRow({ ranked, ref }: { ranked: Ranked; ref?: Ref<HTMLButtonElement> }) {
   const { place, name, share, label } = ranked;
   return (
     <li>
-      <button type="button" className={`${styles.row} ${styles.place}`} aria-label={label} onClick={() => navigate({ view: "place", id: place.id })}>
+      <button
+        ref={ref}
+        type="button"
+        className={`${rows.tap} ${styles.row} ${styles.place}`}
+        aria-label={label}
+        onClick={() => navigate({ view: "place", id: place.id })}
+      >
         <span className={styles.name}>{name}</span>
         <span className={styles.track} aria-hidden="true">
           <span className={styles.fill} style={{ width: `${share}%` }} />
         </span>
-        <span className={styles.duration}>{formatDuration(place.seconds)}</span>
+        <span className={`${rows.duration} ${styles.time}`}>{formatDuration(place.seconds)}</span>
       </button>
     </li>
   );
 }
 
-/** A day opens its day, whether or not anything was recorded on it: a date with nothing is a day to look at too (it may say why). */
+/**
+ * A day opens its day, whether or not anything was recorded on it: a date with nothing is a day to look at too (it may say why).
+ * The button is named by what the row calls the day ("Open Thu 22 Oct"), so that the name holds the text that is on it.
+ */
 function DayRow({ date, day }: Listed) {
+  const when = shortDayLabel(date);
   return (
     <li>
       <button
         type="button"
-        className={day === undefined ? `${styles.row} ${styles.day} ${styles.still}` : `${styles.row} ${styles.day}`}
-        aria-label={`Open ${periodLabel({ view: "day", date })}`}
+        className={day === undefined ? `${rows.tap} ${styles.row} ${styles.day} ${styles.still}` : `${rows.tap} ${styles.row} ${styles.day}`}
+        aria-label={`Open ${when}`}
         onClick={() => navigate({ view: "day", date })}
       >
-        <span className={styles.date}>{shortDayLabel(date)}</span>
+        <span className={styles.date}>{when}</span>
         <span className={styles.stats}>
           {day === undefined ? "No movement" : `${formatDistance(day.distanceMeters)} · ${formatCount(day.places, "place")}`}
         </span>
@@ -103,13 +123,26 @@ function DayRow({ date, day }: Listed) {
   );
 }
 
-/** What is on screen of a period: its chips, where the time went, and its days; `asked` says whether it is the period that the address asks for. */
+/**
+ * What is on screen of a period: its chips, where the time went, and its days; `asked` says whether it is the period that the address
+ * asks for. A new period is a new `Period` (the panel gives it the dates for its key), so that what was opened (the rest of the places)
+ * is closed again, and stays as it was opened for as long as the period is this one, however often it is polled.
+ */
 function Period({ range, asked, loading }: { range: RangeResponse; asked: boolean; loading: boolean }) {
   const ranked = useMemo(() => rank(range.places), [range.places]);
-  const days = useMemo(() => listDays(range), [range]);
+  const date = today(); // read on every render, so that a panel that is left open over midnight lists the new day
+  const days = useMemo(() => listDays(range, date), [range, date]);
+  const [all, setAll] = useState(false);
+  const firstOfTheRest = useRef<HTMLButtonElement>(null);
   const placesHeading = useId();
   const daysHeading = useId();
   const empty = range.places.length === 0 && range.moves.length === 0 && range.days.length === 0;
+  const places = all ? ranked : ranked.slice(0, TOP_PLACES);
+
+  // The button that opened the rest is gone with the click, and the focus with it: it goes to where the rest begins.
+  useEffect(() => {
+    if (all) firstOfTheRest.current?.focus();
+  }, [all]);
 
   return (
     // What is shown while the period asked for is on its way is the period before: it stays, and says it is not the one asked for.
@@ -131,19 +164,24 @@ function Period({ range, asked, loading }: { range: RangeResponse; asked: boolea
       ) : (
         <>
           {ranked.length > 0 && (
-            <>
+            <div className={styles.section}>
               <h2 id={placesHeading} className={styles.heading}>
                 Where your time went
               </h2>
               <ol className={styles.list} aria-labelledby={placesHeading}>
-                {ranked.map((one) => (
-                  <PlaceRow key={one.place.id} ranked={one} />
+                {places.map((one, index) => (
+                  <PlaceRow key={one.place.id} ranked={one} ref={all && index === TOP_PLACES ? firstOfTheRest : undefined} />
                 ))}
               </ol>
-            </>
+              {places.length < ranked.length && (
+                <button type="button" className={`${rows.tap} ${styles.row} ${styles.more}`} onClick={() => setAll(true)}>
+                  {`Show all ${formatCount(ranked.length, "place")}`}
+                </button>
+              )}
+            </div>
           )}
           {days.length > 0 && (
-            <>
+            <div className={styles.section}>
               <h2 id={daysHeading} className={styles.heading}>
                 Days
               </h2>
@@ -152,7 +190,7 @@ function Period({ range, asked, loading }: { range: RangeResponse; asked: boolea
                   <DayRow key={one.date} {...one} />
                 ))}
               </ul>
-            </>
+            </div>
           )}
         </>
       )}
@@ -176,7 +214,7 @@ export function RangePanel({ from, to }: RangePanelProps) {
       {shown === undefined ? (
         !range.isError && <Loading />
       ) : (
-        <Period range={shown} asked={shown.from === from && shown.to === to} loading={!range.isError} />
+        <Period key={`${shown.from}..${shown.to}`} range={shown} asked={shown.from === from && shown.to === to} loading={!range.isError} />
       )}
     </>
   );

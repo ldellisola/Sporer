@@ -12,6 +12,9 @@ import type { PeriodRoute } from "../app/router";
 // speak. date-fns works on `Date` objects, so each one is held at local noon while it is worked on. Noon exists in every zone
 // and no daylight-saving change comes near it, so adding days or months can never slip a date, wherever the code runs.
 
+/** The most days a range may cover, both ends counted: what the API answers for a range or a heat request, and a longer one is a 400. */
+export const MAX_RANGE_DAYS = 400;
+
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MONTH_PATTERN = /^(\d{4})-(\d{2})$/;
 

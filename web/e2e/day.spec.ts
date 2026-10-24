@@ -3,7 +3,7 @@ import { expect, test } from "./base";
 import newYorkDay from "./fixtures/day-new-york.json" with { type: "json" };
 import osloDay from "./fixtures/day-oslo-new-york.json" with { type: "json" };
 import { mockApi } from "./mockApi";
-import { pixelAt, sameColour, type Rgb } from "./pixel";
+import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
 
 // The browser is in Tokyo, which neither of the days is in: every time on screen must be the clock of the zone it happened in.
 test.use({ timezoneId: "Asia/Tokyo" });
@@ -101,7 +101,7 @@ test("day_view_row_tap_leaves_the_address_and_a_place_name_opens_the_place", asy
   // A row is a button, and pressing one is not a move to another address: the day stays. (That the map is taken to the segment is
   // day_view_row_tap_takes_the_map_to_the_stop_and_brings_a_full_sheet_down_to_half's, which looks at the map.)
   await details(page).getByRole("button", { name: "Show stop 2, Café, on the map" }).click();
-  await details(page).getByRole("button", { name: "Show the cycle at 09:10 on the map" }).click();
+  await details(page).getByRole("button", { name: "Show Cycle · 3.4 km at 09:10 on the map" }).click();
   await expect(page).toHaveURL(/\/day\/2026-10-22$/);
 
   // Reachable and operable from the keyboard.
@@ -136,33 +136,38 @@ test("day_view_says_when_a_day_is_empty_and_when_it_is_being_updated", async ({ 
 
 const PIN: Rgb = [0xff, 0x37, 0x5f];
 
-// Ruling P2-R39 and the tap itself: the map is taken to the stop (its pin comes to the middle of the part of the map that nothing
-// covers), and a sheet that was over the map at full comes down to half so that it can be seen.
-test("day_view_row_tap_takes_the_map_to_the_stop_and_brings_a_full_sheet_down_to_half", async ({ page }) => {
-  await mockApi(page, DAYS);
-  await page.goto("/day/2026-10-22");
-  const map = page.getByRole("region", { name: "Map view" });
-  await expect(map).toHaveAttribute("data-map-state", "ready");
-  await openTimeline(page);
-  const { height } = page.viewportSize()!;
-  if (!isWide(page)) await expect.poll(() => visibleSheetHeight(page)).toBe(height - 120); // full
+// The test reads a pixel, which is cheaper to ask for at one to a CSS pixel than at the phone's three (see PIXEL_POLL).
+test.describe("the map after a row tap", () => {
+  test.use({ deviceScaleFactor: 1 });
 
-  await details(page).getByRole("button", { name: "Show stop 2, Café, on the map" }).click();
+  // Ruling P2-R39 and the tap itself: the map is taken to the stop (its pin comes to the middle of the part of the map that nothing
+  // covers), and a sheet that was over the map at full comes down to half so that it can be seen.
+  test("day_view_row_tap_takes_the_map_to_the_stop_and_brings_a_full_sheet_down_to_half", async ({ page }) => {
+    await mockApi(page, DAYS);
+    await page.goto("/day/2026-10-22");
+    const map = page.getByRole("region", { name: "Map view" });
+    await expect(map).toHaveAttribute("data-map-state", "ready");
+    await openTimeline(page);
+    const { height } = page.viewportSize()!;
+    if (!isWide(page)) await expect.poll(() => visibleSheetHeight(page)).toBe(height - 120); // full
 
-  if (isWide(page)) {
-    await expect(grip(page)).toHaveCount(0); // a sidebar is not over the map, and there is nothing to lower
-  } else {
-    await expect.poll(() => visibleSheetHeight(page)).toBe(height / 2);
-  }
-  // The middle of what is free, as the map was padded for it. The pin has a radius of 12 px (and a 3 px outline over its edge), so a
-  // pixel 8 px to the left of its middle is in it and clear of the number in the middle.
-  const free = await map.evaluate((element) => {
-    const read = (side: string) => parseFloat(element.style.getPropertyValue(`--map-padding-${side}`));
-    const box = element.getBoundingClientRect();
-    return {
-      x: box.left + (read("left") + (box.width - read("right"))) / 2,
-      y: box.top + (read("top") + (box.height - read("bottom"))) / 2,
-    };
+    await details(page).getByRole("button", { name: "Show stop 2, Café, on the map" }).click();
+
+    if (isWide(page)) {
+      await expect(grip(page)).toHaveCount(0); // a sidebar is not over the map, and there is nothing to lower
+    } else {
+      await expect.poll(() => visibleSheetHeight(page)).toBe(height / 2);
+    }
+    // The middle of what is free, as the map was padded for it. The pin has a radius of 12 px (and a 3 px outline over its edge), so a
+    // pixel 8 px to the left of its middle is in it and clear of the number in the middle.
+    const free = await map.evaluate((element) => {
+      const read = (side: string) => parseFloat(element.style.getPropertyValue(`--map-padding-${side}`));
+      const box = element.getBoundingClientRect();
+      return {
+        x: box.left + (read("left") + (box.width - read("right"))) / 2,
+        y: box.top + (read("top") + (box.height - read("bottom"))) / 2,
+      };
+    });
+    await expect.poll(async () => sameColour(await pixelAt(page, Math.round(free.x) - 8, Math.round(free.y)), PIN, 8), PIXEL_POLL).toBe(true);
   });
-  await expect.poll(async () => sameColour(await pixelAt(page, Math.round(free.x) - 8, Math.round(free.y)), PIN, 8)).toBe(true);
 });

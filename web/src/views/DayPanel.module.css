@@ -117,36 +117,10 @@
   color: var(--ink-soft);
 }
 
-.duration {
-  font-size: 12.5px;
-  color: var(--ink-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
+/* The button that covers a row. How it looks to a finger, a pointer and the keyboard is the rows' style sheet's (`tap`). */
 .fit {
   position: absolute;
   inset: 0;
   margin: 0;
   padding: 0;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.fit:active {
-  background: var(--row-hover);
-}
-
-@media (hover: hover) {
-  .fit:hover {
-    background: var(--row-hover);
-  }
-}
-
-.fit:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: -2px;
 }

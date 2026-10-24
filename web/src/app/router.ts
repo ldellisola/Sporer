@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import { isDate, isMonth, today as todayInBrowser, weekStart } from "../time/dates";
+import { addDays, isDate, isMonth, MAX_RANGE_DAYS, periodDays, today as todayInBrowser, weekStart } from "../time/dates";
 
 // The URL is the only view state, and there are only six kinds of it, so this is all the router there is:
 //   /day/2026-10-22   /week/2026-10-19   /month/2026-10   /year/2026   /range/2026-10-19..2026-10-25   /place/42
@@ -22,7 +22,8 @@ const ID_PATTERN = /^\d+$/;
 /**
  * The route a path stands for, or `null` when it stands for none: an unknown path, a date that does not exist, a range that
  * ends before it starts. `/` is today's day (`today` is a date, `yyyy-MM-dd`). A week is a week whichever of its days the
- * path names, so it comes back as its Monday. One trailing slash is ignored.
+ * path names, so it comes back as its Monday. A range of more days than the API answers for (`MAX_RANGE_DAYS`) comes back as
+ * its first that many, so that no view is ever asked for one that can only be refused. One trailing slash is ignored.
  */
 export function parseRoute(pathname: string, today: string): Route | null {
   if (pathname === "/") return { view: "day", date: today };
@@ -49,7 +50,9 @@ export function parseRoute(pathname: string, today: string): Route | null {
       if (ends.length !== 2) return null;
       const [from, to] = ends as [string, string];
       // Dates of one fixed width, so that order in text is order in time.
-      return isDate(from) && isDate(to) && from <= to ? { view: "range", from, to } : null;
+      if (!isDate(from) || !isDate(to) || from > to) return null;
+      const longest = periodDays({ view: "range", from, to }) > MAX_RANGE_DAYS;
+      return { view: "range", from, to: longest ? addDays(from, MAX_RANGE_DAYS - 1) : to };
     }
     case "place": {
       const id = Number(arg);

@@ -103,6 +103,23 @@ describe("parseRoute and formatRoute", () => {
     });
   });
 
+  test("parseRoute_cuts_a_range_longer_than_the_api_answers_to_its_first_400_days", () => {
+    // 400 dates, both ends counted, are as many as the API takes; the 401st is one too many (a 400 that no Retry would change).
+    expect(parseRoute("/range/2025-01-01..2026-02-04", TODAY)).toEqual({ view: "range", from: "2025-01-01", to: "2026-02-04" });
+    expect(parseRoute("/range/2025-01-01..2026-02-05", TODAY)).toEqual({ view: "range", from: "2025-01-01", to: "2026-02-04" });
+    expect(parseRoute("/range/2025-01-01..2026-12-31", TODAY)).toEqual({ view: "range", from: "2025-01-01", to: "2026-02-04" });
+    expect(parseRoute("/range/2028-01-01..2029-12-31", TODAY)).toEqual({ view: "range", from: "2028-01-01", to: "2029-02-03" }); // over a leap day
+    expect(parseRoute("/range/0001-01-01..9999-12-31", TODAY)).toEqual({ view: "range", from: "0001-01-01", to: "0002-02-04" });
+    expect(parseRoute("/range/9999-01-01..9999-12-31", TODAY)).toEqual({ view: "range", from: "9999-01-01", to: "9999-12-31" }); // 365 dates
+    expect(resolveRoute("/range/2025-01-01..2026-12-31", TODAY)).toEqual({ view: "range", from: "2025-01-01", to: "2026-02-04" });
+  });
+
+  test("parseRoute_leaves_the_other_views_alone_whatever_their_length", () => {
+    expect(parseRoute("/year/2026", TODAY)).toEqual({ view: "year", year: 2026 }); // 365 dates
+    expect(parseRoute("/year/2028", TODAY)).toEqual({ view: "year", year: 2028 }); // 366
+    expect(parseRoute("/range/2026-01-01..2026-12-31", TODAY)).toEqual({ view: "range", from: "2026-01-01", to: "2026-12-31" });
+  });
+
   test("parseRoute_tolerates_a_trailing_slash_and_ignores_nothing_else", () => {
     expect(parseRoute("/day/2026-10-22/", TODAY)).toEqual({ view: "day", date: "2026-10-22" });
     expect(parseRoute("/place/007", TODAY)).toEqual({ view: "place", id: 7 });
@@ -158,6 +175,17 @@ describe("useRoute and navigate", () => {
 
     expect(result.current).toEqual({ view: "week", start: "2026-10-19" });
     expect(window.location.pathname).toBe("/week/2026-10-19");
+  });
+
+  test("useRoute_replaces_a_range_that_is_too_long_with_the_one_that_is_asked_for", () => {
+    window.history.replaceState(null, "", "/range/2025-01-01..2026-12-31");
+    const lengthBefore = window.history.length;
+
+    const { result } = renderHook(() => useRoute());
+
+    expect(result.current).toEqual({ view: "range", from: "2025-01-01", to: "2026-02-04" }); // nothing below ever sees the long one
+    expect(window.location.pathname).toBe("/range/2025-01-01..2026-02-04");
+    expect(window.history.length).toBe(lengthBefore); // replaced, not pushed
   });
 
   test("navigate_pushes_and_notifies_and_replace_does_not_add_history", () => {

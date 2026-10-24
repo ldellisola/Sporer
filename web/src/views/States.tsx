@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import styles from "./States.module.css";
 
 // What every view shows while it has nothing to show: it is loading, there is nothing in it, or the load failed. They know
@@ -12,18 +11,6 @@ export function Loading({ message = "Loading…" }: { message?: string }) {
 /** A view whose data came and holds nothing: "No data for this day". */
 export function Empty({ message }: { message: string }) {
   return <p className={styles.state}>{message}</p>;
-}
-
-/**
- * The view of what was asked for, or of what was on screen before it while that is on its way: then it stays, fainter, and is said to be
- * busy (`aria-busy`), and when what was asked for has come (or has failed, which leaves nothing on its way) it is as it was.
- */
-export function Shown({ busy, children }: { busy: boolean; children: ReactNode }) {
-  return (
-    <div className={styles.shown} aria-busy={busy}>
-      {children}
-    </div>
-  );
 }
 
 function describe(error: unknown): string | null {

@@ -7,6 +7,7 @@ import type { DayResponse, RangeResponse, StatusResponse, StaySegment } from "..
 import { dayGeoJson, placePoint, rangeGeoJson } from "../map/layers";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
 import october from "../../e2e/fixtures/range-october.json";
+import { periodDays } from "../time/dates";
 import { App } from "./App";
 import { navigate } from "./router";
 
@@ -614,6 +615,12 @@ describe("App period panels", () => {
 
   beforeEach(() => {
     window.history.replaceState(null, "", "/week/2026-10-19");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 11, 1, 12, 0, 0)); // after the periods here, which list no date after today
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   test("App_shows_the_panel_of_each_period_view_and_says_when_a_period_is_empty", async () => {
@@ -759,13 +766,34 @@ describe("App period panels", () => {
     expect(mapProps().fitTo).toBe(fit);
   });
 
+  test("App_asks_for_the_first_400_days_of_a_range_that_is_longer_and_replaces_the_address", async () => {
+    // A deep link to a range that the API would refuse (more than 400 days) is cut where the router reads it: no view asks for it.
+    window.history.replaceState(null, "", "/range/2025-01-01..2026-12-31");
+    const lengthBefore = window.history.length;
+    const paths = stubApi(answerWith({}));
+
+    renderApp();
+
+    expect(await screen.findByText("No data for this period")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/range/2025-01-01..2026-02-04");
+    expect(window.history.length).toBe(lengthBefore); // replaced, so that Back does not return to the address that cannot be had
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("1 Jan 2025 – 4 Feb 2026");
+    const asked = paths.filter((path) => path.startsWith("/api/range"));
+    expect(asked).toContain("/api/range?from=2025-01-01&to=2026-02-04"); // the panel's, and the map's, from the one request
+    expect(asked.filter((path) => path.includes("2026-12-31"))).toEqual([]);
+    for (const path of asked) {
+      const { from, to } = emptyRange(path);
+      expect(periodDays({ view: "range", from, to }), path).toBeLessThanOrEqual(400); // and neither are the neighbours that are prefetched
+    }
+  });
+
   test("App_a_row_of_the_month_opens_its_day_and_a_row_of_a_place_opens_the_place", async () => {
     window.history.replaceState(null, "", "/month/2026-10");
     stubApi(answerWith({ "2026-10-01..2026-10-31": OCTOBER }));
     renderApp();
     await screen.findByRole("list", { name: "Days" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Open Thursday 22 October" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Thu 22 Oct" }));
 
     expect(window.location.pathname).toBe("/day/2026-10-22");
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Thursday 22 October");

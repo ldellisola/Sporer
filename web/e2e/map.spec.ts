@@ -1,7 +1,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./base";
 import { mockApi } from "./mockApi";
-import { pixelAt, sameColour, type Rgb } from "./pixel";
+import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
 
 // The real MapLibre, on software WebGL, with a style that has nothing but a background: no tile, font or sprite is asked for,
 // so no request leaves the machine (base.ts fails a test that makes one).
@@ -95,29 +95,36 @@ test("map_sets_attribution_and_buttons_inside_the_padding", async ({ page }) => 
   await expect(map(page).getByRole("link", { name: "OpenStreetMap" })).toBeVisible();
 });
 
-test("map_follows_the_system_colour_scheme", async ({ page }) => {
-  const asked: string[] = [];
-  for (const [file, colour] of [["light", "#dfe6ea"], ["dark", "#1b2733"]] as const) {
-    await page.route(`**/map-style-${file}.json`, (route) => {
-      asked.push(file);
-      return route.fulfill({ json: flatStyle(colour) });
-    });
-  }
-  await mockApi(page, { config: { mapStyleLight: "/map-style-light.json", mapStyleDark: "/map-style-dark.json" } });
-  await page.emulateMedia({ colorScheme: "light" });
-  await page.goto("/day/2026-10-22");
-  await expect(map(page)).toHaveAttribute("data-map-state", "ready");
-  await expect.poll(() => showsColour(page, LIGHT)).toBe(true);
-  expect(asked).toEqual(["light"]);
+// The test is of the colour of the canvas and has no use for a canvas of 1170 × 2532 pixels, which the phone project paints in
+// software (see PIXEL_POLL): one pixel to a CSS pixel.
+test.describe("colour scheme", () => {
+  test.use({ deviceScaleFactor: 1 });
 
-  await page.emulateMedia({ colorScheme: "dark" }); // the map follows, with no reload of the page
-  await expect.poll(() => asked).toEqual(["light", "dark"]);
-  await expect(map(page)).toHaveAttribute("data-map-state", "ready");
-  await expect.poll(() => showsColour(page, DARK)).toBe(true);
+  test("map_follows_the_system_colour_scheme", async ({ page }) => {
+    const asked: string[] = [];
+    for (const [file, colour] of [["light", "#dfe6ea"], ["dark", "#1b2733"]] as const) {
+      await page.route(`**/map-style-${file}.json`, (route) => {
+        asked.push(file);
+        return route.fulfill({ json: flatStyle(colour) });
+      });
+    }
+    await mockApi(page, { config: { mapStyleLight: "/map-style-light.json", mapStyleDark: "/map-style-dark.json" } });
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.goto("/day/2026-10-22");
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect.poll(() => showsColour(page, LIGHT), PIXEL_POLL).toBe(true);
+    expect(asked).toEqual(["light"]);
 
-  await page.emulateMedia({ colorScheme: "light" });
-  await expect.poll(() => asked).toEqual(["light", "dark", "light"]);
-  await expect.poll(() => showsColour(page, LIGHT)).toBe(true);
+    await page.emulateMedia({ colorScheme: "dark" }); // the map follows, with no reload of the page
+    await expect.poll(() => asked).toEqual(["light", "dark"]);
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect.poll(() => showsColour(page, DARK), PIXEL_POLL).toBe(true);
+
+    await page.emulateMedia({ colorScheme: "light" });
+    await expect.poll(() => asked).toEqual(["light", "dark", "light"]);
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect.poll(() => showsColour(page, LIGHT), PIXEL_POLL).toBe(true);
+  });
 });
 
 // Review Focus 4: the map style cannot be had. The rest of the page goes on, the map stays, and the app is told.
