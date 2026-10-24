@@ -1,12 +1,15 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { parseRoute, useRoute } from "../app/router";
+import { useLastDay } from "../app/useLastDay";
 import { periodDays } from "../time/dates";
 import { TopBar } from "./TopBar";
 
-// The bar is told the route it shows and moves the address; the harness gives it the route the address shows, as the app does.
+// The bar is told the route it shows and moves the address; the harness gives it the route the address shows and the last day
+// that was shown, as the app does.
 function Harness() {
-  return <TopBar route={useRoute()} />;
+  const route = useRoute();
+  return <TopBar route={route} lastDay={useLastDay(route)} />;
 }
 
 function open(path: string) {
@@ -45,8 +48,74 @@ describe("TopBar", () => {
     press("Year");
     expect(pathname()).toBe("/year/2026");
 
-    press("Day"); // and back in: the start of the year, as the bar has no other date to go by
-    expect(pathname()).toBe("/day/2026-01-01");
+    press("Day"); // and back in: the day that was shown, which lies in the year
+    expect(pathname()).toBe("/day/2026-10-22");
+  });
+
+  test("TopBar_switching_to_a_finer_view_lands_on_the_day_that_was_shown", () => {
+    open("/day/2026-08-14");
+
+    press("Month");
+    expect(pathname()).toBe("/month/2026-08");
+    press("Day");
+    expect(pathname()).toBe("/day/2026-08-14");
+
+    press("Year");
+    press("Month"); // a year to a month: the month of that day, not January
+    expect(pathname()).toBe("/month/2026-08");
+    press("Week");
+    expect(pathname()).toBe("/week/2026-08-10");
+    press("Day");
+    expect(pathname()).toBe("/day/2026-08-14");
+
+    press("Range"); // a range holds the period, and the day is still the one to go back to
+    expect(pathname()).toBe("/range/2026-08-14..2026-08-14");
+    press("Year");
+    press("Range");
+    press("Day");
+    expect(pathname()).toBe("/day/2026-08-14");
+  });
+
+  test("TopBar_the_day_that_was_shown_is_not_used_outside_the_period_that_is", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-24T12:00:00"));
+    open("/day/2026-08-14");
+
+    press("Next day"); // the last day shown is the 15th
+    press("Week");
+    expect(pathname()).toBe("/week/2026-08-10");
+    press("Next week"); // a week that does not hold the 15th, nor today (the 24th of October)
+    expect(pathname()).toBe("/week/2026-08-17");
+    press("Day");
+    expect(pathname()).toBe("/day/2026-08-17"); // so its first day
+
+    press("Year");
+    press("Next year");
+    expect(pathname()).toBe("/year/2027");
+    press("Day");
+    expect(pathname()).toBe("/day/2027-01-01"); // a year that holds neither the 17th of August nor today
+  });
+
+  test("TopBar_a_finer_view_of_a_period_that_holds_today_lands_on_today_when_no_day_was_shown", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-24T12:00:00"));
+    open("/week/2026-10-19"); // opened straight on a week: no day has been shown
+
+    press("Day");
+
+    expect(pathname()).toBe("/day/2026-10-24");
+  });
+
+  test("TopBar_a_finer_view_of_another_period_than_today_lands_on_its_first_day_when_no_day_was_shown", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-24T12:00:00"));
+    open("/month/2026-03");
+
+    press("Week");
+
+    expect(pathname()).toBe("/week/2026-02-23"); // the week of March 1st
+    press("Day");
+    expect(pathname()).toBe("/day/2026-02-23"); // and now the week is the period, with its first day
   });
 
   test("TopBar_switching_to_the_view_that_is_shown_goes_nowhere", () => {
@@ -78,40 +147,90 @@ describe("TopBar", () => {
     expect(field("To")).toHaveValue(to);
   });
 
+  // A date field is committed when it is left or Enter is pressed, not for each part of it that is typed (see DateField).
+  const commit = (name: "From" | "To", value: string) => {
+    fireEvent.change(field(name), { target: { value } });
+    fireEvent.blur(field(name));
+  };
+
   test("TopBar_range_fields_set_the_range_and_keep_it_valid", () => {
     open("/range/2026-10-19..2026-10-25");
-    const change = (name: "From" | "To", value: string) => fireEvent.change(field(name), { target: { value } });
 
-    change("From", "2026-10-20");
+    commit("From", "2026-10-20");
     expect(pathname()).toBe("/range/2026-10-20..2026-10-25");
-    change("To", "2026-11-02");
+    commit("To", "2026-11-02");
     expect(pathname()).toBe("/range/2026-10-20..2026-11-02");
     expect(label()).toBe("20 Oct – 2 Nov 2026");
 
     // A start after the end takes the end along, and an end before the start the start: one day, not a range that runs backwards.
-    change("From", "2026-11-10");
+    commit("From", "2026-11-10");
     expect(pathname()).toBe("/range/2026-11-10..2026-11-10");
     expect(field("To")).toHaveValue("2026-11-10");
-    change("To", "2026-11-01");
+    commit("To", "2026-11-01");
     expect(pathname()).toBe("/range/2026-11-01..2026-11-01");
     expect(field("From")).toHaveValue("2026-11-01");
 
     // The API answers 400 for more than 400 days; the other end gives way instead of the owner being sent to an error.
-    change("To", "2028-01-01");
+    commit("To", "2028-01-01");
     const route = parseRoute(pathname(), "2026-10-24");
     expect(route).toMatchObject({ view: "range", to: "2028-01-01" });
     expect(periodDays(route as Extract<typeof route, { view: "range" }>)).toBe(400);
     expect(field("From")).toHaveValue((route as { from: string }).from);
   });
 
-  test("TopBar_range_fields_ignore_what_is_not_yet_a_date", () => {
+  test("TopBar_range_fields_commit_on_Enter_too", () => {
+    open("/range/2026-10-19..2026-10-25");
+
+    fireEvent.change(field("To"), { target: { value: "2026-10-28" } });
+    expect(pathname()).toBe("/range/2026-10-19..2026-10-25");
+    fireEvent.keyDown(field("To"), { key: "Enter" });
+
+    expect(pathname()).toBe("/range/2026-10-19..2026-10-28");
+  });
+
+  test("TopBar_range_fields_take_a_date_typed_one_part_at_a_time_as_one_change", () => {
+    open("/range/2026-10-19..2026-10-25");
+    const entries = window.history.length;
+
+    // Typing 28 into the day of 2026-10-25: the browser reports 2026-10-02 after the 2, and 2026-10-28 after the 8.
+    fireEvent.change(field("To"), { target: { value: "2026-10-02" } });
+    fireEvent.change(field("To"), { target: { value: "2026-10-28" } });
+    expect(pathname()).toBe("/range/2026-10-19..2026-10-25"); // nothing yet: no request, no history entry, and From is where it was
+    expect(window.history.length).toBe(entries);
+    expect(field("From")).toHaveValue("2026-10-19");
+
+    fireEvent.blur(field("To"));
+
+    expect(pathname()).toBe("/range/2026-10-19..2026-10-28"); // and From is still the 19th
+    expect(window.history.length).toBe(entries + 1);
+    expect(field("From")).toHaveValue("2026-10-19");
+    expect(field("To")).toHaveValue("2026-10-28");
+
+    fireEvent.blur(field("To")); // a field that is left again with the same date is no change
+    expect(window.history.length).toBe(entries + 1);
+  });
+
+  test("TopBar_range_fields_ignore_what_is_not_a_date_and_show_the_range_again", () => {
     open("/range/2026-10-19..2026-10-25");
     const before = pathname();
 
-    fireEvent.change(field("From"), { target: { value: "" } }); // a part of the field cleared, on the way to another date
-    fireEvent.change(field("To"), { target: { value: "0002-10-25" } }); // the year typed so far, on the way to 2026
+    commit("From", ""); // a part of the field cleared, on the way to another date
+    expect(field("From")).toHaveValue("2026-10-19"); // left like that, the field shows the range it is part of
+    commit("To", "0002-10-25"); // the year typed so far, on the way to 2026
+    expect(field("To")).toHaveValue("2026-10-25");
 
     expect(pathname()).toBe(before);
+  });
+
+  test("TopBar_range_fields_follow_the_range_when_an_arrow_moves_it_over_a_typed_date", () => {
+    open("/range/2026-10-19..2026-10-25");
+
+    fireEvent.change(field("To"), { target: { value: "2026-10-28" } });
+    press("Next range"); // the draft is not the range: the arrow steps the range that is
+
+    expect(pathname()).toBe("/range/2026-10-26..2026-11-01");
+    expect(field("From")).toHaveValue("2026-10-26");
+    expect(field("To")).toHaveValue("2026-11-01");
   });
 
   test("TopBar_arrows_and_keys_step_period", () => {
@@ -161,7 +280,22 @@ describe("TopBar", () => {
     const target = host.querySelector("b") ?? host.firstElementChild!;
 
     key("ArrowRight", {}, target);
-    key("ArrowLeft", {}, target);
+    key("ArrowRight", {}, target);
+    expect(pathname()).toBe("/day/2026-10-22");
+
+    host.remove();
+    key("ArrowRight"); // and with the focus elsewhere the page answers
+    expect(pathname()).toBe("/day/2026-10-23");
+  });
+
+  test("TopBar_keys_leave_the_map_to_the_map", () => {
+    open("/day/2026-10-22");
+    const host = document.createElement("div");
+    host.innerHTML = '<div role="region" aria-label="Map view"><div tabindex="0" class="canvas-container"><canvas></canvas></div></div>';
+    document.body.append(host);
+
+    key("ArrowRight", {}, host.querySelector("canvas")!); // the map pans with the arrows when it has the focus
+    key("ArrowRight", {}, host.querySelector(".canvas-container")!);
     expect(pathname()).toBe("/day/2026-10-22");
 
     host.remove();

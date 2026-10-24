@@ -78,26 +78,28 @@ test("phone_uses_bottom_sheet_desktop_uses_sidebar", async ({ page }) => {
 });
 
 /**
- * A touch on the handle that moves `dy` pixels (up when negative) in `ms` milliseconds, played in the page in one go with the time
- * stamps given. The sheet judges speed by the stamps of the events, so the test does not depend on how fast a busy machine can
- * drive the browser, which a flick on the real mouse would.
+ * A touch on the handle that moves `dy` pixels (up when negative) in `ms` milliseconds, played in the page with the time stamps
+ * given: down, move, and (once `whileHeld` has looked at the sheet with the finger still down) up. The sheet judges speed by the
+ * stamps of the events, so the test does not depend on how fast a busy machine can drive the browser, which a flick on the real
+ * mouse would.
  */
-async function touchDrag(page: Page, dy: number, ms: number): Promise<void> {
-  await grip(page).evaluate(
-    (handle, { dy, ms }) => {
-      const box = handle.getBoundingClientRect();
-      const y = box.top + box.height / 2;
-      const send = (type: string, at: number, t: number) => {
-        const event = new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 7, isPrimary: true, pointerType: "touch", clientX: box.left + 50, clientY: at });
-        Object.defineProperty(event, "timeStamp", { value: t });
-        handle.dispatchEvent(event);
-      };
-      send("pointerdown", y, 1000);
-      send("pointermove", y + dy, 1000 + ms);
-      send("pointerup", y + dy, 1000 + ms);
-    },
-    { dy, ms },
-  );
+async function touchDrag(page: Page, dy: number, ms: number, whileHeld: () => Promise<void>): Promise<void> {
+  const box = (await grip(page).boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  const send = (type: string, at: number, t: number) =>
+    grip(page).evaluate(
+      (handle, event) => {
+        const pointer = new PointerEvent(event.type, { bubbles: true, cancelable: true, pointerId: 7, isPrimary: true, pointerType: "touch", clientX: event.x, clientY: event.y });
+        Object.defineProperty(pointer, "timeStamp", { value: event.t });
+        handle.dispatchEvent(pointer);
+      },
+      { type, x, y: at, t },
+    );
+  await send("pointerdown", y, 1000);
+  await send("pointermove", y + dy, 1000 + ms);
+  await whileHeld(); // the events were handled: the sheet is where the finger took it
+  await send("pointerup", y + dy, 1000 + ms);
 }
 
 test("bottom_sheet_follows_a_drag_nearest_point_slow_next_point_flicked", async ({ page }) => {
@@ -122,14 +124,18 @@ test("bottom_sheet_follows_a_drag_nearest_point_slow_next_point_flicked", async 
   await page.mouse.up();
   await expect.poll(() => visibleSheetHeight(page)).toBe(PEEK);
 
-  // The same pull as a flick (100 px in 50 ms) goes on to the next point; a slower one (100 px in 1 s) does not.
-  await touchDrag(page, -100, 1000);
+  // The same pull as a flick (100 px in 50 ms) goes on to the next point; a slower one (100 px in 1 s) does not. With the finger
+  // down the sheet is where it took it, which shows that the events were handled and the sheet did not simply stay at its peek.
+  const held = (expected: number) => async () => {
+    await expect.poll(() => visibleSheetHeight(page)).toBe(expected);
+  };
+  await touchDrag(page, -100, 1000, held(PEEK + 100));
   await expect.poll(() => visibleSheetHeight(page)).toBe(PEEK);
-  await touchDrag(page, -100, 50);
+  await touchDrag(page, -100, 50, held(PEEK + 100));
   await expect.poll(() => visibleSheetHeight(page)).toBe(height / 2);
 
   // And a flick back down: 60 px leave it nearer half, and it goes on to the peek.
-  await touchDrag(page, 60, 40);
+  await touchDrag(page, 60, 40, held(height / 2 - 60));
   await expect.poll(() => visibleSheetHeight(page)).toBe(PEEK);
 });
 
@@ -155,11 +161,42 @@ test("arrow_buttons_and_keys_step_the_period", async ({ page }) => {
   await expect(page.getByLabel("To", { exact: true })).toHaveValue("2026-10-25");
 
   await page.getByLabel("To", { exact: true }).fill("2026-10-31"); // a native date field, set the way a picker does
+  await page.getByLabel("To", { exact: true }).press("Enter"); // and committed: a field is taken when it is left or Enter is pressed
   await expect(page).toHaveURL(/\/range\/2026-10-19\.\.2026-10-31$/);
   await page.getByLabel("To", { exact: true }).focus();
   await page.keyboard.press("ArrowLeft"); // in a field, the arrow is the field's
-  await expect(page).toHaveURL(/\/range\/2026-10-19\.\.2026-10-\d\d$/);
-  await expect(page.getByRole("heading", { name: /^19 Oct – \d+ Oct 2026$/ })).toBeVisible();
+  await expect(page).toHaveURL(/\/range\/2026-10-19\.\.2026-10-31$/);
+  await expect(page.getByRole("heading", { name: "19 Oct – 31 Oct 2026" })).toBeVisible();
+});
+
+// Ruling P2-R29: the browser reports every part of a date as it is typed (the 2 of 28 makes the 2nd), and each is a date.
+test("range_fields_take_a_date_typed_part_by_part_as_one_change", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/range/2026-10-19..2026-10-25");
+  const from = page.getByLabel("From", { exact: true });
+  const to = page.getByLabel("To", { exact: true });
+  await expect(to).toHaveValue("2026-10-25");
+  const entries = await page.evaluate(() => window.history.length);
+
+  await to.focus(); // the month part of the field
+  await page.keyboard.press("ArrowRight"); // the day part
+  await page.keyboard.type("28");
+
+  await expect(to).toHaveValue("2026-10-28");
+  await expect(page).toHaveURL(/\/range\/2026-10-19\.\.2026-10-25$/); // the route has not moved for the 2, nor for the 8
+  expect(await page.evaluate(() => window.history.length)).toBe(entries);
+  await expect(from).toHaveValue("2026-10-19");
+
+  await page.keyboard.press("Enter");
+
+  await expect(page).toHaveURL(/\/range\/2026-10-19\.\.2026-10-28$/);
+  expect(await page.evaluate(() => window.history.length)).toBe(entries + 1); // one entry for the one change
+  await expect(from).toHaveValue("2026-10-19"); // and From was not dragged along by the 2nd
+  await expect(page.getByRole("heading", { name: "19 Oct – 28 Oct 2026" })).toBeVisible();
+
+  await to.focus(); // left again as it was, the field changes nothing
+  await to.blur();
+  expect(await page.evaluate(() => window.history.length)).toBe(entries + 1);
 });
 
 test("status_banner_shows_progress_below_the_bar_and_not_over_the_map_buttons", async ({ page }) => {
@@ -234,4 +271,33 @@ test("attribution_stays_visible_and_uncovered_by_the_panel", async ({ page }) =>
   await expect.poll(uncovered).toBe(true);
   const raised = (await link.boundingBox())!;
   expect(raised.y + raised.height).toBeLessThanOrEqual((await details(page).boundingBox())!.y);
+});
+
+// Ruling P2-R30: at full the sheet covers the map. The map keeps the padding of half, so that it has room to fit things into, and
+// its credit and buttons stay clear of the bar.
+test("sheet_at_full_leaves_the_map_a_padding_that_fits_and_the_credit_clear_of_the_bar", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/day/2026-10-22");
+  const map = page.getByRole("region", { name: "Map view" });
+  await expect(map).toHaveAttribute("data-map-state", "ready");
+  const { height } = page.viewportSize()!;
+  if (!isWide(page)) {
+    await grip(page).click();
+    await grip(page).click();
+    await expect.poll(() => visibleSheetHeight(page)).toBe(height - 120); // full
+    await expect.poll(() => map.evaluate((element) => element.style.getPropertyValue("--map-padding-bottom"))).toBe(`${height / 2 + 16}px`);
+  }
+
+  const padding = await map.evaluate((element) => ({
+    top: parseFloat(element.style.getPropertyValue("--map-padding-top")),
+    bottom: parseFloat(element.style.getPropertyValue("--map-padding-bottom")),
+  }));
+  const area = (await map.boundingBox())!;
+  expect(padding.top + padding.bottom).toBeLessThan(area.height); // there is room left to fit a day into
+
+  const bar = (await page.locator("header").boundingBox())!;
+  const credit = (await page.getByRole("link", { name: "OpenStreetMap" }).boundingBox())!;
+  const recenter = (await page.getByRole("button", { name: "Recenter map" }).boundingBox())!;
+  expect(credit.y).toBeGreaterThanOrEqual(bar.y + bar.height); // the credit is not under the bar...
+  expect(recenter.y).toBeGreaterThanOrEqual(bar.y + bar.height); // ...nor are the map's buttons
 });

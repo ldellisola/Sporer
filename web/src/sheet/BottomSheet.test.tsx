@@ -177,6 +177,52 @@ describe("BottomSheet", () => {
     cancel(grip(), pointer({}));
   });
 
+  test("BottomSheet_a_drag_that_starts_on_the_content_is_no_click_on_it", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const onRow = vi.fn();
+    const onHeightChange = vi.fn<(height: number) => void>();
+    render(
+      <BottomSheet onHeightChange={onHeightChange}>
+        <button onClick={onRow}>Row</button>
+      </BottomSheet>,
+    );
+    const row = screen.getByRole("button", { name: "Row" });
+
+    // A mouse pulled up from a row and let go over another row: the browser makes a click of that, on the row it ended on.
+    drag(row, 700, 520, 1000);
+    expect(lastHeight(onHeightChange)).toBe(HALF);
+    fireEvent.click(row);
+    expect(onRow).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1000); // a click that comes later is the content's
+    fireEvent.click(row);
+    expect(onRow).toHaveBeenCalledTimes(1);
+  });
+
+  test("BottomSheet_peeks_96px_above_the_home_indicator", () => {
+    // jsdom cannot evaluate env(): the probe that the sheet measures its inset with is given a height.
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(34);
+    const { sheet, onHeightChange } = renderSheet();
+
+    expect(lastHeight(onHeightChange)).toBe(PEEK + 34); // 96 px of sheet above the 34 px of the indicator
+    expect(visibleHeight(sheet)).toBe(PEEK + 34);
+
+    fireEvent.click(grip());
+    expect(lastHeight(onHeightChange)).toBe(HALF); // the other points are the screen's
+    fireEvent.click(grip());
+    fireEvent.click(grip());
+    expect(lastHeight(onHeightChange)).toBe(PEEK + 34);
+
+    drag(grip(), 700, 1000, 1000); // and a sheet pushed down stops at it
+    expect(visibleHeight(sheet)).toBe(PEEK + 34);
+  });
+
+  test("BottomSheet_peeks_96px_when_the_device_has_no_inset", () => {
+    const { onHeightChange } = renderSheet();
+
+    expect(onHeightChange.mock.calls).toEqual([[PEEK]]);
+  });
+
   test("BottomSheet_follows_a_pointer_that_has_left_the_sheet", () => {
     const { sheet, onHeightChange } = renderSheet();
 

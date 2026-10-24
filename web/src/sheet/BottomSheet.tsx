@@ -1,15 +1,20 @@
 import {
   useEffect,
   useEffectEvent,
+  useLayoutEffect,
   useRef,
   useState,
-  useSyncExternalStore,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { useViewportHeight } from "../app/useViewportHeight";
 import styles from "./BottomSheet.module.css";
 
-/** How much of the sheet shows at its lowest point, in pixels. The map is padded by what shows, so the app starts from this. */
+/**
+ * How much of the sheet shows at its lowest point, in pixels, above the home indicator of a phone that has one: the sheet peeks this
+ * far plus the bottom safe area. The app starts the map's padding from this, until the sheet says how much shows.
+ */
 export const SHEET_PEEK = 96;
 
 /** What the highest point leaves free at the top of the screen, for the bar over the map, unless the bar needs more (`topClearance`). */
@@ -24,16 +29,23 @@ const DRAG_THRESHOLD_PX = 6;
 /** How far back from the release the speed of a drag is measured. */
 const SPEED_WINDOW_MS = 100;
 
-/** How long after a drag a click on the handle is taken for the release of that drag, and not a press of it. */
+/** How long after a drag a click on the sheet is taken for the release of that drag, and not a press of anything on it. */
 const CLICK_AFTER_DRAG_MS = 300;
 
 type Snap = "peek" | "half" | "full";
 const SNAPS: readonly Snap[] = ["peek", "half", "full"];
 
-/** How much of the sheet shows at each point in a viewport `viewport` pixels high; in a very small one the points still come in order. */
-function pointsFor(viewport: number, topClearance: number): Record<Snap, number> {
-  const half = Math.max(SHEET_PEEK, Math.round(viewport / 2));
-  return { peek: SHEET_PEEK, half, full: Math.max(half, viewport - topClearance) };
+/** How much of the sheet shows at the middle point in a viewport `viewport` pixels high: half of it. */
+export const sheetHalfHeight = (viewport: number): number => Math.max(SHEET_PEEK, Math.round(viewport / 2));
+
+/**
+ * How much of the sheet shows at each point in a viewport `viewport` pixels high, with `inset` pixels of home indicator under the
+ * peek; in a very small viewport the points still come in order.
+ */
+function pointsFor(viewport: number, topClearance: number, inset: number): Record<Snap, number> {
+  const peek = SHEET_PEEK + inset;
+  const half = Math.max(peek, sheetHalfHeight(viewport));
+  return { peek, half, full: Math.max(half, viewport - topClearance) };
 }
 
 /**
@@ -78,13 +90,6 @@ interface Drag {
   detach: () => void;
 }
 
-function subscribeToResize(onChange: () => void): () => void {
-  window.addEventListener("resize", onChange);
-  return () => window.removeEventListener("resize", onChange);
-}
-
-const viewportHeight = (): number => window.innerHeight;
-
 export interface BottomSheetProps {
   children: ReactNode;
   /** What the panel is called for those who cannot see it. */
@@ -104,7 +109,7 @@ export interface BottomSheetProps {
 
 /**
  * The panel of a phone: a sheet at the bottom of the screen over the map, which never goes away and is not modal (the map
- * behind it stays in use). It rests at three points, a peek of 96 px, half the screen and the screen less 120 px (`topClearance`), and is pulled
+ * behind it stays in use). It rests at three points, a peek of 96 px above the home indicator, half the screen and the screen less 120 px (`topClearance`), and is pulled
  * between them by its handle or, until it is full, by any part of it. Let go slowly it goes to the nearest point; flicked, to the
  * next one that way. The handle also steps through the points when pressed, for those who cannot drag. Its content scrolls only at
  * full: below that the part that shows is a preview, and a drag on it is the sheet's.
@@ -115,8 +120,18 @@ export function BottomSheet({
   topClearance = SHEET_TOP_CLEARANCE,
   onHeightChange,
 }: BottomSheetProps) {
-  const viewport = useSyncExternalStore(subscribeToResize, viewportHeight);
-  const points = pointsFor(viewport, topClearance);
+  const viewport = useViewportHeight();
+  const probe = useRef<HTMLSpanElement>(null);
+  const [inset, setInset] = useState(0);
+  // The bottom safe area, which only the style sheet can say (env() is its own), read from a probe that has it as its height. Before
+  // the first paint, so that the sheet never shows at a peek that the home indicator then covers.
+  useLayoutEffect(() => {
+    const measure = () => setInset(probe.current?.offsetHeight ?? 0);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+  const points = pointsFor(viewport, topClearance, inset);
   const [snap, setSnap] = useState<Snap>("peek");
   const [dragHeight, setDragHeight] = useState<number | null>(null);
   const drag = useRef<Drag | null>(null);
@@ -166,8 +181,7 @@ export function BottomSheet({
       current.samples.push({ t: end.timeStamp, y: end.clientY });
       setSnap(settleAt(current.height, cancelled ? 0 : upwardSpeed(current.samples, end.timeStamp), points));
       setDragHeight(null);
-      // The release of a mouse that is back on the handle is a click on it too, which would step the sheet on from where it was put.
-      justDragged.current = true;
+      justDragged.current = true; // see onClickCapture
       setTimeout(() => (justDragged.current = false), CLICK_AFTER_DRAG_MS);
     };
     const onUp = (up: PointerEvent) => onEnd(up, false);
@@ -183,8 +197,14 @@ export function BottomSheet({
     drag.current = current;
   };
 
-  const stepThroughPoints = () => {
-    if (!justDragged.current) setSnap(SNAPS[(SNAPS.indexOf(snap) + 1) % SNAPS.length]!);
+  const stepThroughPoints = () => setSnap(SNAPS[(SNAPS.indexOf(snap) + 1) % SNAPS.length]!);
+
+  // The release of a mouse that drags the sheet by a row (or by the handle) is a click on whatever it ends on, which is not a press of
+  // that: it is taken here, before it reaches the content.
+  const onClickCapture = (event: ReactMouseEvent<HTMLElement>) => {
+    if (!justDragged.current) return;
+    event.stopPropagation();
+    event.preventDefault();
   };
 
   return (
@@ -195,6 +215,7 @@ export function BottomSheet({
       data-dragging={dragHeight !== null}
       style={{ height: points.full, transform: `translateY(${points.full - visible}px)` }}
       onPointerDown={onPointerDown}
+      onClickCapture={onClickCapture}
     >
       <button type="button" className={styles.grip} data-grip="" aria-label="Resize panel" onClick={stepThroughPoints}>
         <span className={styles.handle} />
@@ -202,6 +223,7 @@ export function BottomSheet({
       <div className={styles.content} style={{ overflowY: snap === "full" ? "auto" : "hidden" }}>
         {children}
       </div>
+      <span ref={probe} className={styles.inset} aria-hidden="true" />
     </section>
   );
 }

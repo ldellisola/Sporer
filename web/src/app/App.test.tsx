@@ -156,26 +156,56 @@ describe("App layout", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Resize panel" })); // half of 800
     expect(padding()).toEqual({ top: 116, right: 16, bottom: 416, left: 16 });
-    fireEvent.click(screen.getByRole("button", { name: "Resize panel" })); // full: the viewport less 120
-    expect(padding().bottom).toBe(696);
 
     layout.move(160.4); // the range fields open, say: a taller bar, measured up to the next whole pixel
     expect(padding().top).toBe(177);
+  });
+
+  test("App_stops_padding_the_map_for_the_sheet_beyond_half_the_screen", () => {
+    stubApi();
+    stubLayout(100);
+    renderApp();
+    const sheet = screen.getByRole("region", { name: "Details" });
+    const visible = () => parseFloat(sheet.style.height) - Number(/translateY\((-?[\d.]+)px\)/.exec(sheet.style.transform)![1]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" })); // half
+    const atHalf = padding();
+    expect(atHalf.bottom).toBe(416);
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" })); // full: a reading mode that covers the map
+
+    expect(visible()).toBe(680);
+    // The map keeps the padding of half: the top and the bottom together would leave no room to fit anything into, and the
+    // credit and the buttons would sit under the bar.
+    expect(padding()).toEqual(atHalf);
+    expect(padding().top + padding().bottom).toBeLessThan(800);
+  });
+
+  test("App_follows_the_height_of_the_screen_for_what_half_of_it_is", () => {
+    stubApi();
+    stubLayout(100);
+    renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" })); // full
+
+    vi.stubGlobal("innerHeight", 600); // a phone turned
+    act(() => void window.dispatchEvent(new Event("resize")));
+
+    expect(padding().bottom).toBe(300 + 16);
   });
 
   test("App_lets_the_sheet_come_up_only_as_far_as_the_bar_allows", () => {
     stubApi();
     const layout = stubLayout(120); // a bar whose bottom is at 120: the viewport less 120 would just fit under it
     renderApp();
-    fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
-    fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
-    expect(padding().bottom).toBe(800 - 128 + 16); // 120 and a few pixels of air to the bar: 128 is the room
+    const sheet = screen.getByRole("region", { name: "Details" });
+
+    expect(sheet.style.height).toBe(`${800 - 128}px`); // 120 and a few pixels of air to the bar: 128 is the room
 
     layout.move(60); // a small bar: the sheet keeps to the 120 px that it is specified to leave
-    expect(padding().bottom).toBe(800 - 120 + 16);
+    expect(sheet.style.height).toBe(`${800 - 120}px`);
 
     layout.move(200); // a tall one (the range fields), or one under a notch
-    expect(padding().bottom).toBe(800 - 208 + 16);
+    expect(sheet.style.height).toBe(`${800 - 208}px`);
   });
 
   test("App_keeps_the_padding_object_while_no_number_in_it_changes", () => {

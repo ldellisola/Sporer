@@ -25,29 +25,22 @@ const SWIPE_MIN_PX = 50;
 const EARLIEST = "1900-01-01";
 
 /**
- * The date a period is anchored on when the bar switches to another view: the first day of the period it shows (a week's
- * Monday, a month's or a year's first day), and today when it shows none (a place). The address says no more than that.
+ * The date a period is anchored on when the bar switches to another view: the day that was shown last when it lies in the period
+ * that is shown, else today when today does, else the first day of the period (a week's Monday, a month's or a year's first day).
+ * A place has no period: the day shown last, else today. The address says no more than the period, so the last day is the app's to
+ * remember (`useLastDay`), and it is what brings a month or a year back to the day that was looked at.
  */
-function anchorOf(route: Route): string {
-  switch (route.view) {
-    case "day":
-      return route.date;
-    case "week":
-      return route.start;
-    case "month":
-      return `${route.month}-01`;
-    case "year":
-      return `${String(route.year).padStart(4, "0")}-01-01`;
-    case "range":
-      return route.from;
-    case "place":
-      return today();
-  }
+function anchorOf(route: Route, lastDay: string | null): string {
+  if (route.view === "place") return lastDay ?? today();
+  const { from, to } = periodRange(route);
+  if (lastDay !== null && lastDay >= from && lastDay <= to) return lastDay;
+  const now = today();
+  return now >= from && now <= to ? now : from;
 }
 
 /** The route of `view` that holds the anchor date; a range holds the whole period that was shown, so that its fields start filled in. */
-function switchView(route: Route, view: View): PeriodRoute {
-  const anchor = anchorOf(route);
+function switchView(route: Route, view: View, lastDay: string | null): PeriodRoute {
+  const anchor = anchorOf(route, lastDay);
   switch (view) {
     case "day":
       return { view, date: anchor };
@@ -84,35 +77,51 @@ function editRange(route: RangeRoute, edge: "from" | "to", value: string): Range
   return { view: "range", from, to };
 }
 
-const TYPING = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
+// Where the arrow keys are not the bar's: fields that are typed into, and the map, which pans with them when it has the focus.
+const OWNS_ARROWS = 'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="region"][aria-label="Map view"]';
 
-/** Whether a key press is meant for something the owner is typing into, whose arrow keys are its own. */
-const isTyping = (target: EventTarget | null): boolean => target instanceof Element && target.closest(TYPING) !== null;
+/** Whether a key press is meant for something that has the arrow keys for itself. */
+const ownsArrows = (target: EventTarget | null): boolean => target instanceof Element && target.closest(OWNS_ARROWS) !== null;
 
 /**
- * A native date field that the owner can type into and pick from. It is not controlled: a field that React sets back to the last
- * good date would wipe the part of the date being typed (a cleared day, a year half written) with every key. It takes the date
- * of the route when that is another one than it shows, which is when the route was changed by something else (an arrow).
+ * A native date field that the owner can type into and pick from. It takes what is typed when the field is left or Enter is
+ * pressed, not for each part of the date typed: the browser reports every one (the 2 of 28 is the 2nd) and each would be a range, a
+ * history entry and a request, and would drag the other end of the range along. Until then the field holds a draft of its own, which
+ * is why it is not controlled either: a field that React set back to the last good date would wipe the part being typed. It takes
+ * the date of the route when that is another one than it shows, which is when something else moved the route (an arrow); a date
+ * that is no date to take is put back to the route's.
  */
-function DateField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function DateField({ label, value, onCommit }: { label: string; value: string; onCommit: (typed: string) => boolean }) {
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (input.current !== null && input.current.value !== value) input.current.value = value;
   }, [value]);
+  const commit = () => {
+    if (input.current !== null && !onCommit(input.current.value)) input.current.value = value;
+  };
   return (
     <label className={styles.field}>
       {label}
-      <input ref={input} type="date" defaultValue={value} min={EARLIEST} onChange={(event) => onChange(event.currentTarget.value)} />
+      <input
+        ref={input}
+        type="date"
+        defaultValue={value}
+        min={EARLIEST}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") commit();
+        }}
+      />
     </label>
   );
 }
 
 /**
  * The card that floats at the top of the map: the views as a segmented control, for a range its two dates, and the period with
- * ‹ › to step it. Switching view keeps the date (see `anchorOf`). Stepping is also a swipe along the period, or ← and → on the
- * keyboard unless the focus is in a field. A place has no period to step: its bar has the views to go to, and none is shown as current.
+ * ‹ › to step it. Switching view keeps the date (see `anchorOf`; `lastDay` is the day shown last). Stepping is also a swipe along the period,
+ * or ← and → on the keyboard unless the focus is in a field or on the map. A place has no period to step: its bar has the views to go to, and none is shown as current.
  */
-export function TopBar({ route }: { route: Route }) {
+export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: string | null }) {
   const period = route.view === "place" ? null : route;
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
 
@@ -121,7 +130,7 @@ export function TopBar({ route }: { route: Route }) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       // Alt and ⌘ with an arrow are the browser's (back, forward); a held key would ask for a day every few milliseconds.
-      if (event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || isTyping(event.target)) return;
+      if (event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || ownsArrows(event.target)) return;
       event.preventDefault();
       navigate(step(period, event.key === "ArrowLeft" ? -1 : 1));
     };
@@ -132,9 +141,12 @@ export function TopBar({ route }: { route: Route }) {
   const stepBy = (delta: -1 | 1) => {
     if (period !== null) navigate(step(period, delta));
   };
-  const setRange = (edge: "from" | "to", value: string) => {
-    const next = route.view === "range" ? editRange(route, edge, value) : null;
-    if (next !== null) navigate(next);
+  /** Takes a date typed into one end of the range; whether it was one to take. */
+  const setRange = (edge: "from" | "to", typed: string): boolean => {
+    const next = route.view === "range" ? editRange(route, edge, typed) : null;
+    if (next === null) return false;
+    navigate(next);
+    return true;
   };
 
   const onPointerDown = (event: PointerEvent) => {
@@ -158,7 +170,7 @@ export function TopBar({ route }: { route: Route }) {
             type="button"
             className={styles.segment}
             aria-pressed={route.view === view}
-            onClick={() => navigate(switchView(route, view))}
+            onClick={() => navigate(switchView(route, view, lastDay))}
           >
             {label}
           </button>
@@ -166,8 +178,8 @@ export function TopBar({ route }: { route: Route }) {
       </div>
       {route.view === "range" && (
         <div className={styles.fields} role="group" aria-label="Date range">
-          <DateField label="From" value={route.from} onChange={(value) => setRange("from", value)} />
-          <DateField label="To" value={route.to} onChange={(value) => setRange("to", value)} />
+          <DateField label="From" value={route.from} onCommit={(typed) => setRange("from", typed)} />
+          <DateField label="To" value={route.to} onCommit={(typed) => setRange("to", typed)} />
         </div>
       )}
       {period !== null && (

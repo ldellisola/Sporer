@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { prefetchNeighbours, useDay } from "../api/queries";
 import { MapView, type MapData, type MapPadding } from "../map/MapView";
-import { BottomSheet, SHEET_PEEK, SHEET_TOP_CLEARANCE } from "../sheet/BottomSheet";
+import { BottomSheet, SHEET_PEEK, SHEET_TOP_CLEARANCE, sheetHalfHeight } from "../sheet/BottomSheet";
 import { Sidebar, SIDEBAR_WIDTH } from "../sheet/Sidebar";
 import { Empty, ErrorState, Loading } from "../views/States";
 import { Notice } from "../views/Notice";
@@ -12,7 +12,9 @@ import { useKeptData } from "../views/useKeptData";
 import styles from "./App.module.css";
 import { useRoute, type Route } from "./router";
 import { useBottomEdge } from "./useBottomEdge";
+import { useLastDay } from "./useLastDay";
 import { useMediaQuery } from "./useMediaQuery";
+import { useViewportHeight } from "./useViewportHeight";
 
 /** From this width the day's panel is a sidebar, below it a bottom sheet. */
 const DESKTOP_QUERY = "(min-width: 900px)";
@@ -57,6 +59,8 @@ export function App() {
   const route = useRoute();
   const queryClient = useQueryClient();
   const desktop = useMediaQuery(DESKTOP_QUERY);
+  const viewportHeight = useViewportHeight();
+  const lastDay = useLastDay(route);
   const [mapUnavailable, setMapUnavailable] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(SHEET_PEEK);
   const barRef = useRef<HTMLDivElement>(null);
@@ -69,15 +73,19 @@ export function App() {
   }, [queryClient, route]);
 
   // What covers the map, and some air round it: the bar at the top (as measured), on a phone the sheet at the bottom, on a desktop
-  // the sidebar at the left. A new object only when a number changes, for the map hands it to its controls.
+  // the sidebar at the left. The sheet counts up to half the screen and no further: above that it is a page to read, which covers the
+  // map and the credit under it (the credit is part of the map it credits), and padding for all of it would leave the map no room to
+  // fit anything into, and put its buttons and credit under the bar. A new object only when a number changes, for the map hands it
+  // to its controls.
+  const sheetCovers = Math.min(sheetHeight, sheetHalfHeight(viewportHeight));
   const padding = useMemo<MapPadding>(
     () => ({
       top: barBottom + AIR,
       right: AIR,
-      bottom: desktop ? AIR : sheetHeight + AIR,
+      bottom: desktop ? AIR : sheetCovers + AIR,
       left: desktop ? SIDEBAR_WIDTH + AIR : AIR,
     }),
-    [barBottom, desktop, sheetHeight],
+    [barBottom, desktop, sheetCovers],
   );
 
   const panel = <Panel route={route} />;
@@ -94,7 +102,7 @@ export function App() {
       </div>
       <div className={styles.top}>
         <div ref={barRef} className={styles.bar}>
-          <TopBar route={route} />
+          <TopBar route={route} lastDay={lastDay} />
         </div>
         <div className={styles.notices}>
           <StatusBanner />

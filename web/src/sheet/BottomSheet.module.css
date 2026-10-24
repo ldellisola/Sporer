@@ -73,3 +73,15 @@
   padding: 0 max(16px, var(--safe-right)) max(16px, var(--safe-bottom)) max(16px, var(--safe-left));
   overscroll-behavior: contain;
 }
+
+/* Takes no room and shows nothing: its height is the bottom safe area, which the sheet reads to peek above the home indicator. */
+.inset {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  visibility: hidden;
+  pointer-events: none;
+}
