@@ -135,9 +135,12 @@ background, at about one Nominatim request per second, so their names appear gra
 
 Follow the progress at `https://sporer.lud.ar/api/status`: `backfill.percent` goes from 0 to 100, `pendingRanges` falls to
 0, and `failedRanges`, `lastError` and `warnings` say if something needs your attention. A backfill step that fails three
-times in a row is set aside as a failed range (retried later with a growing delay) and the backfill goes on after it,
-so one bad stretch of history does not hold up the rest. The same backfill runs again whenever the detection thresholds
-or the detection code change.
+times in a row, or that the process dies in the middle of three times (it ran out of memory), is set aside as a failed
+range (retried later with a growing delay) and the backfill goes on after it; a live range that fails three times is
+set aside the same way. Later processing does not reach back into a set-aside range, so one bad stretch of history does not
+hold up the rest, live data included. The failed range of a backfill step also covers the week after it, which is rebuilt
+together with it when the retry goes through (until then those days show as `pending`). The same backfill runs again
+whenever the detection thresholds or the detection code change, and starts without any failed ranges.
 
 ## Releases
 

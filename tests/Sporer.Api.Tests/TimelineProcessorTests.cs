@@ -203,8 +203,15 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
             Assert.True(after[k].StartUtc >= after[k - 1].EndUtc - TimeSpan.FromSeconds(1), $"segment {k} overlaps the one before");
     }
 
+    /// <summary>Makes <paramref name="from"/> to <paramref name="to"/> the only dirty range, with the given number of failed attempts.</summary>
+    private static async Task OnlyDirtyRangeAsync(string cs, DateTime from, DateTime to, int attempts)
+    {
+        await Sql.ExecAsync(cs, "delete from dirty_range", ct: Ct);
+        await Sql.ExecAsync(cs, "insert into dirty_range (from_utc, to_utc, attempts) values (@from, @to, @attempts)", new { from, to, attempts }, Ct);
+    }
+
     [Fact]
-    public async Task Anchors_widen_to_the_stay_before_the_range_unless_a_floor_stops_them()
+    public async Task Anchors_widen_to_the_stay_before_the_range_unless_a_set_aside_range_stops_them()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
@@ -219,21 +226,49 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
             new { s1 = T(2, 0), e1 = T(4, 0), s2 = T(6, 0), e2 = T(8, 0), s3 = T(20, 0), e3 = T(22, 0) }, Ct);
         var (from, to) = (T(12, 0), T(14, 0));
 
-        // No floor: the last stay before the range starts the rebuild, the first stay after it ends it.
+        // Nothing set aside: the last stay before the range starts the rebuild, the first stay after it ends it.
         Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
-        // A floor after that stay's start moves the start up to it; one at or before the stay's start changes nothing.
-        Assert.Equal((T(10, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct, T(10, 0)));
-        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct, T(6, 0)));
-        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct, T(5, 0)));
-        // The rebuild never starts after the range: a floor past the start of the range is the start of the range.
-        Assert.Equal((from, T(22, 0)), await store.FindAnchorsAsync(from, to, Ct, T(13, 0)));
-        // With no stay before the range the rebuild starts at the range, floor or not.
+        // A set-aside range that ends after that stay's start (and before the range) moves the start up to its end...
+        await OnlyDirtyRangeAsync(cs, T(9, 0), T(10, 0), attempts: 3);
+        Assert.Equal((T(10, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        await OnlyDirtyRangeAsync(cs, T(5, 0), T(10, 0), attempts: 3); // even if it began before that stay
+        Assert.Equal((T(10, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        await OnlyDirtyRangeAsync(cs, T(9, 0), T(11, 0), attempts: 7); // the latest end wins, and more attempts are still set aside
+        await Sql.ExecAsync(cs, "insert into dirty_range (from_utc, to_utc, attempts) values (@f, @t, 3)", new { f = T(9, 30), t = T(10, 30) }, Ct);
+        Assert.Equal((T(11, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        // ...one that ends at or before the stay's start changes nothing...
+        await OnlyDirtyRangeAsync(cs, T(4, 30), T(6, 0), attempts: 3);
+        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        await OnlyDirtyRangeAsync(cs, T(3, 0), T(5, 0), attempts: 3);
+        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        // ...and so does one that has not failed often enough (it is only waiting for its next try).
+        await OnlyDirtyRangeAsync(cs, T(9, 0), T(10, 0), attempts: 2);
+        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        // The rebuild never starts after the range: a set-aside range that reaches over the start of the range (the one
+        // after a set-aside chunk) floors it at the start of the range, if nothing of it is stored before the range.
+        await OnlyDirtyRangeAsync(cs, T(11, 0), T(13, 0), attempts: 3);
+        Assert.Equal((from, T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        await OnlyDirtyRangeAsync(cs, T(7, 0), T(18, 0), attempts: 3);
+        Assert.Equal((from, T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        // If something of it is stored already (a stay that starts inside it: its retry, rebuilt piece by piece), that stay
+        // is where the rebuild starts: it lies in a stretch that was rebuilt, not in the one that failed.
+        await OnlyDirtyRangeAsync(cs, T(5, 0), T(13, 0), attempts: 3);
+        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        // A set-aside range never stops its own retry, which starts where it starts.
+        await OnlyDirtyRangeAsync(cs, from, to, attempts: 3);
+        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        await OnlyDirtyRangeAsync(cs, T(13, 0), T(15, 0), attempts: 3); // one that starts after the range starts is of no concern to it
+        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        // With no stay before the range the rebuild starts at the range, set-aside ranges or not.
         Assert.Equal((T(1, 0), T(4, 0)), await store.FindAnchorsAsync(T(1, 0), T(1, 30), Ct));
-        Assert.Equal((T(1, 0), T(4, 0)), await store.FindAnchorsAsync(T(1, 0), T(1, 30), Ct, T(0, 30)));
+        await OnlyDirtyRangeAsync(cs, T(0, 30), T(0, 50), attempts: 3);
+        Assert.Equal((T(1, 0), T(4, 0)), await store.FindAnchorsAsync(T(1, 0), T(1, 30), Ct));
+        await OnlyDirtyRangeAsync(cs, T(0, 30), T(2, 0), attempts: 3);
+        Assert.Equal((T(1, 0), T(4, 0)), await store.FindAnchorsAsync(T(1, 0), T(1, 30), Ct));
     }
 
     [Fact]
-    public async Task A_floor_keeps_the_rebuild_from_reaching_back_into_an_unprocessed_week()
+    public async Task A_set_aside_range_keeps_the_rebuild_from_reaching_back_into_an_unprocessed_week()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
@@ -243,9 +278,10 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
         var segmentsInWeek2 = () => Sql.ScalarAsync<long>(cs,
             "select count(*) from segment where start_utc >= @from and start_utc < @to", new { from = T(0, 0, 8), to = T(7, 0, 14) }, Ct);
         Assert.Equal(0, await segmentsInWeek2());
+        await OnlyDirtyRangeAsync(cs, T(7, 0, 7), T(7, 0, 14), attempts: 3); // week 2 failed and was set aside
 
-        // Week 3 with a floor at its start: nothing of week 2 is loaded, so nothing of week 2 is stored...
-        var written = await processor.ReprocessAsync(T(7, 0, 14), T(7, 0, 21), Ct, anchorFloorUtc: T(7, 0, 14));
+        // Week 3 with week 2 set aside: nothing of week 2 is loaded, so nothing of week 2 is stored...
+        var written = await processor.ReprocessAsync(T(7, 0, 14), T(7, 0, 21), Ct);
         Assert.True(written > 0);
         Assert.Equal(0, await segmentsInWeek2());
         Assert.Equal(T(7, 0, 14), await Sql.ScalarAsync<DateTime>(cs, "select min(start_utc) from segment where start_utc >= @from",
@@ -253,7 +289,8 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
         Assert.Equal(7 * 3, await Sql.ScalarAsync<long>(cs,
             "select count(*) from segment where kind = 'stay' and start_utc >= @from and start_utc < @to", new { from = T(7, 0, 14), to = T(0, 0, 21) }, Ct));
 
-        // ...whereas without one it is widened back to the last stay of week 1, and rebuilds week 2 on the way.
+        // ...whereas without one (it was retried and went through: its row is gone) it is widened back to the last stay of week 1, and rebuilds week 2 on the way.
+        await Sql.ExecAsync(cs, "delete from dirty_range", ct: Ct);
         await processor.ReprocessAsync(T(7, 0, 14), T(7, 0, 21), Ct);
         Assert.True(await segmentsInWeek2() > 0);
     }
@@ -263,7 +300,7 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
     /// when they put the same stays in the same places, even if a place's centre differs by a few metres (a place is
     /// created from the first stay that needs it, which a chunk edge may have cut short).
     /// </summary>
-    private static async Task<IReadOnlyList<string>> CanonicalRowsAsync(string cs)
+    internal static async Task<IReadOnlyList<string>> CanonicalRowsAsync(string cs)
     {
         var rows = await Sql.QueryAsync(cs,
             "select (to_jsonb(s) - 'id' - 'place_id')::text as json, place_id from segment s order by start_utc, id", ct: Ct);

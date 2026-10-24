@@ -69,6 +69,8 @@ public class MigrationTests(DatabaseFixture db)
         foreach (var table in new[] { "place", "segment", "geocode_cache", "processing_state" })
             Assert.True(await Sql.ScalarAsync<bool>(cs, $"select to_regclass('{table}') is not null", ct: Ct), table);
         Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from processing_state where id = 1", ct: Ct));
+        Assert.Contains(("backfill_chunk_attempts", "integer", "NO"), await Columns(cs, "processing_state"));
+        Assert.Equal(0, await Sql.ScalarAsync<int>(cs, "select backfill_chunk_attempts from processing_state where id = 1", ct: Ct));
         Assert.Empty(Warnings(api).Items);
     }
 
@@ -107,7 +109,7 @@ public class MigrationTests(DatabaseFixture db)
         await using (var first = new ApiFactory(cs))
             _ = first.Services;
         var applied = await Sql.ScalarAsync<int>(cs, "select count(*) from schemaversions", ct: Ct);
-        Assert.Equal(3, applied);
+        Assert.Equal(4, applied);
 
         await using var second = new ApiFactory(cs);
         _ = second.Services;
@@ -144,7 +146,7 @@ public class MigrationTests(DatabaseFixture db)
         await using var second = new ApiFactory(cs);
         _ = second.Services; // does not throw
 
-        Assert.Equal(3, await Sql.ScalarAsync<int>(cs, "select count(*) from schemaversions", ct: Ct));
+        Assert.Equal(4, await Sql.ScalarAsync<int>(cs, "select count(*) from schemaversions", ct: Ct));
         foreach (var table in tables)
         {
             Assert.Equal(columns[table], await Columns(cs, table));

@@ -19,7 +19,10 @@ public sealed record FailedRange(DateTime FromUtc, DateTime ToUtc, int Attempts,
 /// </summary>
 public sealed record ProcessingBacklog(long Pending, IReadOnlyList<FailedRange> Failed);
 
-/// <summary>The single row of <c>processing_state</c>. All times are UTC.</summary>
+/// <summary>
+/// The single row of <c>processing_state</c>. All times are UTC. <paramref name="BackfillChunkAttempts"/> is how many times in
+/// a row the backfill has started the chunk at its cursor without finishing it.
+/// </summary>
 public sealed record ProcessingState(
     string? AlgorithmVersion,
     DateTime? BackfillFrom,
@@ -27,13 +30,22 @@ public sealed record ProcessingState(
     DateTime? BackfillCursor,
     bool Paused,
     DateTime? LastRunAt,
-    string? LastError);
+    string? LastError,
+    int BackfillChunkAttempts = 0);
 
 /// <summary>
 /// The processing worker's database side: the queue of dirty ranges that ingest fills, and the state of the backfill.
 /// </summary>
 public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptions options)
 {
+    /// <summary>
+    /// A dirty range that has failed this many times is <em>set aside</em>: it stays in the table and is retried with the
+    /// usual backoff, but rebuilds of later ranges no longer reach back into it (see <see cref="SegmentStore.FindAnchorsAsync"/>),
+    /// so a stretch that cannot be processed does not hold up the data after it. A backfill chunk is set aside after this
+    /// many failed or interrupted starts.
+    /// </summary>
+    public const int SetAsideAfterAttempts = 3;
+
     /// <summary>Ranges that overlap or are at most this far apart are processed as one.</summary>
     private static readonly TimeSpan MergeGap = TimeSpan.FromHours(1);
 
@@ -128,7 +140,8 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
 
     /// <summary>
     /// Records a failed attempt: each row's attempts go up by one, its error is stored, and it is not due again until
-    /// <see cref="Backoff"/> after <paramref name="nowUtc"/>.
+    /// <see cref="Backoff"/> after <paramref name="nowUtc"/>. A row that reaches <see cref="SetAsideAfterAttempts"/> is set
+    /// aside: it stays and is retried, and rebuilds of later ranges keep clear of it.
     /// </summary>
     public async Task FailAsync(IReadOnlyList<long> ids, string error, DateTime nowUtc, CancellationToken ct = default)
     {
@@ -148,13 +161,16 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
     }
 
     /// <summary>
-    /// Sets a backfill step aside after <paramref name="attempts"/> failures so that the backfill can go on: the range
-    /// <paramref name="fromUtc"/> to <paramref name="toUtc"/> becomes a failed dirty range (retried after the usual backoff,
-    /// behind the cursor), and the cursor, which must be at <paramref name="fromUtc"/>, moves to <paramref name="toUtc"/>.
+    /// Sets a backfill chunk aside so that the backfill can go on: a failed dirty range (with <see cref="SetAsideAfterAttempts"/>
+    /// attempts, retried after the usual backoff, behind the cursor) is recorded for <paramref name="fromUtc"/> to
+    /// <paramref name="coveredToUtc"/>, and the cursor, which must be at <paramref name="fromUtc"/>, moves to
+    /// <paramref name="chunkEndUtc"/> with the chunk's attempt count back at zero. The range reaches beyond the chunk
+    /// (the worker passes the end of the chunk after it): the chunk after a set-aside one is rebuilt without reaching back
+    /// into it and so can leave a cut stay at their edge, which the retry of this range then rebuilds along with the rest.
     /// One transaction: both happen or neither.
     /// </summary>
     public async Task SetBackfillStepAsideAsync(
-        DateTime fromUtc, DateTime toUtc, int attempts, string error, DateTime nowUtc, CancellationToken ct = default)
+        DateTime fromUtc, DateTime chunkEndUtc, DateTime coveredToUtc, string error, DateTime nowUtc, CancellationToken ct = default)
     {
         var now = AsUtc(nowUtc);
         await using var connection = await dataSource.OpenConnectionAsync(ct);
@@ -163,15 +179,41 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
         await connection.ExecuteAsync(new CommandDefinition(
             """
             insert into dirty_range (from_utc, to_utc, created_at, attempts, next_attempt_at, last_error)
-            values (@From, @To, @Now, @Attempts, @NextAttemptAt, @Error)
+            values (@From, @CoveredTo, @Now, @Attempts, @NextAttemptAt, @Error)
             """,
-            new { From = AsUtc(fromUtc), To = AsUtc(toUtc), Now = now, Attempts = attempts, NextAttemptAt = now + Backoff(attempts), Error = error },
+            new
+            {
+                From = AsUtc(fromUtc), CoveredTo = AsUtc(coveredToUtc), Now = now, Attempts = SetAsideAfterAttempts,
+                NextAttemptAt = now + Backoff(SetAsideAfterAttempts), Error = error,
+            },
             transaction, cancellationToken: ct));
         await connection.ExecuteAsync(new CommandDefinition(
-            "update processing_state set backfill_cursor = @To where id = 1 and backfill_cursor = @From",
-            new { From = AsUtc(fromUtc), To = AsUtc(toUtc) }, transaction, cancellationToken: ct));
+            "update processing_state set backfill_cursor = @ChunkEnd, backfill_chunk_attempts = 0 where id = 1 and backfill_cursor = @From",
+            new { From = AsUtc(fromUtc), ChunkEnd = AsUtc(chunkEndUtc) }, transaction, cancellationToken: ct));
 
         await transaction.CommitAsync(ct);
+    }
+
+    /// <summary>
+    /// Counts one more start of the backfill chunk at the cursor and returns the count. Called, and stored, before the
+    /// chunk runs: a process killed in the middle of it (out of memory) cannot record anything afterwards, and the count is
+    /// what lets the next start see that this chunk has not got to the end <see cref="SetAsideAfterAttempts"/> times.
+    /// </summary>
+    public async Task<int> CountBackfillAttemptAsync(CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        return await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            "update processing_state set backfill_chunk_attempts = backfill_chunk_attempts + 1 where id = 1 returning backfill_chunk_attempts",
+            cancellationToken: ct));
+    }
+
+    /// <summary>Takes back one counted start (never below zero): the chunk was interrupted by the service stopping, which is not its fault.</summary>
+    public async Task ReleaseBackfillAttemptAsync(CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await connection.ExecuteAsync(new CommandDefinition(
+            "update processing_state set backfill_chunk_attempts = greatest(backfill_chunk_attempts - 1, 0) where id = 1",
+            cancellationToken: ct));
     }
 
     /// <summary>How many dirty ranges wait, and which of them have failed. Reads only; whether a range is due does not matter.</summary>
@@ -196,7 +238,8 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
         var row = await connection.QuerySingleOrDefaultAsync<StateRow>(new CommandDefinition(
             """
             select algorithm_version as AlgorithmVersion, backfill_from as BackfillFrom, backfill_to as BackfillTo,
-                   backfill_cursor as BackfillCursor, paused as Paused, last_run_at as LastRunAt, last_error as LastError
+                   backfill_cursor as BackfillCursor, paused as Paused, last_run_at as LastRunAt, last_error as LastError,
+                   backfill_chunk_attempts as BackfillChunkAttempts
             from processing_state where id = 1
             """, cancellationToken: ct));
 
@@ -204,11 +247,11 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
             ? new ProcessingState(null, null, null, null, false, null, null)
             : new ProcessingState(
                 row.AlgorithmVersion, Utc(row.BackfillFrom), Utc(row.BackfillTo), Utc(row.BackfillCursor),
-                row.Paused, Utc(row.LastRunAt), row.LastError);
+                row.Paused, Utc(row.LastRunAt), row.LastError, row.BackfillChunkAttempts);
     }
 
     /// <summary>
-    /// Stores everything the worker owns: the version, the backfill's range and cursor, the last run and the last error.
+    /// Stores everything the worker owns: the version, the backfill's range, cursor and chunk attempts, the last run and the last error.
     /// <see cref="ProcessingState.Paused"/> is not written: it belongs to whoever pauses the backfill, and the worker
     /// holds a state for the length of a pass, so writing it back could undo a pause made in the meantime.
     /// </summary>
@@ -217,12 +260,13 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await connection.ExecuteAsync(new CommandDefinition(
             """
-            insert into processing_state (id, algorithm_version, backfill_from, backfill_to, backfill_cursor, last_run_at, last_error)
-            values (1, @AlgorithmVersion, @BackfillFrom, @BackfillTo, @BackfillCursor, @LastRunAt, @LastError)
+            insert into processing_state (id, algorithm_version, backfill_from, backfill_to, backfill_cursor, last_run_at, last_error, backfill_chunk_attempts)
+            values (1, @AlgorithmVersion, @BackfillFrom, @BackfillTo, @BackfillCursor, @LastRunAt, @LastError, @BackfillChunkAttempts)
             on conflict (id) do update set
                 algorithm_version = excluded.algorithm_version, backfill_from = excluded.backfill_from,
                 backfill_to = excluded.backfill_to, backfill_cursor = excluded.backfill_cursor,
-                last_run_at = excluded.last_run_at, last_error = excluded.last_error
+                last_run_at = excluded.last_run_at, last_error = excluded.last_error,
+                backfill_chunk_attempts = excluded.backfill_chunk_attempts
             """,
             new
             {
@@ -232,6 +276,7 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
                 BackfillCursor = Utc(state.BackfillCursor),
                 LastRunAt = Utc(state.LastRunAt),
                 state.LastError,
+                state.BackfillChunkAttempts,
             },
             cancellationToken: ct));
     }
@@ -241,7 +286,9 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
     /// with the cursor at its start (no range, for an empty history, means there is nothing to backfill), and deletes every
     /// stored segment, in one transaction. The old segments came from another algorithm; if they stayed, the stays among
     /// them would anchor the rebuild (see <see cref="SegmentStore.FindAnchorsAsync"/>) and carry its output into the
-    /// new one. Places are kept, and the raw points are never touched.
+    /// new one. The set-aside dirty ranges go too, and the chunk attempts return to zero: the backfill goes over all of that
+    /// history again, and a set-aside range that stayed would be listed twice, and would hold back the new rebuilds.
+    /// Places are kept, and the raw points are never touched.
     /// </summary>
     public async Task RestartBackfillAsync(string algorithmVersion, DateTime? fromUtc, DateTime? toUtc, CancellationToken ct = default)
     {
@@ -250,12 +297,16 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
 
         await connection.ExecuteAsync(new CommandDefinition("delete from segment", transaction: transaction, cancellationToken: ct));
         await connection.ExecuteAsync(new CommandDefinition(
+            "delete from dirty_range where attempts >= @SetAside",
+            new { SetAside = SetAsideAfterAttempts }, transaction, cancellationToken: ct));
+        await connection.ExecuteAsync(new CommandDefinition(
             """
-            insert into processing_state (id, algorithm_version, backfill_from, backfill_to, backfill_cursor, last_error)
-            values (1, @AlgorithmVersion, @From, @To, @From, null)
+            insert into processing_state (id, algorithm_version, backfill_from, backfill_to, backfill_cursor, last_error, backfill_chunk_attempts)
+            values (1, @AlgorithmVersion, @From, @To, @From, null, 0)
             on conflict (id) do update set
                 algorithm_version = excluded.algorithm_version, backfill_from = excluded.backfill_from,
-                backfill_to = excluded.backfill_to, backfill_cursor = excluded.backfill_cursor, last_error = null
+                backfill_to = excluded.backfill_to, backfill_cursor = excluded.backfill_cursor, last_error = null,
+                backfill_chunk_attempts = 0
             """,
             new { AlgorithmVersion = algorithmVersion, From = Utc(fromUtc), To = Utc(toUtc) },
             transaction, cancellationToken: ct));
@@ -313,5 +364,6 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
         public bool Paused { get; set; }
         public DateTime? LastRunAt { get; set; }
         public string? LastError { get; set; }
+        public int BackfillChunkAttempts { get; set; }
     }
 }
