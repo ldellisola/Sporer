@@ -43,6 +43,11 @@ public sealed class ApiFactory(
         foreach (var (key, value) in values)
             builder.UseSetting(key, value);
 
+        // The Web SDK lists what lies in the project's wwwroot when it builds (the web app's build output, if it has been built),
+        // and in the Development environment the host serves that list ahead of the web root. A test must not see whatever
+        // the last `npm run build` left there, so the list is pointed at a file that does not exist.
+        builder.UseSetting(WebHostDefaults.StaticWebAssetsKey, "no-static-web-assets.json");
+
         // The web root is a setting like the others, so Program.cs sees it before Build() and the static files come from there.
         if (webRoot is not null)
             builder.UseWebRoot(webRoot);
