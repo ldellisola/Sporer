@@ -1,19 +1,20 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { prefetchNeighbours, useDay } from "../api/queries";
-import { MapView, type MapData, type MapPadding } from "../map/MapView";
+import { prefetchNeighbours } from "../api/queries";
+import type { FitFeatures } from "../map/layers";
+import { MapView, type MapPadding } from "../map/MapView";
 import { BottomSheet, SHEET_PEEK, SHEET_TOP_CLEARANCE, sheetHalfHeight } from "../sheet/BottomSheet";
 import { Sidebar, SIDEBAR_WIDTH } from "../sheet/Sidebar";
-import { Empty, ErrorState, Loading } from "../views/States";
+import { DayPanel } from "../views/DayPanel";
 import { Notice } from "../views/Notice";
 import { StatusBanner } from "../views/StatusBanner";
 import { TopBar } from "../views/TopBar";
-import { useKeptData } from "../views/useKeptData";
 import styles from "./App.module.css";
 import { useRoute, type Route } from "./router";
 import { useBottomEdge } from "./useBottomEdge";
 import { useLastDay } from "./useLastDay";
 import { useMediaQuery } from "./useMediaQuery";
+import { useViewMap } from "./useViewMap";
 import { useViewportHeight } from "./useViewportHeight";
 
 /** From this width the day's panel is a sidebar, below it a bottom sheet. */
@@ -22,38 +23,20 @@ const DESKTOP_QUERY = "(min-width: 900px)";
 /** What is left between what covers the map and what the map is made to show: a pin is never right at the edge of a sheet. */
 const AIR = 16;
 
-// Until the panels of the views arrive (Tasks 9 to 12) the map draws nothing, and the panels are placeholders.
-const NO_DATA: MapData = { routes: { type: "FeatureCollection", features: [] } };
-
-// A placeholder for the day's panel, with the states every view has: loading, empty, and an error with a Retry that leaves the day
-// that was on screen where it is.
-function DayPanel({ date }: { date: string }) {
-  const day = useDay(date);
-  const shown = useKeptData(day.data);
-  return (
-    <>
-      {day.isError && <ErrorState error={day.error} onRetry={() => void day.refetch()} />}
-      {shown === undefined ? (
-        !day.isError && <Loading />
-      ) : (
-        <>
-          <p className={styles.summary}>{shown.segments.length === 1 ? "1 segment" : `${shown.segments.length} segments`}</p>
-          {shown.date === date && shown.segments.length === 0 && <Empty message="No data for this day" />}
-        </>
-      )}
-    </>
-  );
-}
-
-function Panel({ route }: { route: Route }) {
-  if (route.view === "day") return <DayPanel date={route.date} />;
+/**
+ * The panel of the view of the route. The day has its own; the others are placeholders until their panels arrive (Tasks 10 to 12).
+ * `onFocus` is how a panel asks for the map to be brought to something (a row tapped): the map is the shell's, and the one.
+ */
+function Panel({ route, onFocus }: { route: Route; onFocus: (features: FitFeatures) => void }) {
+  if (route.view === "day") return <DayPanel date={route.date} onFocus={onFocus} />;
   return <p className={styles.placeholder}>{`Coming soon: the ${route.view} view.`}</p>;
 }
 
 /**
  * The shell every view lives in: the map fills the screen, the top bar floats over it with the notes under it, and the panel of the
  * view is a bottom sheet on a phone and a sidebar from 900 px up. The map is padded by what covers it (see `padding`), so that
- * what it shows lies in the part that is free.
+ * what it shows lies in the part that is free. What the map draws and where it is brought to come from the route (`useViewMap`),
+ * and a panel asks the shell to move it (`onFocus`).
  */
 export function App() {
   const route = useRoute();
@@ -61,6 +44,7 @@ export function App() {
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const viewportHeight = useViewportHeight();
   const lastDay = useLastDay(route);
+  const map = useViewMap(route);
   const [mapUnavailable, setMapUnavailable] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(SHEET_PEEK);
   const barRef = useRef<HTMLDivElement>(null);
@@ -88,13 +72,13 @@ export function App() {
     [barBottom, desktop, sheetCovers],
   );
 
-  const panel = <Panel route={route} />;
+  const panel = <Panel route={route} onFocus={map.onFocus} />;
   return (
     <main className={styles.shell} data-layout={desktop ? "desktop" : "phone"}>
       <div className={styles.map}>
         <MapView
-          data={NO_DATA}
-          fitTo={null}
+          data={map.data}
+          fitTo={map.fitTo}
           padding={padding}
           onStyleError={() => setMapUnavailable(true)}
           onStyleLoad={() => setMapUnavailable(false)}

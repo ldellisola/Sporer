@@ -12,6 +12,8 @@ const PEEK = 96;
 const isWide = (page: Page): boolean => page.viewportSize()!.width >= 900;
 const details = (page: Page): Locator => page.getByRole(isWide(page) ? "complementary" : "region", { name: "Details" });
 const grip = (page: Page): Locator => page.getByRole("button", { name: "Resize panel" });
+/** The "No data" rows of a day's timeline (a gap each); the message of a day with nothing at all says more than that. */
+const noData = (page: Page): Locator => page.getByText("No data", { exact: true });
 
 /** How much of the bottom sheet shows: it is as tall as its largest point and moved down by the rest. */
 async function visibleSheetHeight(page: Page): Promise<number> {
@@ -241,21 +243,20 @@ test("error_then_retry_recovers", async ({ page }) => {
     },
   });
   await page.goto("/day/2026-10-22");
-  await expect(page.getByText("3 segments")).toBeVisible();
+  await expect(noData(page)).toHaveCount(3); // the three gaps of the day
 
   await page.getByRole("button", { name: "Next day" }).click(); // answered with a 500 both times: the app asks twice, then gives up
   await expect(page).toHaveURL(/\/day\/2026-10-23$/);
   await expect(page.getByRole("alert")).toContainText("Couldn't load");
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
-  await expect(page.getByText("3 segments")).toBeVisible(); // the day that was shown is still there
+  await expect(noData(page)).toHaveCount(3); // the day that was shown is still there
   await expect(page.getByRole("heading", { name: "Friday 23 October" })).toBeVisible();
 
   failing = false;
   await page.getByRole("button", { name: "Retry" }).click();
 
-  await expect(page.getByText("1 segment", { exact: true })).toBeVisible();
+  await expect(noData(page)).toHaveCount(1);
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(page.getByText("3 segments")).toHaveCount(0);
 });
 
 // Ruling P2-R25: the credit is the one thing on the map that must never be covered.

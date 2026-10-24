@@ -3,6 +3,7 @@ import type {
   HeatResponse,
   LonLat,
   Mode,
+  PlaceRef,
   RangeResponse,
 } from "../api/types";
 import type { StyleSpecification } from "./style";
@@ -14,14 +15,20 @@ export type Point = { type: "Point"; coordinates: LonLat };
 export type LineString = { type: "LineString"; coordinates: LonLat[] };
 export type Geometry = Point | LineString;
 export type Feature<G extends Geometry, P> = { type: "Feature"; geometry: G; properties: P };
+/** What the map can be brought to: the features, of any kind, whose positions are to be brought into view (see `MapView`'s `fitTo`). */
+export type FitFeatures = readonly Feature<Geometry, unknown>[];
 export type FeatureCollection<G extends Geometry, P> = { type: "FeatureCollection"; features: Feature<G, P>[] };
 
 /** The mode of a move, or `unknown` for one the server could not tell. */
 export type RouteMode = Mode | "unknown";
 
 export type RouteProperties = { id: number; mode: RouteMode };
-/** `order` counts the pins of the day from 1; `id` is the id of the stay; `name` is null for a place that has none (yet). */
-export type StopProperties = { order: number; name: string | null; id: number };
+/**
+ * A pin is one place of the day, however many of its stays there are. `order` is the number of the first of them (counted from 1,
+ * see `stopOrders`) and `id` its id; `label` lists the numbers of all of them ("1 · 4" for a day that starts and ends at home), and
+ * is what the pin shows; `name` is null for a place that has none (yet).
+ */
+export type StopProperties = { order: number; label: string; name: string | null; id: number };
 /** `radius` is in pixels; `label` is only there for the places that are named on the map. */
 export type PlaceProperties = { id: number; radius: number; label?: string };
 export type HeatProperties = { weight: number };
@@ -43,6 +50,9 @@ const UNKNOWN_MODE_COLOR = "#8E8E93";
 export const PIN_COLOR = "#FF375F";
 const WHITE = "#FFFFFF";
 
+/** The colour a move is drawn in on the map and in the timeline; a move whose mode the server could not tell is grey. */
+export const modeColor = (mode: RouteMode): string => (mode === "unknown" ? UNKNOWN_MODE_COLOR : MODE_COLORS[mode]);
+
 // --- Data for the sources ---
 
 function point<P>(lon: number, lat: number, properties: P): Feature<Point, P> {
@@ -56,19 +66,46 @@ function route(id: number, mode: Mode | null, geometry: LonLat[]): Feature<LineS
 }
 
 /**
- * The routes of a day (every move, with its mode) and its stops: a pin for each stay at a known place, numbered from 1 in the
- * order of the day. A stay at a position that matched no place has no position to draw; it gets no pin and no number. Gaps are
- * not drawn: the day is never bridged with a line that was not travelled.
+ * The number of each stay of a day that has a pin, by the id of the stay: counted from 1 in the order of the day. A stay at a
+ * position that matched no place has no position to draw, so it has no pin and no number. The pins of the map are labelled from
+ * this and the rows of the timeline are numbered from it, so that the two always agree.
+ */
+export function stopOrders(day: DayResponse): Map<number, number> {
+  const orders = new Map<number, number>();
+  for (const segment of day.segments) {
+    if (segment.kind === "stay" && segment.place !== null) orders.set(segment.id, orders.size + 1);
+  }
+  return orders;
+}
+
+/** The point on the map that is a place: where its pin is, for whatever is to be brought into view. */
+export const placePoint = (place: PlaceRef): Feature<Point, Record<string, never>> => point(place.lon, place.lat, {});
+
+/**
+ * The routes of a day (every move, with its mode) and its stops: a pin for each place the day was spent at, labelled with the
+ * numbers of its stays (`stopOrders`), so that a day that starts and ends at home has one pin that says "1 · 4" and not two that
+ * print their numbers over each other. Pins come in the order of their first stay. Gaps are not drawn: the day is never bridged
+ * with a line that was not travelled.
  */
 export function dayGeoJson(day: DayResponse): { routes: RouteCollection; stops: StopCollection } {
+  const orders = stopOrders(day);
   const routes: RouteCollection = { type: "FeatureCollection", features: [] };
   const stops: StopCollection = { type: "FeatureCollection", features: [] };
+  const pinOf = new Map<number, Feature<Point, StopProperties>>(); // by the id of the place: places are merged by the server, not here
   for (const segment of day.segments) {
     if (segment.kind === "move") {
       routes.features.push(...route(segment.id, segment.mode, segment.geometry));
     } else if (segment.kind === "stay" && segment.place !== null) {
       const { place } = segment;
-      stops.features.push(point(place.lon, place.lat, { order: stops.features.length + 1, name: place.name, id: segment.id }));
+      const order = orders.get(segment.id) ?? 0;
+      const pin = pinOf.get(place.id);
+      if (pin === undefined) {
+        const created = point(place.lon, place.lat, { order, label: String(order), name: place.name, id: segment.id });
+        pinOf.set(place.id, created);
+        stops.features.push(created);
+      } else {
+        pin.properties.label += ` · ${order}`;
+      }
     }
   }
   return { routes, stops };
@@ -172,6 +209,16 @@ const MODE_COLOR: LineColor = [
 /** The font OpenFreeMap serves glyphs for; where a map server has no such font, MapLibre draws the text itself. */
 const BOLD_FONT = ["Noto Sans Bold"];
 const LABEL_SIZE = 12;
+
+type CircleLayer = Extract<LayerSpecification, { type: "circle" }>;
+type CircleRadius = Extract<NonNullable<NonNullable<CircleLayer["paint"]>["circle-radius"]>, readonly unknown[]>;
+
+/**
+ * The radius of a stop pin in pixels: 12 for one number, and larger for a label that lists several ("1 · 4" is about twice as wide
+ * as "1"), so that the white numbers stay inside the pin: outside it they would be white on the map and no longer there. It is
+ * 6 px and 2.2 px for each character of the label, which is the width of the text and a margin.
+ */
+const PIN_RADIUS: CircleRadius = ["max", 12, ["+", 6, ["*", 2.2, ["length", ["to-string", ["get", "label"]]]]]];
 
 /**
  * Every layer the map draws, from the bottom up: the heat, the routes, the place dots with their labels, the stop pins with their
@@ -282,7 +329,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       type: "circle",
       source: SOURCE_IDS.stops,
       paint: {
-        "circle-radius": 12,
+        "circle-radius": PIN_RADIUS,
         "circle-color": PIN_COLOR,
         "circle-stroke-color": WHITE,
         "circle-stroke-width": 3,
@@ -297,8 +344,8 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
         "text-field": ["get", "name"],
         "text-font": BOLD_FONT,
         "text-size": LABEL_SIZE,
-        "text-anchor": "left", // to the right of the pin, as in the mockup; two pins at one place are named once
-        "text-offset": [1.5, 0], // the pin's radius and outline, and a little more, in ems
+        "text-variable-anchor": ["left"], // to the right of the pin, as in the mockup; two pins at one place are named once
+        "text-radial-offset": ["+", ["/", PIN_RADIUS, LABEL_SIZE], 0.5], // the pin's radius and outline, and a little more, in ems
         "text-justify": "left",
         "symbol-sort-key": ["get", "order"],
       },
@@ -311,7 +358,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       type: "symbol",
       source: SOURCE_IDS.stops,
       layout: {
-        "text-field": ["to-string", ["get", "order"]],
+        "text-field": ["get", "label"],
         "text-font": BOLD_FONT,
         "text-size": LABEL_SIZE,
         "text-allow-overlap": true,

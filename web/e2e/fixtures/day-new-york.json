@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-23",
+  "timeZone": "America/New_York",
+  "state": "done",
+  "summary": { "places": 3, "distanceMeters": 2700, "movingSeconds": 2220 },
+  "segments": [
+    {
+      "kind": "stay",
+      "id": 110,
+      "start": "2026-10-22T19:40:00Z",
+      "end": "2026-10-23T13:00:00Z",
+      "startTimeZone": "America/New_York",
+      "endTimeZone": "America/New_York",
+      "place": { "id": 5, "name": "Hotel Midtown", "city": "New York", "country": "United States", "lat": 40.755, "lon": -73.986 }
+    },
+    {
+      "kind": "move",
+      "id": 111,
+      "start": "2026-10-23T13:00:00Z",
+      "end": "2026-10-23T13:12:00Z",
+      "startTimeZone": "America/New_York",
+      "endTimeZone": "America/New_York",
+      "mode": "walk",
+      "distanceMeters": 900,
+      "geometry": [[-73.986, 40.755], [-73.983, 40.7565], [-73.98, 40.758]]
+    },
+    {
+      "kind": "stay",
+      "id": 112,
+      "start": "2026-10-23T13:12:00Z",
+      "end": "2026-10-23T14:05:00Z",
+      "startTimeZone": "America/New_York",
+      "endTimeZone": "America/New_York",
+      "place": { "id": 6, "name": "Coffee Shop", "city": "New York", "country": "United States", "lat": 40.758, "lon": -73.98 }
+    },
+    {
+      "kind": "move",
+      "id": 113,
+      "start": "2026-10-23T14:05:00Z",
+      "end": "2026-10-23T14:30:00Z",
+      "startTimeZone": "America/New_York",
+      "endTimeZone": "America/New_York",
+      "mode": "walk",
+      "distanceMeters": 1800,
+      "geometry": [[-73.98, 40.758], [-73.97, 40.768], [-73.963, 40.779]]
+    },
+    {
+      "kind": "stay",
+      "id": 114,
+      "start": "2026-10-23T14:30:00Z",
+      "end": "2026-10-23T18:00:00Z",
+      "startTimeZone": "America/New_York",
+      "endTimeZone": "America/New_York",
+      "place": { "id": 7, "name": "Museum", "city": "New York", "country": "United States", "lat": 40.779, "lon": -73.963 }
+    }
+  ]
+}

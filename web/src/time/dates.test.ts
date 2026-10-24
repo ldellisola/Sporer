@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { PeriodRoute } from "../app/router";
-import { addDays, monthOf, periodLabel, periodRange, step, today, weekStart } from "./dates";
+import { addDays, dateOf, monthOf, periodLabel, periodRange, step, today, weekStart } from "./dates";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -52,6 +52,23 @@ describe("date arithmetic", () => {
     const here = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
     expect(today()).toBe(`${here.getFullYear()}-${pad(here.getMonth() + 1)}-${pad(here.getDate())}`);
+  });
+});
+
+describe("dateOf", () => {
+  test("dateOf_is_the_calendar_date_of_an_instant_on_the_clock_of_a_zone", () => {
+    const instant = "2026-10-22T23:30:00Z";
+
+    expect(dateOf(instant, "UTC")).toBe("2026-10-22");
+    expect(dateOf(instant, "Europe/Oslo")).toBe("2026-10-23"); // 01:30 there, UTC+2
+    expect(dateOf(instant, "America/New_York")).toBe("2026-10-22"); // 19:30, UTC-4
+    expect(dateOf("2026-10-22T22:00:00Z", "Europe/Oslo")).toBe("2026-10-23"); // exactly its midnight
+    expect(dateOf("2026-10-22T21:59:59Z", "Europe/Oslo")).toBe("2026-10-22");
+    expect(dateOf("2026-01-01T00:30:00Z", "America/New_York")).toBe("2025-12-31"); // the year changes with it
+  });
+
+  test("dateOf_reads_a_zone_this_browser_does_not_know_as_UTC", () => {
+    expect(dateOf("2026-10-22T23:30:00Z", "Not/AZone")).toBe("2026-10-22");
   });
 });
 

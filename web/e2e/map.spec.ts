@@ -137,7 +137,7 @@ for (const [name, response] of BROKEN_STYLES) {
     await expect(map(page)).toHaveAttribute("data-map-state", "unavailable");
     await expect(map(page).locator("canvas.maplibregl-canvas")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Thursday 22 October" })).toBeVisible(); // the rest of the page goes on
-    await expect(page.getByText("0 segments")).toBeVisible(); // the rest of the app has its data
+    await expect(page.getByText("No data for this day")).toBeVisible(); // the rest of the app has its data
     await expect(map(page).getByRole("button", { name: "Recenter map" })).toBeVisible();
   });
 }

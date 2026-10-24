@@ -25,6 +25,9 @@
   --danger-ink: #c4001d;
   --focus: #007aff;
 
+  --pin: #ff375f; /* the stop pins of the map, and the numbers of the stops in the timeline: the same pink on both */
+  --row-hover: rgba(118, 118, 128, 0.1); /* a tappable row under the pointer or the finger */
+
   --segment-track: rgba(118, 118, 128, 0.14);
   --segment-on: #ffffff;
   --segment-on-ink: #000000;
@@ -55,6 +58,8 @@
     --accent-ink: #4da3ff;
     --danger-ink: #ff6961;
     --focus: #0a84ff;
+
+    --row-hover: rgba(118, 118, 128, 0.2);
 
     --segment-track: rgba(118, 118, 128, 0.24);
     --segment-on: #636366;

@@ -61,10 +61,3 @@
   text-align: center;
   color: var(--ink-muted);
 }
-
-.summary {
-  margin: 4px 0 12px;
-  color: var(--ink-muted);
-  font-size: 13px;
-  font-weight: 600;
-}

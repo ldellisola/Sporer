@@ -49,16 +49,35 @@ export function isMonth(text: string): boolean {
 
 const firstOf = (month: string): Date => parse(`${month}-01`);
 
-/** Today's date in `zone` (an IANA name), or in the zone of the browser when there is none. */
-export function today(zone?: string): string {
+function dateIn(instant: Date, zone: string | undefined): string {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: zone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(new Date());
+  }).formatToParts(instant);
   const part = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
   return `${part("year").padStart(4, "0")}-${part("month")}-${part("day")}`;
+}
+
+/** Today's date in `zone` (an IANA name), or in the zone of the browser when there is none. */
+export function today(zone?: string): string {
+  return dateIn(new Date(), zone);
+}
+
+/**
+ * The calendar date of an instant (`isoUtc`, ISO-8601 with a `Z`) on the clock of `zone`, an IANA name: the day that a time of a
+ * segment falls on where it happened, which is how the server tells which days a segment is on. A zone this browser has never heard
+ * of reads as UTC (as `formatTime` does), and does not take the screen down with it.
+ */
+export function dateOf(isoUtc: string, zone: string): string {
+  const instant = new Date(isoUtc);
+  try {
+    return dateIn(instant, zone);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    return dateIn(instant, "UTC");
+  }
 }
 
 /** The date `n` days after `date` (before it, when `n` is negative). */

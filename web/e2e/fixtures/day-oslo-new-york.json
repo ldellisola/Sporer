@@ -1,0 +1,107 @@
+{
+  "date": "2026-10-22",
+  "timeZone": "Europe/Oslo",
+  "state": "done",
+  "summary": { "places": 5, "distanceMeters": 5952300, "movingSeconds": 33180 },
+  "segments": [
+    {
+      "kind": "stay",
+      "id": 101,
+      "start": "2026-10-21T19:10:00Z",
+      "end": "2026-10-22T06:32:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "place": { "id": 1, "name": "Home", "city": "Oslo", "country": "Norway", "lat": 59.91, "lon": 10.75 }
+    },
+    {
+      "kind": "move",
+      "id": 102,
+      "start": "2026-10-22T06:32:00Z",
+      "end": "2026-10-22T06:46:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "mode": "walk",
+      "distanceMeters": 1100,
+      "geometry": [[10.75, 59.91], [10.757, 59.9125], [10.764, 59.914]]
+    },
+    {
+      "kind": "stay",
+      "id": 103,
+      "start": "2026-10-22T06:46:00Z",
+      "end": "2026-10-22T07:10:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "place": { "id": 2, "name": "Café", "city": "Oslo", "country": "Norway", "lat": 59.914, "lon": 10.764 }
+    },
+    {
+      "kind": "move",
+      "id": 104,
+      "start": "2026-10-22T07:10:00Z",
+      "end": "2026-10-22T07:23:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "mode": "cycle",
+      "distanceMeters": 3400,
+      "geometry": [[10.764, 59.914], [10.77, 59.918], [10.78, 59.923]]
+    },
+    {
+      "kind": "stay",
+      "id": 105,
+      "start": "2026-10-22T07:23:00Z",
+      "end": "2026-10-22T09:41:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "place": { "id": 3, "name": "Office", "city": "Oslo", "country": "Norway", "lat": 59.923, "lon": 10.78 }
+    },
+    {
+      "kind": "move",
+      "id": 106,
+      "start": "2026-10-22T09:41:00Z",
+      "end": "2026-10-22T10:22:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "mode": "drive",
+      "distanceMeters": 47800,
+      "geometry": [[10.78, 59.923], [10.9, 60.05], [11.1, 60.198]]
+    },
+    {
+      "kind": "stay",
+      "id": 107,
+      "start": "2026-10-22T10:22:00Z",
+      "end": "2026-10-22T10:50:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "place": { "id": 4, "name": null, "city": "Oslo", "country": "Norway", "lat": 60.198, "lon": 11.1 }
+    },
+    {
+      "kind": "move",
+      "id": 108,
+      "start": "2026-10-22T10:50:00Z",
+      "end": "2026-10-22T18:55:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "America/New_York",
+      "mode": "flight",
+      "distanceMeters": 5900000,
+      "geometry": [[11.1, 60.198], [-30, 64], [-73.78, 40.64]]
+    },
+    {
+      "kind": "gap",
+      "id": 109,
+      "start": "2026-10-22T18:55:00Z",
+      "end": "2026-10-22T19:40:00Z",
+      "startTimeZone": "America/New_York",
+      "endTimeZone": "America/New_York",
+      "from": { "lat": 40.64, "lon": -73.78 },
+      "to": { "lat": 40.755, "lon": -73.986 }
+    },
+    {
+      "kind": "stay",
+      "id": 110,
+      "start": "2026-10-22T19:40:00Z",
+      "end": "2026-10-23T13:00:00Z",
+      "startTimeZone": "America/New_York",
+      "endTimeZone": "America/New_York",
+      "place": { "id": 5, "name": "Hotel Midtown", "city": "New York", "country": "United States", "lat": 40.755, "lon": -73.986 }
+    }
+  ]
+}

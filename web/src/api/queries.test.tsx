@@ -119,6 +119,17 @@ describe("query hooks", () => {
     expect(result.current.isPlaceholderData).toBe(false);
   });
 
+  test("useDay_with_no_date_asks_for_nothing", async () => {
+    const urls = stubApi(() => json(day("2026-10-22")));
+    const { result } = renderHook(() => useDay(null), { wrapper: wrapperFor(newClient()) });
+
+    await act(async () => undefined);
+
+    expect(urls).toEqual([]); // the view on show is not a day
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(result.current.data).toBeUndefined();
+  });
+
   test("useDay_refetches_every_30_seconds_only_while_pending", async () => {
     vi.useFakeTimers();
     let state: LoadState = "pending";

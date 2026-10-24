@@ -78,7 +78,8 @@ export function configQueryOptions() {
   });
 }
 
-export const useDay = (date: string) => useQuery(dayQueryOptions(date));
+/** The day `date`; nothing is asked for while it is null (the view on show is not a day, and its map has no day to draw). */
+export const useDay = (date: string | null) => useQuery({ ...dayQueryOptions(date ?? ""), enabled: date !== null });
 
 export const useRange = (from: string, to: string) => useQuery(rangeQueryOptions(from, to));
 

@@ -19,6 +19,7 @@ import {
   PIN_COLOR,
   rangeGeoJson,
   SOURCE_IDS,
+  stopOrders,
 } from "./layers";
 
 const SUMMARY = { places: 0, distanceMeters: 0, movingSeconds: 0 };
@@ -72,13 +73,38 @@ describe("dayGeoJson", () => {
       { type: "Feature", properties: { id: 15, mode: "unknown" }, geometry: { type: "LineString", coordinates: [[10.2, 59.2], [10.0, 59.0]] } },
     ]);
 
+    // The day starts and ends at home: one pin for the place, with both numbers (ruling P2-R20).
     expect(stops.type).toBe("FeatureCollection");
     expect(stops.features).toEqual([
-      { type: "Feature", properties: { order: 1, name: "Home", id: 10 }, geometry: { type: "Point", coordinates: [10.0, 59.0] } },
-      { type: "Feature", properties: { order: 2, name: "Café", id: 12 }, geometry: { type: "Point", coordinates: [10.1, 59.1] } },
-      { type: "Feature", properties: { order: 3, name: null, id: 14 }, geometry: { type: "Point", coordinates: [10.2, 59.2] } },
-      { type: "Feature", properties: { order: 4, name: "Home", id: 16 }, geometry: { type: "Point", coordinates: [10.0, 59.0] } },
+      { type: "Feature", properties: { order: 1, label: "1 · 4", name: "Home", id: 10 }, geometry: { type: "Point", coordinates: [10.0, 59.0] } },
+      { type: "Feature", properties: { order: 2, label: "2", name: "Café", id: 12 }, geometry: { type: "Point", coordinates: [10.1, 59.1] } },
+      { type: "Feature", properties: { order: 3, label: "3", name: null, id: 14 }, geometry: { type: "Point", coordinates: [10.2, 59.2] } },
     ]);
+  });
+
+  test("dayGeoJson_merges_the_stops_of_one_place_into_one_pin_that_lists_their_numbers", () => {
+    const { stops } = dayGeoJson(
+      day(
+        stay(1, HOME),
+        stay(2, CAFE),
+        stay(3, HOME),
+        stay(4, null), // no pin, no number
+        stay(5, HOME),
+        stay(6, CAFE),
+      ),
+    );
+
+    expect(stops.features.map((feature) => [feature.properties.label, feature.properties.order, feature.properties.id])).toEqual([
+      ["1 · 3 · 4", 1, 1], // in the order of the day, at the first of its stays: the stay at no place (4) took no number
+      ["2 · 5", 2, 2],
+    ]);
+  });
+
+  test("dayGeoJson_keeps_apart_places_that_only_share_a_name_or_a_spot", () => {
+    const other = place(9, "Home", 10.0, 59.0); // another place, same name and position: a merge of the places is the server's
+    const { stops } = dayGeoJson(day(stay(1, HOME), stay(2, other)));
+
+    expect(stops.features.map((feature) => feature.properties.label)).toEqual(["1", "2"]);
   });
 
   test("dayGeoJson_numbers_only_the_stops_it_can_draw_and_skips_gaps_and_degenerate_lines", () => {
@@ -111,6 +137,42 @@ describe("dayGeoJson", () => {
 
     expect(routes.features[0]?.geometry.coordinates).toEqual(arc);
     expect(routes.features[0]?.properties.mode).toBe("flight");
+  });
+});
+
+describe("stopOrders", () => {
+  test("stopOrders_numbers_the_stays_that_have_a_pin_from_1_in_the_order_of_the_day", () => {
+    const orders = stopOrders(
+      day(
+        stay(10, HOME),
+        move(11, "walk", [[10, 59], [10.1, 59.1]]),
+        stay(12, null), // no place, no number
+        { id: 13, kind: "gap", ...WHEN, from: null, to: null },
+        stay(14, CAFE),
+        stay(15, HOME), // the same place again: its own number
+      ),
+    );
+
+    expect([...orders]).toEqual([[10, 1], [14, 2], [15, 3]]);
+  });
+
+  test("stopOrders_are_the_numbers_on_the_pins", () => {
+    // The timeline reads its numbers from here and the pins are labelled from here: they cannot disagree (ruling P2-R16).
+    const stays = [stay(1, HOME), stay(2, null), stay(3, CAFE), stay(4, HOME), stay(5, OFFICE), stay(6, CAFE)];
+    const orders = stopOrders(day(...stays));
+    const { stops } = dayGeoJson(day(...stays));
+
+    const byPlace = new Map<number, string[]>();
+    for (const segment of stays) {
+      const order = orders.get(segment.id);
+      if (segment.place !== null) byPlace.set(segment.place.id, [...(byPlace.get(segment.place.id) ?? []), String(order)]);
+    }
+    expect(stops.features.map((feature) => feature.properties.label)).toEqual([...byPlace.values()].map((numbers) => numbers.join(" · ")));
+    expect(orders.has(2)).toBe(false);
+  });
+
+  test("stopOrders_of_an_empty_day_are_none", () => {
+    expect(stopOrders(day()).size).toBe(0);
   });
 });
 
@@ -329,10 +391,21 @@ describe("layerSpecs", () => {
     expect(paint(pins)["circle-color"]).toBe(PIN_COLOR);
     expect(paint(pins)["circle-stroke-color"]).toBe("#FFFFFF");
     expect(numbers.type).toBe("symbol");
-    expect(layout(numbers)["text-field"]).toEqual(["to-string", ["get", "order"]]);
+    // The label of the pin: the number, or the numbers of every stay at the place ("1 · 4").
+    expect(layout(numbers)["text-field"]).toEqual(["get", "label"]);
     // No number is left out for another one being near: the timeline shows them all, so does the map.
     expect(layout(numbers)["text-allow-overlap"]).toBe(true);
     expect((numbers as { source: string }).source).toBe(SOURCE_IDS.stops);
+  });
+
+  test("layerSpecs_grow_a_stop_pin_with_its_label_so_that_the_white_numbers_stay_inside_it", () => {
+    const radius = JSON.stringify(paint(find("day", LAYER_IDS.stops))["circle-radius"]);
+    const offset = JSON.stringify(layout(find("day", LAYER_IDS.stopNames))["text-radial-offset"]);
+
+    // "1 · 4" is wider than "1", and white text outside the pin would be lost on the map; the name beside it follows the pin's size.
+    expect(radius).toContain('"length"');
+    expect(radius).toContain('"label"');
+    expect(offset).toContain('"label"');
   });
 
   test("layerSpecs_size_place_dots_by_their_radius_and_label_the_top_ones", () => {

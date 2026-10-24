@@ -3,7 +3,9 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MapPadding, MapViewProps } from "../map/MapView";
-import type { DayResponse, StatusResponse } from "../api/types";
+import type { DayResponse, StatusResponse, StaySegment } from "../api/types";
+import { dayGeoJson, placePoint } from "../map/layers";
+import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
 import { App } from "./App";
 import { navigate } from "./router";
 
@@ -243,7 +245,7 @@ describe("App layout", () => {
     renderApp();
 
     expect(screen.getByRole("heading")).toHaveTextContent("Thursday 22 October");
-    expect(await screen.findByText("3 segments")).toBeInTheDocument();
+    expect(await screen.findAllByText("No data")).toHaveLength(3); // the day's timeline: three gaps
   });
 
   test("App_is_one_landmark_and_the_map_is_in_it", () => {
@@ -337,20 +339,19 @@ describe("App day panel", () => {
       return failing ? new Response("{}", { status: 500 }) : Response.json(day(date, 1));
     });
     renderApp();
-    expect(await screen.findByText("3 segments")).toBeInTheDocument();
+    expect(await screen.findAllByText("No data")).toHaveLength(3);
 
     fireEvent.click(screen.getByRole("button", { name: "Next day" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load — Retry");
-    expect(screen.getByText("3 segments")).toBeInTheDocument(); // the day that was shown stays under the error
+    expect(screen.getAllByText("No data")).toHaveLength(3); // the day that was shown stays under the error
     expect(screen.getByRole("heading")).toHaveTextContent("Friday 23 October");
 
     failing = false;
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
-    expect(await screen.findByText("1 segment")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("No data")).toHaveLength(1));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.queryByText("3 segments")).not.toBeInTheDocument();
   });
 
   test("App_says_when_a_day_has_no_data_and_when_it_is_still_loading", async () => {
@@ -366,7 +367,6 @@ describe("App day panel", () => {
     release(Response.json(day("2026-10-22", 0)));
 
     expect(await screen.findByText("No data for this day")).toBeInTheDocument();
-    expect(screen.getByText("0 segments")).toBeInTheDocument();
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
   });
 
@@ -376,7 +376,24 @@ describe("App day panel", () => {
     renderApp();
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load — Retry");
-    expect(screen.queryByText(/segments?$/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
+  });
+
+  test("App_keeps_the_day_it_could_not_replace_on_the_map_too", async () => {
+    stubApi((path) => {
+      const date = path.split("/").pop()!;
+      return date === "2026-10-22" ? Response.json(flightDay) : new Response("{}", { status: 500 });
+    });
+    renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    const drawn = mapProps().data;
+
+    fireEvent.click(screen.getByRole("button", { name: "Next day" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load — Retry");
+
+    expect(mapProps().data.routes).toBe(drawn.routes); // as the panel keeps its rows
+    expect(mapProps().data.stops).toBe(drawn.stops);
+    expect(mapProps().fitTo).toBeNull(); // but the map is not taken anywhere for a date that has nothing
   });
 
   test("App_has_a_panel_for_every_other_view", () => {
@@ -393,5 +410,74 @@ describe("App day panel", () => {
       act(() => navigate(route));
       expect(screen.getByRole("region", { name: "Details" })).not.toBeEmptyDOMElement();
     }
+  });
+});
+
+describe("App day on the map", () => {
+  const OSLO_DAY = flightDay as DayResponse;
+  const answerWithTheFlight = (path: string) => Response.json(path.endsWith("2026-10-22") ? OSLO_DAY : day(path.split("/").pop()!, 2));
+
+  test("App_draws_the_day_of_the_panel_on_the_map_and_fits_to_it", async () => {
+    stubApi(answerWithTheFlight);
+
+    renderApp();
+
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    expect(mapProps().data).toEqual(dayGeoJson(OSLO_DAY));
+    const { routes, stops } = dayGeoJson(OSLO_DAY);
+    expect(mapProps().fitTo).toEqual([...routes.features, ...stops.features]);
+  });
+
+  test("App_a_tap_on_a_row_fits_the_map_to_its_segment_each_time_it_is_tapped", async () => {
+    stubApi(answerWithTheFlight);
+    renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    const auto = mapProps().fitTo;
+    const home = placePoint((OSLO_DAY.segments[0] as StaySegment).place!);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Home on the map" }));
+    const first = mapProps().fitTo;
+    expect(first).toEqual([home]);
+    expect(first).not.toBe(auto);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Home on the map" })); // the same row again: another array, so the map moves again
+    expect(mapProps().fitTo).toEqual([home]);
+    expect(mapProps().fitTo).not.toBe(first);
+  });
+
+  test("App_does_not_take_the_map_back_from_a_row_when_the_day_is_polled", async () => {
+    let state: "pending" | "done" = "pending";
+    stubApi((path) => Response.json(path.endsWith("2026-10-22") ? { ...OSLO_DAY, state } : day(path.split("/").pop()!)));
+    const { client } = renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Show Café on the map" }));
+    const tapped = mapProps().fitTo;
+
+    state = "done"; // the poll of a day that was still being processed finds it done
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["day", "2026-10-22"] });
+    });
+
+    await waitFor(() => expect(screen.queryByText("Updating…")).not.toBeInTheDocument());
+    expect(mapProps().fitTo).toBe(tapped);
+  });
+
+  test("App_finds_the_next_day_already_asked_for_when_stepping_forward", async () => {
+    // Ruling P2-R36: the neighbours of the day on show are prefetched (by the shell, for every route), so › has them at hand.
+    const paths = stubApi((path) => Response.json(day(path.split("/").pop()!, 2)));
+    const { client } = renderApp();
+    await screen.findAllByText("No data");
+    await waitFor(() => expect(client.getQueryData(["day", "2026-10-23"])).toBeDefined());
+    expect(paths.filter((path) => path === "/api/day/2026-10-23")).toHaveLength(1);
+    expect(client.getQueryData(["day", "2026-10-21"])).toBeDefined(); // and the one before
+
+    fireEvent.click(screen.getByRole("button", { name: "Next day" }));
+
+    // The next day is on screen in the same render, with no loading in between and no second request for it.
+    expect(screen.getByRole("heading")).toHaveTextContent("Friday 23 October");
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+    expect(screen.getAllByText("No data")).toHaveLength(2);
+    expect(document.querySelector("[aria-busy]")).toHaveAttribute("aria-busy", "false"); // it is the day asked for, not the one before
+    expect(paths.filter((path) => path === "/api/day/2026-10-23")).toHaveLength(1);
   });
 });

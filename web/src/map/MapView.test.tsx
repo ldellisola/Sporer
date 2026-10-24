@@ -136,10 +136,10 @@ function routes(id = 1, ...lonLat: [number, number][]): FeatureCollection<LineSt
   };
 }
 
-function stops(): FeatureCollection<Point, { order: number; name: string | null; id: number }> {
+function stops(): FeatureCollection<Point, { order: number; label: string; name: string | null; id: number }> {
   return {
     type: "FeatureCollection",
-    features: [{ type: "Feature", properties: { order: 1, name: "Home", id: 5 }, geometry: { type: "Point", coordinates: [10, 59] } }],
+    features: [{ type: "Feature", properties: { order: 1, label: "1", name: "Home", id: 5 }, geometry: { type: "Point", coordinates: [10, 59] } }],
   };
 }
 
