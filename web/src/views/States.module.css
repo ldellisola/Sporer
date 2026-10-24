@@ -40,3 +40,18 @@
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
+
+/* The period that is on screen while another is loading: still there, and fainter. */
+.shown {
+  transition: opacity 150ms;
+}
+
+.shown[aria-busy="true"] {
+  opacity: 0.55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shown {
+    transition: none;
+  }
+}

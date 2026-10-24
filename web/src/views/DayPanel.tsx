@@ -4,9 +4,10 @@ import type { DayResponse, GapSegment, MoveSegment, StaySegment } from "../api/t
 import { navigate } from "../app/router";
 import { dayGeoJson, modeColor, placePoint, stopOrders, type FitFeatures, type RouteProperties, type Feature, type LineString } from "../map/layers";
 import { dateOf } from "../time/dates";
-import { formatDistance, formatDuration, formatTime } from "../time/format";
+import { formatCount, formatDistance, formatDuration, formatTime } from "../time/format";
+import { Chip, Chips } from "./Chips";
 import styles from "./DayPanel.module.css";
-import { Empty, ErrorState, Loading } from "./States";
+import { Empty, ErrorState, Loading, Shown } from "./States";
 import { useKeptData } from "./useKeptData";
 
 type RouteFeature = Feature<LineString, RouteProperties>;
@@ -100,12 +101,6 @@ function GapRow({ gap }: { gap: GapSegment }) {
   );
 }
 
-function Chip({ children, updating = false }: { children: string; updating?: boolean }) {
-  return <span className={updating ? `${styles.chip} ${styles.updating}` : styles.chip}>{children}</span>;
-}
-
-const places = (count: number): string => (count === 1 ? "1 place" : `${count} places`);
-
 /** What is on screen of a day: its chips and its timeline; `asked` says whether it is the day that the address asks for. */
 function Day({ day, asked, loading, onFocus }: { day: DayResponse; asked: boolean; loading: boolean; onFocus: DayPanelProps["onFocus"] }) {
   // The numbers are the map's: the pins are labelled from the same `stopOrders`, and the routes tapped are the lines it draws.
@@ -118,17 +113,17 @@ function Day({ day, asked, loading, onFocus }: { day: DayResponse; asked: boolea
   return (
     // What is shown while the day asked for is on its way is the day before: it stays, and says it is not the one asked for. Under an
     // error nothing is on its way, and the error says what the day shown is.
-    <div className={styles.day} aria-busy={!asked && loading}>
-      <div className={styles.chips}>
+    <Shown busy={!asked && loading}>
+      <Chips>
         {!empty && (
           <>
-            <Chip>{places(day.summary.places)}</Chip>
+            <Chip>{formatCount(day.summary.places, "place")}</Chip>
             <Chip>{formatDistance(day.summary.distanceMeters)}</Chip>
             <Chip>{`${formatDuration(day.summary.movingSeconds)} moving`}</Chip>
           </>
         )}
         {day.state === "pending" && <Chip updating>Updating…</Chip>}
-      </div>
+      </Chips>
       {empty ? (
         // An empty day that is not the one asked for says nothing of the one that is.
         asked ? <Empty message="No data for this day" /> : loading && <Loading />
@@ -154,7 +149,7 @@ function Day({ day, asked, loading, onFocus }: { day: DayResponse; asked: boolea
           })}
         </ol>
       )}
-    </div>
+    </Shown>
   );
 }
 

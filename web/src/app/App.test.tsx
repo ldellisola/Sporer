@@ -3,9 +3,10 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MapPadding, MapViewProps } from "../map/MapView";
-import type { DayResponse, StatusResponse, StaySegment } from "../api/types";
-import { dayGeoJson, placePoint } from "../map/layers";
+import type { DayResponse, RangeResponse, StatusResponse, StaySegment } from "../api/types";
+import { dayGeoJson, placePoint, rangeGeoJson } from "../map/layers";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
+import october from "../../e2e/fixtures/range-october.json";
 import { App } from "./App";
 import { navigate } from "./router";
 
@@ -63,10 +64,27 @@ function day(date: string, segments = 0): DayResponse {
   };
 }
 
+/** A period with nothing in it, for the dates that a request of `/api/range` asks for. */
+function emptyRange(path: string): RangeResponse {
+  const query = new URLSearchParams(path.split("?")[1]);
+  return {
+    from: query.get("from")!,
+    to: query.get("to")!,
+    state: "done",
+    summary: { places: 0, distanceMeters: 0, movingSeconds: 0, moves: 0 },
+    moves: [],
+    places: [],
+    days: [],
+  };
+}
+
 type Answer = (path: string) => Response | Promise<Response>;
 
+/** Answers a day with a day and a period with a period, none of them with anything in it. */
+const answerEmpty: Answer = (path) => Response.json(path.startsWith("/api/range") ? emptyRange(path) : day(path.split("/").pop()!));
+
 /** Answers the API: the status always, everything else by `answer`; returns the paths asked for. */
-function stubApi(answer: Answer = (path) => Response.json(day(path.split("/").pop()!))): string[] {
+function stubApi(answer: Answer = answerEmpty): string[] {
   const paths: string[] = [];
   vi.stubGlobal(
     "fetch",
@@ -569,5 +587,193 @@ describe("App row taps on the sheet", () => {
 
     expect(mapProps().fitTo).not.toBe(before);
     expect(screen.queryByRole("button", { name: "Resize panel" })).not.toBeInTheDocument();
+  });
+});
+
+describe("App period panels", () => {
+  const OCTOBER = october as RangeResponse; // 2026-10-01 to 2026-10-31: 9 moves, 6 places, 8 days
+  /** What a request of `/api/range` is answered with by the dates it asks for; any other period has nothing in it. */
+  const answerWith = (periods: Record<string, RangeResponse | Answer>): Answer => (path) => {
+    if (!path.startsWith("/api/range")) return answerEmpty(path);
+    const { from, to } = emptyRange(path);
+    const answer = periods[`${from}..${to}`];
+    if (answer === undefined) return Response.json(emptyRange(path));
+    return typeof answer === "function" ? answer(path) : Response.json(answer);
+  };
+  /** A week with a few of the month's routes and places, so that it is told from the month and from another week. */
+  const week = (from: string, to: string, moves: number, places: number): RangeResponse => ({
+    ...OCTOBER,
+    from,
+    to,
+    summary: { places, distanceMeters: 5000, movingSeconds: 600, moves },
+    moves: OCTOBER.moves.slice(0, moves),
+    places: OCTOBER.places.slice(0, places),
+    days: OCTOBER.days.filter((entry) => entry.date >= from && entry.date <= to),
+  });
+  const WEEK_19 = week("2026-10-19", "2026-10-25", 2, 3);
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/week/2026-10-19");
+  });
+
+  test("App_shows_the_panel_of_each_period_view_and_says_when_a_period_is_empty", async () => {
+    stubApi(answerWith({ "2026-10-01..2026-10-31": OCTOBER }));
+    renderApp();
+    expect(await screen.findByText("No data for this period")).toBeInTheDocument(); // the week of the 19th: the API has nothing
+
+    act(() => navigate({ view: "month", month: "2026-10" }));
+
+    expect(await screen.findByText("6 places")).toBeInTheDocument();
+    expect(screen.getByText("41.3 km")).toBeInTheDocument();
+    expect(screen.getByText("9 moves")).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Where your time went" })).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Days" })).toBeInTheDocument();
+
+    act(() => navigate({ view: "range", from: "2026-11-02", to: "2026-11-08" }));
+    expect(await screen.findByText("No data for this period")).toBeInTheDocument();
+
+    act(() => navigate({ view: "year", year: 2026 }));
+    expect(await screen.findByText("No data for this period")).toBeInTheDocument();
+  });
+
+  test("App_draws_the_period_of_the_panel_on_the_map_and_fits_to_it", async () => {
+    window.history.replaceState(null, "", "/month/2026-10");
+    stubApi(answerWith({ "2026-10-01..2026-10-31": OCTOBER }));
+
+    renderApp();
+
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    expect(mapProps().data).toEqual(rangeGeoJson(OCTOBER));
+    const { routes, places } = rangeGeoJson(OCTOBER);
+    const all = [...routes.features, ...places.features];
+    expect(mapProps().fitTo).toEqual(all);
+    expect(mapProps().home).toEqual(all);
+  });
+
+  test("App_finds_the_next_week_already_asked_for_when_stepping_forward", async () => {
+    // Ruling P2-R44: the neighbours of the period on show are prefetched (by the shell, for every route), so › has them at hand.
+    const paths = stubApi(
+      answerWith({ "2026-10-19..2026-10-25": WEEK_19, "2026-10-26..2026-11-01": week("2026-10-26", "2026-11-01", 3, 2) }),
+    );
+    const { client } = renderApp();
+    await screen.findByText("3 places");
+    await waitFor(() => expect(client.getQueryData(["range", "2026-10-26", "2026-11-01"])).toBeDefined());
+    expect(paths.filter((path) => path === "/api/range?from=2026-10-26&to=2026-11-01")).toHaveLength(1);
+    expect(client.getQueryData(["range", "2026-10-12", "2026-10-18"])).toBeDefined(); // and the one before
+
+    fireEvent.click(screen.getByRole("button", { name: "Next week" }));
+
+    // The next week is on screen in the same render, with no loading in between and no second request for it.
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("26 Oct – 1 Nov 2026"); // the others are the lists
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+    expect(screen.getByText("2 places")).toBeInTheDocument();
+    expect(document.querySelector("[aria-busy]")).toHaveAttribute("aria-busy", "false"); // it is the week asked for, not the one before
+    expect(paths.filter((path) => path === "/api/range?from=2026-10-26&to=2026-11-01")).toHaveLength(1);
+  });
+
+  test("App_keeps_the_week_it_could_not_replace_under_the_error_and_on_the_map_too", async () => {
+    let failing = true;
+    stubApi(
+      answerWith({
+        "2026-10-19..2026-10-25": WEEK_19,
+        "2026-10-26..2026-11-01": () => (failing ? new Response("{}", { status: 500 }) : Response.json(week("2026-10-26", "2026-11-01", 3, 2))),
+      }),
+    );
+    renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    const drawn = mapProps().data;
+
+    fireEvent.click(screen.getByRole("button", { name: "Next week" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load — Retry");
+
+    expect(screen.getByText("3 places")).toBeInTheDocument(); // the week that was shown stays under the error...
+    expect(mapProps().data.routes).toBe(drawn.routes); // ...and on the map
+    expect(mapProps().data.places).toBe(drawn.places);
+    expect(mapProps().fitTo).toBeNull(); // which is not taken anywhere for a week that has nothing
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText("2 places")).toBeInTheDocument();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    expect(mapProps().data).toEqual(rangeGeoJson(week("2026-10-26", "2026-11-01", 3, 2)));
+  });
+
+  test("App_keeps_the_week_under_the_month_on_the_map_as_in_the_panel_when_the_bar_switches_view", async () => {
+    // Week to month is one panel that goes on (nothing remounts), and it keeps the week while the month loads. The map does the same.
+    stubApi(answerWith({ "2026-10-19..2026-10-25": WEEK_19, "2026-10-01..2026-10-31": () => new Promise<Response>(() => undefined) }));
+    renderApp();
+    await screen.findByText("3 places");
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    const drawn = mapProps().data;
+
+    fireEvent.click(screen.getByRole("button", { name: "Month" }));
+
+    expect(window.location.pathname).toBe("/month/2026-10");
+    expect(screen.getByText("3 places")).toBeInTheDocument(); // the panel's...
+    expect(document.querySelector("[aria-busy]")).toHaveAttribute("aria-busy", "true");
+    expect(mapProps().data.routes).toBe(drawn.routes); // ...and the map's
+    expect(mapProps().data.places).toBe(drawn.places);
+  });
+
+  test("App_draws_and_shows_nothing_of_the_week_that_was_left_when_the_next_one_is_not_there_yet", async () => {
+    // Week, then a day, then another week that has to be loaded: the panel is mounted afresh and says "Loading…", and the map is cleared too.
+    let release: (response: Response) => void = () => undefined;
+    stubApi(
+      answerWith({
+        "2026-10-19..2026-10-25": WEEK_19,
+        "2026-10-26..2026-11-01": () => new Promise<Response>((resolve) => (release = resolve)),
+      }),
+    );
+    renderApp();
+    await waitFor(() => expect(mapProps().data.places?.features).toHaveLength(3));
+    act(() => navigate({ view: "day", date: "2026-10-22" }));
+    expect(await screen.findByText("No data for this day")).toBeInTheDocument();
+    expect(mapProps().data.routes.features).toEqual([]);
+
+    act(() => navigate({ view: "week", start: "2026-10-26" }));
+
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
+    expect(mapProps().data.routes.features).toEqual([]); // not the 19th's routes and dots
+    expect(mapProps().data.places).toBeUndefined();
+    expect(mapProps().fitTo).toBeNull();
+    release(Response.json(week("2026-10-26", "2026-11-01", 3, 2)));
+    expect(await screen.findByText("2 places")).toBeInTheDocument();
+  });
+
+  test("App_does_not_take_the_map_back_when_a_period_that_is_still_being_processed_is_polled", async () => {
+    let state: "pending" | "done" = "pending";
+    stubApi(answerWith({ "2026-10-19..2026-10-25": () => Response.json({ ...WEEK_19, state }) }));
+    const { client } = renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    expect(screen.getByText("Updating…")).toBeInTheDocument();
+    const fit = mapProps().fitTo;
+
+    state = "done"; // the poll of a period that was still being processed finds it done
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["range", "2026-10-19", "2026-10-25"] });
+    });
+
+    await waitFor(() => expect(screen.queryByText("Updating…")).not.toBeInTheDocument());
+    expect(mapProps().fitTo).toBe(fit);
+  });
+
+  test("App_a_row_of_the_month_opens_its_day_and_a_row_of_a_place_opens_the_place", async () => {
+    window.history.replaceState(null, "", "/month/2026-10");
+    stubApi(answerWith({ "2026-10-01..2026-10-31": OCTOBER }));
+    renderApp();
+    await screen.findByRole("list", { name: "Days" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Thursday 22 October" }));
+
+    expect(window.location.pathname).toBe("/day/2026-10-22");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Thursday 22 October");
+    expect(await screen.findByText("No data for this day")).toBeInTheDocument(); // the day view, in the same shell
+
+    act(() => navigate({ view: "month", month: "2026-10" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Home" }));
+
+    expect(window.location.pathname).toBe("/place/1");
   });
 });

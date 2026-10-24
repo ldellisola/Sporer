@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 import { ApiError } from "../api/client";
-import { Empty, ErrorState, Loading } from "./States";
+import { Empty, ErrorState, Loading, Shown } from "./States";
 
 describe("States", () => {
   test("Loading_says_so_and_can_say_what_is_loading", () => {
@@ -16,6 +16,17 @@ describe("States", () => {
     render(<Empty message="No data for this day" />);
 
     expect(screen.getByText("No data for this day")).toBeInTheDocument();
+  });
+
+  test("Shown_holds_what_it_is_given_and_says_when_it_is_busy", () => {
+    const { container, rerender } = render(<Shown busy={false}>the week</Shown>);
+    expect(screen.getByText("the week")).toBeInTheDocument();
+    expect(container.firstElementChild).toHaveAttribute("aria-busy", "false");
+
+    rerender(<Shown busy>the week</Shown>); // another week is on its way: this one stays, and is not the one asked for
+
+    expect(screen.getByText("the week")).toBeInTheDocument();
+    expect(container.firstElementChild).toHaveAttribute("aria-busy", "true");
   });
 
   test("ErrorState_says_it_could_not_load_and_offers_a_retry", () => {

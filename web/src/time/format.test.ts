@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { formatDistance, formatDuration, formatTime } from "./format";
+import { formatCount, formatDistance, formatDuration, formatTime } from "./format";
 
 describe("formatTime", () => {
   test("formatTime_uses_segment_zone", () => {
@@ -72,5 +72,14 @@ describe("formatDuration", () => {
     expect(formatDistance(41_203_000)).toBe("41,203 km");
     expect(formatDistance(-20)).toBe("0 m");
     expect(formatDistance(Number.NaN)).toBe("0 m");
+  });
+});
+
+describe("formatCount", () => {
+  test("formatCount_says_one_of_a_thing_and_many_of_things", () => {
+    expect(formatCount(0, "move")).toBe("0 moves");
+    expect(formatCount(1, "place")).toBe("1 place");
+    expect(formatCount(2, "place")).toBe("2 places");
+    expect(formatCount(1234, "move")).toBe("1,234 moves"); // grouped, as the distances are
   });
 });

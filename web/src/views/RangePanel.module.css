@@ -1,0 +1,111 @@
+/* The heads of the two lists, as the mockup has them: small, bold, capitals. */
+.heading {
+  margin: 2px 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.list {
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+}
+
+/*
+ * A row of either list is one button that is the whole row, and that is all there is to it: unlike a row of the day's timeline it has
+ * nothing else in it to tap. It reaches a little past the text on each side, which is what shows under the finger or the pointer.
+ */
+.row {
+  display: grid;
+  align-items: center;
+  column-gap: 10px;
+  box-sizing: border-box;
+  width: calc(100% + 12px);
+  min-height: 36px;
+  margin: 0 -6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.row:active {
+  background: var(--row-hover);
+}
+
+@media (hover: hover) {
+  .row:hover {
+    background: var(--row-hover);
+  }
+}
+
+.row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* The name, the bar and the time: the bar takes what the other two leave. */
+.place {
+  grid-template-columns: minmax(0, 96px) minmax(0, 1fr) 64px;
+}
+
+.name {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+/* The bar is a share of the top place's (the mockup's): a track, and what is filled of it, which the row gives the width of. */
+.track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--pin);
+}
+
+.duration {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.day {
+  grid-template-columns: 82px minmax(0, 1fr);
+}
+
+.date {
+  font-size: 13.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A day with no movement is a quiet row: still there, to be opened, but it does not call for the eye. */
+.still .date,
+.still .stats {
+  font-weight: 400;
+  color: var(--ink-muted);
+}

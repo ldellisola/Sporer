@@ -1,4 +1,4 @@
-// How the app writes times, durations and distances. English, 24-hour clock, metric.
+// How the app writes times, durations, distances and counts. English, 24-hour clock, metric.
 
 const integer = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 0 });
 
@@ -37,6 +37,11 @@ export function formatDuration(seconds: number): string {
   if (hours > 0) return `${integer.format(hours)}h ${minutes}m`;
   if (minutes > 0) return `${minutes}m`;
   return `${total}s`;
+}
+
+/** "1 place" or "5 places": the count (grouped, as the distances are) and the noun, with an s unless the count is one. */
+export function formatCount(count: number, noun: string): string {
+  return `${integer.format(count)} ${count === 1 ? noun : `${noun}s`}`;
 }
 
 /** "850 m", "1.1 km" (one decimal below 100 km) or "412 km". */

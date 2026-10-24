@@ -167,6 +167,57 @@ describe("query hooks", () => {
     expect(result.current.data).toBeUndefined();
   });
 
+  test("useRange_with_no_period_asks_for_nothing_even_when_every_range_is_refetched", async () => {
+    const urls = stubApi(() => json(range("2026-10-19", "2026-10-25")));
+    const client = newClient();
+    const { result } = renderHook(() => useRange(null, null, false), { wrapper: wrapperFor(client) });
+
+    await act(async () => undefined);
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["range"] });
+    });
+
+    expect(urls).toEqual([]); // the view on show is not a period, and no range is asked for as `/api/range?from=null&to=null`
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(result.current.data).toBeUndefined();
+  });
+
+  test("useRange_keeps_the_previous_period_while_the_next_loads_unless_told_not_to", async () => {
+    let releaseSecond: (response: Response) => void = () => {};
+    const second = new Promise<Response>((resolve) => (releaseSecond = resolve));
+    stubApi((url) => (url.includes("from=2026-10-19") ? json(range("2026-10-19", "2026-10-25")) : second));
+    const kept = renderHook(({ from, to }) => useRange(from, to), {
+      initialProps: { from: "2026-10-19", to: "2026-10-25" },
+      wrapper: wrapperFor(newClient()),
+    });
+    await waitFor(() => expect(kept.result.current.data?.from).toBe("2026-10-19"));
+
+    kept.rerender({ from: "2026-10-26", to: "2026-11-01" });
+
+    expect(kept.result.current.data?.from).toBe("2026-10-19"); // still on screen
+    expect(kept.result.current.isPlaceholderData).toBe(true);
+    await act(async () => releaseSecond(json(range("2026-10-26", "2026-11-01"))));
+    await waitFor(() => expect(kept.result.current.data?.from).toBe("2026-10-26"));
+  });
+
+  test("useRange_can_leave_the_previous_period_to_its_caller_and_has_none_after_a_visit_to_where_there_is_no_period", async () => {
+    stubApi((url) => (url.includes("from=2026-10-19") ? json(range("2026-10-19", "2026-10-25")) : new Promise<Response>(() => undefined)));
+    const { result, rerender } = renderHook(
+      ({ from, to }: { from: string | null; to: string | null }) => useRange(from, to, false),
+      { initialProps: { from: "2026-10-19", to: "2026-10-25" } as { from: string | null; to: string | null }, wrapper: wrapperFor(newClient()) },
+    );
+    await waitFor(() => expect(result.current.data?.from).toBe("2026-10-19"));
+
+    rerender({ from: "2026-10-26", to: "2026-11-01" });
+    expect(result.current.data).toBeUndefined(); // no placeholder: what is kept is the caller's to keep
+
+    rerender({ from: "2026-10-19", to: "2026-10-25" });
+    await waitFor(() => expect(result.current.data?.from).toBe("2026-10-19"));
+    rerender({ from: null, to: null });
+    rerender({ from: "2026-10-26", to: "2026-11-01" });
+    expect(result.current.data).toBeUndefined(); // the placeholder is the last data there was, through a null period too: not here
+  });
+
   test("useDay_refetches_every_30_seconds_only_while_pending", async () => {
     vi.useFakeTimers();
     let state: LoadState = "pending";

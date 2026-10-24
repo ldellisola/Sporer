@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useState } from "react";
-import { useDay } from "../api/queries";
-import { dayGeoJson, type FitFeatures } from "../map/layers";
+import { useDay, useRange } from "../api/queries";
+import type { DayResponse, RangeResponse } from "../api/types";
+import { dayGeoJson, rangeGeoJson, type FitFeatures } from "../map/layers";
 import type { MapData } from "../map/MapView";
+import { periodRange } from "../time/dates";
 import { useKeptData } from "../views/useKeptData";
 import { formatRoute, type Route } from "./router";
 
@@ -21,8 +23,8 @@ export interface ViewMap {
 }
 
 /**
- * What one kind of view gives the shell for the map: what to draw, what is in it to fit the map to, and whether it is the data of the
- * route that is asked for (a day that is still loading shows the one before it, which is not).
+ * What a view gives the shell for the map: what to draw, what is in it to fit the map to, and whether it is the data of the route that
+ * is asked for (a day or a period that is still loading shows the one before it, which is not).
  */
 interface Drawn {
   data: MapData;
@@ -32,24 +34,48 @@ interface Drawn {
 
 const NOTHING: Drawn = { data: NO_DATA, features: NO_FEATURES, ready: false };
 
+/** What a response is drawn as: the collections for the map, and the features of them that the map is brought to. */
+type Drawing = Omit<Drawn, "ready">;
+
+/** A day: its routes and pins, all of which the map is brought to. */
+function drawDay(day: DayResponse): Drawing {
+  const data = dayGeoJson(day);
+  return { data, features: [...data.routes.features, ...data.stops.features] };
+}
+
+/** A period (a week, a month, a year, a range): its faint routes and its dots, all of which the map is brought to. */
+function drawPeriod(range: RangeResponse): Drawing {
+  const data = rangeGeoJson(range);
+  return { data, features: [...data.routes.features, ...data.places.features] };
+}
+
 /**
- * The map of a day: its routes and pins from the same query as its panel (the cache gives them the one request). What was drawn last
- * stays while the next day loads, and under an error, as the panel keeps its rows: `useKeptData`. It does not stay through another
- * view: a panel that is mounted when a day is shown again starts with nothing (it says "Loading…", or the error), and so does the map.
- * For the same reason the query gives no previous day of its own (`keepPrevious`), which would be the one from before the other view.
- * Nothing is asked for on a route that is not a day.
+ * What the map of a view draws from the response of the query behind its panel (the cache gives them the one request). What was drawn
+ * last stays while the next response loads, and under an error, as the panel keeps its rows: `useKeptData`. It does not stay through
+ * another kind of view (`active` is false there): a panel that is mounted when a day or a period is shown again starts with nothing (it
+ * says "Loading…", or the error), and so does the map. For the same reason the query gives no previous response of its own
+ * (`keepPrevious` is false for the callers), which would be the one from before the other view. The map has what is asked for
+ * (`isAsked`) when the response is the one for the date or the dates of the route, and not the one that is kept under it.
  */
+function useDrawn<T>(response: T | undefined, active: boolean, draw: (response: T) => Drawing, isAsked: (response: T) => boolean): Drawn {
+  const kept = useKeptData(response, active);
+  const drawing = useMemo(() => (kept === undefined ? undefined : draw(kept)), [kept, draw]);
+  if (kept === undefined || drawing === undefined) return NOTHING;
+  return { ...drawing, ready: isAsked(kept) };
+}
+
+/** The map of a day. Nothing is asked for on a route that is not a day. */
 function useDayMap(route: Route): Drawn {
   const date = route.view === "day" ? route.date : null;
   const day = useDay(date, false);
-  const kept = useKeptData(day.data, date !== null);
-  const drawn = useMemo(() => {
-    if (kept === undefined) return NOTHING;
-    const data = dayGeoJson(kept);
-    return { data, features: [...data.routes.features, ...data.stops.features], ready: true };
-  }, [kept]);
-  if (date === null) return NOTHING;
-  return { ...drawn, ready: drawn.ready && kept?.date === date };
+  return useDrawn(day.data, date !== null, drawDay, (response) => response.date === date);
+}
+
+/** The map of a week, a month, a year or a range. Nothing is asked for on a route that is not one of them. */
+function usePeriodMap(route: Route): Drawn {
+  const period = route.view === "day" || route.view === "place" ? null : periodRange(route);
+  const range = useRange(period?.from ?? null, period?.to ?? null, false);
+  return useDrawn(range.data, period !== null, drawPeriod, (response) => response.from === period?.from && response.to === period.to);
 }
 
 /** Where the fit stands: for which route, whether it has been made, and what the map was last brought to. */
@@ -60,17 +86,20 @@ interface Fit {
 }
 
 /**
- * What the map of the shell shows for the route: the data of the view (so far the day's; the other views draw nothing, and the later
- * ones are added next to `useDayMap`), and where the map is brought to.
+ * What the map of the shell shows for the route: the data of the view (the day's, or the period's of a week, a month, a year or a
+ * range; a place draws nothing yet), and where the map is brought to.
  *
  * The map is brought to what is drawn once for each time a route is shown, at the first data of it that has anything to fit to: a
- * poll or a refetch of the same day never moves a map that the owner has panned, and a day that is shown again (stepped back to, or
- * come back to from another view) is fitted again. A day is fitted in the render that has its data, so one that was prefetched needs no
- * wait. The panel asks for the map to be moved to a row through `onFocus`, and that is a new array each time, which moves it again.
- * The route that is left takes what was asked for with it. What Recenter brings back is `home`, all of what is drawn.
+ * poll or a refetch of the same day or period never moves a map that the owner has panned, and a route that is shown again (stepped
+ * back to, or come back to from another view) is fitted again. It is fitted in the render that has its data, so one that was
+ * prefetched needs no wait. The panel asks for the map to be moved to a row through `onFocus`, and that is a new array each time,
+ * which moves it again. The route that is left takes what was asked for with it. What Recenter brings back is `home`, all of what is
+ * drawn.
  */
 export function useViewMap(route: Route): ViewMap {
-  const { data, features, ready } = useDayMap(route);
+  const day = useDayMap(route);
+  const period = usePeriodMap(route);
+  const { data, features, ready } = route.view === "day" ? day : period; // for a place, neither is asked for and the period is nothing
   const key = formatRoute(route);
   const [fit, setFit] = useState<Fit>({ key, fitted: false, to: null });
 

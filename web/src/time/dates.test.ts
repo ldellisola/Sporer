@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { PeriodRoute } from "../app/router";
-import { addDays, dateOf, monthOf, periodLabel, periodRange, step, today, weekStart } from "./dates";
+import { addDays, dateOf, monthOf, periodLabel, periodRange, shortDayLabel, step, today, weekStart } from "./dates";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -151,6 +151,13 @@ describe("periods", () => {
       expect(step(step(route, 1), -1)).toEqual(route);
       expect(step(step(route, -1), 1)).toEqual(route);
     }
+  });
+
+  test("shortDayLabel_gives_the_weekday_and_the_date_in_english", () => {
+    expect(shortDayLabel("2026-10-22")).toBe("Thu 22 Oct");
+    expect(shortDayLabel("2026-10-25")).toBe("Sun 25 Oct"); // a week ends on a Sunday
+    expect(shortDayLabel("2028-02-29")).toBe("Tue 29 Feb");
+    expect(shortDayLabel("2026-01-01")).toBe("Thu 1 Jan"); // no leading zero
   });
 
   test("periodLabel_names_each_view_in_english", () => {

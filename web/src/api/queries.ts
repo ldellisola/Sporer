@@ -39,12 +39,16 @@ export function dayQueryOptions(date: string | null, keepPrevious = true) {
   });
 }
 
-export function rangeQueryOptions(from: string, to: string) {
+/**
+ * A period of days, as the week, month, year and range views show it. Nothing is asked for while `from` or `to` is null (the view on
+ * show is not a period), and `keepPrevious` is what it is for a day: false for a caller that keeps the period it last had itself.
+ */
+export function rangeQueryOptions(from: string | null, to: string | null, keepPrevious = true) {
   return queryOptions({
     queryKey: ["range", from, to] as const,
-    queryFn: ({ signal }) => getJson<RangeResponse>(`/api/range?from=${from}&to=${to}`, signal),
+    queryFn: from === null || to === null ? skipToken : ({ signal }) => getJson<RangeResponse>(`/api/range?from=${from}&to=${to}`, signal),
     staleTime: STALE_MS,
-    placeholderData: keepPreviousData,
+    placeholderData: keepPrevious ? keepPreviousData : undefined,
     refetchInterval: pollWhilePending,
   });
 }
@@ -86,7 +90,7 @@ export function configQueryOptions() {
 
 export const useDay = (date: string | null, keepPrevious = true) => useQuery(dayQueryOptions(date, keepPrevious));
 
-export const useRange = (from: string, to: string) => useQuery(rangeQueryOptions(from, to));
+export const useRange = (from: string | null, to: string | null, keepPrevious = true) => useQuery(rangeQueryOptions(from, to, keepPrevious));
 
 /** The heat of a period; nothing is asked for while `enabled` is false. */
 export const useHeat = (from: string, to: string, enabled: boolean) =>

@@ -140,6 +140,11 @@ export function step(route: PeriodRoute, delta: -1 | 1): PeriodRoute {
   }
 }
 
+/** A day as a row of a list says it: "Thu 22 Oct" (the weekday and the date; the month, for a list that runs over several). */
+export function shortDayLabel(date: string): string {
+  return format(parse(date), "EEE d MMM");
+}
+
 function dateRangeLabel(from: string, to: string, collapseMonth: boolean): string {
   const start = parse(from);
   const end = parse(to);

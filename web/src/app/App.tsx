@@ -5,8 +5,10 @@ import type { FitFeatures } from "../map/layers";
 import { MapView, type MapPadding } from "../map/MapView";
 import { BottomSheet, SHEET_PEEK, SHEET_TOP_CLEARANCE, sheetHalfHeight, type BottomSheetHandle } from "../sheet/BottomSheet";
 import { Sidebar, SIDEBAR_WIDTH } from "../sheet/Sidebar";
+import { periodRange } from "../time/dates";
 import { DayPanel } from "../views/DayPanel";
 import { Notice } from "../views/Notice";
+import { RangePanel } from "../views/RangePanel";
 import { StatusBanner } from "../views/StatusBanner";
 import { TopBar } from "../views/TopBar";
 import styles from "./App.module.css";
@@ -24,12 +26,15 @@ const DESKTOP_QUERY = "(min-width: 900px)";
 const AIR = 16;
 
 /**
- * The panel of the view of the route. The day has its own; the others are placeholders until their panels arrive (Tasks 10 to 12).
- * `onFocus` is how a panel asks for the map to be brought to something (a row tapped): the map is the shell's, and the one.
+ * The panel of the view of the route. The day has its own, and the week, the month, the year and the range share one (the period
+ * they cover is what differs); the place is a placeholder until its panel arrives. `onFocus` is how a panel asks for the map to be
+ * brought to something (a row tapped): the map is the shell's, and the one.
  */
 function Panel({ route, onFocus }: { route: Route; onFocus: (features: FitFeatures) => void }) {
   if (route.view === "day") return <DayPanel date={route.date} onFocus={onFocus} />;
-  return <p className={styles.placeholder}>{`Coming soon: the ${route.view} view.`}</p>;
+  if (route.view === "place") return <p className={styles.placeholder}>Coming soon: the place view.</p>;
+  const { from, to } = periodRange(route);
+  return <RangePanel from={from} to={to} />;
 }
 
 /**
