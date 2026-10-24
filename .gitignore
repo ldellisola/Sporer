@@ -482,3 +482,10 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Web app (web/): installed packages, test output, and the production build, which Vite writes into the API's web root
+web/node_modules
+web/dist
+web/test-results
+web/playwright-report
+src/Sporer.Api/wwwroot

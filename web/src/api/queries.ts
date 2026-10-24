@@ -1,0 +1,122 @@
+import { keepPreviousData, QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
+import { step, periodDays, periodRange } from "../time/dates";
+import type { Route } from "../app/router";
+import { ApiError, getJson } from "./client";
+import type {
+  ConfigResponse,
+  DayResponse,
+  HeatResponse,
+  PlaceResponse,
+  RangeResponse,
+  StatusResponse,
+} from "./types";
+
+/** How long an answer counts as fresh, and how often a period that is still being processed is asked for again. */
+const STALE_MS = 30_000;
+const POLL_MS = 30_000;
+
+/** The most days the API lets a range or heat request cover (both ends counted); more is a 400. */
+const MAX_RANGE_DAYS = 400;
+
+// A day or a range that is "pending" may still change as its points are processed: ask again until it is "done". While
+// the next period loads, the previous one stays on screen (keepPreviousData), so stepping never blanks the view.
+const pollWhilePending = (query: { state: { data: { state: string } | undefined } }): number | false =>
+  query.state.data?.state === "pending" ? POLL_MS : false;
+
+export function dayQueryOptions(date: string) {
+  return queryOptions({
+    queryKey: ["day", date] as const,
+    queryFn: ({ signal }) => getJson<DayResponse>(`/api/day/${date}`, signal),
+    staleTime: STALE_MS,
+    placeholderData: keepPreviousData,
+    refetchInterval: pollWhilePending,
+  });
+}
+
+export function rangeQueryOptions(from: string, to: string) {
+  return queryOptions({
+    queryKey: ["range", from, to] as const,
+    queryFn: ({ signal }) => getJson<RangeResponse>(`/api/range?from=${from}&to=${to}`, signal),
+    staleTime: STALE_MS,
+    placeholderData: keepPreviousData,
+    refetchInterval: pollWhilePending,
+  });
+}
+
+export function heatQueryOptions(from: string, to: string) {
+  return queryOptions({
+    queryKey: ["heat", from, to] as const,
+    queryFn: ({ signal }) => getJson<HeatResponse>(`/api/heat?from=${from}&to=${to}`, signal),
+    staleTime: STALE_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function placeQueryOptions(id: number) {
+  return queryOptions({
+    queryKey: ["place", id] as const,
+    queryFn: ({ signal }) => getJson<PlaceResponse>(`/api/places/${id}`, signal),
+    staleTime: STALE_MS,
+    // No keepPreviousData: another place's name and visits under this place's heading would be wrong, not just old.
+  });
+}
+
+export function statusQueryOptions() {
+  return queryOptions({
+    queryKey: ["status"] as const,
+    queryFn: ({ signal }) => getJson<StatusResponse>("/api/status", signal),
+    staleTime: STALE_MS,
+    refetchInterval: POLL_MS, // paused by TanStack Query while the page is in the background
+  });
+}
+
+export function configQueryOptions() {
+  return queryOptions({
+    queryKey: ["config"] as const,
+    queryFn: ({ signal }) => getJson<ConfigResponse>("/api/config", signal),
+    staleTime: STALE_MS,
+  });
+}
+
+export const useDay = (date: string) => useQuery(dayQueryOptions(date));
+
+export const useRange = (from: string, to: string) => useQuery(rangeQueryOptions(from, to));
+
+/** The heat of a period; nothing is asked for while `enabled` is false. */
+export const useHeat = (from: string, to: string, enabled: boolean) =>
+  useQuery({ ...heatQueryOptions(from, to), enabled });
+
+export const usePlace = (id: number) => useQuery(placeQueryOptions(id));
+
+export const useStatus = () => useQuery(statusQueryOptions());
+
+export const useConfig = () => useQuery(configQueryOptions());
+
+/**
+ * Starts loading the period before and the one after `route`, so that ‹ and › find their data in the cache. Never throws and
+ * never waits on a failure: a prefetch that fails is simply asked for again when the period is shown. A place has no
+ * neighbours, and a period the API would refuse (more than 400 days) is not asked for.
+ */
+export async function prefetchNeighbours(queryClient: QueryClient, route: Route): Promise<void> {
+  if (route.view === "place") return;
+  await Promise.all(
+    ([-1, 1] as const).map((delta) => {
+      const neighbour = step(route, delta);
+      if (neighbour.view === "day") return queryClient.prefetchQuery(dayQueryOptions(neighbour.date));
+      if (periodDays(neighbour) > MAX_RANGE_DAYS) return undefined;
+      const { from, to } = periodRange(neighbour);
+      return queryClient.prefetchQuery(rangeQueryOptions(from, to));
+    }),
+  );
+}
+
+function shouldRetry(failureCount: number, error: Error): boolean {
+  // A 400 or a 404 will be the same the next time. Anything else (a 500, a dropped connection) is tried once more; after
+  // that the view shows its error with a Retry button instead of keeping the owner waiting.
+  if (error instanceof ApiError && error.status >= 400 && error.status < 500) return false;
+  return failureCount < 1;
+}
+
+export function createQueryClient(): QueryClient {
+  return new QueryClient({ defaultOptions: { queries: { retry: shouldRetry } } });
+}
