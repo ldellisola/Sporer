@@ -13,6 +13,7 @@ The server is a .NET 10 API. It exposes:
 | `POST /api/overland` | Receives Overland batches. Answers `{"result":"ok"}` once the points are stored. |
 | `GET /api/day/{yyyy-MM-dd}` | One local day of the timeline. `state` is `pending` while work that affects that day is still waiting. |
 | `GET /api/range?from=yyyy-MM-dd&to=yyyy-MM-dd` | A stretch of local days (at most 400, both ends counted) in one answer: every move with its line (simplified further if there would be more than 60 000 vertices), the places with the time spent there inside the range, and a list of the days. `state` is `pending` while work that affects the range is still waiting. |
+| `GET /api/heat?from=yyyy-MM-dd&to=yyyy-MM-dd` | Where the time of a range (the same dates, the same limit as `/api/range`) was spent, for a heat layer: `cells` are `[lon, lat, seconds]`, the most seconds first, one per cell of a grid of 0.001 degrees (about 110 m), weighted by the time of the stays in it, not by points; `maxSeconds` is the first one's weight (0 when there are none). |
 | `GET /api/status` | Processing health: algorithm version, backfill progress, pending and failed work, place naming progress, warnings. |
 
 ## Running it

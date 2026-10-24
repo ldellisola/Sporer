@@ -20,19 +20,25 @@ public static class TimelineSeeder
 
     /// <remarks>
     /// The local dates are given, not worked out from the times: a test says what the stored row says. <paramref name="geometry"/>
-    /// is stored as both the detail and the coarse line.
+    /// is stored as both the detail and the coarse line. <paramref name="lat"/> and <paramref name="lon"/> are the stay's centre
+    /// (the segment's own position, which is not its place's); a segment has none unless the test says so.
     /// </remarks>
     public static Task<long> InsertSegmentAsync(
         string cs, string kind, DateTime start, DateTime end, DateOnly localStart, DateOnly localEnd,
         string startTz = "Europe/Oslo", string? endTz = null, long? placeId = null, string? mode = null,
-        double? distance = null, string? geometry = null) => Sql.ScalarAsync<long>(cs,
+        double? distance = null, string? geometry = null, double? lat = null, double? lon = null, int pointCount = 0)
+        => Sql.ScalarAsync<long>(cs,
         """
         insert into segment (kind, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date, place_id,
-                             mode, distance_m, geometry_detail, geometry_coarse)
+                             latitude, longitude, mode, distance_m, geometry_detail, geometry_coarse, point_count)
         values (@kind, @start, @end, @startTz, @endTz, @localStart, @localEnd, @placeId,
-                @mode, @distance, @geometry::jsonb, @geometry::jsonb) returning id
+                @lat, @lon, @mode, @distance, @geometry::jsonb, @geometry::jsonb, @pointCount) returning id
         """,
-        new { kind, start, end, startTz, endTz = endTz ?? startTz, localStart, localEnd, placeId, mode, distance, geometry }, Ct);
+        new
+        {
+            kind, start, end, startTz, endTz = endTz ?? startTz, localStart, localEnd, placeId, lat, lon, mode, distance, geometry,
+            pointCount,
+        }, Ct);
 
     public static Task InsertDirtyRangeAsync(string cs, DateTime from, DateTime to, int attempts = 0, DateTime? nextAttemptAt = null)
         => Sql.ExecAsync(cs,

@@ -19,6 +19,12 @@ public sealed record RangeMove(long Id, string? Mode, DateTime StartUtc, DateTim
 public sealed record RangePlace(
     long Id, string? Name, string? City, string? Country, double Latitude, double Longitude, long Seconds, int Visits);
 
+/// <summary>
+/// A cell of the heat grid: <paramref name="Latitude"/> and <paramref name="Longitude"/> are its centre, <paramref name="Seconds"/>
+/// the time spent in it inside the range.
+/// </summary>
+public sealed record HeatCell(double Latitude, double Longitude, long Seconds);
+
 /// <summary>One local day of a range that has a segment starting on it, with what the moves that start on it add up to.</summary>
 public sealed record RangeDay(DateOnly Date, double DistanceM, long MovingSeconds, int Places);
 
@@ -152,6 +158,50 @@ public sealed class RangeStore(NpgsqlDataSource dataSource)
                 d.DistanceM, (long)Math.Round(d.MovingSeconds), (int)d.Places))]);
     }
 
+    /// <summary>
+    /// Where the time of <paramref name="range"/> was spent: its stays, each at its own centre (the stay's position, not its
+    /// place's), in a grid of cells a thousandth of a degree (about 110 m of latitude) on a side. A cell is named by its centre,
+    /// the position rounded to three decimals, and weighs the seconds of the stays in it. The weight is time, not points: a
+    /// night is heavier than a coffee however often either was logged. The most weight first; cells of equal weight by latitude,
+    /// then longitude, so that the answer, and with it its tag, is the same each time.
+    /// </summary>
+    /// <remarks>
+    /// A stay's seconds are clipped to the range as the places' are (see <see cref="FindAsync"/>): from the start of the first
+    /// day to the start of the day after the last, on the clock of the stay's own start zone, and a stay with none of its time
+    /// inside makes no cell. A stay with no place counts like any other. One without a position, or at a position that is not on
+    /// the globe (ingest stores whatever a client sends, and a latitude of 95 would stop the map from drawing the rest), cannot
+    /// be drawn and is left out. A merged place changes nothing: no place is looked at.
+    /// </remarks>
+    public async Task<IReadOnlyList<HeatCell>> FindHeatAsync(DateRange range, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+
+        // One statement, so one snapshot: no transaction to hold the rest still. round() has no double precision form.
+        var cells = await connection.QueryAsync<HeatRow>(new CommandDefinition(
+            """
+            with clipped as (
+                select round(latitude::numeric, 3) as lat, round(longitude::numeric, 3) as lon,
+                       extract(epoch from least(end_utc, (@To::date + 1)::timestamp at time zone start_tz)
+                                        - greatest(start_utc, @From::date::timestamp at time zone start_tz)) as secs
+                from segment
+                where kind = 'stay' and local_start_date <= @To and local_end_date >= @From
+                  and latitude between -90 and 90 and longitude between -180 and 180
+            )
+            select lat::double precision as Latitude, lon::double precision as Longitude, sum(secs)::double precision as Seconds
+            from clipped
+            where secs > 0
+            group by lat, lon
+            """,
+            new { From = range.From, To = range.To }, cancellationToken: ct));
+
+        return
+        [
+            .. cells
+                .Select(c => new HeatCell(c.Latitude, c.Longitude, (long)Math.Round(c.Seconds)))
+                .OrderByDescending(c => c.Seconds).ThenBy(c => c.Latitude).ThenBy(c => c.Longitude),
+        ];
+    }
+
     private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
     /// <summary>The stored <c>[[lon,lat],...]</c> as points. A move without a line has an empty one.</summary>
@@ -165,6 +215,8 @@ public sealed class RangeStore(NpgsqlDataSource dataSource)
 
     private sealed record PlaceRow(
         long Id, string? Name, string? City, string? Country, double Latitude, double Longitude, double Seconds, long Visits);
+
+    private sealed record HeatRow(double Latitude, double Longitude, double Seconds);
 
     private sealed record DayRow(string Date, double DistanceM, double MovingSeconds, long Places);
 }
