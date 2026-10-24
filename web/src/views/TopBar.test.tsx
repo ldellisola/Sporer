@@ -322,6 +322,27 @@ describe("TopBar", () => {
       expect(field("To")).toHaveValue("2026-11-01");
     });
 
+    test("TopBar_range_field_forgets_the_pause_when_the_other_end_moves_from_elsewhere", () => {
+      open("/range/2026-10-19..2026-10-25");
+      commit("To", "2026-10-31");
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-31");
+      const entries = window.history.length;
+
+      draft("From", "2026-10-28"); // fine against the 31st
+      // Back to 19..25 inside the pause: this field's own date (the 19th) is the same, only the other end moved, and 28 is
+      // after the new end, so taking it would push 28..28 over a range the owner went back to.
+      act(() => {
+        window.history.replaceState(null, "", "/range/2026-10-19..2026-10-25");
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      });
+      wait(5000);
+
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-25");
+      expect(window.history.length).toBe(entries);
+      expect(field("From")).toHaveValue("2026-10-19");
+      expect(field("To")).toHaveValue("2026-10-25");
+    });
+
     test("TopBar_range_field_forgets_the_pause_when_the_bar_goes", () => {
       const { unmount } = open("/range/2026-10-19..2026-10-25");
       draft("To", "2026-10-28");

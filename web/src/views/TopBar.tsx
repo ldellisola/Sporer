@@ -96,6 +96,8 @@ interface DateFieldProps {
   label: string;
   /** The date of the route. */
   value: string;
+  /** The date of the route at the other end of the range: a draft was typed against it, so it goes when this changes too. */
+  other: string;
   /** Takes a date typed into the field; whether it was one to take. */
   onCommit: (typed: string) => boolean;
   /** Whether a date typed into the field is one to take as it is, without the other end of the range having to give way. */
@@ -110,10 +112,11 @@ interface DateFieldProps {
  * the field: a date picked from the calendar of a desktop browser leaves the focus there, and nothing else would take it. One that
  * is not fine waits to be left, and is then made to fit (see `editRange`). The field is not controlled: one that React set back to
  * the last good date would wipe the part being typed. It takes the date of the route when that is another one than it shows, which
- * is when something else moved the route (an arrow), and the draft it had is dropped with the pause that was running; a date that is
- * no date to take is put back to the route's.
+ * is when something else moved the route (an arrow, Back), and the draft it had is dropped with the pause that was running; a date that
+ * is no date to take is put back to the route's. The draft goes as well when only the other end of the range moved (Back to a range
+ * that has the same start and another end): it was fine against the end it was typed against, and may not be against the new one.
  */
-function DateField({ label, value, onCommit, isPlain }: DateFieldProps) {
+function DateField({ label, value, other, onCommit, isPlain }: DateFieldProps) {
   const input = useRef<HTMLInputElement>(null);
   const pause = useRef<number | undefined>(undefined);
   // The latest of the props, for the pause that ends after them: a route that moved meanwhile is the one to take the date into.
@@ -131,15 +134,21 @@ function DateField({ label, value, onCommit, isPlain }: DateFieldProps) {
     const typed = input.current?.value;
     if (typed !== undefined && !latest.current.onCommit(typed) && input.current !== null) input.current.value = latest.current.value;
   };
+  // The end of the pause is judged against the route as it is by then, not as it was when the date was typed: a draft that was fine
+  // for the range it was typed against is not taken into one that moved meanwhile, where it would be a range the owner never asked for.
+  const commitIfPlain = () => {
+    if (input.current !== null && latest.current.isPlain(input.current.value)) commit();
+    else pause.current = undefined;
+  };
   const onChange = () => {
     stop();
-    if (input.current !== null && isPlain(input.current.value)) pause.current = window.setTimeout(commit, COMMIT_AFTER_MS);
+    if (input.current !== null && isPlain(input.current.value)) pause.current = window.setTimeout(commitIfPlain, COMMIT_AFTER_MS);
   };
 
   useEffect(() => {
     stop();
     if (input.current !== null && input.current.value !== value) input.current.value = value;
-  }, [value]);
+  }, [value, other]);
   useEffect(() => stop, []);
 
   return (
@@ -225,12 +234,14 @@ export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: stri
           <DateField
             label="From"
             value={route.from}
+            other={route.to}
             onCommit={(typed) => setRange("from", typed)}
             isPlain={(typed) => isPlainEdit(route, "from", typed)}
           />
           <DateField
             label="To"
             value={route.to}
+            other={route.from}
             onCommit={(typed) => setRange("to", typed)}
             isPlain={(typed) => isPlainEdit(route, "to", typed)}
           />
