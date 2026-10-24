@@ -6,7 +6,10 @@ on:
     branches: ["main"]
     paths:
       - src/**
-      - docker/Dockerfile
+      - tests/**
+      - docker/dockerfile
+      - .dockerignore
+      - .github/workflows/docker-publish.yml
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -16,7 +19,26 @@ env:
   IMAGE_NAME: ldellisola/sporer
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # The integration tests start TimescaleDB with Testcontainers, which uses the Docker on the runner.
+      - name: Run tests
+        run: dotnet test src/Sporer.sln
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

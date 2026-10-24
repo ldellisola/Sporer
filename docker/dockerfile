@@ -1,13 +1,19 @@
-FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS build-backend
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build-backend
 WORKDIR /src
-COPY ./src/Sporer.sln .
+
+# Only the API and the timeline library are built. The solution also references the test projects, which are not
+# copied here, so it is never restored or built in the image.
+COPY ./src/Sporer.Api/Sporer.Api.csproj ./Sporer.Api/
+COPY ./src/Sporer.Timeline/Sporer.Timeline.csproj ./Sporer.Timeline/
+RUN dotnet restore ./Sporer.Api/Sporer.Api.csproj
+
 COPY ./src/Sporer.Api ./Sporer.Api
+COPY ./src/Sporer.Timeline ./Sporer.Timeline
+RUN dotnet publish ./Sporer.Api/Sporer.Api.csproj -c Release -o /app --no-restore
 
-RUN dotnet restore Sporer.sln
-RUN dotnet build -c Release --no-restore
-RUN dotnet publish ./Sporer.Api/Sporer.Api.csproj -c Release -o /app --no-restore --no-build
-
-FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS runtime
+# The Ubuntu-based runtime image already ships /usr/share/zoneinfo, which converting UTC to a segment's local time
+# (TimeZoneInfo.FindSystemTimeZoneById with IANA ids such as Europe/Oslo) needs. Do not switch to an image without it.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 ENV ASPNETCORE_URLS=http://+:80
 ENV ASPNETCORE_ENVIRONMENT=Production
 WORKDIR /app
