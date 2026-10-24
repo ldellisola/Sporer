@@ -8,6 +8,13 @@ export default defineConfig({
   build: {
     outDir: "../src/Sporer.Api/wwwroot",
     emptyOutDir: true, // the output lies outside the project root, so Vite must be told it may clear it
+    rolldownOptions: {
+      // MapLibre is most of the bytes of the app. In a chunk of its own it is fetched once and kept while the app around it
+      // changes from release to release.
+      output: { codeSplitting: { groups: [{ name: "maplibre", test: /node_modules[\\/]maplibre-gl[\\/]/ }] } },
+    },
+    // ...and it is a megabyte on its own (a third of that over the wire), which is no reason for the build to warn every time.
+    chunkSizeWarningLimit: 1500,
   },
   server: {
     proxy: { "/api": "http://localhost:5097" },
