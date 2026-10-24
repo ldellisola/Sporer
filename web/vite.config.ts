@@ -12,4 +12,9 @@ export default defineConfig({
   server: {
     proxy: { "/api": "http://localhost:5097" },
   },
+  preview: {
+    // `vite preview` serves the e2e tests, which must never reach a real API (they mock it; see e2e/mockApi.ts). Left out,
+    // it would inherit the proxy above.
+    proxy: {},
+  },
 });

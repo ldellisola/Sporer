@@ -4,7 +4,11 @@ import config from "./fixtures/config.json" with { type: "json" };
 import heat from "./fixtures/heat.json" with { type: "json" };
 import status from "./fixtures/status.json" with { type: "json" };
 
-/** What an API request is answered with: JSON, with 200 unless a status is given. */
+/**
+ * What an API request is answered with: JSON, with 200 unless a status is given. A status of 400 or more is a deliberate
+ * error (a test of the error state): the browser's own console error about it, "Failed to load resource", is excused for that
+ * URL (see base.ts). Nothing else is.
+ */
 export interface Reply {
   status?: number;
   json?: unknown;
@@ -24,11 +28,44 @@ export interface MockApi {
   readonly requests: string[];
 }
 
-const unmocked = new WeakMap<Page, string[]>();
+interface ApiState {
+  /** API requests that nothing answered. */
+  readonly unmocked: string[];
+  /** Full URLs that a mock answered with a status of 400 or more, on purpose. */
+  readonly deliberateErrors: Set<string>;
+}
 
-/** The API requests of `page` that nothing answered. The shared fixture (base.ts) fails the test if there are any. */
-export function unmockedRequests(page: Page): readonly string[] {
-  return unmocked.get(page) ?? [];
+const states = new WeakMap<Page, ApiState>();
+
+/**
+ * Makes `page` unable to reach any backend: every request to `/api/` is recorded and answered with a 501, until `mockApi`
+ * puts its own route in front (a route registered later is asked first; whatever it has no answer for falls back to this one).
+ * The shared fixture (base.ts) calls it for every test, so a spec that never calls `mockApi` cannot silently get through to
+ * a real API on the machine either. Calling it again does nothing.
+ */
+export async function guardApi(page: Page): Promise<void> {
+  if (states.has(page)) return;
+  const state: ApiState = { unmocked: [], deliberateErrors: new Set() };
+  states.set(page, state);
+  await page.route(isApiUrl, async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    state.unmocked.push(`${request.method()} ${url.pathname}${url.search}`);
+    await route.fulfill({ status: 501, json: { error: "No mock for this request." } });
+  });
+}
+
+const isApiUrl = (url: URL): boolean => url.pathname.startsWith("/api/");
+
+/** The API requests of `page` that nothing answered, which are forgotten once handed over. */
+export function takeUnmockedRequests(page: Page): string[] {
+  const state = states.get(page);
+  return state ? state.unmocked.splice(0) : [];
+}
+
+/** Whether the mock of `page` answered `url` (absolute, as the browser reports it) with an error status on purpose. */
+export function isDeliberateError(page: Page, url: string): boolean {
+  return states.get(page)?.deliberateErrors.has(url) ?? false;
 }
 
 const EMPTY_SUMMARY = { places: 0, distanceMeters: 0, movingSeconds: 0 };
@@ -66,31 +103,30 @@ function find(table: Record<string, Override>, path: string): Override | undefin
 /**
  * Answers every `/api/*` request of `page` from the fixtures in `e2e/fixtures/` (empty days and ranges are made up from the
  * dates asked for) or from `overrides`. A request that nothing answers gets a 501 and fails the test (see base.ts), so a test
- * never depends on an API call it did not mean to make. Call it before `page.goto`.
+ * never depends on an API call it did not mean to make. A reply with a status of 400 or more is a deliberate error and does
+ * not fail the test. Call it before `page.goto`.
  */
 export async function mockApi(page: Page, overrides: Overrides = {}): Promise<MockApi> {
+  await guardApi(page);
+  const state = states.get(page) as ApiState;
   const requests: string[] = [];
-  const missing: string[] = [];
-  unmocked.set(page, missing);
 
-  await page.route(
-    (url) => url.pathname.startsWith("/api/"),
-    async (route) => {
-      const request = route.request();
-      const url = new URL(request.url());
-      requests.push(url.pathname + url.search);
+  await page.route(isApiUrl, async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    requests.push(url.pathname + url.search);
 
-      const path = url.pathname.slice("/api/".length);
-      const override = request.method() === "GET" ? (find(overrides, path) ?? find(defaults, path)) : undefined;
-      if (override === undefined) {
-        missing.push(`${request.method()} ${url.pathname}${url.search}`);
-        await route.fulfill({ status: 501, json: { error: "No mock for this request." } });
-        return;
-      }
+    const path = url.pathname.slice("/api/".length);
+    const override = request.method() === "GET" ? (find(overrides, path) ?? find(defaults, path)) : undefined;
+    if (override === undefined) {
+      await route.fallback(); // to the guard, which records it and answers 501
+      return;
+    }
 
-      const reply: Reply = typeof override === "function" ? await override(request) : { json: override };
-      await route.fulfill({ status: reply.status ?? 200, json: reply.json ?? {} });
-    },
-  );
+    const reply: Reply = typeof override === "function" ? await override(request) : { json: override };
+    const status = reply.status ?? 200;
+    if (status >= 400) state.deliberateErrors.add(request.url());
+    await route.fulfill({ status, json: reply.json ?? {} });
+  });
   return { requests };
 }

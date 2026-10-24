@@ -12,6 +12,7 @@ export default defineConfig({
   testDir: "./e2e",
   testMatch: "**/*.spec.ts",
   fullyParallel: true,
+  forbidOnly: true, // a committed test.only would silently skip every other test: fail instead
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
     baseURL: ORIGIN,
