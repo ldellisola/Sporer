@@ -186,32 +186,50 @@ public class PlaceEndpointTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task Place_is_served_only_when_the_place_it_resolves_to_is_in_use()
+    public async Task Place_is_in_use_when_it_or_any_place_merged_into_it_has_a_segment()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
         var client = api.CreateClient();
-        // In use is what PlaceStore.InUse says, so that the places that are counted, named and served are the same: the place that
-        // is not merged into another has a segment of its own. All the time of this one is at the place merged into it, which is
-        // not shown by itself, and the one it resolves to is not in use.
+        // The day and range views show the surviving place of a stay, whatever id the stay still carries, so the place view serves
+        // it too: a place is in use when it, or a place merged into it however indirectly, is named by a segment. All the time of
+        // this one is at the place merged into it.
         var lonely = await InsertPlaceAsync(cs, userName: "Lonely");
         var child = await InsertPlaceAsync(cs, userName: "Child", mergedInto: lonely);
         await InsertSegmentAsync(cs, "stay", Utc(2026, 10, 22, 6), Utc(2026, 10, 22, 7), D(2026, 10, 22), D(2026, 10, 22), placeId: child);
+        // The same three links down: only the last has a stay, and every id on the way leads to the survivor.
+        var root = await InsertPlaceAsync(cs, userName: "Root");
+        var middle = await InsertPlaceAsync(cs, userName: "Middle", mergedInto: root);
+        var leaf = await InsertPlaceAsync(cs, userName: "Leaf", mergedInto: middle);
+        await InsertSegmentAsync(cs, "stay", Utc(2026, 10, 23, 6), Utc(2026, 10, 23, 9), D(2026, 10, 23), D(2026, 10, 23), placeId: leaf);
+        // A group that no segment names at all is not in use, whichever of its ids is asked for.
+        var hollow = await InsertPlaceAsync(cs, userName: "Hollow");
+        var hollowChild = await InsertPlaceAsync(cs, userName: "Hollow child", mergedInto: hollow);
         // A place named by no stay, only by a move (the app does not write that, the schema allows it) has no visit to show.
         var moveOnly = await InsertPlaceAsync(cs, userName: "Move only");
         await InsertSegmentAsync(cs, "move", Utc(2026, 10, 22, 8), Utc(2026, 10, 22, 9), D(2026, 10, 22), D(2026, 10, 22), mode: "walk", placeId: moveOnly);
 
-        Assert.Equal(HttpStatusCode.NotFound, await StatusOfAsync(client, $"/api/places/{lonely}"));
-        Assert.Equal(HttpStatusCode.NotFound, await StatusOfAsync(client, $"/api/places/{child}"));
+        foreach (var (id, survivor, seconds) in new[] { (lonely, lonely, 3600L), (child, lonely, 3600L), (root, root, 3 * 3600L), (middle, root, 3 * 3600L), (leaf, root, 3 * 3600L) })
+        {
+            using var body = await GetPlaceAsync(client, id);
+            Assert.True(survivor == body.RootElement.GetProperty("id").GetInt64(), $"{id} gave {body.RootElement.GetProperty("id").GetInt64()}, not {survivor}");
+            Assert.Equal(seconds, body.RootElement.GetProperty("totalSeconds").GetInt64());
+            Assert.Equal(1, body.RootElement.GetProperty("visits").GetInt32());
+            Assert.Equal(1, body.RootElement.GetProperty("recentVisits").GetArrayLength());
+        }
+
+        Assert.Equal(HttpStatusCode.NotFound, await StatusOfAsync(client, $"/api/places/{hollow}"));
+        Assert.Equal(HttpStatusCode.NotFound, await StatusOfAsync(client, $"/api/places/{hollowChild}"));
         Assert.Equal(HttpStatusCode.NotFound, await StatusOfAsync(client, $"/api/places/{moveOnly}"));
 
-        // Once the survivor is shown by a segment of its own, both ids are served, as it, with the time of both.
-        await InsertSegmentAsync(cs, "stay", Utc(2026, 10, 23, 6), Utc(2026, 10, 23, 8), D(2026, 10, 23), D(2026, 10, 23), placeId: lonely);
+        // A segment of the survivor's own adds to the time of the places merged into it.
+        await InsertSegmentAsync(cs, "stay", Utc(2026, 10, 24, 6), Utc(2026, 10, 24, 8), D(2026, 10, 24), D(2026, 10, 24), placeId: lonely);
         foreach (var id in new[] { lonely, child })
         {
             using var body = await GetPlaceAsync(client, id);
             Assert.Equal(lonely, body.RootElement.GetProperty("id").GetInt64());
             Assert.Equal(3 * 3600, body.RootElement.GetProperty("totalSeconds").GetInt64());
+            Assert.Equal(2, body.RootElement.GetProperty("visits").GetInt32());
         }
     }
 

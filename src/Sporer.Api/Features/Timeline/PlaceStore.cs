@@ -36,8 +36,10 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     /// <summary>
     /// The SQL condition, for <c>place</c> aliased <c>p</c>, for a place that is in use: not merged into another, and shown
     /// by at least one segment. A reprocessing that moves a stay leaves its old place behind with no segment; such an
-    /// orphan is not on the timeline and is never named. What names places, what counts them and what serves one
-    /// (<see cref="FindDetailAsync"/>) all use this, so that they cannot disagree about which places there are.
+    /// orphan is not on the timeline and is never named. What names places and what counts them both use this, so that
+    /// they cannot disagree about which places there are. (The place view, <see cref="FindDetailAsync"/>, asks a little more
+    /// of the places merged into another: it serves the survivor when any place merged into it has a segment, which is
+    /// what the day and range views show, whether or not the survivor has one of its own.)
     /// </summary>
     internal const string InUse = "p.merged_into_id is null and exists (select 1 from segment s where s.place_id = p.id)";
 
@@ -47,14 +49,15 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     /// <summary>
     /// The SQL, to start a <c>with recursive</c> list that goes on with more tables, for the place <c>@Id</c> stands for and the
     /// places that are one with it. <c>resolved</c> follows <c>merged_into_id</c> from <c>@Id</c>, up to 32 links, as the day
-    /// and range views do. <c>survivor</c> is the place it ends at, if that place is in use (<see cref="InUse"/>): a cycle, which
-    /// the app does not write but the schema allows, has no end, so no survivor. <c>members</c> are the survivor and every place
-    /// merged into it, however indirectly, within the same 32 links: a stay keeps the place id it was given, so the time spent at
-    /// a place is that of the stays of all of them. (Followed from the survivor, which has no merge of its own, the list
-    /// cannot run in a circle; the bound is for the sake of it.)
+    /// and range views do, and <c>root</c> is the place it ends at: a cycle, which the app does not write but the schema allows,
+    /// has no end, so no root. <c>members</c> are the root and every place merged into it, however indirectly, within the same
+    /// 32 links: a stay keeps the place id it was given, so the time spent at a place is that of the stays of all of them.
+    /// (Followed from the root, which has no merge of its own, the list cannot run in a circle; the bound is for the sake of it.)
+    /// <c>survivor</c> is the root when it is in use, which here is when a segment names it or any of its members: the day and
+    /// range views show the root for such a stay, so it is a place of the timeline though it has no segment of its own.
     /// </summary>
     private const string SurvivorAndMembers =
-        $"""
+        """
         with recursive
         resolved as (
             select id, merged_into_id, 0 as depth
@@ -65,18 +68,20 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
             from resolved join place next on next.id = resolved.merged_into_id
             where resolved.depth < 32
         ),
-        survivor as (
-            select p.id
-            from place p
-            where p.id = (select id from resolved where merged_into_id is null)
-              and ({InUse})
+        root as (
+            select id from resolved where merged_into_id is null
         ),
         members as (
-            select id, 0 as depth from survivor
+            select id, 0 as depth from root
             union all
             select merged.id, members.depth + 1
             from members join place merged on merged.merged_into_id = members.id
             where members.depth < 32
+        ),
+        survivor as (
+            select id
+            from root
+            where exists (select 1 from segment s where s.place_id in (select id from members))
         )
         """;
 
@@ -116,8 +121,10 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
 
     /// <summary>
     /// The place <paramref name="id"/> stands for, with the time spent there, or null when there is no such place: the id is
-    /// unknown, or it leads (through merges) to a place that is not in use (<see cref="InUse"/>, which is what the timeline shows),
-    /// or to none at all (a merge cycle). A place merged into another stands for the one at the end of the merges.
+    /// unknown, or it leads (through merges) to a place that no segment names, nor any place merged into it (so that it is not
+    /// on the timeline), or to none at all (a merge cycle). A place merged into another stands for the one at the end of the
+    /// merges, and is in use when that one or any place merged into it has a segment, as the day and range views show it: this
+    /// is not <see cref="InUse"/>, which asks the place itself to have one.
     /// </summary>
     /// <remarks>
     /// The totals are over every stay of the place and of every place merged into it, all of the time there is and not a range of
@@ -149,7 +156,7 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
             """,
             new { Id = id }, transaction, cancellationToken: ct));
 
-        // A place whose only segments are not stays has nothing to show: not a place of the timeline.
+        // A group whose segments are not stays (the app writes a place on stays only) has no visit to show: not a place of the timeline.
         if (place is not { FirstVisit: { } first, LastVisit: { } last })
         {
             await transaction.CommitAsync(ct);
