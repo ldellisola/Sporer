@@ -462,9 +462,10 @@ describe("MapView", () => {
     };
     const PADDING = { top: 120, right: 20, bottom: 300, left: 340 };
 
-    test("MapView_fits_to_the_features_with_padding_and_not_again_for_the_same_bounds", () => {
+    test("MapView_fits_to_the_features_with_padding", () => {
       goodStyle();
-      const { rerender } = render(view({ fitTo: [flight], padding: PADDING }));
+
+      render(view({ fitTo: [flight], padding: PADDING }));
 
       const map = theMap();
       expect(map.fitCalls).toHaveLength(1);
@@ -472,37 +473,53 @@ describe("MapView", () => {
       expect(map.fitCalls[0]?.options).toMatchObject({ padding: PADDING });
       expect(map.fitCalls[0]?.options["duration"]).toBeGreaterThan(0); // animated
       expect(map.fitCalls[0]?.options["maxZoom"]).toBeLessThanOrEqual(18); // one point does not zoom in to the street
+    });
 
-      // The same place in a new array (a refetch of the same day, a parent that rebuilds its list) is no reason to move.
-      rerender(view({ fitTo: [{ ...flight }], padding: PADDING }));
-      // Nor is a change of padding, such as the sheet changing its height.
-      rerender(view({ fitTo: [flight], padding: { ...PADDING, bottom: 500 } }));
+    test("MapView_fits_again_for_every_new_fitTo_even_when_it_is_the_same_box_and_not_for_the_same_object", () => {
+      goodStyle();
+      const home = [flight];
+      const { rerender } = render(view({ fitTo: home, padding: PADDING }));
+      const map = theMap();
       expect(map.fitCalls).toHaveLength(1);
 
-      // Somewhere else is.
+      // The same array again (the parent rendered for another reason): the map is where the owner left it.
+      rerender(view({ fitTo: home, padding: PADDING }));
+      rerender(view({ fitTo: home, padding: { ...PADDING, bottom: 500 } })); // nor does padding, such as a sheet changing its height
+      expect(map.fitCalls).toHaveLength(1);
+
+      // Another day with the same box (two days spent at home), or a row of the timeline tapped a second time: the owner has
+      // panned away since, and is brought back.
+      const sameBox = [{ ...flight }];
+      rerender(view({ fitTo: sameBox, padding: { ...PADDING, bottom: 500 } }));
+      expect(map.fitCalls).toHaveLength(2);
+      expect(map.fitCalls[1]?.bounds).toEqual(map.fitCalls[0]?.bounds);
+      expect(map.fitCalls[1]?.options).toMatchObject({ padding: { ...PADDING, bottom: 500 } }); // with the padding as it is now
+
+      // And somewhere else, of course.
       const elsewhere: Feature<Point, object> = { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [-0.1, 51.5] } };
       rerender(view({ fitTo: [elsewhere], padding: { ...PADDING, bottom: 500 } }));
-      expect(map.fitCalls).toHaveLength(2);
-      expect(map.fitCalls[1]?.bounds).toEqual([[-0.1, 51.5], [-0.1, 51.5]]);
-      expect(map.fitCalls[1]?.options).toMatchObject({ padding: { ...PADDING, bottom: 500 } });
+      expect(map.fitCalls).toHaveLength(3);
+      expect(map.fitCalls[2]?.bounds).toEqual([[-0.1, 51.5], [-0.1, 51.5]]);
     });
 
     test("MapView_does_not_fit_to_nothing", () => {
       goodStyle();
       const { rerender } = render(view({ fitTo: null }));
       rerender(view({ fitTo: [] }));
+      rerender(view({ fitTo: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [] } }] }));
 
       expect(theMap().fitCalls).toEqual([]);
     });
 
     test("MapView_recenter_button_refits_the_current_data_with_the_current_padding", () => {
       goodStyle();
-      const { rerender } = render(view({ fitTo: [flight], padding: PADDING }));
+      const home = [flight];
+      const { rerender } = render(view({ fitTo: home, padding: PADDING }));
       const map = theMap();
       const button = screen.getByRole("button", { name: "Recenter map" });
       expect(button).toBeEnabled();
 
-      rerender(view({ fitTo: [flight], padding: { ...PADDING, bottom: 500 } }));
+      rerender(view({ fitTo: home, padding: { ...PADDING, bottom: 500 } }));
       fireEvent.click(button);
 
       expect(map.fitCalls).toHaveLength(2);
@@ -520,13 +537,25 @@ describe("MapView", () => {
       expect(button).toBeEnabled();
     });
 
-    test("MapView_keeps_its_controls_inside_the_padding", () => {
+    test("MapView_hands_the_padding_to_the_style_sheet_for_its_controls_to_sit_inside", () => {
+      // The style sheet (see the e2e test of the attribution) sets the buttons and MapLibre's controls, the attribution among
+      // them, in by these, so that a bottom sheet, a sidebar or a bar does not cover them.
       goodStyle();
-      render(view({ padding: PADDING }));
+      const { rerender } = render(view({ padding: PADDING }));
 
-      const controls = screen.getByRole("button", { name: "Recenter map" }).parentElement!;
-      expect(controls.style.top).toBe("132px"); // below what covers the top of the map, with a margin of 12
-      expect(controls.style.right).toBe("32px");
+      const root = region();
+      const padding = () => ["top", "right", "bottom", "left"].map((side) => root.style.getPropertyValue(`--map-padding-${side}`));
+      expect(padding()).toEqual(["120px", "20px", "300px", "340px"]);
+
+      rerender(view({ padding: { top: 0, right: 0, bottom: 96, left: 0 } })); // the peek of the sheet
+      expect(padding()).toEqual(["0px", "0px", "96px", "0px"]);
+    });
+
+    test("MapView_without_padding_leaves_the_controls_at_the_corners", () => {
+      goodStyle();
+      render(view({ padding: undefined }));
+
+      expect(["top", "right", "bottom", "left"].map((side) => region().style.getPropertyValue(`--map-padding-${side}`))).toEqual(["0px", "0px", "0px", "0px"]);
     });
   });
 

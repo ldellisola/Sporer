@@ -297,7 +297,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
         "text-field": ["get", "name"],
         "text-font": BOLD_FONT,
         "text-size": LABEL_SIZE,
-        "text-anchor": "left", // to the right of the pin, as in the mockup; a second visit to a place is not named again
+        "text-anchor": "left", // to the right of the pin, as in the mockup; two pins at one place are named once
         "text-offset": [1.5, 0], // the pin's radius and outline, and a little more, in ems
         "text-justify": "left",
         "symbol-sort-key": ["get", "order"],
@@ -305,8 +305,8 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       paint: labelPaint,
     },
     {
-      // Above the names, which are placed after the numbers: a number is never hidden by a name. Two pins at one place (the day
-      // starts and ends at home) show the first number only, instead of two numbers written over each other.
+      // The last layer, which MapLibre places first: no name or label hides a number. And no number is left out for another one
+      // being near: the timeline shows every number, so the map does.
       id: LAYER_IDS.stopNumbers,
       type: "symbol",
       source: SOURCE_IDS.stops,
@@ -314,7 +314,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
         "text-field": ["to-string", ["get", "order"]],
         "text-font": BOLD_FONT,
         "text-size": LABEL_SIZE,
-        "symbol-sort-key": ["get", "order"],
+        "text-allow-overlap": true,
       },
       paint: { "text-color": WHITE },
     },

@@ -330,9 +330,8 @@ describe("layerSpecs", () => {
     expect(paint(pins)["circle-stroke-color"]).toBe("#FFFFFF");
     expect(numbers.type).toBe("symbol");
     expect(layout(numbers)["text-field"]).toEqual(["to-string", ["get", "order"]]);
-    // Pins at one place show the first number only: the numbers may not overlap, and the earlier one is placed first.
-    expect(layout(numbers)["text-allow-overlap"]).toBeUndefined();
-    expect(layout(numbers)["symbol-sort-key"]).toEqual(["get", "order"]);
+    // No number is left out for another one being near: the timeline shows them all, so does the map.
+    expect(layout(numbers)["text-allow-overlap"]).toBe(true);
     expect((numbers as { source: string }).source).toBe(SOURCE_IDS.stops);
   });
 

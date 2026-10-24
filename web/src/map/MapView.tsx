@@ -1,7 +1,7 @@
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapLibreMap, setWorkerUrl, type GeoJSONSource } from "maplibre-gl";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
-import { useEffect, useMemo, useRef, useSyncExternalStore, type ReactElement, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore, type CSSProperties, type ReactElement, type RefObject } from "react";
 import { useConfig } from "../api/queries";
 import { boundsOf, type Bounds } from "./bounds";
 import {
@@ -51,7 +51,12 @@ export interface MapViewProps {
    * `useMemo` of the response) and builds a new one only when the data is new.
    */
   data: MapData;
-  /** What to bring into view, with `padding` left free; moves the map when the box around it moves. Nothing when null. */
+  /**
+   * What to bring into view, with `padding` left free. The map moves each time this is another array than the last: a day
+   * looked at again, or a row tapped a second time, brings the view back even if the box is the same as before. So a parent keeps
+   * the array (a `useMemo` of the response) and builds a new one only when the view is to move. Nothing is done for null or an
+   * array without positions.
+   */
   fitTo?: readonly Feature<Geometry, unknown>[] | null;
   padding?: MapPadding;
   /**
@@ -73,7 +78,6 @@ const FALLBACK_STYLE: StyleSpecification = { version: 8, sources: {}, layers: []
 /** One point of a trip is a point on the map; never closer than this, which is about a street. */
 const FIT_MAX_ZOOM = 16;
 const FIT_DURATION_MS = 600;
-const CONTROLS_MARGIN = 12;
 
 const EMPTY_STOPS: StopCollection = { type: "FeatureCollection", features: [] };
 const EMPTY_PLACES: PlaceCollection = { type: "FeatureCollection", features: [] };
@@ -157,6 +161,20 @@ function syncData(map: MapLibreMap, data: MapData, dark: boolean, pushed: Pushed
   }
 }
 
+/**
+ * The padding as custom properties of the map's element, which the style sheet sets the map's controls (the attribution, the
+ * recenter button) in from: what covers the map must not cover them. MapLibre's own `padding` would move the centre of the view
+ * but leaves its controls at the corners of the element, where a bottom sheet is.
+ */
+function paddingVariables(padding: MapPadding): CSSProperties {
+  return {
+    "--map-padding-top": `${padding.top}px`,
+    "--map-padding-right": `${padding.right}px`,
+    "--map-padding-bottom": `${padding.bottom}px`,
+    "--map-padding-left": `${padding.left}px`,
+  } as CSSProperties;
+}
+
 function fit(map: MapLibreMap, bounds: Bounds, padding: MapPadding): void {
   map.fitBounds(bounds, { padding, maxZoom: FIT_MAX_ZOOM, duration: FIT_DURATION_MS });
 }
@@ -181,8 +199,6 @@ function MapSurface({ source, dark, data, fitTo = null, padding = NO_PADDING, on
 
   const { routes, stops, places, heat } = data;
   const bounds = useMemo(() => (fitTo === null ? null : boundsOf(fitTo)), [fitTo]);
-  // The map moves when the place to show does, not when the list that describes it is a new one.
-  const boundsKey = bounds === null ? "" : bounds.flat().join(",");
 
   const latest = useLatest({ data, dark, padding, onStyleError, source, bounds });
   const styleUrl = source !== null && "url" in source ? source.url : null;
@@ -309,7 +325,7 @@ function MapSurface({ source, dark, data, fitTo = null, padding = NO_PADDING, on
     const map = mapRef.current;
     const target = latest.current.bounds;
     if (map !== null && target !== null) fit(map, target, latest.current.padding);
-  }, [boundsKey, latest]);
+  }, [fitTo, latest]); // each new `fitTo` moves the map, whether or not its box is the one it is already at; padding does not
 
   const recenter = (): void => {
     const map = mapRef.current;
@@ -318,9 +334,9 @@ function MapSurface({ source, dark, data, fitTo = null, padding = NO_PADDING, on
   };
 
   return (
-    <div ref={rootRef} className={styles.root} role="region" aria-label="Map view">
+    <div ref={rootRef} className={styles.root} role="region" aria-label="Map view" style={paddingVariables(padding)}>
       <div ref={containerRef} className={styles.map} />
-      <div className={styles.controls} style={{ top: padding.top + CONTROLS_MARGIN, right: padding.right + CONTROLS_MARGIN }}>
+      <div className={styles.controls}>
         <button
           type="button"
           className={styles.button}

@@ -47,6 +47,49 @@ test("map_canvas_renders_with_attribution", async ({ page }) => {
   await expect(map(page).getByRole("button", { name: "Recenter map" })).toBeDisabled(); // nothing on the map to go back to
 });
 
+// Ruling P2-R17: what covers the map (the bottom sheet on a phone, the sidebar on a desktop) must not cover the credit. The component
+// hands its `padding` to the style sheet as `--map-padding-*` on the map's element (a unit test pins that); this is the other half,
+// that the style sheet sets MapLibre's controls and the buttons in by them, in the browser, where the corners are real.
+test("map_sets_attribution_and_buttons_inside_the_padding", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/day/2026-10-22");
+  await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+  const attribution = map(page).locator(".maplibregl-ctrl-attrib");
+  const recenter = map(page).getByRole("button", { name: "Recenter map" });
+  const area = (await map(page).boundingBox())!;
+  const edges = async () => {
+    const credit = (await attribution.boundingBox())!;
+    const button = (await recenter.boundingBox())!;
+    return {
+      creditBottom: area.y + area.height - (credit.y + credit.height), // its distance from the bottom of the map
+      creditRight: area.x + area.width - (credit.x + credit.width),
+      buttonTop: button.y - area.y,
+      buttonRight: area.x + area.width - (button.x + button.width),
+    };
+  };
+
+  const free = await edges(); // no padding: in the corners (MapLibre leaves a margin of 10px round its controls)
+  expect(free.creditBottom).toBeLessThan(16);
+  expect(free.creditRight).toBeLessThan(16);
+  expect(free.buttonTop).toBeCloseTo(12, 0);
+  expect(free.buttonRight).toBeCloseTo(12, 0);
+
+  // The peek of a bottom sheet, a sidebar's width on the right, a bar on top.
+  await map(page).evaluate((element) => {
+    element.style.setProperty("--map-padding-bottom", "96px");
+    element.style.setProperty("--map-padding-right", "40px");
+    element.style.setProperty("--map-padding-top", "120px");
+  });
+
+  const padded = await edges();
+  expect(padded.creditBottom - free.creditBottom).toBeCloseTo(96, 0);
+  expect(padded.creditRight - free.creditRight).toBeCloseTo(40, 0);
+  expect(padded.buttonTop - free.buttonTop).toBeCloseTo(120, 0);
+  expect(padded.buttonRight - free.buttonRight).toBeCloseTo(40, 0);
+  await expect(attribution).toBeInViewport(); // above the sheet, in view
+  await expect(map(page).getByRole("link", { name: "OpenStreetMap" })).toBeVisible();
+});
+
 test("map_follows_the_system_colour_scheme", async ({ page }) => {
   const asked: string[] = [];
   for (const [file, colour] of [["light", "#dfe6ea"], ["dark", "#1b2733"]] as const) {
