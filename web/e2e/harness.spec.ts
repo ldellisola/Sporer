@@ -16,15 +16,19 @@ async function untilConsoleError(page: Page, action: () => Promise<unknown>): Pr
 }
 
 test("deliberate_error_reply_passes_and_the_page_recovers", async ({ page, guard }) => {
+  // The app asks for the days next to the one it shows as well, so this test counts the requests for the one date it is about.
+  const DATE_PATH = "/api/day/2026-10-22";
   let asked = 0;
   const api = await mockApi(page, {
-    // The first answer is a 500, as in a test of the error state; the app asks once more by itself and then gets a day.
+    // The first answer for that date is a 500, as in a test of the error state; the app asks once more by itself and gets a day.
     "day/*": (request) => {
-      asked += 1;
-      const date = new URL(request.url()).pathname.split("/").pop();
-      return asked === 1
-        ? { status: 500, json: { title: "Internal Server Error" } }
-        : { json: { date, timeZone: "Europe/Oslo", state: "done", summary: {}, segments: [] } };
+      const { pathname } = new URL(request.url());
+      if (pathname === DATE_PATH) {
+        asked += 1;
+        if (asked === 1) return { status: 500, json: { title: "Internal Server Error" } };
+      }
+      const date = pathname.split("/").pop();
+      return { json: { date, timeZone: "Europe/Oslo", state: "done", summary: {}, segments: [] } };
     },
   });
   const failed = page.waitForEvent("console", (message) => message.type() === "error");
@@ -35,7 +39,7 @@ test("deliberate_error_reply_passes_and_the_page_recovers", async ({ page, guard
   expect(message.text()).toContain("Failed to load resource");
   expect(message.text()).toContain("500");
   await expect(page.getByText("0 segments")).toBeVisible(); // ...the app recovered...
-  expect(api.requests.filter((request) => request.startsWith("/api/day/"))).toHaveLength(2);
+  expect(api.requests.filter((request) => request === DATE_PATH)).toHaveLength(2);
   expect(guard.take()).toEqual({ consoleErrors: [], externalRequests: [], unmockedApiRequests: [] }); // ...and the guard let it pass
 });
 

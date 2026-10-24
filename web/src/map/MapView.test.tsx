@@ -252,6 +252,48 @@ describe("MapView", () => {
     expect(theMap().sources.size).toBe(4);
   });
 
+  test("MapView_calls_onStyleLoad_for_every_style_that_loads_but_not_for_the_plain_one_it_falls_back_to", async () => {
+    goodStyle();
+    const onStyleLoad = vi.fn<() => void>();
+    const onStyleError = vi.fn<(error: Error) => void>();
+    const { rerender } = render(view({ onStyleLoad, onStyleError }));
+    await styleApplied();
+    const map = theMap();
+    expect(onStyleLoad).not.toHaveBeenCalled(); // the style is on its way
+
+    map.emit("style.load");
+    expect(onStyleLoad).toHaveBeenCalledTimes(1);
+
+    // The other colour scheme's style: loaded again, and told again.
+    map.setStyle({ version: 8, sources: {}, layers: [] }, { diff: false });
+    map.emit("style.load");
+    expect(onStyleLoad).toHaveBeenCalledTimes(2);
+
+    // A style that MapLibre refuses is an error, and the plain style it falls back to is not a map that is available.
+    rerender(view({ onStyleLoad, onStyleError, styleUrl: "/other.json" }));
+    await styleApplied(3);
+    map.emit("error", { error: new Error("layers[3].paint: unknown property") });
+    await waitFor(() => expect(map.styleCalls).toHaveLength(4));
+    map.emit("style.load");
+    expect(onStyleError).toHaveBeenCalledTimes(1);
+    expect(onStyleLoad).toHaveBeenCalledTimes(2);
+
+    // A good one after that: told, so that whoever noted the failure can take the note back.
+    rerender(view({ onStyleLoad, onStyleError, styleUrl: "/third.json" }));
+    await styleApplied(5);
+    map.emit("style.load");
+    expect(onStyleLoad).toHaveBeenCalledTimes(3);
+  });
+
+  test("MapView_works_without_onStyleLoad", async () => {
+    goodStyle();
+    render(view());
+    await styleApplied();
+
+    expect(() => theMap().emit("style.load")).not.toThrow();
+    expect(region()).toHaveAttribute("data-map-state", "ready");
+  });
+
   test("MapView_leaves_map_errors_after_the_style_loaded_to_the_console", async () => {
     goodStyle();
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);

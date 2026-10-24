@@ -16,7 +16,7 @@ const STALE_MS = 30_000;
 const POLL_MS = 30_000;
 
 /** The most days the API lets a range or heat request cover (both ends counted); more is a 400. */
-const MAX_RANGE_DAYS = 400;
+export const MAX_RANGE_DAYS = 400;
 
 // A day or a range that is "pending" may still change as its points are processed: ask again until it is "done". While
 // the next period loads, the previous one stays on screen (keepPreviousData), so stepping never blanks the view.

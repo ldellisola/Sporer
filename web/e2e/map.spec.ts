@@ -68,6 +68,11 @@ test("map_sets_attribution_and_buttons_inside_the_padding", async ({ page }) => 
     };
   };
 
+  // The shell pads the map by what covers it (see App.tsx); this test sets the padding itself, so it starts from none.
+  await map(page).evaluate((element) => {
+    for (const side of ["top", "right", "bottom", "left"]) element.style.setProperty(`--map-padding-${side}`, "0px");
+  });
+
   const free = await edges(); // no padding: in the corners (MapLibre leaves a margin of 10px round its controls)
   expect(free.creditBottom).toBeLessThan(16);
   expect(free.creditRight).toBeLessThan(16);
@@ -131,7 +136,7 @@ for (const [name, response] of BROKEN_STYLES) {
     await expect(page.getByRole("status")).toHaveText("Map unavailable");
     await expect(map(page)).toHaveAttribute("data-map-state", "unavailable");
     await expect(map(page).locator("canvas.maplibregl-canvas")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Sporer" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Thursday 22 October" })).toBeVisible(); // the rest of the page goes on
     await expect(page.getByText("0 segments")).toBeVisible(); // the rest of the app has its data
     await expect(map(page).getByRole("button", { name: "Recenter map" })).toBeVisible();
   });

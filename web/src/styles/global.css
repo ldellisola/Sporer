@@ -1,0 +1,22 @@
+/* What the page itself needs: no margin round the app, the colours of the scheme behind it, no bounce that would fight the sheet. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font: 16px/1.4 var(--font);
+  -webkit-text-size-adjust: 100%;
+  /* A drag of the sheet or the map is the app's; the browser's pull to refresh and its bounce are not wanted under it. */
+  overscroll-behavior: none;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}

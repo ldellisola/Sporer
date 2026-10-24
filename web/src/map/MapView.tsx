@@ -64,6 +64,12 @@ export interface MapViewProps {
    * a map that cannot start (no WebGL). The map then draws on a plain background, and everything else on the page goes on.
    */
   onStyleError?: (error: Error) => void;
+  /**
+   * Called each time a style has finished loading: the first one, and the one of the other colour scheme after a switch, so that a
+   * parent that noted a failure can take the note back. Not for the plain style the map falls back to after a failure: that map is
+   * still not the one that was asked for.
+   */
+  onStyleLoad?: () => void;
 }
 
 const NO_PADDING: MapPadding = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -189,7 +195,15 @@ interface SurfaceProps extends Omit<MapViewProps, "styleUrl"> {
   dark: boolean;
 }
 
-function MapSurface({ source, dark, data, fitTo = null, padding = NO_PADDING, onStyleError }: SurfaceProps): ReactElement {
+function MapSurface({
+  source,
+  dark,
+  data,
+  fitTo = null,
+  padding = NO_PADDING,
+  onStyleError,
+  onStyleLoad,
+}: SurfaceProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -200,7 +214,7 @@ function MapSurface({ source, dark, data, fitTo = null, padding = NO_PADDING, on
   const { routes, stops, places, heat } = data;
   const bounds = useMemo(() => (fitTo === null ? null : boundsOf(fitTo)), [fitTo]);
 
-  const latest = useLatest({ data, dark, padding, onStyleError, source, bounds });
+  const latest = useLatest({ data, dark, padding, onStyleError, onStyleLoad, source, bounds });
   const styleUrl = source !== null && "url" in source ? source.url : null;
   const styleFailed = source !== null && "error" in source;
 
@@ -267,12 +281,13 @@ function MapSurface({ source, dark, data, fitTo = null, padding = NO_PADDING, on
         if (!request.signal.aborted) map.setStyle(FALLBACK_STYLE, { diff: false });
       });
     };
-    const onStyleLoad = (): void => {
+    const styleLoaded = (): void => {
       if (phase === "applying") phase = "ready";
       readyRef.current = true;
       showState(rootRef.current, phase === "failed" ? "unavailable" : "ready");
       pushedRef.current = newPushed();
       syncData(map, latest.current.data, latest.current.dark, pushedRef.current);
+      if (phase !== "failed") latest.current.onStyleLoad?.();
     };
     // MapLibre reports a style it will not take, and every problem in it, as error events and never loads it. Errors of a
     // style that is up (a tile that did not come) are not ours to handle: they are logged, as MapLibre would have done.
@@ -280,7 +295,7 @@ function MapSurface({ source, dark, data, fitTo = null, padding = NO_PADDING, on
       if (phase === "applying") fail(toError(error));
       else if (phase !== "failed") console.error(error);
     };
-    map.on("style.load", onStyleLoad);
+    map.on("style.load", styleLoaded);
     map.on("error", onError);
 
     if (styleUrl === null) {
@@ -306,7 +321,7 @@ function MapSurface({ source, dark, data, fitTo = null, padding = NO_PADDING, on
 
     return () => {
       request.abort();
-      map.off("style.load", onStyleLoad);
+      map.off("style.load", styleLoaded);
       map.off("error", onError);
       readyRef.current = false;
     };

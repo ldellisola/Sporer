@@ -1,0 +1,207 @@
+import {
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+import styles from "./BottomSheet.module.css";
+
+/** How much of the sheet shows at its lowest point, in pixels. The map is padded by what shows, so the app starts from this. */
+export const SHEET_PEEK = 96;
+
+/** What the highest point leaves free at the top of the screen, for the bar over the map, unless the bar needs more (`topClearance`). */
+export const SHEET_TOP_CLEARANCE = 120;
+
+/** A drag that ends faster than this (pixels per millisecond) is a flick: it goes on to the next point rather than the nearest. */
+const FLICK_SPEED = 0.5;
+
+/** How far a finger has to move before a touch is a drag and no longer a tap on whatever is under it. */
+const DRAG_THRESHOLD_PX = 6;
+
+/** How far back from the release the speed of a drag is measured. */
+const SPEED_WINDOW_MS = 100;
+
+/** How long after a drag a click on the handle is taken for the release of that drag, and not a press of it. */
+const CLICK_AFTER_DRAG_MS = 300;
+
+type Snap = "peek" | "half" | "full";
+const SNAPS: readonly Snap[] = ["peek", "half", "full"];
+
+/** How much of the sheet shows at each point in a viewport `viewport` pixels high; in a very small one the points still come in order. */
+function pointsFor(viewport: number, topClearance: number): Record<Snap, number> {
+  const half = Math.max(SHEET_PEEK, Math.round(viewport / 2));
+  return { peek: SHEET_PEEK, half, full: Math.max(half, viewport - topClearance) };
+}
+
+/**
+ * The point a sheet comes to rest at when let go at `height`. A flick (`upward` is its speed in pixels per millisecond, up
+ * positive) goes to the next point in its direction, and to the end if there is none; anything slower, to the nearest.
+ */
+function settleAt(height: number, upward: number, points: Record<Snap, number>): Snap {
+  if (Math.abs(upward) > FLICK_SPEED) {
+    // A pixel of leeway, so that a sheet let go on a point is not "before" it by a rounding error.
+    const next =
+      upward > 0 ? SNAPS.find((snap) => points[snap] > height + 1) : SNAPS.findLast((snap) => points[snap] < height - 1);
+    return next ?? (upward > 0 ? "full" : "peek");
+  }
+  return SNAPS.reduce((best, snap) => (Math.abs(points[snap] - height) < Math.abs(points[best] - height) ? snap : best));
+}
+
+/** Where a finger was and when; the time is the one the browser stamped on the event, which a busy page cannot make late. */
+interface Sample {
+  t: number;
+  y: number;
+}
+
+/** How fast the finger was going up (pixels per millisecond) over the last moments before `now`; 0 when it had stopped. */
+function upwardSpeed(samples: Sample[], now: number): number {
+  const recent = samples.filter((sample) => sample.t >= now - SPEED_WINDOW_MS);
+  const first = recent[0];
+  const last = recent.at(-1);
+  if (first === undefined || last === undefined || last.t === first.t) return 0;
+  return (first.y - last.y) / (last.t - first.t);
+}
+
+interface Drag {
+  pointerId: number;
+  startY: number;
+  /** How much of the sheet showed when the finger came down. */
+  startHeight: number;
+  /** How much shows now, once the finger has moved far enough for this to be a drag. */
+  height: number;
+  active: boolean;
+  samples: Sample[];
+  /** Takes the listeners of the drag off the window. */
+  detach: () => void;
+}
+
+function subscribeToResize(onChange: () => void): () => void {
+  window.addEventListener("resize", onChange);
+  return () => window.removeEventListener("resize", onChange);
+}
+
+const viewportHeight = (): number => window.innerHeight;
+
+export interface BottomSheetProps {
+  children: ReactNode;
+  /** What the panel is called for those who cannot see it. */
+  label?: string;
+  /**
+   * How much of the top of the screen the highest point leaves free, in pixels: 120, the room the bar over the map needs. A bar
+   * that is taller (its range fields open) or lower (a notch above it) asks for more, so that the sheet never comes up over it, and
+   * over the handle that it is let down by.
+   */
+  topClearance?: number;
+  /**
+   * Told how much of the sheet shows (in pixels from the bottom of the screen) when it first appears and each time it has come
+   * to rest at another height or the screen has changed size; not while a finger is moving it. The map is padded by it.
+   */
+  onHeightChange?: (height: number) => void;
+}
+
+/**
+ * The panel of a phone: a sheet at the bottom of the screen over the map, which never goes away and is not modal (the map
+ * behind it stays in use). It rests at three points, a peek of 96 px, half the screen and the screen less 120 px (`topClearance`), and is pulled
+ * between them by its handle or, until it is full, by any part of it. Let go slowly it goes to the nearest point; flicked, to the
+ * next one that way. The handle also steps through the points when pressed, for those who cannot drag. Its content scrolls only at
+ * full: below that the part that shows is a preview, and a drag on it is the sheet's.
+ */
+export function BottomSheet({
+  children,
+  label = "Details",
+  topClearance = SHEET_TOP_CLEARANCE,
+  onHeightChange,
+}: BottomSheetProps) {
+  const viewport = useSyncExternalStore(subscribeToResize, viewportHeight);
+  const points = pointsFor(viewport, topClearance);
+  const [snap, setSnap] = useState<Snap>("peek");
+  const [dragHeight, setDragHeight] = useState<number | null>(null);
+  const drag = useRef<Drag | null>(null);
+  const justDragged = useRef(false);
+
+  const settled = points[snap];
+  const visible = dragHeight ?? settled;
+
+  const report = useEffectEvent((height: number) => onHeightChange?.(height));
+  useEffect(() => report(settled), [settled]);
+
+  // A drag in progress when the sheet goes (a layout change, say) must not leave its listeners on the window.
+  useEffect(() => () => drag.current?.detach(), []);
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+    // At full the content is the owner's to scroll; only the handle moves the sheet then.
+    if (snap === "full" && !(event.target instanceof Element && event.target.closest("[data-grip]"))) return;
+
+    drag.current?.detach(); // a drag whose release never came (a mouse let go outside the window) is over
+    const current: Drag = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight: settled,
+      height: settled,
+      active: false,
+      samples: [{ t: event.timeStamp, y: event.clientY }],
+      detach: () => undefined,
+    };
+    // The moves and the release are listened for on the window, not on the sheet: a mouse that leaves the sheet in one jump takes
+    // them with it (a touch keeps them on the sheet by itself). Pointer capture would do as much, but a captured pointer takes the
+    // click of whatever was tapped with it.
+    const onMove = (move: PointerEvent) => {
+      if (move.pointerId !== current.pointerId) return;
+      current.samples.push({ t: move.timeStamp, y: move.clientY });
+      const moved = move.clientY - current.startY;
+      if (!current.active && Math.abs(moved) < DRAG_THRESHOLD_PX) return; // a tap, until the finger has gone somewhere
+      current.active = true;
+      current.height = Math.min(points.full, Math.max(points.peek, current.startHeight - moved));
+      setDragHeight(current.height);
+    };
+    const onEnd = (end: PointerEvent, cancelled: boolean) => {
+      if (end.pointerId !== current.pointerId) return;
+      current.detach();
+      drag.current = null;
+      if (!current.active) return;
+      current.samples.push({ t: end.timeStamp, y: end.clientY });
+      setSnap(settleAt(current.height, cancelled ? 0 : upwardSpeed(current.samples, end.timeStamp), points));
+      setDragHeight(null);
+      // The release of a mouse that is back on the handle is a click on it too, which would step the sheet on from where it was put.
+      justDragged.current = true;
+      setTimeout(() => (justDragged.current = false), CLICK_AFTER_DRAG_MS);
+    };
+    const onUp = (up: PointerEvent) => onEnd(up, false);
+    const onCancel = (cancel: PointerEvent) => onEnd(cancel, true);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    current.detach = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+    drag.current = current;
+  };
+
+  const stepThroughPoints = () => {
+    if (!justDragged.current) setSnap(SNAPS[(SNAPS.indexOf(snap) + 1) % SNAPS.length]!);
+  };
+
+  return (
+    <section
+      className={styles.sheet}
+      aria-label={label}
+      data-snap={snap}
+      data-dragging={dragHeight !== null}
+      style={{ height: points.full, transform: `translateY(${points.full - visible}px)` }}
+      onPointerDown={onPointerDown}
+    >
+      <button type="button" className={styles.grip} data-grip="" aria-label="Resize panel" onClick={stepThroughPoints}>
+        <span className={styles.handle} />
+      </button>
+      <div className={styles.content} style={{ overflowY: snap === "full" ? "auto" : "hidden" }}>
+        {children}
+      </div>
+    </section>
+  );
+}

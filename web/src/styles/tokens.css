@@ -1,0 +1,67 @@
+/*
+ * The look of the app as custom properties, light and dark: every colour, radius and shadow the shell uses is here, so that the
+ * two schemes differ in one place only. The values come from the approved mockup. Light is the default; dark follows the system.
+ */
+:root {
+  color-scheme: light dark;
+
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* The parts of the screen the device keeps for itself (a notch, the home indicator): the page is drawn under them (viewport-fit=cover). */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
+  --ink: #1c1c1e;
+  --ink-soft: #3a3a3c;
+  --ink-muted: #6c6c70;
+  --surface: #ffffff;
+  --surface-sunken: #f2f2f7;
+  --line: #e5e5ea;
+  --glass: rgba(255, 255, 255, 0.82);
+  --accent: #007aff;
+  --accent-ink: #0062cc; /* the accent as the colour of small text: dark enough to read on white */
+  --danger-ink: #c4001d;
+  --focus: #007aff;
+
+  --segment-track: rgba(118, 118, 128, 0.14);
+  --segment-on: #ffffff;
+  --segment-on-ink: #000000;
+  --grabber: #d1d1d6;
+
+  --shadow-card: 0 4px 18px rgba(0, 0, 0, 0.1);
+  --shadow-sheet: 0 -4px 22px rgba(0, 0, 0, 0.1);
+
+  --radius-card: 18px;
+  --radius-sheet: 22px;
+  --radius-segment: 9px;
+  --radius-segment-item: 7px;
+
+  /* Wide windows keep the day's panel in a column of this width. The app's code knows the number too (sheet/Sidebar.tsx). */
+  --sidebar-width: 320px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #f2f2f7;
+    --ink-soft: #d1d1d6;
+    --ink-muted: #8e8e93;
+    --surface: #1c1c1e;
+    --surface-sunken: #2c2c2e;
+    --line: #38383a;
+    --glass: rgba(30, 30, 32, 0.78);
+    --accent: #0a84ff;
+    --accent-ink: #4da3ff;
+    --danger-ink: #ff6961;
+    --focus: #0a84ff;
+
+    --segment-track: rgba(118, 118, 128, 0.24);
+    --segment-on: #636366;
+    --segment-on-ink: #ffffff;
+    --grabber: #48484a;
+
+    --shadow-card: 0 4px 18px rgba(0, 0, 0, 0.45);
+    --shadow-sheet: 0 -4px 22px rgba(0, 0, 0, 0.45);
+  }
+}

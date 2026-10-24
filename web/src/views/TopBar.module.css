@@ -1,0 +1,106 @@
+.bar {
+  box-sizing: border-box;
+  padding: 8px;
+  border-radius: var(--radius-card);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-card);
+}
+
+.segments {
+  display: flex;
+  padding: 2px;
+  border-radius: var(--radius-segment);
+  background: var(--segment-track);
+}
+
+.segment {
+  flex: 1;
+  min-height: 28px;
+  margin: 0;
+  padding: 4px 0;
+  border: 0;
+  border-radius: var(--radius-segment-item);
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.segment[aria-pressed="true"] {
+  background: var(--segment-on);
+  color: var(--segment-on-ink);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.segment:focus-visible,
+.arrow:focus-visible,
+.field input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.fields {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.field {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.field input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-segment-item);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.dateRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 2px;
+  /* A swipe along the row is the app's (it steps the period); a drag down it is still the browser's. */
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.arrow {
+  width: 44px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-segment-item);
+  background: transparent;
+  color: var(--accent);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.label {
+  margin: 0;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+}
