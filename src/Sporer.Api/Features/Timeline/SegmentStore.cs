@@ -61,19 +61,16 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
     /// stretch that was <em>set aside</em>: a dirty range with <see cref="ProcessingQueue.SetAsideAfterAttempts"/> or more
     /// attempts, whose rebuild keeps failing (loading the same data again would fail again, and every range after it with it).
     /// The stretch is read from the table each time, so it holds across restarts and for every rebuild, backfill chunks and
-    /// live ranges alike; when its range is retried and succeeds the row is deleted and the floor is gone. For each set-aside
-    /// range that began before <paramref name="fromUtc"/> and ends after <c>T0</c>:
+    /// live ranges alike; when its range is retried and succeeds the row is deleted and the floor is gone.
     /// </para>
-    /// <list type="bullet">
-    /// <item>It ends at or before <paramref name="fromUtc"/>: <c>T0</c> goes up to its end.</item>
-    /// <item>
-    /// It ends after <paramref name="fromUtc"/> (a set-aside chunk's range runs on over the chunk after it, so that the retry
-    /// rebuilds the edge between them): <c>T0</c> goes up to <paramref name="fromUtc"/>, but only if the stay found lies before
-    /// the range began, which means that nothing of it is stored. A stay inside it is the retry's own earlier piece (a
-    /// retry rebuilds a long range one piece after another): the rebuild goes back to it.
-    /// </item>
-    /// </list>
-    /// <para>A set-aside range that starts where the rebuild does, as its own retry does, never raises <c>T0</c>.</para>
+    /// <para>
+    /// Only a set-aside range that began after <c>T0</c> and before <paramref name="fromUtc"/> counts, and <c>T0</c> goes up
+    /// to the smaller of its end and <paramref name="fromUtc"/>. One that began at or before <c>T0</c> has the stay inside
+    /// it or behind it, and a stay there is not in what failed but in what was rebuilt since: the chunk after a set-aside
+    /// one (its range runs on over that chunk, so that the retry rebuilds the edge between them), or an earlier piece of the
+    /// retry itself, which rebuilds a long range piece by piece. Reaching back to that stay is right, and flooring at the
+    /// range's end instead would cut the stay that crosses it. A range that starts where the rebuild does (its own retry) never counts.
+    /// </para>
     /// </summary>
     public async Task<(DateTime T0, DateTime? T1)> FindAnchorsAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct = default)
     {
@@ -91,8 +88,7 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
             """
             select max(least(to_utc, @FromUtc))
             from dirty_range
-            where attempts >= @SetAside and from_utc < @FromUtc and to_utc > @T0
-              and (to_utc <= @FromUtc or from_utc > @T0)
+            where attempts >= @SetAside and from_utc > @T0 and from_utc < @FromUtc
             """,
             new { FromUtc = fromUtc, T0 = start, SetAside = ProcessingQueue.SetAsideAfterAttempts }, cancellationToken: ct));
         if (floor is { } raised && AsUtc(raised) > start)

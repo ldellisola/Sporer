@@ -98,7 +98,7 @@ public sealed class TimelineWorker(
     /// Runs the backfill chunk <paramref name="cursor"/> to <paramref name="chunkEnd"/>. The start is counted and stored
     /// first: a process that dies in the middle of the chunk (it ran out of memory) leaves the count behind, and the start
     /// that finds it at <see cref="ProcessingQueue.SetAsideAfterAttempts"/> sets the chunk aside without running it. A failure
-    /// that is caught counts the same way. A chunk that is set aside becomes a failed dirty range (retried behind the cursor
+    /// that is caught counts the same way, and a counted start is never taken back, so every kind of stop converges. A chunk that is set aside becomes a failed dirty range (retried behind the cursor
     /// with the usual backoff: a fix or a changed setting may let it through), the cursor moves on, and the rebuilds after it
     /// stay clear of it (see <see cref="SegmentStore.FindAnchorsAsync"/>). Returns the new state, and whether the chunk was done
     /// (the backfill then pauses).
@@ -120,12 +120,7 @@ public sealed class TimelineWorker(
         {
             await processor.ReprocessAsync(cursor, chunkEnd, ct);
         }
-        catch (Exception) when (ct.IsCancellationRequested)
-        {
-            await TryReleaseAttemptAsync(); // the service is stopping: that is not the chunk's fault
-            throw;
-        }
-        catch (Exception ex)
+        catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             var failedAt = Now();
             _backfillRetryAt = failedAt + ProcessingQueue.Backoff(attempts);
@@ -159,19 +154,6 @@ public sealed class TimelineWorker(
         await queue.SetBackfillStepAsideAsync(cursor, chunkEnd, coveredTo, error, Now(), ct);
         (_backfillRetryAt, _backfillError) = (DateTime.MinValue, null);
         return state with { BackfillCursor = chunkEnd, BackfillChunkAttempts = 0 };
-    }
-
-    private async Task TryReleaseAttemptAsync()
-    {
-        try
-        {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5)); // the host is stopping: do not hold it up
-            await queue.ReleaseBackfillAttemptAsync(timeout.Token);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Could not take back the interrupted backfill attempt");
-        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

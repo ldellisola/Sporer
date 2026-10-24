@@ -207,15 +207,6 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
             cancellationToken: ct));
     }
 
-    /// <summary>Takes back one counted start (never below zero): the chunk was interrupted by the service stopping, which is not its fault.</summary>
-    public async Task ReleaseBackfillAttemptAsync(CancellationToken ct = default)
-    {
-        await using var connection = await dataSource.OpenConnectionAsync(ct);
-        await connection.ExecuteAsync(new CommandDefinition(
-            "update processing_state set backfill_chunk_attempts = greatest(backfill_chunk_attempts - 1, 0) where id = 1",
-            cancellationToken: ct));
-    }
-
     /// <summary>How many dirty ranges wait, and which of them have failed. Reads only; whether a range is due does not matter.</summary>
     public async Task<ProcessingBacklog> GetBacklogAsync(CancellationToken ct = default)
     {

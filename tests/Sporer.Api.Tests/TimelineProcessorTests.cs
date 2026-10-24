@@ -228,15 +228,21 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
 
         // Nothing set aside: the last stay before the range starts the rebuild, the first stay after it ends it.
         Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
-        // A set-aside range that ends after that stay's start (and before the range) moves the start up to its end...
+        // A set-aside range that began after that stay's start, and ends before the range, moves the start up to its end...
         await OnlyDirtyRangeAsync(cs, T(9, 0), T(10, 0), attempts: 3);
         Assert.Equal((T(10, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
-        await OnlyDirtyRangeAsync(cs, T(5, 0), T(10, 0), attempts: 3); // even if it began before that stay
+        await OnlyDirtyRangeAsync(cs, T(6, 1), T(10, 0), attempts: 3);
         Assert.Equal((T(10, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        // ...but one that began at or before it does not: the stay is inside the range that was set aside (or beyond it), so it
+        // lies in what was rebuilt since (the chunk after a set-aside one, the earlier piece of a retry), not in what failed.
+        await OnlyDirtyRangeAsync(cs, T(5, 0), T(10, 0), attempts: 3);
+        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
+        await OnlyDirtyRangeAsync(cs, T(6, 0), T(10, 0), attempts: 3);
+        Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
         await OnlyDirtyRangeAsync(cs, T(9, 0), T(11, 0), attempts: 7); // the latest end wins, and more attempts are still set aside
         await Sql.ExecAsync(cs, "insert into dirty_range (from_utc, to_utc, attempts) values (@f, @t, 3)", new { f = T(9, 30), t = T(10, 30) }, Ct);
         Assert.Equal((T(11, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
-        // ...one that ends at or before the stay's start changes nothing...
+        // ...one that ends at or before the stay's start changes nothing either...
         await OnlyDirtyRangeAsync(cs, T(4, 30), T(6, 0), attempts: 3);
         Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
         await OnlyDirtyRangeAsync(cs, T(3, 0), T(5, 0), attempts: 3);
@@ -244,14 +250,15 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
         // ...and so does one that has not failed often enough (it is only waiting for its next try).
         await OnlyDirtyRangeAsync(cs, T(9, 0), T(10, 0), attempts: 2);
         Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
-        // The rebuild never starts after the range: a set-aside range that reaches over the start of the range (the one
-        // after a set-aside chunk) floors it at the start of the range, if nothing of it is stored before the range.
+        // The rebuild never starts after the range: a set-aside range that began after the stay found and reaches over the
+        // start of the range (the chunk after a set-aside chunk: nothing of the set-aside one is stored) floors it at the
+        // start of the range.
         await OnlyDirtyRangeAsync(cs, T(11, 0), T(13, 0), attempts: 3);
         Assert.Equal((from, T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
         await OnlyDirtyRangeAsync(cs, T(7, 0), T(18, 0), attempts: 3);
         Assert.Equal((from, T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
-        // If something of it is stored already (a stay that starts inside it: its retry, rebuilt piece by piece), that stay
-        // is where the rebuild starts: it lies in a stretch that was rebuilt, not in the one that failed.
+        // If it began at or before the stay found (the stay starts inside it: its retry, rebuilt piece by piece), that stay
+        // is where the rebuild starts, as above.
         await OnlyDirtyRangeAsync(cs, T(5, 0), T(13, 0), attempts: 3);
         Assert.Equal((T(6, 0), T(22, 0)), await store.FindAnchorsAsync(from, to, Ct));
         // A set-aside range never stops its own retry, which starts where it starts.

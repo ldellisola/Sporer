@@ -130,18 +130,29 @@ public class FailureIsolationTests(DatabaseFixture db)
     private static Task<long> StaysBetweenAsync(string cs, DateTime from, DateTime to) => Sql.ScalarAsync<long>(cs,
         "select count(*) from segment where kind = 'stay' and start_utc >= @from and start_utc < @to", new { from, to }, Ct);
 
-    /// <summary>Runs passes, five minutes apart (longer than any backoff before the third failure), until a dirty range is set aside.</summary>
-    private static async Task RunUntilSetAsideAsync(Harness h, FakeTimeProvider clock, string cs)
+    /// <summary>Runs passes, five minutes apart (longer than any backoff before the third failure), until <paramref name="count"/> dirty ranges are set aside.</summary>
+    private static async Task RunUntilSetAsideAsync(Harness h, FakeTimeProvider clock, string cs, int count = 1)
     {
-        for (var pass = 0; pass < 30; pass++)
+        for (var pass = 0; pass < 40; pass++)
         {
             await h.Worker.RunOnceAsync(Ct);
-            if (await SetAsideCountAsync(cs) > 0)
+            if (await SetAsideCountAsync(cs) >= count)
                 return;
             clock.Advance(TimeSpan.FromMinutes(5));
         }
 
-        Assert.Fail("nothing was set aside");
+        Assert.Fail($"fewer than {count} ranges were set aside");
+    }
+
+    /// <summary>The rows of one run over <paramref name="track"/> from the start of the day to <paramref name="to"/>, in a database of their own.</summary>
+    private async Task<IReadOnlyList<string>> FullRunRowsAsync(IEnumerable<TrackPoint> track, DateTime to)
+    {
+        var referenceCs = await db.CreateDatabaseAsync(Ct);
+        await using var reference = new ApiFactory(referenceCs);
+        var processor = reference.Services.GetRequiredService<ITimelineProcessor>(); // starting the host runs the migrations
+        await PointSeeder.InsertAsync(referenceCs, track, Ct);
+        await processor.ReprocessAsync(T(0, 0), to, Ct);
+        return await TimelineProcessorTests.CanonicalRowsAsync(referenceCs);
     }
 
     private static string ToOverlandPayload(IEnumerable<TrackPoint> points) => Payload.Many([.. points.Select(p =>
@@ -317,6 +328,82 @@ public class FailureIsolationTests(DatabaseFixture db)
         Assert.Equal(expected, await TimelineProcessorTests.CanonicalRowsAsync(cs));
     }
 
+    /// <summary>
+    /// Office on day 0 from 08:00, then home overnight until 09:00 and the office until 17:00 on days 1 to 5. With one-day
+    /// steps from 08:00, every step edge falls inside a home stay, and the far end of a set-aside range does too.
+    /// </summary>
+    private static List<TrackPoint> HomeNightsTrack()
+    {
+        var b = new TrackBuilder(T(8, 0), Spots.Office)
+            .Stay(T(17, 0) - T(8, 0), Every2min)
+            .Travel(Spots.Home, 18, Every10s);
+        for (var day = 1; day <= 5; day++)
+        {
+            b.Stay(T(9, 0, day) - b.Now, Every2min).Travel(Spots.Office, 18, Every10s);
+            b.Stay(T(17, 0, day) - b.Now, Every2min).Travel(Spots.Home, 18, Every10s);
+        }
+
+        return b.Stay(TimeSpan.FromHours(3), Every2min).Build();
+    }
+
+    [Fact] // the range of a set-aside step runs on over the step after it: the edge at its far end must be rebuilt too
+    public async Task Set_aside_retry_leaves_no_seam_at_the_far_end_of_its_range()
+    {
+        var track = HomeNightsTrack();
+        var expected = await FullRunRowsAsync(track, T(0, 0, 6));
+        Assert.Equal(23, expected.Count); // twelve stays and eleven moves
+
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = new FakeTimeProvider(new DateTimeOffset(T(0, 0, 6)));
+        await using var h = Start(cs, clock, new Dictionary<string, string?>(NoPause) { ["Processing:BackfillChunkDays"] = "1" });
+        await PointSeeder.InsertAsync(cs, track, Ct);
+        h.Processor.FailFrom = from => from == T(8, 0, 1); // the second step [day 1 08:00, day 2 08:00]
+
+        await RunUntilSetAsideAsync(h, clock, cs);
+        await DrainAsync(h.Worker);
+        Assert.True(await BackfillDoneAsync(cs));
+        var setAside = Assert.Single(await DirtyAsync(cs));
+        Assert.Equal((T(8, 0, 1), T(8, 0, 3)), (setAside.FromUtc, setAside.ToUtc)); // its far end, day 3 08:00, is inside a home stay
+
+        h.Processor.FailFrom = null;
+        clock.Advance(TimeSpan.FromMinutes(9));
+        await DrainAsync(h.Worker);
+
+        Assert.Empty(await DirtyAsync(cs));
+        Assert.Equal(expected, await TimelineProcessorTests.CanonicalRowsAsync(cs));
+    }
+
+    [Fact] // two set-aside steps in a row overlap; they are due together and are retried as one range
+    public async Task Consecutive_set_aside_steps_retried_together_leave_no_seam()
+    {
+        var track = HomeNightsTrack();
+        var expected = await FullRunRowsAsync(track, T(0, 0, 6));
+        Assert.Equal(23, expected.Count);
+
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = new FakeTimeProvider(new DateTimeOffset(T(0, 0, 6)));
+        await using var h = Start(cs, clock, new Dictionary<string, string?>(NoPause) { ["Processing:BackfillChunkDays"] = "1" });
+        await PointSeeder.InsertAsync(cs, track, Ct);
+        h.Processor.FailFrom = from => from == T(8, 0, 1) || from == T(8, 0, 2); // the steps [day 1 08:00, day 2 08:00] and [day 2 08:00, day 3 08:00]
+
+        await RunUntilSetAsideAsync(h, clock, cs, count: 2);
+        await DrainAsync(h.Worker);
+        Assert.True(await BackfillDoneAsync(cs));
+        var rows = await DirtyAsync(cs);
+        Assert.Equal([(T(8, 0, 1), T(8, 0, 3)), (T(8, 0, 2), T(8, 0, 4))], rows.Select(r => (r.FromUtc, r.ToUtc)));
+        Assert.All(rows, r => Assert.True(r.Attempts >= 3));
+
+        // Fixed: both are due after a while, overlap, and are rebuilt as one range of three steps.
+        h.Processor.FailFrom = null;
+        clock.Advance(TimeSpan.FromHours(1));
+        h.Processor.Calls.Clear();
+        await DrainAsync(h.Worker);
+
+        Assert.Equal([(T(8, 0, 1), T(8, 0, 2)), (T(8, 0, 2), T(8, 0, 3)), (T(8, 0, 3), T(8, 0, 4))], h.Processor.Calls);
+        Assert.Empty(await DirtyAsync(cs));
+        Assert.Equal(expected, await TimelineProcessorTests.CanonicalRowsAsync(cs));
+    }
+
     [Fact] // the set-aside range reaches over the step after it, so the backfill-open deferral (R17) holds it back until the cursor is past
     public async Task A_set_aside_chunk_is_retried_once_the_backfill_has_passed_its_range()
     {
@@ -429,28 +516,6 @@ public class FailureIsolationTests(DatabaseFixture db)
 
         Assert.Equal([1, 2], seen);
         Assert.Equal(2, await ChunkAttemptsAsync(cs)); // a failure is not forgotten between passes
-        Assert.Empty(await DirtyAsync(cs));
-    }
-
-    [Fact] // stopping the service is not the chunk's fault: a deployment must not use up its attempts
-    public async Task Stopping_in_the_middle_of_a_chunk_does_not_count_as_an_attempt()
-    {
-        var cs = await db.CreateDatabaseAsync(Ct);
-        var clock = new FakeTimeProvider(new DateTimeOffset(T(0, 0, 22)));
-        await using var h = Start(cs, clock, NoPause);
-        await PointSeeder.InsertAsync(cs, CommuteDays(0, 21), Ct);
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        h.Processor.OnCall = () =>
-        {
-            cts.Cancel(); // the host is stopping
-            cts.Token.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
-        };
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => h.Worker.RunOnceAsync(cts.Token));
-
-        Assert.Equal(0, await ChunkAttemptsAsync(cs));
-        Assert.Equal(T(7, 0), await CursorAsync(cs));
         Assert.Empty(await DirtyAsync(cs));
     }
 }
