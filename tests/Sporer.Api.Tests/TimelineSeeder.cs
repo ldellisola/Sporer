@@ -11,12 +11,12 @@ public static class TimelineSeeder
 
     public static Task<long> InsertPlaceAsync(
         string cs, string? userName = null, string? osmName = null, string? city = null, string? country = null,
-        double lat = 59.92, double lon = 10.75, long? mergedInto = null) => Sql.ScalarAsync<long>(cs,
+        double lat = 59.92, double lon = 10.75, long? mergedInto = null, string? address = null) => Sql.ScalarAsync<long>(cs,
         """
-        insert into place (latitude, longitude, osm_name, city, country, user_name, merged_into_id, geocode_state)
-        values (@lat, @lon, @osmName, @city, @country, @userName, @mergedInto, 'done') returning id
+        insert into place (latitude, longitude, osm_name, address, city, country, user_name, merged_into_id, geocode_state)
+        values (@lat, @lon, @osmName, @address, @city, @country, @userName, @mergedInto, 'done') returning id
         """,
-        new { lat, lon, osmName, city, country, userName, mergedInto }, Ct);
+        new { lat, lon, osmName, address, city, country, userName, mergedInto }, Ct);
 
     /// <remarks>
     /// The local dates are given, not worked out from the times: a test says what the stored row says. <paramref name="geometry"/>
