@@ -40,7 +40,8 @@ function stayTimes(stay: StaySegment, day: DayResponse, ongoing: boolean): strin
 /**
  * A row of the timeline that takes the map to its segment. The row is a button of its own, laid over the whole row (see the style
  * sheet), and is not the parent of what else in the row can be tapped: a button inside a button is not HTML, and a tap on the name
- * of a place would be a tap on the row too.
+ * of a place would be a tap on the row too. Its `label` is its only name, so each row's is its own: a stop by its number, a move by
+ * when it began.
  */
 function FitButton({ label, onClick }: { label: string; onClick: () => void }) {
   return <button type="button" className={styles.fit} aria-label={label} onClick={onClick} />;
@@ -63,7 +64,9 @@ function StayRow({ stay, order, when, onFocus }: { stay: StaySegment; order: num
         <span className={styles.when}>{when}</span>
       </div>
       <span className={styles.duration}>{formatDuration(secondsOf(stay))}</span>
-      {place !== null && <FitButton label={`Show ${place.name ?? "unnamed place"} on the map`} onClick={() => onFocus([placePoint(place)])} />}
+      {place !== null && order !== undefined && (
+        <FitButton label={`Show stop ${order}, ${place.name ?? "unnamed place"}, on the map`} onClick={() => onFocus([placePoint(place)])} />
+      )}
     </li>
   );
 }
@@ -76,7 +79,12 @@ function MoveRow({ move, route, onFocus }: { move: MoveSegment; route: RouteFeat
       <span className={styles.bar} style={{ backgroundColor: modeColor(mode) }} aria-hidden="true" />
       <span className={styles.what}>{`${word} · ${formatDistance(move.distanceMeters)}`}</span>
       <span className={styles.duration}>{formatDuration(secondsOf(move))}</span>
-      {route !== undefined && <FitButton label={`Show the ${word.toLowerCase()} on the map`} onClick={() => onFocus([route])} />}
+      {route !== undefined && (
+        <FitButton
+          label={`Show the ${word.toLowerCase()} at ${formatTime(move.start, move.startTimeZone)} on the map`}
+          onClick={() => onFocus([route])}
+        />
+      )}
     </li>
   );
 }
@@ -108,8 +116,9 @@ function Day({ day, asked, loading, onFocus }: { day: DayResponse; asked: boolea
   const last = day.segments.length - 1;
 
   return (
-    // What is shown while the day asked for is on its way is the day before: it stays, and says it is not the one asked for.
-    <div className={styles.day} aria-busy={!asked}>
+    // What is shown while the day asked for is on its way is the day before: it stays, and says it is not the one asked for. Under an
+    // error nothing is on its way, and the error says what the day shown is.
+    <div className={styles.day} aria-busy={!asked && loading}>
       <div className={styles.chips}>
         {!empty && (
           <>

@@ -3,19 +3,27 @@ import { expect, test } from "./base";
 import newYorkDay from "./fixtures/day-new-york.json" with { type: "json" };
 import osloDay from "./fixtures/day-oslo-new-york.json" with { type: "json" };
 import { mockApi } from "./mockApi";
+import { pixelAt, sameColour, type Rgb } from "./pixel";
 
-// The browser is in Tokyo, which neither of the days is in: every time on screen must be the clock of the zone it happened in. The
-// date of "today" is fixed as well, so that no day of the fixtures is ever the day that is still going on.
+// The browser is in Tokyo, which neither of the days is in: every time on screen must be the clock of the zone it happened in.
 test.use({ timezoneId: "Asia/Tokyo" });
 
-test.beforeEach(async ({ page }) => {
-  await page.clock.setFixedTime(new Date("2026-12-01T12:00:00Z"));
-});
+/**
+ * Fixes the date of "today", so that no day of the fixtures is ever the day that is still going on. Not for the test that looks at the
+ * camera of the map: a fixed clock is the page's clock, and the map's camera moves on it, which would then stand still.
+ */
+const fixToday = (page: Page): Promise<void> => page.clock.setFixedTime(new Date("2026-12-01T12:00:00Z"));
 
 const isWide = (page: Page): boolean => page.viewportSize()!.width >= 900;
 const details = (page: Page): Locator => page.getByRole(isWide(page) ? "complementary" : "region", { name: "Details" });
 const grip = (page: Page): Locator => page.getByRole("button", { name: "Resize panel" });
 const rows = (page: Page): Locator => details(page).getByRole("listitem");
+
+/** How much of the bottom sheet shows: it is as tall as its largest point and moved down by the rest. */
+async function visibleSheetHeight(page: Page): Promise<number> {
+  const box = (await details(page).boundingBox())!;
+  return page.viewportSize()!.height - box.y;
+}
 
 /** On a phone the sheet starts at its peek, which shows a chip or two: bring it up to full, where the timeline can be read. */
 async function openTimeline(page: Page): Promise<void> {
@@ -28,6 +36,7 @@ async function openTimeline(page: Page): Promise<void> {
 const DAYS = { "day/2026-10-22": osloDay, "day/2026-10-23": newYorkDay };
 
 test("day_view_lists_timeline_and_steps_days", async ({ page }) => {
+  await fixToday(page);
   const api = await mockApi(page, DAYS);
   await page.goto("/day/2026-10-22");
   await expect(page.getByRole("region", { name: "Map view" })).toHaveAttribute("data-map-state", "ready");
@@ -83,19 +92,21 @@ test("day_view_lists_timeline_and_steps_days", async ({ page }) => {
 });
 
 test("day_view_row_tap_leaves_the_address_and_a_place_name_opens_the_place", async ({ page }) => {
+  await fixToday(page);
   await mockApi(page, DAYS);
   await page.goto("/day/2026-10-22");
   await expect(page.getByRole("region", { name: "Map view" })).toHaveAttribute("data-map-state", "ready");
   await openTimeline(page);
 
-  // A row is a button that takes the map to its segment; the map moves, and the address stays.
-  await details(page).getByRole("button", { name: "Show Café on the map" }).click();
-  await details(page).getByRole("button", { name: "Show the cycle on the map" }).click();
+  // A row is a button, and pressing one is not a move to another address: the day stays. (That the map is taken to the segment is the
+  // next test's, which looks at the map.)
+  await details(page).getByRole("button", { name: "Show stop 2, Café, on the map" }).click();
+  await details(page).getByRole("button", { name: "Show the cycle at 09:10 on the map" }).click();
   await expect(page).toHaveURL(/\/day\/2026-10-22$/);
 
   // Reachable and operable from the keyboard.
-  await details(page).getByRole("button", { name: "Show Office on the map" }).focus();
-  await expect(details(page).getByRole("button", { name: "Show Office on the map" })).toBeFocused();
+  await details(page).getByRole("button", { name: "Show stop 3, Office, on the map" }).focus();
+  await expect(details(page).getByRole("button", { name: "Show stop 3, Office, on the map" })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/day\/2026-10-22$/);
 
@@ -105,6 +116,7 @@ test("day_view_row_tap_leaves_the_address_and_a_place_name_opens_the_place", asy
 });
 
 test("day_view_says_when_a_day_is_empty_and_when_it_is_being_updated", async ({ page }) => {
+  await fixToday(page);
   await mockApi(page, {
     "day/2026-10-22": { ...osloDay, state: "pending" },
     "day/2026-10-21": { ...osloDay, date: "2026-10-21", state: "done", summary: { places: 0, distanceMeters: 0, movingSeconds: 0 }, segments: [] },
@@ -120,4 +132,37 @@ test("day_view_says_when_a_day_is_empty_and_when_it_is_being_updated", async ({ 
   await expect(details(page).getByText("No data for this day")).toBeVisible();
   await expect(details(page).getByText("Updating…")).toHaveCount(0);
   await expect(rows(page)).toHaveCount(0);
+});
+
+const PIN: Rgb = [0xff, 0x37, 0x5f];
+
+// Ruling P2-R39 and the tap itself: the map is taken to the stop (its pin comes to the middle of the part of the map that nothing
+// covers), and a sheet that was over the map at full comes down to half so that it can be seen.
+test("day_view_row_tap_takes_the_map_to_the_stop_and_brings_a_full_sheet_down_to_half", async ({ page }) => {
+  await mockApi(page, DAYS);
+  await page.goto("/day/2026-10-22");
+  const map = page.getByRole("region", { name: "Map view" });
+  await expect(map).toHaveAttribute("data-map-state", "ready");
+  await openTimeline(page);
+  const { height } = page.viewportSize()!;
+  if (!isWide(page)) await expect.poll(() => visibleSheetHeight(page)).toBe(height - 120); // full
+
+  await details(page).getByRole("button", { name: "Show stop 2, Café, on the map" }).click();
+
+  if (isWide(page)) {
+    await expect(grip(page)).toHaveCount(0); // a sidebar is not over the map, and there is nothing to lower
+  } else {
+    await expect.poll(() => visibleSheetHeight(page)).toBe(height / 2);
+  }
+  // The middle of what is free, as the map was padded for it; the pin is 12 px across, so a pixel a little to the left of its middle is
+  // in it and clear of the number in the middle.
+  const free = await map.evaluate((element) => {
+    const read = (side: string) => parseFloat(element.style.getPropertyValue(`--map-padding-${side}`));
+    const box = element.getBoundingClientRect();
+    return {
+      x: box.left + (read("left") + (box.width - read("right"))) / 2,
+      y: box.top + (read("top") + (box.height - read("bottom"))) / 2,
+    };
+  });
+  await expect.poll(async () => sameColour(await pixelAt(page, Math.round(free.x) - 8, Math.round(free.y)), PIN, 8)).toBe(true);
 });

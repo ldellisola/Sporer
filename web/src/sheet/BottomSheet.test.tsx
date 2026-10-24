@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { BottomSheet } from "./BottomSheet";
+import { BottomSheet, type BottomSheetHandle } from "./BottomSheet";
 
 // A viewport of 800 px makes the snap points 96 (peek), 400 (half) and 680 (full: the viewport less 120).
 const PEEK = 96;
@@ -335,6 +336,75 @@ describe("BottomSheet", () => {
     fireEvent.click(grip());
     expect(lastHeight(onHeightChange)).toBe(PEEK);
     expect(sheet).toHaveAttribute("data-snap", "peek");
+  });
+
+  describe("lowerTo", () => {
+    function renderWithHandle() {
+      const handle = createRef<BottomSheetHandle>();
+      const onHeightChange = vi.fn<(height: number) => void>();
+      render(
+        <BottomSheet ref={handle} onHeightChange={onHeightChange}>
+          <p>Panel</p>
+        </BottomSheet>,
+      );
+      const sheet = screen.getByRole("region", { name: "Details" });
+      const lowerTo = (snap: "peek" | "half") => act(() => handle.current!.lowerTo(snap));
+      return { sheet, onHeightChange, lowerTo };
+    }
+
+    test("BottomSheet_lowerTo_half_brings_a_full_sheet_down_to_half", () => {
+      const { sheet, onHeightChange, lowerTo } = renderWithHandle();
+      fireEvent.click(grip());
+      fireEvent.click(grip());
+      expect(sheet).toHaveAttribute("data-snap", "full");
+      expect(lastHeight(onHeightChange)).toBe(FULL);
+
+      lowerTo("half");
+
+      expect(sheet).toHaveAttribute("data-snap", "half");
+      expect(lastHeight(onHeightChange)).toBe(HALF);
+      expect(visibleHeight(sheet)).toBe(HALF);
+      expect(content()).toHaveStyle({ overflowY: "hidden" }); // a sheet that is not full is a preview again
+    });
+
+    test("BottomSheet_lowerTo_never_raises_a_sheet_that_is_at_or_below_the_point", () => {
+      const { sheet, lowerTo } = renderWithHandle();
+
+      lowerTo("half"); // at its peek, which is lower than half
+      expect(sheet).toHaveAttribute("data-snap", "peek");
+
+      fireEvent.click(grip());
+      expect(sheet).toHaveAttribute("data-snap", "half");
+      lowerTo("half"); // at half already
+      expect(sheet).toHaveAttribute("data-snap", "half");
+    });
+
+    test("BottomSheet_lowerTo_peek_brings_a_sheet_down_from_half_and_from_full", () => {
+      const { sheet, lowerTo } = renderWithHandle();
+      fireEvent.click(grip());
+
+      lowerTo("peek");
+      expect(sheet).toHaveAttribute("data-snap", "peek");
+
+      fireEvent.click(grip());
+      fireEvent.click(grip());
+      expect(sheet).toHaveAttribute("data-snap", "full");
+      lowerTo("peek");
+      expect(sheet).toHaveAttribute("data-snap", "peek");
+    });
+
+    test("BottomSheet_goes_on_being_dragged_after_it_was_lowered", () => {
+      const { sheet, onHeightChange, lowerTo } = renderWithHandle();
+      fireEvent.click(grip());
+      fireEvent.click(grip());
+      lowerTo("half");
+
+      drag(grip(), 500, 400, 800); // 100 px up from half: nearest is half, then a flick on to full
+      expect(sheet).toHaveAttribute("data-snap", "half");
+      drag(grip(), 500, 300, 100); // 200 px in 100 ms: a flick
+      expect(sheet).toHaveAttribute("data-snap", "full");
+      expect(lastHeight(onHeightChange)).toBe(FULL);
+    });
   });
 
   test("BottomSheet_follows_the_viewport", () => {

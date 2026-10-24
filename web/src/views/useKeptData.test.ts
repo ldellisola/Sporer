@@ -20,4 +20,19 @@ describe("useKeptData", () => {
     rerender({ data: undefined });
     expect(result.current).toBe("Friday");
   });
+
+  test("useKeptData_drops_what_it_kept_when_it_is_told_not_to_keep_and_does_not_bring_it_back", () => {
+    const { result, rerender } = renderHook(({ data, keep }: { data: string | undefined; keep: boolean }) => useKeptData(data, keep), {
+      initialProps: { data: "Thursday" as string | undefined, keep: true },
+    });
+    expect(result.current).toBe("Thursday");
+
+    rerender({ data: undefined, keep: false }); // the view that it was for is gone
+    expect(result.current).toBeUndefined();
+
+    rerender({ data: undefined, keep: true }); // and the next one starts with nothing
+    expect(result.current).toBeUndefined();
+    rerender({ data: "Friday", keep: true });
+    expect(result.current).toBe("Friday");
+  });
 });

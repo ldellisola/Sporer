@@ -435,14 +435,50 @@ describe("App day on the map", () => {
     const auto = mapProps().fitTo;
     const home = placePoint((OSLO_DAY.segments[0] as StaySegment).place!);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show Home on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Home, on the map" }));
     const first = mapProps().fitTo;
     expect(first).toEqual([home]);
     expect(first).not.toBe(auto);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show Home on the map" })); // the same row again: another array, so the map moves again
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Home, on the map" })); // the same row again: another array, so the map moves again
     expect(mapProps().fitTo).toEqual([home]);
     expect(mapProps().fitTo).not.toBe(first);
+  });
+
+  test("App_gives_the_map_the_whole_day_to_recenter_to_and_a_tapped_row_leaves_it_so", async () => {
+    stubApi(answerWithTheFlight);
+    renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    const { routes, stops } = dayGeoJson(OSLO_DAY);
+    expect(mapProps().home).toEqual([...routes.features, ...stops.features]);
+    const home = mapProps().home;
+
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Café, on the map" }));
+
+    expect(mapProps().fitTo).toHaveLength(1); // the map is taken to the row...
+    expect(mapProps().home).toBe(home); // ...and Recenter is still the whole day
+  });
+
+  test("App_draws_and_shows_nothing_of_the_day_that_was_left_when_the_next_one_is_not_there_yet", async () => {
+    // Day 22, then a week, then day 23 that has to be loaded: the panel is mounted afresh and says "Loading…", and the map is cleared too.
+    let release: (response: Response) => void = () => undefined;
+    stubApi((path) =>
+      path.endsWith("2026-10-22") ? Response.json(OSLO_DAY) : path.endsWith("2026-10-23") ? new Promise<Response>((resolve) => (release = resolve)) : Response.json(day(path.split("/").pop()!)),
+    );
+    renderApp();
+    await waitFor(() => expect(mapProps().data.stops?.features).toHaveLength(5));
+    act(() => navigate({ view: "week", start: "2026-10-19" }));
+    expect(mapProps().data.routes.features).toEqual([]);
+
+    act(() => navigate({ view: "day", date: "2026-10-23" }));
+
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
+    expect(mapProps().data.routes.features).toEqual([]); // not the 22nd's routes and pins
+    expect(mapProps().data.stops).toBeUndefined();
+    expect(mapProps().fitTo).toBeNull();
+    release(Response.json(day("2026-10-23", 1)));
+    expect(await screen.findAllByText("No data")).toHaveLength(1);
   });
 
   test("App_does_not_take_the_map_back_from_a_row_when_the_day_is_polled", async () => {
@@ -450,7 +486,7 @@ describe("App day on the map", () => {
     stubApi((path) => Response.json(path.endsWith("2026-10-22") ? { ...OSLO_DAY, state } : day(path.split("/").pop()!)));
     const { client } = renderApp();
     await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: "Show Café on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Café, on the map" }));
     const tapped = mapProps().fitTo;
 
     state = "done"; // the poll of a day that was still being processed finds it done
@@ -479,5 +515,59 @@ describe("App day on the map", () => {
     expect(screen.getAllByText("No data")).toHaveLength(2);
     expect(document.querySelector("[aria-busy]")).toHaveAttribute("aria-busy", "false"); // it is the day asked for, not the one before
     expect(paths.filter((path) => path === "/api/day/2026-10-23")).toHaveLength(1);
+  });
+});
+
+describe("App row taps on the sheet", () => {
+  const OSLO_DAY = flightDay as DayResponse;
+  const sheet = () => screen.getByRole("region", { name: "Details" });
+  const resize = () => fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
+  const tapRow = () => fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Café, on the map" }));
+
+  test("App_a_row_tap_lowers_a_full_sheet_to_half_so_that_the_map_can_be_seen", async () => {
+    stubApi((path) => Response.json(path.endsWith("2026-10-22") ? OSLO_DAY : day(path.split("/").pop()!)));
+    stubLayout(120);
+    renderApp();
+    await screen.findByRole("list");
+    resize();
+    resize();
+    expect(sheet()).toHaveAttribute("data-snap", "full");
+    const before = mapProps().fitTo;
+
+    tapRow();
+
+    expect(sheet()).toHaveAttribute("data-snap", "half");
+    expect(mapProps().fitTo).not.toBe(before); // and the map was taken to the row
+    expect(padding().bottom).toBe(416); // with the room that half leaves
+  });
+
+  test("App_a_row_tap_leaves_a_sheet_at_half_or_at_its_peek_where_it_is", async () => {
+    stubApi((path) => Response.json(path.endsWith("2026-10-22") ? OSLO_DAY : day(path.split("/").pop()!)));
+    stubLayout(120);
+    renderApp();
+    await screen.findByRole("list");
+    expect(sheet()).toHaveAttribute("data-snap", "peek");
+
+    tapRow();
+    expect(sheet()).toHaveAttribute("data-snap", "peek"); // a tap is not a request to open the sheet
+
+    resize();
+    expect(sheet()).toHaveAttribute("data-snap", "half");
+    tapRow();
+    expect(sheet()).toHaveAttribute("data-snap", "half");
+  });
+
+  test("App_a_row_tap_on_a_desktop_moves_the_map_and_has_no_sheet_to_lower", async () => {
+    stubDesktop(true);
+    stubApi((path) => Response.json(path.endsWith("2026-10-22") ? OSLO_DAY : day(path.split("/").pop()!)));
+    stubLayout(120);
+    renderApp();
+    await screen.findByRole("list");
+    const before = mapProps().fitTo;
+
+    tapRow();
+
+    expect(mapProps().fitTo).not.toBe(before);
+    expect(screen.queryByRole("button", { name: "Resize panel" })).not.toBeInTheDocument();
   });
 });

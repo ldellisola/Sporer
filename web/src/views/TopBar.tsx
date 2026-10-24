@@ -134,17 +134,14 @@ function DateField({ label, value, other, onCommit, isPlain }: DateFieldProps) {
     const typed = input.current?.value;
     if (typed !== undefined && !latest.current.onCommit(typed) && input.current !== null) input.current.value = latest.current.value;
   };
-  // The end of the pause is judged against the route as it is by then, not as it was when the date was typed: a draft that was fine
-  // for the range it was typed against is not taken into one that moved meanwhile, where it would be a range the owner never asked for.
-  const commitIfPlain = () => {
-    if (input.current !== null && latest.current.isPlain(input.current.value)) commit();
-    else pause.current = undefined;
-  };
   const onChange = () => {
     stop();
-    if (input.current !== null && isPlain(input.current.value)) pause.current = window.setTimeout(commitIfPlain, COMMIT_AFTER_MS);
+    if (input.current !== null && isPlain(input.current.value)) pause.current = window.setTimeout(commit, COMMIT_AFTER_MS);
   };
 
+  // Whenever either end of the range moves the pause is dropped here. The route is read from the address, so a change of it renders
+  // and runs this at once, before any timer can fire: a date that ends its pause is always one that was checked against the range it
+  // ends in, and needs no second look.
   useEffect(() => {
     stop();
     if (input.current !== null && input.current.value !== value) input.current.value = value;

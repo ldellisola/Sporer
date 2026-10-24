@@ -14,6 +14,8 @@ export interface ViewMap {
   data: MapData;
   /** What the map is brought to: a new array for each time it is to move, and null while there is nothing to bring it to. */
   fitTo: FitFeatures | null;
+  /** The whole of what is drawn, which the map's Recenter brings back (a row tapped moves `fitTo`, not this); null when nothing is drawn. */
+  home: FitFeatures | null;
   /** The panel's way to ask for the map to be brought to something (a row tapped): each call moves the map, the same row or not. */
   onFocus: (features: FitFeatures) => void;
 }
@@ -32,13 +34,15 @@ const NOTHING: Drawn = { data: NO_DATA, features: NO_FEATURES, ready: false };
 
 /**
  * The map of a day: its routes and pins from the same query as its panel (the cache gives them the one request). What was drawn last
- * stays while the next day loads, and under an error, as the panel keeps its rows: `useKeptData`. Nothing is asked for on a route
- * that is not a day.
+ * stays while the next day loads, and under an error, as the panel keeps its rows: `useKeptData`. It does not stay through another
+ * view: a panel that is mounted when a day is shown again starts with nothing (it says "Loading…", or the error), and so does the map.
+ * For the same reason the query gives no previous day of its own (`keepPrevious`), which would be the one from before the other view.
+ * Nothing is asked for on a route that is not a day.
  */
 function useDayMap(route: Route): Drawn {
   const date = route.view === "day" ? route.date : null;
-  const day = useDay(date);
-  const kept = useKeptData(day.data);
+  const day = useDay(date, false);
+  const kept = useKeptData(day.data, date !== null);
   const drawn = useMemo(() => {
     if (kept === undefined) return NOTHING;
     const data = dayGeoJson(kept);
@@ -63,7 +67,7 @@ interface Fit {
  * poll or a refetch of the same day never moves a map that the owner has panned, and a day that is shown again (stepped back to, or
  * come back to from another view) is fitted again. A day is fitted in the render that has its data, so one that was prefetched needs no
  * wait. The panel asks for the map to be moved to a row through `onFocus`, and that is a new array each time, which moves it again.
- * The route that is left takes what was asked for with it.
+ * The route that is left takes what was asked for with it. What Recenter brings back is `home`, all of what is drawn.
  */
 export function useViewMap(route: Route): ViewMap {
   const { data, features, ready } = useDayMap(route);
@@ -77,5 +81,5 @@ export function useViewMap(route: Route): ViewMap {
   if (current !== fit) setFit(current);
 
   const onFocus = useCallback((focused: FitFeatures) => setFit((last) => ({ ...last, to: [...focused] })), []);
-  return { data, fitTo: current.to, onFocus };
+  return { data, fitTo: current.to, home: features.length > 0 ? features : null, onFocus };
 }

@@ -205,6 +205,28 @@ describe("DayPanel", () => {
     expect(document.querySelector("[aria-busy]")).toHaveAttribute("aria-busy", "false");
   });
 
+  test("DayPanel_is_not_busy_under_an_error_where_nothing_is_on_its_way", async () => {
+    let failing = false;
+    stubApi({
+      "2026-10-22": FLIGHT_DAY,
+      "2026-10-23": () => (failing ? new Response("{}", { status: 500 }) : Response.json(day([stay(1, HOME)], { date: "2026-10-23" }))),
+    });
+    const { show } = mount("2026-10-22");
+    await screen.findByText("5 places");
+    failing = true;
+
+    show("2026-10-23");
+    expect(document.querySelector("[aria-busy]")).toHaveAttribute("aria-busy", "true"); // on its way
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load — Retry");
+    expect(screen.getByText("5 places")).toBeInTheDocument(); // the day that was shown stays under the error...
+    expect(document.querySelector("[aria-busy]")).toHaveAttribute("aria-busy", "false"); // ...and is not announced as loading, nor dimmed
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("1 place")).toBeInTheDocument();
+  });
+
   test("DayPanel_does_not_call_an_empty_day_of_another_date_the_empty_day_it_is_waiting_for", async () => {
     let release: (response: Response) => void = () => undefined;
     stubApi({
@@ -362,7 +384,7 @@ describe("DayPanel taps", () => {
     await screen.findByRole("list");
 
     // A stay: the map is taken to its place.
-    fireEvent.click(screen.getByRole("button", { name: "Show Café on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Café, on the map" }));
     expect(onFocus).toHaveBeenCalledTimes(1);
     expect(onFocus).toHaveBeenLastCalledWith([placePoint(FLIGHT_STAY_CAFE.place!)]);
     expect(onFocus.mock.lastCall![0]).toEqual([
@@ -370,7 +392,7 @@ describe("DayPanel taps", () => {
     ]);
 
     // A move: the map is taken to its route, the line the map draws for it.
-    fireEvent.click(screen.getByRole("button", { name: "Show the walk on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show the walk at 08:32 on the map" }));
     expect(onFocus).toHaveBeenCalledTimes(2);
     expect(onFocus.mock.lastCall![0]).toEqual([
       { type: "Feature", properties: { id: FLIGHT_WALK.id, mode: "walk" }, geometry: { type: "LineString", coordinates: FLIGHT_WALK.geometry } },
@@ -387,8 +409,8 @@ describe("DayPanel taps", () => {
     const { onFocus } = mount("2026-10-22");
     await screen.findByRole("list");
 
-    fireEvent.click(screen.getByRole("button", { name: "Show Office on the map" }));
-    fireEvent.click(screen.getByRole("button", { name: "Show Office on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 3, Office, on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 3, Office, on the map" }));
 
     expect(onFocus).toHaveBeenCalledTimes(2);
     expect(onFocus.mock.calls[1]![0]).toEqual(onFocus.mock.calls[0]![0]);
@@ -400,7 +422,7 @@ describe("DayPanel taps", () => {
     mount("2026-10-22");
     await screen.findByRole("list");
 
-    const row = screen.getByRole("button", { name: "Show Café on the map" });
+    const row = screen.getByRole("button", { name: "Show stop 2, Café, on the map" });
     const name = screen.getByRole("button", { name: "Café" });
 
     expect(row.tagName).toBe("BUTTON");
@@ -412,6 +434,28 @@ describe("DayPanel taps", () => {
     // Every stay with a place and every move with a line has one; a gap has none.
     expect(screen.getAllByRole("button", { name: /^Show .* on the map$/ })).toHaveLength(9); // 5 stays and 4 moves, in 10 rows
     expect(within(rows()[8]!).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  test("DayPanel_gives_every_row_button_a_name_of_its_own", async () => {
+    stubApi({ "2026-10-22": FLIGHT_DAY });
+    mount("2026-10-22");
+    await screen.findByRole("list");
+
+    const names = screen.getAllByRole("button", { name: /^Show .* on the map$/ }).map((button) => button.getAttribute("aria-label"));
+
+    // A stay by its number, a move by the time it began on its own clock; none the same as another, though two stays can be at home.
+    expect(names).toEqual([
+      "Show stop 1, Home, on the map",
+      "Show the walk at 08:32 on the map",
+      "Show stop 2, Café, on the map",
+      "Show the cycle at 09:10 on the map",
+      "Show stop 3, Office, on the map",
+      "Show the drive at 11:41 on the map",
+      "Show stop 4, unnamed place, on the map",
+      "Show the flight at 12:50 on the map",
+      "Show stop 5, Hotel Midtown, on the map",
+    ]);
+    expect(new Set(names).size).toBe(names.length);
   });
 
   test("DayPanel_names_a_place_that_has_no_name_in_its_button_too", async () => {

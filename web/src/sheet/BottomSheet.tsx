@@ -1,12 +1,14 @@
 import {
   useEffect,
   useEffectEvent,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type Ref,
 } from "react";
 import { useViewportHeight } from "../app/useViewportHeight";
 import styles from "./BottomSheet.module.css";
@@ -90,8 +92,19 @@ interface Drag {
   detach: () => void;
 }
 
+/** What the app can ask of the sheet besides what the owner does to it with a finger. */
+export interface BottomSheetHandle {
+  /**
+   * Brings the sheet down to `snap` if it is higher than that, and leaves it where it is if it is there or lower: a request to lower
+   * it, never to raise it. For what the owner has done that is best seen on the map (a row tapped) while the sheet covers it.
+   */
+  lowerTo(snap: "peek" | "half"): void;
+}
+
 export interface BottomSheetProps {
   children: ReactNode;
+  /** The handle by which the app lowers the sheet (see `BottomSheetHandle`). */
+  ref?: Ref<BottomSheetHandle>;
   /** What the panel is called for those who cannot see it. */
   label?: string;
   /**
@@ -112,10 +125,12 @@ export interface BottomSheetProps {
  * behind it stays in use). It rests at three points, a peek of 96 px above the home indicator, half the screen and the screen less 120 px (`topClearance`), and is pulled
  * between them by its handle or, until it is full, by any part of it. Let go slowly it goes to the nearest point; flicked, to the
  * next one that way. The handle also steps through the points when pressed, for those who cannot drag. Its content scrolls only at
- * full: below that the part that shows is a preview, and a drag on it is the sheet's.
+ * full: below that the part that shows is a preview, and a drag on it is the sheet's. The app can ask for it to be lowered
+ * (`ref`).
  */
 export function BottomSheet({
   children,
+  ref,
   label = "Details",
   topClearance = SHEET_TOP_CLEARANCE,
   onHeightChange,
@@ -136,6 +151,12 @@ export function BottomSheet({
   const [dragHeight, setDragHeight] = useState<number | null>(null);
   const drag = useRef<Drag | null>(null);
   const justDragged = useRef(false);
+
+  useImperativeHandle(
+    ref,
+    () => ({ lowerTo: (to) => setSnap((current) => (SNAPS.indexOf(current) > SNAPS.indexOf(to) ? to : current)) }),
+    [],
+  );
 
   const settled = points[snap];
   const visible = dragHeight ?? settled;

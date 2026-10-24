@@ -1,9 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { prefetchNeighbours } from "../api/queries";
 import type { FitFeatures } from "../map/layers";
 import { MapView, type MapPadding } from "../map/MapView";
-import { BottomSheet, SHEET_PEEK, SHEET_TOP_CLEARANCE, sheetHalfHeight } from "../sheet/BottomSheet";
+import { BottomSheet, SHEET_PEEK, SHEET_TOP_CLEARANCE, sheetHalfHeight, type BottomSheetHandle } from "../sheet/BottomSheet";
 import { Sidebar, SIDEBAR_WIDTH } from "../sheet/Sidebar";
 import { DayPanel } from "../views/DayPanel";
 import { Notice } from "../views/Notice";
@@ -45,6 +45,7 @@ export function App() {
   const viewportHeight = useViewportHeight();
   const lastDay = useLastDay(route);
   const map = useViewMap(route);
+  const sheetRef = useRef<BottomSheetHandle>(null);
   const [mapUnavailable, setMapUnavailable] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(SHEET_PEEK);
   const barRef = useRef<HTMLDivElement>(null);
@@ -72,13 +73,25 @@ export function App() {
     [barBottom, desktop, sheetCovers],
   );
 
-  const panel = <Panel route={route} onFocus={map.onFocus} />;
+  // A panel asks for the map to be moved to something (a row tapped). On a phone the sheet may be over the map by then, up to the whole
+  // screen: it is brought down to half, where the map shows what it was moved to (the map is padded for half at the most, so that is
+  // where it fits things). A sheet at half or at its peek stays; on a desktop there is no sheet.
+  const { onFocus: moveMap } = map;
+  const onFocus = useCallback(
+    (features: FitFeatures) => {
+      moveMap(features);
+      sheetRef.current?.lowerTo("half");
+    },
+    [moveMap],
+  );
+  const panel = <Panel route={route} onFocus={onFocus} />;
   return (
     <main className={styles.shell} data-layout={desktop ? "desktop" : "phone"}>
       <div className={styles.map}>
         <MapView
           data={map.data}
           fitTo={map.fitTo}
+          home={map.home}
           padding={padding}
           onStyleError={() => setMapUnavailable(true)}
           onStyleLoad={() => setMapUnavailable(false)}
@@ -97,7 +110,7 @@ export function App() {
         <Sidebar>{panel}</Sidebar>
       ) : (
         // The sheet at its highest stops short of the bar, which is taller with the range fields and lower under a notch.
-        <BottomSheet topClearance={Math.max(SHEET_TOP_CLEARANCE, barBottom + 8)} onHeightChange={setSheetHeight}>
+        <BottomSheet ref={sheetRef} topClearance={Math.max(SHEET_TOP_CLEARANCE, barBottom + 8)} onHeightChange={setSheetHeight}>
           {panel}
         </BottomSheet>
       )}

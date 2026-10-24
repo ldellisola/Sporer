@@ -290,6 +290,31 @@ describe("heatGeoJson", () => {
   });
 });
 
+/** Evaluates a MapLibre expression for the properties of one feature, for the few operators the pin radius is made of; any other throws. */
+function evaluate(expression: unknown, properties: Record<string, unknown>): unknown {
+  if (!Array.isArray(expression)) return expression;
+  const [operator, ...operands] = expression as [string, ...unknown[]];
+  if (operator === "get") return properties[operands[0] as string];
+  const values = operands.map((operand) => evaluate(operand, properties));
+  const numbers = values as number[];
+  switch (operator) {
+    case "to-string":
+      return String(values[0]);
+    case "length":
+      return String(values[0]).length;
+    case "+":
+      return numbers.reduce((sum, n) => sum + n);
+    case "*":
+      return numbers.reduce((product, n) => product * n);
+    case "/":
+      return numbers[0]! / numbers[1]!;
+    case "max":
+      return Math.max(...numbers);
+    default:
+      throw new Error(`The test cannot evaluate "${operator}"`);
+  }
+}
+
 describe("layerSpecs", () => {
   const find = (view: "day" | "range", id: string, dark = false) => {
     const spec = layerSpecs(view, dark).find((candidate) => candidate.id === id);
@@ -399,13 +424,21 @@ describe("layerSpecs", () => {
   });
 
   test("layerSpecs_grow_a_stop_pin_with_its_label_so_that_the_white_numbers_stay_inside_it", () => {
-    const radius = JSON.stringify(paint(find("day", LAYER_IDS.stops))["circle-radius"]);
-    const offset = JSON.stringify(layout(find("day", LAYER_IDS.stopNames))["text-radial-offset"]);
+    const radius = paint(find("day", LAYER_IDS.stops))["circle-radius"];
+    const offset = layout(find("day", LAYER_IDS.stopNames))["text-radial-offset"];
+    const radiusOf = (label: string) => evaluate(radius, { label }) as number;
+    const offsetOf = (label: string) => evaluate(offset, { label }) as number;
 
-    // "1 · 4" is wider than "1", and white text outside the pin would be lost on the map; the name beside it follows the pin's size.
-    expect(radius).toContain('"length"');
-    expect(radius).toContain('"label"');
-    expect(offset).toContain('"label"');
+    // The expressions are MapLibre's, evaluated here for the few operators they are made of (the e2e tests have the real map take them).
+    expect(radiusOf("1")).toBe(12); // one number: the pin as it was
+    expect(radiusOf("10")).toBe(12);
+    expect(radiusOf("1 · 4")).toBeCloseTo(17, 10); // 5 characters: 6 + 2.2 * 5
+    expect(radiusOf("1 · 4 · 7")).toBeCloseTo(25.8, 10);
+    expect(radiusOf("1 · 4")).toBeGreaterThan(radiusOf("1"));
+    expect(radiusOf("1 · 4 · 7")).toBeGreaterThan(radiusOf("1 · 4"));
+    // The name beside a pin clears it: its radius in ems of the 12 px text, and half an em more (1.5 em for a pin of one number).
+    expect(offsetOf("1")).toBeCloseTo(1.5, 10);
+    expect(offsetOf("1 · 4")).toBeCloseTo(17 / 12 + 0.5, 10);
   });
 
   test("layerSpecs_size_place_dots_by_their_radius_and_label_the_top_ones", () => {

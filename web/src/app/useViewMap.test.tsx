@@ -144,6 +144,83 @@ describe("useViewMap data", () => {
   });
 });
 
+describe("useViewMap leaving the day view", () => {
+  const WEEK: Route = { view: "week", start: "2026-10-19" };
+
+  test("useViewMap_does_not_draw_the_day_that_was_left_while_the_next_one_loads", async () => {
+    // The panel of a day that is shown after another view starts afresh, and says "Loading…": the map must say the same.
+    let release: (response: Response) => void = () => undefined;
+    stubApi({ "2026-10-22": OSLO_DAY, "2026-10-23": () => new Promise<Response>((resolve) => (release = resolve)) });
+    const { result, go } = setup(DAY_22);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    go(WEEK);
+
+    go(DAY_23);
+
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.stops).toBeUndefined();
+    expect(result.current.fitTo).toBeNull();
+    expect(result.current.home).toBeNull();
+    release(Response.json(NEW_YORK_DAY));
+    await waitFor(() => expect(result.current.data).toEqual(dayGeoJson(NEW_YORK_DAY)));
+    expect(result.current.fitTo).toEqual(featuresOf(NEW_YORK_DAY));
+  });
+
+  test("useViewMap_does_not_draw_the_day_that_was_left_when_the_next_one_fails", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY, "2026-10-23": new Response("{}", { status: 500 }) });
+    const { result, go, client } = setup(DAY_22);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    go(WEEK);
+
+    go(DAY_23);
+    await waitFor(() => expect(client.getQueryState(["day", "2026-10-23"])?.status).toBe("error"));
+
+    expect(result.current.data.routes.features).toEqual([]); // the panel shows the error and no rows, and so does the map
+    expect(result.current.data.stops).toBeUndefined();
+    expect(result.current.fitTo).toBeNull();
+  });
+
+  test("useViewMap_still_keeps_the_day_under_the_next_one_when_the_view_stays_a_day", async () => {
+    let release: (response: Response) => void = () => undefined;
+    stubApi({ "2026-10-22": OSLO_DAY, "2026-10-23": () => new Promise<Response>((resolve) => (release = resolve)) });
+    const { result, go } = setup(DAY_22);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    const drawn = result.current.data;
+
+    go(DAY_23); // stepping, with no other view between
+
+    expect(result.current.data.routes).toBe(drawn.routes);
+    release(Response.json(NEW_YORK_DAY));
+    await waitFor(() => expect(result.current.data).toEqual(dayGeoJson(NEW_YORK_DAY)));
+  });
+});
+
+describe("useViewMap home", () => {
+  test("useViewMap_gives_the_whole_day_as_home_and_a_tapped_row_does_not_change_it", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY });
+    const { result } = setup(DAY_22);
+    expect(result.current.home).toBeNull(); // nothing to go back to before the day is there
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    const home = result.current.home;
+    expect(home).toEqual(featuresOf(OSLO_DAY));
+
+    act(() => result.current.onFocus([placePoint((OSLO_DAY.segments[2] as StaySegment).place!)]));
+
+    expect(result.current.fitTo).toHaveLength(1); // the map is at the row...
+    expect(result.current.home).toBe(home); // ...and Recenter is for the whole day
+  });
+
+  test("useViewMap_has_no_home_for_the_other_views_or_a_day_with_nothing_on_it", async () => {
+    stubApi({ "2026-10-22": emptyDay("2026-10-22") });
+    const { result, go } = setup(DAY_22);
+    await waitFor(() => expect(result.current.data.stops).toBeDefined());
+    expect(result.current.home).toBeNull();
+
+    go({ view: "month", month: "2026-10" });
+    expect(result.current.home).toBeNull();
+  });
+});
+
 describe("useViewMap fit", () => {
   test("useViewMap_fits_to_the_whole_day_when_its_data_first_arrives", async () => {
     stubApi({ "2026-10-22": OSLO_DAY });

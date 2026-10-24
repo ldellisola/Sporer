@@ -1,4 +1,4 @@
-import { keepPreviousData, QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, QueryClient, queryOptions, skipToken, useQuery } from "@tanstack/react-query";
 import { step, periodDays, periodRange } from "../time/dates";
 import type { Route } from "../app/router";
 import { ApiError, getJson } from "./client";
@@ -23,12 +23,18 @@ export const MAX_RANGE_DAYS = 400;
 const pollWhilePending = (query: { state: { data: { state: string } | undefined } }): number | false =>
   query.state.data?.state === "pending" ? POLL_MS : false;
 
-export function dayQueryOptions(date: string) {
+/**
+ * A day. Nothing is asked for while `date` is null (the view on show is not a day): the query is skipped, so that however the days are
+ * refetched no day that is not one is asked for. While the next day loads the previous one stays as `data` (a placeholder) unless
+ * `keepPrevious` is false, for a caller that keeps the day it last had itself (`useKeptData`) and must not be given one from before
+ * it left the day view: the placeholder is the data of the last query that had any, null dates included.
+ */
+export function dayQueryOptions(date: string | null, keepPrevious = true) {
   return queryOptions({
     queryKey: ["day", date] as const,
-    queryFn: ({ signal }) => getJson<DayResponse>(`/api/day/${date}`, signal),
+    queryFn: date === null ? skipToken : ({ signal }) => getJson<DayResponse>(`/api/day/${date}`, signal),
     staleTime: STALE_MS,
-    placeholderData: keepPreviousData,
+    placeholderData: keepPrevious ? keepPreviousData : undefined,
     refetchInterval: pollWhilePending,
   });
 }
@@ -78,8 +84,7 @@ export function configQueryOptions() {
   });
 }
 
-/** The day `date`; nothing is asked for while it is null (the view on show is not a day, and its map has no day to draw). */
-export const useDay = (date: string | null) => useQuery({ ...dayQueryOptions(date ?? ""), enabled: date !== null });
+export const useDay = (date: string | null, keepPrevious = true) => useQuery(dayQueryOptions(date, keepPrevious));
 
 export const useRange = (from: string, to: string) => useQuery(rangeQueryOptions(from, to));
 

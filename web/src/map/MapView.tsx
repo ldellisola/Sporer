@@ -58,6 +58,12 @@ export interface MapViewProps {
    * array without positions.
    */
   fitTo?: readonly Feature<Geometry, unknown>[] | null;
+  /**
+   * What the Recenter button brings back: the whole of what is drawn, where `fitTo` may be a part of it (a row of the timeline that
+   * was tapped). Without it the button goes back to `fitTo`. It never moves the map by itself, so a parent may give a new one as
+   * often as its data changes; null (or no position in it) says there is nothing to go back to, and disables the button.
+   */
+  home?: readonly Feature<Geometry, unknown>[] | null;
   padding?: MapPadding;
   /**
    * Called once for each style that cannot be loaded (the request fails, it is not a style, MapLibre will not take it), and for
@@ -200,6 +206,7 @@ function MapSurface({
   dark,
   data,
   fitTo = null,
+  home,
   padding = NO_PADDING,
   onStyleError,
   onStyleLoad,
@@ -213,8 +220,9 @@ function MapSurface({
 
   const { routes, stops, places, heat } = data;
   const bounds = useMemo(() => (fitTo === null ? null : boundsOf(fitTo)), [fitTo]);
+  const homeBounds = useMemo(() => (home === undefined ? bounds : home === null ? null : boundsOf(home)), [home, bounds]);
 
-  const latest = useLatest({ data, dark, padding, onStyleError, onStyleLoad, source, bounds });
+  const latest = useLatest({ data, dark, padding, onStyleError, onStyleLoad, source, bounds, homeBounds });
   const styleUrl = source !== null && "url" in source ? source.url : null;
   const styleFailed = source !== null && "error" in source;
 
@@ -344,7 +352,7 @@ function MapSurface({
 
   const recenter = (): void => {
     const map = mapRef.current;
-    const target = latest.current.bounds;
+    const target = latest.current.homeBounds;
     if (map !== null && target !== null) fit(map, target, latest.current.padding);
   };
 
@@ -357,7 +365,7 @@ function MapSurface({
           className={styles.button}
           aria-label="Recenter map"
           title="Recenter map"
-          disabled={bounds === null}
+          disabled={homeBounds === null}
           onClick={recenter}
         >
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">

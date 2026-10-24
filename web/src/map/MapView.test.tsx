@@ -569,6 +569,66 @@ describe("MapView", () => {
       expect(map.fitCalls[1]?.options).toMatchObject({ padding: { ...PADDING, bottom: 500 } });
     });
 
+    describe("home", () => {
+      const row: Feature<Point, object> = { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [10.7, 59.9] } };
+      const whole = [flight, row];
+
+      test("MapView_recenter_brings_back_home_when_the_map_was_taken_to_a_row", () => {
+        goodStyle();
+        const { rerender } = render(view({ fitTo: whole, home: whole, padding: PADDING }));
+        const map = theMap();
+        rerender(view({ fitTo: [row], home: whole, padding: PADDING })); // a row of the timeline tapped
+        expect(map.fitCalls).toHaveLength(2);
+        expect(map.fitCalls[1]?.bounds).toEqual(boundsOf([row]));
+
+        fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+
+        expect(map.fitCalls).toHaveLength(3); // the whole day, and not the row it was last taken to
+        expect(map.fitCalls[2]?.bounds).toEqual(boundsOf(whole));
+        expect(map.fitCalls[2]?.options).toMatchObject({ padding: PADDING });
+      });
+
+      test("MapView_home_alone_does_not_move_the_map_and_the_latest_home_is_the_one_recentered_to", () => {
+        goodStyle();
+        const tapped = [row];
+        const { rerender } = render(view({ fitTo: tapped, home: [row], padding: PADDING }));
+        const map = theMap();
+        expect(map.fitCalls).toHaveLength(1);
+
+        rerender(view({ fitTo: tapped, home: whole, padding: PADDING })); // the day was polled and has more in it: the map stays
+        expect(map.fitCalls).toHaveLength(1);
+
+        fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+        expect(map.fitCalls).toHaveLength(2);
+        expect(map.fitCalls[1]?.bounds).toEqual(boundsOf(whole));
+      });
+
+      test("MapView_recenter_goes_to_the_fit_when_there_is_no_home_given", () => {
+        goodStyle();
+        render(view({ fitTo: [row], padding: PADDING }));
+        const map = theMap();
+
+        fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+
+        expect(map.fitCalls[1]?.bounds).toEqual(boundsOf([row]));
+      });
+
+      test("MapView_recenter_is_disabled_when_home_is_null_whatever_the_fit_is", () => {
+        goodStyle();
+        const { rerender } = render(view({ fitTo: [row], home: null }));
+        const button = screen.getByRole("button", { name: "Recenter map" });
+
+        expect(button).toBeDisabled();
+        fireEvent.click(button);
+        expect(theMap().fitCalls).toHaveLength(1); // the fit that was asked for, and no more
+
+        rerender(view({ fitTo: [row], home: whole }));
+        expect(button).toBeEnabled();
+        rerender(view({ fitTo: [row], home: [] })); // nothing in it to bring back
+        expect(button).toBeDisabled();
+      });
+    });
+
     test("MapView_recenter_button_is_disabled_when_there_is_nothing_to_show", () => {
       goodStyle();
       const { rerender } = render(view({ fitTo: null }));

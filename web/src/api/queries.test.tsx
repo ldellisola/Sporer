@@ -119,14 +119,51 @@ describe("query hooks", () => {
     expect(result.current.isPlaceholderData).toBe(false);
   });
 
-  test("useDay_with_no_date_asks_for_nothing", async () => {
+  test("useDay_with_no_date_asks_for_nothing_even_when_every_day_is_refetched", async () => {
     const urls = stubApi(() => json(day("2026-10-22")));
-    const { result } = renderHook(() => useDay(null), { wrapper: wrapperFor(newClient()) });
+    const client = newClient();
+    const { result } = renderHook(() => useDay(null), { wrapper: wrapperFor(client) });
 
     await act(async () => undefined);
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["day"] });
+      await client.refetchQueries({ queryKey: ["day"] });
+    });
 
-    expect(urls).toEqual([]); // the view on show is not a day
+    expect(urls).toEqual([]); // the view on show is not a day, and no day is asked for as `/api/day/`
     expect(result.current.fetchStatus).toBe("idle");
+    expect(result.current.data).toBeUndefined();
+  });
+
+  test("useDay_can_leave_the_previous_day_to_its_caller_while_the_next_loads", async () => {
+    let releaseSecond: (response: Response) => void = () => {};
+    const second = new Promise<Response>((resolve) => (releaseSecond = resolve));
+    stubApi((url) => (url.endsWith("2026-10-22") ? json(day("2026-10-22")) : second));
+    const { result, rerender } = renderHook(({ date }) => useDay(date, false), {
+      initialProps: { date: "2026-10-22" },
+      wrapper: wrapperFor(newClient()),
+    });
+    await waitFor(() => expect(result.current.data?.date).toBe("2026-10-22"));
+
+    rerender({ date: "2026-10-23" });
+
+    expect(result.current.data).toBeUndefined(); // no placeholder: what is kept is the caller's to keep
+    await act(async () => releaseSecond(json(day("2026-10-23"))));
+    await waitFor(() => expect(result.current.data?.date).toBe("2026-10-23"));
+  });
+
+  test("useDay_has_no_previous_day_to_show_after_a_visit_to_where_there_is_no_day", async () => {
+    // The placeholder is the data of the last query that had any: through a null date too, so that a day the owner left comes back.
+    stubApi((url) => (url.endsWith("2026-10-22") ? json(day("2026-10-22")) : new Promise<Response>(() => undefined)));
+    const { result, rerender } = renderHook(({ date }: { date: string | null }) => useDay(date, false), {
+      initialProps: { date: "2026-10-22" as string | null },
+      wrapper: wrapperFor(newClient()),
+    });
+    await waitFor(() => expect(result.current.data?.date).toBe("2026-10-22"));
+
+    rerender({ date: null });
+    rerender({ date: "2026-10-23" });
+
     expect(result.current.data).toBeUndefined();
   });
 
