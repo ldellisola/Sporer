@@ -125,14 +125,21 @@ function DayRow({ date, day }: Listed) {
 
 /**
  * What is on screen of a period: its chips, where the time went, and its days; `asked` says whether it is the period that the address
- * asks for. A new period is a new `Period` (the panel gives it the dates for its key), so that what was opened (the rest of the places)
- * is closed again, and stays as it was opened for as long as the period is this one, however often it is polled.
+ * asks for. What was opened (the rest of the places) is closed again for another period, and stays as it was opened for as long as the
+ * period is this one, however often it is polled. It is the state that is let go of and not the panel that is made again: a panel
+ * that is made again for each period would take the focus of a place row that both periods have (← and → step the period) to the page,
+ * and the fade that un-dims what was shown while the period loaded.
  */
 function Period({ range, asked, loading }: { range: RangeResponse; asked: boolean; loading: boolean }) {
   const ranked = useMemo(() => rank(range.places), [range.places]);
   const date = today(); // read on every render, so that a panel that is left open over midnight lists the new day
   const days = useMemo(() => listDays(range, date), [range, date]);
-  const [all, setAll] = useState(false);
+  const periodKey = `${range.from}..${range.to}`;
+  const [openedFor, setOpenedFor] = useState<string | null>(null); // the period whose rest of the places is shown
+  // Adjusting state while rendering, as React documents it: this render is thrown away and made again with `openedFor` set. Once the
+  // period is another it is closed, and a period that is stepped back to starts closed too.
+  if (openedFor !== null && openedFor !== periodKey) setOpenedFor(null);
+  const all = openedFor === periodKey;
   const firstOfTheRest = useRef<HTMLButtonElement>(null);
   const placesHeading = useId();
   const daysHeading = useId();
@@ -174,7 +181,7 @@ function Period({ range, asked, loading }: { range: RangeResponse; asked: boolea
                 ))}
               </ol>
               {places.length < ranked.length && (
-                <button type="button" className={`${rows.tap} ${styles.row} ${styles.more}`} onClick={() => setAll(true)}>
+                <button type="button" className={`${rows.tap} ${styles.row} ${styles.more}`} onClick={() => setOpenedFor(periodKey)}>
                   {`Show all ${formatCount(ranked.length, "place")}`}
                 </button>
               )}
@@ -214,7 +221,7 @@ export function RangePanel({ from, to }: RangePanelProps) {
       {shown === undefined ? (
         !range.isError && <Loading />
       ) : (
-        <Period key={`${shown.from}..${shown.to}`} range={shown} asked={shown.from === from && shown.to === to} loading={!range.isError} />
+        <Period range={shown} asked={shown.from === from && shown.to === to} loading={!range.isError} />
       )}
     </>
   );

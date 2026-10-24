@@ -360,6 +360,31 @@ describe("RangePanel places", () => {
     row.focus();
     expect(row).toHaveFocus();
   });
+
+  test("RangePanel_keeps_a_focused_place_row_and_the_panel_across_a_period_step", async () => {
+    // ← and → step the period with the focus on a row. A place that both periods have is the same row in them, and the panel is not
+    // made again: the keyboard stays where it is, and what was dimmed under the loading un-dims by its transition.
+    stubApi({
+      "2026-10-19..2026-10-25": WEEK,
+      "2026-10-26..2026-11-01": period("2026-10-26", "2026-11-01", {
+        summary: { places: 2, distanceMeters: 0, movingSeconds: 0, moves: 0 },
+        places: [HOME, CAFE],
+      }),
+    });
+    const { show } = mount("2026-10-19", "2026-10-25");
+    await screen.findByRole("list", { name: "Where your time went" });
+    const row = screen.getByRole("button", { name: "Open Home" });
+    const shown = document.querySelector("[aria-busy]");
+    row.focus();
+
+    show("2026-10-26", "2026-11-01");
+    await screen.findByText("2 places");
+
+    expect(screen.getByRole("button", { name: "Open Home" })).toBe(row);
+    expect(row).toHaveFocus();
+    expect(document.querySelector("[aria-busy]")).toBe(shown);
+    expect(shown).toHaveAttribute("aria-busy", "false");
+  });
 });
 
 describe("RangePanel states", () => {

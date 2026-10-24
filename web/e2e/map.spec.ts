@@ -101,6 +101,9 @@ test.describe("colour scheme", () => {
   test.use({ deviceScaleFactor: 1 });
 
   test("map_follows_the_system_colour_scheme", async ({ page }) => {
+    // Three polls of PIXEL_POLL run one after the other, which is more than the 30 s that Playwright gives a test: it is the test's
+    // budget that would run out first, whatever each poll is allowed. So the test gets the time of its polls on top of the default.
+    test.setTimeout(30_000 + 3 * PIXEL_POLL.timeout);
     const asked: string[] = [];
     for (const [file, colour] of [["light", "#dfe6ea"], ["dark", "#1b2733"]] as const) {
       await page.route(`**/map-style-${file}.json`, (route) => {
