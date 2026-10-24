@@ -160,8 +160,9 @@ test("arrow_buttons_and_keys_step_the_period", async ({ page }) => {
   await expect(page.getByLabel("From", { exact: true })).toHaveValue("2026-10-19");
   await expect(page.getByLabel("To", { exact: true })).toHaveValue("2026-10-25");
 
-  await page.getByLabel("To", { exact: true }).fill("2026-10-31"); // a native date field, set the way a picker does
-  await page.getByLabel("To", { exact: true }).press("Enter"); // and committed: a field is taken when it is left or Enter is pressed
+  // A native date field set the way a picker does, in one go, and left with the focus in it: no blur and no Enter, and it is taken
+  // after a short pause (it would be taken at once on either).
+  await page.getByLabel("To", { exact: true }).fill("2026-10-31");
   await expect(page).toHaveURL(/\/range\/2026-10-19\.\.2026-10-31$/);
   await page.getByLabel("To", { exact: true }).focus();
   await page.keyboard.press("ArrowLeft"); // in a field, the arrow is the field's
@@ -169,7 +170,8 @@ test("arrow_buttons_and_keys_step_the_period", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "19 Oct – 31 Oct 2026" })).toBeVisible();
 });
 
-// Ruling P2-R29: the browser reports every part of a date as it is typed (the 2 of 28 makes the 2nd), and each is a date.
+// Rulings P2-R29 and P2-R33: the browser reports every part of a date as it is typed (the 2 of 28 makes the 2nd), and each is a date.
+// One that crosses the other end of the range is held; one that is fine is taken after a pause, with the focus still in the field.
 test("range_fields_take_a_date_typed_part_by_part_as_one_change", async ({ page }) => {
   await mockApi(page);
   await page.goto("/range/2026-10-19..2026-10-25");
@@ -180,23 +182,39 @@ test("range_fields_take_a_date_typed_part_by_part_as_one_change", async ({ page 
 
   await to.focus(); // the month part of the field
   await page.keyboard.press("ArrowRight"); // the day part
-  await page.keyboard.type("28");
+  await page.keyboard.type("28"); // 2026-10-02 after the 2 (before From: held), 2026-10-28 after the 8
 
   await expect(to).toHaveValue("2026-10-28");
-  await expect(page).toHaveURL(/\/range\/2026-10-19\.\.2026-10-25$/); // the route has not moved for the 2, nor for the 8
-  expect(await page.evaluate(() => window.history.length)).toBe(entries);
-  await expect(from).toHaveValue("2026-10-19");
-
-  await page.keyboard.press("Enter");
-
-  await expect(page).toHaveURL(/\/range\/2026-10-19\.\.2026-10-28$/);
-  expect(await page.evaluate(() => window.history.length)).toBe(entries + 1); // one entry for the one change
-  await expect(from).toHaveValue("2026-10-19"); // and From was not dragged along by the 2nd
+  await expect(page).toHaveURL(/\/range\/2026-10-19\.\.2026-10-28$/); // taken after the pause, with no blur and no Enter
+  await expect(to).toBeFocused();
+  await expect(from).toHaveValue("2026-10-19"); // From was not dragged along by the 2nd
   await expect(page.getByRole("heading", { name: "19 Oct – 28 Oct 2026" })).toBeVisible();
+  expect(await page.evaluate(() => window.history.length)).toBe(entries + 1); // one entry for the one change
 
-  await to.focus(); // left again as it was, the field changes nothing
-  await to.blur();
+  await to.blur(); // left again as it was, the field changes nothing
   expect(await page.evaluate(() => window.history.length)).toBe(entries + 1);
+});
+
+test("range_fields_take_an_invalid_date_when_they_are_left_and_Enter_takes_a_valid_one_at_once", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/range/2026-10-19..2026-10-25");
+  const from = page.getByLabel("From", { exact: true });
+  const to = page.getByLabel("To", { exact: true });
+  const entries = await page.evaluate(() => window.history.length);
+
+  await to.focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.type("2"); // 2026-10-02: before From, so held however long it stays
+  await page.waitForTimeout(900); // longer than the pause
+  await expect(page).toHaveURL(/\/range\/2026-10-19\.\.2026-10-25$/);
+  await to.blur(); // left like that: From is dragged along
+  await expect(page).toHaveURL(/\/range\/2026-10-02\.\.2026-10-02$/);
+  await expect(from).toHaveValue("2026-10-02");
+
+  await to.fill("2026-10-09");
+  await to.press("Enter"); // Enter does not wait for the pause
+  await expect(page).toHaveURL(/\/range\/2026-10-02\.\.2026-10-09$/);
+  expect(await page.evaluate(() => window.history.length)).toBe(entries + 2);
 });
 
 test("status_banner_shows_progress_below_the_bar_and_not_over_the_map_buttons", async ({ page }) => {

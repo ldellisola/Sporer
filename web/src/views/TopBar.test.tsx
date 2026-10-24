@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { parseRoute, useRoute } from "../app/router";
 import { useLastDay } from "../app/useLastDay";
@@ -147,7 +147,8 @@ describe("TopBar", () => {
     expect(field("To")).toHaveValue(to);
   });
 
-  // A date field is committed when it is left or Enter is pressed, not for each part of it that is typed (see DateField).
+  // A date field is committed when it is left, when Enter is pressed, or (a date that is fine) after a pause: not for each part of it
+  // that is typed (see DateField).
   const commit = (name: "From" | "To", value: string) => {
     fireEvent.change(field(name), { target: { value } });
     fireEvent.blur(field(name));
@@ -208,6 +209,138 @@ describe("TopBar", () => {
 
     fireEvent.blur(field("To")); // a field that is left again with the same date is no change
     expect(window.history.length).toBe(entries + 1);
+  });
+
+  describe("a date that is left in the field", () => {
+    // A date picked from the calendar of a desktop browser leaves the focus in the field: no blur, no Enter. A date that is fine
+    // is taken after a pause of 600 ms without another edit; one that is not waits to be left.
+    const draft = (name: "From" | "To", value: string) => fireEvent.change(field(name), { target: { value } });
+    const wait = (ms: number) => act(() => void vi.advanceTimersByTime(ms));
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+
+    test("TopBar_range_field_takes_a_valid_date_after_600ms_and_not_before", () => {
+      open("/range/2026-10-19..2026-10-25");
+      const entries = window.history.length;
+
+      draft("To", "2026-10-28");
+      wait(599);
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-25");
+
+      wait(1);
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-28");
+      expect(window.history.length).toBe(entries + 1);
+      wait(5000); // once, and the field keeps what it was given
+      expect(window.history.length).toBe(entries + 1);
+      expect(field("To")).toHaveValue("2026-10-28");
+    });
+
+    test("TopBar_range_field_waits_the_pause_out_again_for_each_edit", () => {
+      open("/range/2026-10-19..2026-10-25");
+
+      draft("To", "2026-10-26");
+      wait(400);
+      draft("To", "2026-10-27");
+      wait(400); // 800 ms since the first edit, 400 since the last
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-25");
+
+      wait(200);
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-27");
+    });
+
+    test("TopBar_range_field_holds_a_date_that_crosses_the_other_end_until_it_is_left", () => {
+      open("/range/2026-10-19..2026-10-25");
+
+      draft("To", "2026-10-02"); // the 2 of 28 typed into the day: before From
+      wait(5000);
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-25"); // never on the timer
+      expect(field("From")).toHaveValue("2026-10-19");
+
+      fireEvent.blur(field("To")); // left like that: From is dragged along
+      expect(pathname()).toBe("/range/2026-10-02..2026-10-02");
+    });
+
+    test("TopBar_range_field_holds_a_date_that_makes_the_range_too_long_until_it_is_left", () => {
+      open("/range/2026-10-19..2026-10-25");
+
+      draft("To", "2028-01-01"); // more than 400 days
+      wait(5000);
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-25");
+      draft("From", "2020-01-01");
+      wait(5000);
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-25");
+
+      fireEvent.blur(field("From"));
+      const route = parseRoute(pathname(), "2026-10-24") as Extract<ReturnType<typeof parseRoute>, { view: "range" }>;
+      expect(route.from).toBe("2020-01-01");
+      expect(periodDays(route)).toBe(400); // the other end gave way
+    });
+
+    test("TopBar_range_field_typed_one_part_at_a_time_is_held_then_taken_after_the_pause", () => {
+      open("/range/2026-10-19..2026-10-25");
+      const entries = window.history.length;
+
+      draft("To", "2026-10-02"); // the 2 of 28: invalid, held
+      draft("To", "2026-10-28"); // the 8: valid
+      wait(599);
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-25");
+      expect(field("From")).toHaveValue("2026-10-19");
+      wait(1);
+
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-28"); // From was not dragged along by the 2nd
+      expect(window.history.length).toBe(entries + 1);
+    });
+
+    test("TopBar_range_field_blur_and_Enter_take_a_valid_date_at_once_and_only_once", () => {
+      open("/range/2026-10-19..2026-10-25");
+      const entries = window.history.length;
+
+      draft("To", "2026-10-28");
+      fireEvent.blur(field("To"));
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-28");
+      wait(5000); // the pause that was running is over with the blur
+      expect(window.history.length).toBe(entries + 1);
+
+      draft("From", "2026-10-20");
+      fireEvent.keyDown(field("From"), { key: "Enter" });
+      expect(pathname()).toBe("/range/2026-10-20..2026-10-28");
+      wait(5000);
+      expect(window.history.length).toBe(entries + 2);
+    });
+
+    test("TopBar_range_field_forgets_the_pause_when_the_range_is_moved_from_elsewhere", () => {
+      open("/range/2026-10-19..2026-10-25");
+
+      draft("To", "2026-10-28");
+      press("Next range"); // an arrow: the range is another one, and the draft belongs to the old
+      expect(pathname()).toBe("/range/2026-10-26..2026-11-01");
+      wait(5000);
+
+      expect(pathname()).toBe("/range/2026-10-26..2026-11-01");
+      expect(field("To")).toHaveValue("2026-11-01");
+    });
+
+    test("TopBar_range_field_forgets_the_pause_when_the_bar_goes", () => {
+      const { unmount } = open("/range/2026-10-19..2026-10-25");
+      draft("To", "2026-10-28");
+
+      unmount();
+      wait(5000);
+
+      expect(pathname()).toBe("/range/2026-10-19..2026-10-25");
+    });
+
+    test("TopBar_range_field_forgets_the_pause_when_the_view_changes", () => {
+      open("/range/2026-10-19..2026-10-25");
+      draft("To", "2026-10-28");
+
+      press("Week"); // no fields any more
+      wait(5000);
+
+      expect(pathname()).toBe("/week/2026-10-19");
+    });
   });
 
   test("TopBar_range_fields_ignore_what_is_not_a_date_and_show_the_range_again", () => {

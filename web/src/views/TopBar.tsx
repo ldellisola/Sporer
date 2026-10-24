@@ -18,6 +18,9 @@ const SEGMENTS: readonly { view: View; label: string }[] = [
 /** A swipe along the date row steps the period when it is at least this far, and goes mostly sideways. */
 const SWIPE_MIN_PX = 50;
 
+/** How long a date left in a range field, with the focus still in it, waits for another edit before it is taken. */
+const COMMIT_AFTER_MS = 600;
+
 /**
  * The earliest date a range field takes. A native date field passes through years the owner does not mean on its way to the one
  * typed (0002, 0020, 0202, 2026), and each of them would otherwise be a range, and a request.
@@ -77,28 +80,68 @@ function editRange(route: RangeRoute, edge: "from" | "to", value: string): Range
   return { view: "range", from, to };
 }
 
+/** Whether `typed` set as one end of the range leaves the other end alone: it is a date, and the range stays as it is with it. */
+function isPlainEdit(route: RangeRoute, edge: "from" | "to", typed: string): boolean {
+  const next = editRange(route, edge, typed);
+  return next !== null && (edge === "from" ? next.to === route.to : next.from === route.from);
+}
+
 // Where the arrow keys are not the bar's: fields that are typed into, and the map, which pans with them when it has the focus.
 const OWNS_ARROWS = 'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="region"][aria-label="Map view"]';
 
 /** Whether a key press is meant for something that has the arrow keys for itself. */
 const ownsArrows = (target: EventTarget | null): boolean => target instanceof Element && target.closest(OWNS_ARROWS) !== null;
 
+interface DateFieldProps {
+  label: string;
+  /** The date of the route. */
+  value: string;
+  /** Takes a date typed into the field; whether it was one to take. */
+  onCommit: (typed: string) => boolean;
+  /** Whether a date typed into the field is one to take as it is, without the other end of the range having to give way. */
+  isPlain: (typed: string) => boolean;
+}
+
 /**
- * A native date field that the owner can type into and pick from. It takes what is typed when the field is left or Enter is
- * pressed, not for each part of the date typed: the browser reports every one (the 2 of 28 is the 2nd) and each would be a range, a
- * history entry and a request, and would drag the other end of the range along. Until then the field holds a draft of its own, which
- * is why it is not controlled either: a field that React set back to the last good date would wipe the part being typed. It takes
- * the date of the route when that is another one than it shows, which is when something else moved the route (an arrow); a date
- * that is no date to take is put back to the route's.
+ * A native date field that the owner can type into and pick from. What is typed is a draft, held in the field, and not each part of
+ * the date: the browser reports every one (the 2 of 28 is the 2nd) and each would be a range, a history entry and a request, and
+ * would drag the other end of the range along. A draft is taken when the field is left or Enter is pressed, and also, when it is
+ * fine as it is (the range stays a range of 400 days at most), once it has been left alone for a moment with the focus still in
+ * the field: a date picked from the calendar of a desktop browser leaves the focus there, and nothing else would take it. One that
+ * is not fine waits to be left, and is then made to fit (see `editRange`). The field is not controlled: one that React set back to
+ * the last good date would wipe the part being typed. It takes the date of the route when that is another one than it shows, which
+ * is when something else moved the route (an arrow), and the draft it had is dropped with the pause that was running; a date that is
+ * no date to take is put back to the route's.
  */
-function DateField({ label, value, onCommit }: { label: string; value: string; onCommit: (typed: string) => boolean }) {
+function DateField({ label, value, onCommit, isPlain }: DateFieldProps) {
   const input = useRef<HTMLInputElement>(null);
+  const pause = useRef<number | undefined>(undefined);
+  // The latest of the props, for the pause that ends after them: a route that moved meanwhile is the one to take the date into.
+  const latest = useRef({ value, onCommit, isPlain });
   useEffect(() => {
+    latest.current = { value, onCommit, isPlain };
+  });
+
+  const stop = () => {
+    window.clearTimeout(pause.current);
+    pause.current = undefined;
+  };
+  const commit = () => {
+    stop();
+    const typed = input.current?.value;
+    if (typed !== undefined && !latest.current.onCommit(typed) && input.current !== null) input.current.value = latest.current.value;
+  };
+  const onChange = () => {
+    stop();
+    if (input.current !== null && isPlain(input.current.value)) pause.current = window.setTimeout(commit, COMMIT_AFTER_MS);
+  };
+
+  useEffect(() => {
+    stop();
     if (input.current !== null && input.current.value !== value) input.current.value = value;
   }, [value]);
-  const commit = () => {
-    if (input.current !== null && !onCommit(input.current.value)) input.current.value = value;
-  };
+  useEffect(() => stop, []);
+
   return (
     <label className={styles.field}>
       {label}
@@ -107,6 +150,7 @@ function DateField({ label, value, onCommit }: { label: string; value: string; o
         type="date"
         defaultValue={value}
         min={EARLIEST}
+        onChange={onChange}
         onBlur={commit}
         onKeyDown={(event) => {
           if (event.key === "Enter") commit();
@@ -178,8 +222,18 @@ export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: stri
       </div>
       {route.view === "range" && (
         <div className={styles.fields} role="group" aria-label="Date range">
-          <DateField label="From" value={route.from} onCommit={(typed) => setRange("from", typed)} />
-          <DateField label="To" value={route.to} onCommit={(typed) => setRange("to", typed)} />
+          <DateField
+            label="From"
+            value={route.from}
+            onCommit={(typed) => setRange("from", typed)}
+            isPlain={(typed) => isPlainEdit(route, "from", typed)}
+          />
+          <DateField
+            label="To"
+            value={route.to}
+            onCommit={(typed) => setRange("to", typed)}
+            isPlain={(typed) => isPlainEdit(route, "to", typed)}
+          />
         </div>
       )}
       {period !== null && (
