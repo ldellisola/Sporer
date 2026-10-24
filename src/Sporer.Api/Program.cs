@@ -7,6 +7,7 @@ using Npgsql;
 using Sporer.Api.Configuration;
 using Sporer.Api.Database;
 using Sporer.Api.Features.Places;
+using Sporer.Api.Features.Range;
 using Sporer.Api.Features.Timeline;
 using Sporer.Api.Http;
 using Sporer.Timeline;
@@ -23,6 +24,7 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<PointStore>();
 builder.Services.AddSingleton<PlaceStore>();
 builder.Services.AddSingleton<SegmentStore>();
+builder.Services.AddSingleton<RangeStore>();
 builder.Services.AddSingleton<ITimelineProcessor, TimelineProcessor>();
 builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConfiguration>().GetSection("Processing").Get<ProcessingOptions>() ?? new ProcessingOptions());
