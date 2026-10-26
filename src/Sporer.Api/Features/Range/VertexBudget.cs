@@ -8,8 +8,11 @@ namespace Sporer.Api.Features.Range;
 /// </summary>
 public static class VertexBudget
 {
-    /// <summary>The most vertices a response carries, all its lines together.</summary>
-    public const int MaxVertices = 60_000;
+    /// <summary>
+    /// The most vertices a response carries, all its lines together: the spec's "under about 50k" (section 7.3), which binds over the
+    /// 60 000 that the plan first wrote. A year of moves has to stay small enough to draw smoothly on a phone.
+    /// </summary>
+    public const int MaxVertices = 50_000;
 
     private const double FirstToleranceMeters = 100;
 

@@ -27,7 +27,7 @@ After fix rounds 1 and 2 (the first pass in brackets for the web and compression
 | `/api/heat`, month and year windows | (none of its own; the range's) | month p95 8.1 ms, year p95 17.9 ms | Met |
 | `/api/places/{id}`, 200 requests over the 79 places of the busiest year window | (none of its own; the day's, 200 ms) | p50 11.7 ms, p95 16.8 ms, max 23.1 ms (right after the start: p95 17.6, max 97.2) | Met |
 | Year payload size | ≤ 1.5 MB raw JSON | median 532 kB, largest 559 kB raw (the calendar year 2025: 553 kB; 400 days: 600 kB); Brotli 148.9 kB median, 157.8 kB largest | Met, 2.7 times under |
-| Year vertex count | ≤ 60,000 | median 14,888, largest 15,746 (400 days: 16,810) | Met, 3.8 times under (the cap itself is not reached, see the caveats) |
+| Year vertex count | ≤ 50,000 (spec §7.3; the plan wrote 60,000, which was the cap while this was measured: see the note under the table) | median 14,888, largest 15,746 (400 days: 16,810) | Met, 3.2 times under (the cap itself is not reached, see the caveats) |
 | **Bundle** main-thread JavaScript, gzip (P2-R63) | ≤ 450 kB | **379.0 kB**: the page starts with 97.6 kB and the map fetches MapLibre's chunk, 281.4 kB, when it mounts. MapLibre's worker, apart: 147.9 kB | **Met**, 71 kB under. Stated plainly: counting every JavaScript file, worker included, it is 526.9 kB, 77 kB (17 %) over 450 kB |
 | **Web, cold navigation to the panel's rows**, day (4× CPU, 7 runs) | ≤ 1 s | median 764 ms, worst 846 ms; heaviest day 757 / 1,020 ms (first pass: 947 / 1,016; heaviest 982 / 1,124) | Met; one run of seven of the heaviest day is 2 % over |
 | same, month | ≤ 2 s | median 793 ms, worst 853 ms; heaviest month 874 / 1,007 ms (first pass: 1,154 / 1,197; heaviest 1,097 / 1,264) | Met, 2.5 times under |
@@ -39,6 +39,10 @@ After fix rounds 1 and 2 (the first pass in brackets for the web and compression
 
 The panel's rows (in the DOM) are the primary signal for the web; `idle` and the paint are recorded and caveated. Everything in the
 table is a number from the runs below.
+
+*The vertex cap.* The spec says "aim for under about 50k" (§7.3) and binds over the plan's 60,000, which is what `VertexBudget.MaxVertices`
+was while the numbers here were taken. It is 50,000 now (the final review's fix). Nothing in the synthetic history reached either (the
+year's largest is 15.7 thousand vertices), so no number here would be different at the lower cap.
 
 What fix round 1 changed, and what was left: the server's queries needed nothing (no query scans a large table, so no migration
 0005; the one index that was weighed, on `segment.place_id`, is measured below and left out), the app's start no longer waits for
@@ -163,8 +167,9 @@ generation of the history:
   requests are slower in proportion (p50 7.8 ms right after the start, 5.7 ms after).
 - Plan 1's own script, `tools/perf/day-latency.sh` (no compression), run again in the first pass: p50 5.2 ms, p95 8.6 ms, p99 10.7 ms,
   max 17.1 ms, against 5.0 / 7.0 / 7.9 / 12.4 in Plan 1: the same. `/api/status`: 9.0 ms once warm (the first request, 67 ms, is the JIT).
-- The year answer is mostly its `moves` (1,643 moves, one line each); the 60,000-vertex cap of `VertexBudget` did not have to cut
-  anything here (14.9 thousand vertices), so the synthetic history does not show what it does to a heavier year (the unit tests do).
+- The year answer is mostly its `moves` (1,643 moves, one line each); the vertex cap of `VertexBudget` (60,000 when this was measured,
+  50,000 now) did not have to cut anything here (14.9 thousand vertices), so the synthetic history does not show what it does to a
+  heavier year (the unit tests do).
 - The place endpoint is the slowest per row of work (p50 11.7 ms) because it is two recursive queries and a transaction at
   `RepeatableRead`; it has no target of its own and sits at a tenth of the day's.
 
@@ -455,7 +460,7 @@ own code runs at a quarter of it; on a slower phone the worker's share of `idle`
   (the month's cold rows were 1,022 ms in one run of 7 and 1,154 ms in the next), and the worst of 7 is a sample of the tail, not
   a bound. The runs are in one browser process, one after another; the first thrown away.
 - **The data.** Synthetic: a person who moves 1.7 hours a day on clean commutes, 7,607 segments, 1,643 moves in the busiest year
-  and 15 thousand vertices after simplification. The 60,000-vertex budget was never reached, and a history with places of thousands
+  and 15 thousand vertices after simplification. The vertex budget (60,000 then, 50,000 now) was never reached, and a history with places of thousands
   of visits, several devices or a year of long drives could cost more at the server and in the range panel's 348 rows. The row
   counts, 41 for a month and 348 for a year, are this person's.
 - **Only the phone viewport** was timed (the desktop sidebar renders the same rows); only the light colour scheme; the heat layer

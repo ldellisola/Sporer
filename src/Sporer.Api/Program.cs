@@ -74,7 +74,10 @@ builder.Services.Configure<BrotliCompressionProviderOptions>(options => options.
 builder.Services.Configure<GzipCompressionProviderOptions>(options => options.Level = CompressionLevel.Optimal);
 builder.Services.AddResponseCompression(options =>
 {
-    options.EnableForHttps = true; // TLS ends at Traefik, but the app may also be asked over https directly
+    // Traefik ends TLS and sends X-Forwarded-Proto: https, which the forwarded-headers middleware (above) turns into Request.IsHttps. The
+    // compression middleware skips every https request unless told not to, so without this compression would silently stop in production
+    // only: the app itself speaks plain http, and so does every test that does not send the header.
+    options.EnableForHttps = true;
     options.Providers.Add<BrotliCompressionProvider>();
     options.Providers.Add<GzipCompressionProvider>();
     // text/javascript is what .NET serves .js files as (application/javascript before .NET 9).

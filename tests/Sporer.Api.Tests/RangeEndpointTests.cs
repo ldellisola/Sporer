@@ -549,7 +549,7 @@ public class RangeEndpointTests(DatabaseFixture db)
         await using var api = new ApiFactory(cs);
         var client = api.CreateClient();
 
-        // 300 moves of 400 vertices each: 120 000, twice the budget. A line zig-zags across its base line by its own amplitude,
+        // 300 moves of 400 vertices each: 120 000, more than twice the budget of 50 000. A line zig-zags across its base line by its own amplitude,
         // so how much of it a tolerance removes is known: nothing while the tolerance is below the amplitude, all but the
         // two ends from it. Five amplitudes, so that each doubling of the tolerance (100, 200, 400, 800 m) removes some moves'
         // lines and the budget is first met at 800 m, where only the two biggest amplitudes (40 % of the vertices) stay.
@@ -576,7 +576,7 @@ public class RangeEndpointTests(DatabaseFixture db)
         Assert.Equal(ids, moves.Select(m => m.GetProperty("id").GetInt64()));
         var lines = moves.Select(m => Line(m.GetProperty("geometry"))).ToList();
         var total = lines.Sum(l => l.Length);
-        Assert.InRange(total, 40_000, 60_000); // within the budget, and not simplified further than it needed
+        Assert.InRange(total, 40_000, 50_000); // within the budget, and not simplified further than it needed
         for (var k = 0; k < moveCount; k++)
         {
             // Every line begins and ends where it did, and keeps only vertices it had, in their order.

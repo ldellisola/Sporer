@@ -23,11 +23,13 @@ public class HostingTests(DatabaseFixture db)
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
 
     private static async Task<HttpResponseMessage> GetAsync(
-        HttpClient client, string url, string? acceptEncoding = null, string? ifNoneMatch = null)
+        HttpClient client, string url, string? acceptEncoding = null, string? ifNoneMatch = null, string? forwardedProto = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         if (acceptEncoding is not null)
             request.Headers.TryAddWithoutValidation("Accept-Encoding", acceptEncoding);
+        if (forwardedProto is not null)
+            request.Headers.TryAddWithoutValidation("X-Forwarded-Proto", forwardedProto);
         if (ifNoneMatch is not null)
             request.Headers.TryAddWithoutValidation("If-None-Match", ifNoneMatch);
         return await client.SendAsync(request, Ct);
@@ -217,6 +219,25 @@ public class HostingTests(DatabaseFixture db)
 
         var icon = await GetAsync(client, "/favicon.svg", acceptEncoding: "br");
         Assert.Equal("br", Assert.Single(icon.Content.Headers.ContentEncoding));
+    }
+
+    [Theory]
+    [InlineData("/api/status")]
+    [InlineData(TempWebRoot.HashedScriptPath)]
+    public async Task Responses_behind_the_proxy_over_https_are_still_compressed(string url)
+    {
+        // Traefik ends TLS and tells the app so with X-Forwarded-Proto: https, which the forwarded-headers middleware makes of
+        // Request.IsHttps. The response compression middleware does not compress an https response unless EnableForHttps is set, so
+        // without it compression stops in production and nowhere else: every other test here asks over plain http.
+        using var webRoot = new TempWebRoot();
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs, webRoot: webRoot.Path);
+
+        var response = await GetAsync(api.CreateClient(), url, acceptEncoding: "br", forwardedProto: "https");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("br", Assert.Single(response.Content.Headers.ContentEncoding));
+        Assert.Contains("Accept-Encoding", response.Headers.Vary);
     }
 
     [Fact]

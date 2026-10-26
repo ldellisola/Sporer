@@ -21,6 +21,24 @@ public class VertexBudgetTests
     private static int Total(IEnumerable<IReadOnlyList<GeoPoint>> lines) => lines.Sum(l => l.Count);
 
     [Fact]
+    public void The_budget_is_the_specs_under_about_50_thousand_vertices()
+    {
+        Assert.Equal(50_000, VertexBudget.MaxVertices); // spec 7.3, which binds over the plan's 60 000
+    }
+
+    [Fact]
+    public void A_response_between_50_and_60_thousand_vertices_is_simplified_to_fit_the_default_budget()
+    {
+        // 55 000 vertices on 100 lines, each swinging 30 m: the 100 m tolerance, the first, cuts them to their ends.
+        var lines = Enumerable.Range(0, 100).Select(_ => (IReadOnlyList<GeoPoint>)ZigZag(550, 30)).ToList();
+
+        var fitted = VertexBudget.Fit(lines);
+
+        Assert.Equal(100, fitted.Count);
+        Assert.InRange(Total(fitted), 2 * lines.Count, 50_000); // the spec's figure itself, not the constant under test
+    }
+
+    [Fact]
     public void Lines_within_the_budget_are_returned_as_they_are()
     {
         IReadOnlyList<IReadOnlyList<GeoPoint>> lines = [ZigZag(400, 500), ZigZag(300, 500)];
@@ -78,15 +96,15 @@ public class VertexBudgetTests
     [Fact]
     public async Task Terminates_when_the_ends_alone_are_over_the_budget()
     {
-        // 30 001 lines of two vertices are 60 002 vertices, and no tolerance can remove an end: the budget cannot be met, the
+        // 25 001 lines of two vertices are 50 002 vertices, and no tolerance can remove an end: the budget cannot be met, the
         // lines are returned as short as they can be, and the search for a tolerance ends.
-        var lines = Enumerable.Range(0, 30_001)
+        var lines = Enumerable.Range(0, 25_001)
             .Select(k => (IReadOnlyList<GeoPoint>)[new GeoPoint(59.9, 10.7), new GeoPoint(59.9 + k * 1e-6, 10.8)])
             .ToList();
 
         var fitted = await Task.Run(() => VertexBudget.Fit(lines)).WaitAsync(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken);
 
-        Assert.Equal(30_001, fitted.Count);
+        Assert.Equal(25_001, fitted.Count);
         Assert.All(fitted, line => Assert.Equal(2, line.Count));
     }
 
