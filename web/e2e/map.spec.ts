@@ -143,7 +143,7 @@ for (const [name, response] of BROKEN_STYLES) {
 
     await page.goto("/day/2026-10-22");
 
-    await expect(page.getByRole("status")).toHaveText("Map unavailable");
+    await expect(page.getByRole("status")).toHaveText("Map unavailable — Retry");
     await expect(map(page)).toHaveAttribute("data-map-state", "unavailable");
     await expect(map(page).locator("canvas.maplibregl-canvas")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Thursday 22 October" })).toBeVisible(); // the rest of the page goes on
@@ -151,3 +151,33 @@ for (const [name, response] of BROKEN_STYLES) {
     await expect(map(page).getByRole("button", { name: "Recenter map" })).toBeVisible();
   });
 }
+
+// A network blip, or a VPN that is still connecting when the app is opened from the home screen (which has no reload button): the style
+// cannot be had the first time. The note has a Retry, and the map is the real one once the style comes.
+test.describe("a style that cannot be had the first time", () => {
+  test.use({ deviceScaleFactor: 1 });
+
+  test("map_comes_up_when_Retry_is_pressed_after_the_style_request_failed", async ({ page }) => {
+    test.setTimeout(30_000 + PIXEL_POLL.timeout);
+    let asked = 0;
+    await page.route("**/map-style-flaky.json", (route) => {
+      asked += 1;
+      return asked === 1
+        ? route.fulfill({ status: 200, contentType: "application/json", body: "<html>blocked</html>" }) // what a captive network answers with
+        : route.fulfill({ json: flatStyle("#dfe6ea") });
+    });
+    await mockApi(page, { config: { mapStyleLight: "/map-style-flaky.json", mapStyleDark: "/map-style-flaky.json" } });
+    await page.goto("/day/2026-10-22");
+    const note = page.getByRole("status").filter({ hasText: "Map unavailable" });
+    await expect(note).toBeVisible();
+    await expect(map(page)).toHaveAttribute("data-map-state", "unavailable");
+    expect(asked).toBe(1); // it does not try again by itself
+
+    await note.getByRole("button", { name: "Retry" }).click();
+
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect(note).toHaveCount(0); // the note goes when the style has loaded
+    expect(asked).toBe(2);
+    await expect.poll(() => showsColour(page, LIGHT), PIXEL_POLL).toBe(true); // the style that came, and not the plain one it had meanwhile
+  });
+});

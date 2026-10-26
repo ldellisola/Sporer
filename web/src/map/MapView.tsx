@@ -1,5 +1,17 @@
 import type { GeoJSONSource, MapLibreMap } from "maplibre-gl";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactElement, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type ReactElement,
+  type Ref,
+  type RefObject,
+} from "react";
 import { useConfig } from "../api/queries";
 import { boundsOf, type Bounds } from "./bounds";
 import {
@@ -45,7 +57,20 @@ export interface MapPadding {
   left: number;
 }
 
+/** What the app can ask of the map besides what it draws: to try again what failed. */
+export interface MapViewHandle {
+  /**
+   * Tries again what has failed: MapLibre, if it could not be fetched or the map could not start, else the style, if that could not be
+   * loaded. One attempt for each call, and none when nothing has failed or an attempt is already on its way. The map does this by itself
+   * as well, each time the page comes back into view and the network comes back, for as long as it has failed; this is for the owner's
+   * own Retry. How an attempt goes is told as for the first: `onStyleLoad` when it worked, `onStyleError` when it did not.
+   */
+  retry(): void;
+}
+
 export interface MapViewProps {
+  /** The handle by which the app asks the map to try again (see `MapViewHandle`). */
+  ref?: Ref<MapViewHandle>;
   /** A style to load in place of the one `/api/config` gives for the colour scheme; for tests and previews. */
   styleUrl?: string;
   /**
@@ -78,14 +103,16 @@ export interface MapViewProps {
   heatToggle?: HeatToggle;
   /**
    * Called once for each style that cannot be loaded (the request fails, it is not a style, MapLibre will not take it), and for
-   * a map that cannot start (no WebGL, or MapLibre itself could not be fetched). The map then draws on a plain background, and
-   * everything else on the page goes on.
+   * a map that cannot start (no WebGL, or MapLibre itself could not be fetched), and again for each attempt that fails once more
+   * (see `MapViewHandle`). The map then draws on a plain background, and everything else on the page goes on. A style that cannot
+   * be had for a map that already has one (the colour scheme changed) leaves the one it has on screen: a working map is not swapped
+   * for a blank one.
    */
   onStyleError?: (error: Error) => void;
   /**
-   * Called each time a style has finished loading: the first one, and the one of the other colour scheme after a switch, so that a
-   * parent that noted a failure can take the note back. Not for the plain style the map falls back to after a failure: that map is
-   * still not the one that was asked for.
+   * Called each time a style has finished loading: the first one, the one of the other colour scheme after a switch, and the one of an
+   * attempt that has put right a failure, so that a parent that noted the failure can take the note back. Not for the plain style the
+   * map falls back to after a failure: that map is still not the one that was asked for.
    */
   onStyleLoad?: () => void;
 }
@@ -108,6 +135,9 @@ const EMPTY_PLACES: PlaceCollection = { type: "FeatureCollection", features: [] 
 const EMPTY_HEAT: HeatCollection = { type: "FeatureCollection", features: [] };
 
 type MapState = "loading" | "ready" | "unavailable";
+
+/** What has gone wrong with the map, for as long as it has: there is no map (MapLibre could not be had, or would not start), or it has no style. */
+type Failure = "map" | "style";
 
 /** The state of the map as an attribute of its element, for whoever drives the page (the e2e tests wait for it). */
 function showState(root: HTMLElement | null, state: MapState): void {
@@ -219,10 +249,14 @@ type StyleSource = { url: string } | { error: Error } | null;
 interface SurfaceProps extends Omit<MapViewProps, "styleUrl"> {
   source: StyleSource;
   dark: boolean;
+  /** Asks again for where the style comes from, when that is what failed (the config): the style is asked for once it is there. */
+  retrySource?: () => void;
 }
 
 function MapSurface({
+  ref,
   source,
+  retrySource,
   dark,
   data,
   fitTo = null,
@@ -240,12 +274,19 @@ function MapSurface({
   /** Whether the style of the map has loaded, so that sources and layers may be added to it. */
   const readyRef = useRef(false);
   const pushedRef = useRef<Pushed>(newPushed());
+  /** What has failed and is not being tried again yet; null while all is well, and while an attempt is on its way. */
+  const failureRef = useRef<Failure | null>(null);
+  /** The style the map can be drawn on: the last one that loaded, or else the plain one that it fell back to; null before it has any. */
+  const shownRef = useRef<StyleSpecification | null>(null);
+  // One count for each thing there is to try again. A change of either is what runs the effect again.
+  const [mapAttempts, setMapAttempts] = useState(0);
+  const [styleAttempts, setStyleAttempts] = useState(0);
 
   const { routes, stops, places, heat } = data;
   const bounds = useMemo(() => (fitTo === null ? null : boundsOf(fitTo)), [fitTo]);
   const homeBounds = useMemo(() => (home === undefined ? bounds : home === null ? null : boundsOf(home)), [home, bounds]);
 
-  const latest = useLatest({ data, dark, padding, onStyleError, onStyleLoad, source, bounds, homeBounds, load });
+  const latest = useLatest({ data, dark, padding, onStyleError, onStyleLoad, source, retrySource, bounds, homeBounds, load });
   const styleUrl = source !== null && "url" in source ? source.url : null;
   const styleFailed = source !== null && "error" in source;
 
@@ -257,9 +298,11 @@ function MapSurface({
     if (container === null) return;
     let cancelled = false;
     let made: MapLibreMap | null = null;
+    failureRef.current = null; // an attempt is on its way (the first, or one that was asked for)
     showState(rootRef.current, "loading");
     const unavailable = (error: unknown): void => {
-      // No WebGL, most likely, or no MapLibre. The page goes on without a map.
+      // No WebGL, most likely, or no MapLibre. The page goes on without a map, and tries again when it is asked to (`retry`).
+      failureRef.current = "map";
       showState(rootRef.current, "unavailable");
       latest.current.onStyleError?.(toError(error));
     };
@@ -284,6 +327,7 @@ function MapSurface({
           });
           readyRef.current = false;
           pushedRef.current = newPushed();
+          shownRef.current = null;
           showState(rootRef.current, "loading");
           setMap(made); // the effects below take it from here: the style, the data, and the camera, each with the latest of what was given
         } catch (error) {
@@ -307,34 +351,56 @@ function MapSurface({
       made?.remove();
       readyRef.current = false;
     };
-  }, [latest]);
+  }, [latest, mapAttempts]);
 
   // The style: fetched here, so that English labels can be put in it and a failure is ours to handle, then handed to the map.
   // A new one (the colour scheme changed) replaces the old one only once it is fetched, and the sources and layers come back
-  // with the latest data when it has loaded.
+  // with the latest data when it has loaded. A style that cannot be had leaves the map with what it shows (see `fail`), and is
+  // asked for again when the map is told to try again (`retry`).
   useEffect(() => {
     if (map === null || (styleUrl === null && !styleFailed)) return;
     const request = new AbortController();
-    // fetching: the style is on its way. applying: the map has it, and neither loaded it nor refused it yet.
-    // ready: loaded. failed: reported, and the map has been given a plain style instead.
+    // fetching: the style is on its way, and the map still has what it had. applying: the map has the new style, and neither loaded
+    // it nor refused it yet. ready: loaded. failed: reported.
     let phase: "fetching" | "applying" | "ready" | "failed" = "fetching";
+    let applying: StyleSpecification | null = null;
+    failureRef.current = null; // an attempt is on its way
     readyRef.current = false;
     showState(rootRef.current, "loading");
 
     const fail = (error: Error): void => {
       if (phase === "failed") return;
+      const replaced = phase === "applying"; // the map was given the style that failed, which took the one it had away
       phase = "failed";
-      readyRef.current = false;
+      failureRef.current = "style";
       showState(rootRef.current, "unavailable");
       latest.current.onStyleError?.(error);
-      // Not at once: MapLibre may be in the middle of reporting the problems of the style, one error event after the other, and
-      // takes its style away from under that; the events that are left would then have no listener and be logged.
+      if (!replaced && shownRef.current !== null) {
+        // The map has not been touched, and what it shows is a style that works (the one of the other colour scheme, or the plain one
+        // of an earlier failure): it stays, and draws what comes, instead of being swapped for a blank map.
+        readyRef.current = true;
+        try {
+          syncData(map, latest.current.data, latest.current.dark, pushedRef.current);
+        } catch {
+          readyRef.current = false; // the context was lost meanwhile: MapLibre sets its style again, and that loads (`styleLoaded`)
+        }
+        return;
+      }
+      readyRef.current = false;
+      // The style that worked before (MapLibre dropped it for the one that failed), or else a plain one for the routes to lie on. Not
+      // at once: MapLibre may be in the middle of reporting the problems of the style, one error event after the other, and takes its
+      // style away from under that; the events that are left would then have no listener and be logged.
+      const back = shownRef.current ?? FALLBACK_STYLE;
+      shownRef.current = back;
       queueMicrotask(() => {
-        if (!request.signal.aborted) map.setStyle(FALLBACK_STYLE, { diff: false });
+        if (!request.signal.aborted) map.setStyle(back, { diff: false });
       });
     };
     const styleLoaded = (): void => {
-      if (phase === "applying") phase = "ready";
+      if (phase === "applying") {
+        phase = "ready";
+        shownRef.current = applying;
+      }
       readyRef.current = true;
       showState(rootRef.current, phase === "failed" ? "unavailable" : "ready");
       pushedRef.current = newPushed();
@@ -358,6 +424,7 @@ function MapSurface({
         (style) => {
           if (request.signal.aborted) return;
           phase = "applying";
+          applying = style;
           readyRef.current = false;
           try {
             map.setStyle(style, { diff: false }); // not a diff: a style of another look, which would only be patched
@@ -377,7 +444,35 @@ function MapSurface({
       map.off("error", onError);
       readyRef.current = false;
     };
-  }, [map, styleUrl, styleFailed, dark, latest]);
+  }, [map, styleUrl, styleFailed, dark, latest, styleAttempts]);
+
+  // Tries again what failed, once. Whoever asks (the owner's Retry, the page coming back, the network coming back) gets one attempt at
+  // most, and none while there is nothing to put right or an attempt is on its way (`failureRef` is null then), so that a phone that
+  // wakes up and says both does not ask twice. An attempt that fails sets `failureRef` again; nothing tries again until the next ask.
+  const retry = useCallback((): void => {
+    const failure = failureRef.current;
+    if (failure === null) return;
+    failureRef.current = null;
+    const { source: current, retrySource: refetchSource } = latest.current;
+    if (failure === "map") setMapAttempts((count) => count + 1);
+    else if (current !== null && "error" in current && refetchSource !== undefined) refetchSource(); // the style is asked for once the config is there
+    else setStyleAttempts((count) => count + 1);
+  }, [latest]);
+  useImperativeHandle(ref, () => ({ retry }), [retry]);
+
+  // A page that was in the background comes back, or the network does: reasons enough to try again what failed, which the VPN not yet
+  // being up when the app was opened, or a blip, would have left blank. Not a reason to try again a map that works.
+  useEffect(() => {
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === "visible") retry();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("online", retry);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("online", retry);
+    };
+  }, [retry]);
 
   // New data goes to the sources it belongs to. While there is no style the map is not touched: the style that loads picks up
   // the latest data by itself.
@@ -437,22 +532,25 @@ function MapSurface({
 }
 
 /** The colour scheme the style follows, and the style of it that `/api/config` gives. */
-function ConfiguredMap(props: Omit<SurfaceProps, "source">): ReactElement {
+function ConfiguredMap(props: Omit<SurfaceProps, "source" | "retrySource">): ReactElement {
   const config = useConfig();
+  const { refetch } = config;
+  const retrySource = useCallback(() => void refetch(), [refetch]);
   let source: StyleSource = null;
   if (config.data !== undefined) {
     source = { url: props.dark ? config.data.mapStyleDark : config.data.mapStyleLight };
   } else if (config.isError) {
     source = { error: toError(config.error) };
   }
-  return <MapSurface {...props} source={source} />;
+  return <MapSurface {...props} source={source} retrySource={retrySource} />;
 }
 
 /**
  * The map: MapLibre, used directly, full size of its parent. One map is made and kept; it loads the light or the dark style of
  * `/api/config` by the colour scheme of the system, switching as that does, with English labels. Whatever the style, the routes,
  * pins, dots and heat of `data` are drawn on top (the heat under the routes, which it fades), and the map moves to show `fitTo` within
- * `padding`. OpenStreetMap is credited.
+ * `padding`. OpenStreetMap is credited. What fails (MapLibre, the map, a style) is told (`onStyleError`) and tried again when the page or
+ * the network comes back, and on `ref`'s `retry`: an app on a home screen has no reload.
  *
  * Without `styleUrl` it reads the config, so it needs a `QueryClientProvider`; with one it needs nothing.
  */

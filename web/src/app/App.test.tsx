@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { StrictMode } from "react";
+import { StrictMode, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MapPadding, MapViewProps } from "../map/MapView";
 import type { DayResponse, PlaceResponse, RangeResponse, StatusResponse, StaySegment } from "../api/types";
@@ -14,10 +14,11 @@ import { navigate } from "./router";
 
 // The map is MapLibre, which jsdom cannot run (MapView.test.tsx has its own double of it). Here the map is a stand-in that
 // keeps the props it was given: what the shell hands the map is what these tests are about.
-const map = vi.hoisted(() => ({ props: null as unknown }));
+const map = vi.hoisted(() => ({ props: null as unknown, retries: 0 }));
 vi.mock("../map/MapView", () => ({
-  MapView: (props: unknown) => {
+  MapView: (props: MapViewProps) => {
     map.props = props;
+    useImperativeHandle(props.ref, () => ({ retry: () => void (map.retries += 1) }), []); // the handle the shell asks the map to try again by
     return <div role="region" aria-label="Map view" />;
   },
 }));
@@ -169,6 +170,7 @@ function renderApp(client = new QueryClient({ defaultOptions: { queries: { retry
 
 beforeEach(() => {
   map.props = null;
+  map.retries = 0;
   queries.prefetch = null;
   window.history.replaceState(null, "", "/day/2026-10-22");
   vi.stubGlobal("innerHeight", 800);
@@ -303,16 +305,36 @@ describe("App map note", () => {
   test("App_notes_that_the_map_is_unavailable_until_a_style_loads", () => {
     stubApi();
     renderApp();
-    expect(screen.queryByText("Map unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
 
     act(() => mapProps().onStyleError?.(new Error("blocked")));
     expect(screen.getByRole("status")).toHaveTextContent("Map unavailable");
 
     act(() => mapProps().onStyleError?.(new Error("blocked again")));
-    expect(screen.getAllByText("Map unavailable")).toHaveLength(1);
+    expect(screen.getAllByText(/Map unavailable/)).toHaveLength(1);
 
     act(() => mapProps().onStyleLoad?.()); // the other colour scheme's style loaded: the map is back
-    expect(screen.queryByText("Map unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
+  });
+
+  test("App_offers_a_Retry_with_the_map_note_that_asks_the_map_to_try_again_once_for_each_press", () => {
+    stubApi();
+    renderApp();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+
+    act(() => mapProps().onStyleError?.(new Error("blocked")));
+    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable — Retry");
+    expect(map.retries).toBe(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(map.retries).toBe(1);
+    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable"); // the note stays until the map says that it has a style
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(map.retries).toBe(2);
+
+    act(() => mapProps().onStyleLoad?.()); // the attempt worked
+    expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 });
 

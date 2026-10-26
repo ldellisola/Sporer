@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { prefetchNeighbours } from "../api/queries";
 import type { FitFeatures } from "../map/layers";
-import { MapView, type MapPadding } from "../map/MapView";
+import { MapView, type MapPadding, type MapViewHandle } from "../map/MapView";
 import { BottomSheet, SHEET_PEEK, SHEET_TOP_CLEARANCE, sheetHalfHeight, type BottomSheetHandle } from "../sheet/BottomSheet";
 import { Sidebar, SIDEBAR_WIDTH } from "../sheet/Sidebar";
 import { periodRange } from "../time/dates";
@@ -56,6 +56,7 @@ export function App() {
   const [heatOn, setHeatOn] = useStoredFlag("heat", false);
   const map = useViewMap(route, heatOn);
   const sheetRef = useRef<BottomSheetHandle>(null);
+  const mapRef = useRef<MapViewHandle>(null);
   const [mapUnavailable, setMapUnavailable] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(SHEET_PEEK);
   const barRef = useRef<HTMLDivElement>(null);
@@ -107,6 +108,7 @@ export function App() {
     <main className={styles.shell} data-layout={desktop ? "desktop" : "phone"}>
       <div className={styles.map}>
         <MapView
+          ref={mapRef}
           data={map.data}
           fitTo={map.fitTo}
           home={map.home}
@@ -122,7 +124,7 @@ export function App() {
         </div>
         <div className={styles.notices}>
           <StatusBanner />
-          {mapUnavailable && <Notice>Map unavailable</Notice>}
+          {mapUnavailable && <Notice onRetry={() => mapRef.current?.retry()}>Map unavailable</Notice>}
           {map.heat.failed && (
             <Notice tone="error" onRetry={map.heat.retry}>
               Couldn't load the heat map
