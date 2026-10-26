@@ -201,6 +201,91 @@ test.describe("the map of a month", () => {
   });
 });
 
+/** Home as the place view has it, for the dot that opens it. */
+const HOME = {
+  id: 1,
+  name: "Home",
+  address: "Storgata 1, Oslo",
+  city: "Oslo",
+  country: "Norway",
+  lat: 59.91,
+  lon: 10.75,
+  totalSeconds: 1_440_000,
+  visits: 22,
+  firstVisit: "2026-10-01T05:00:00Z",
+  lastVisit: "2026-10-22T20:00:00Z",
+  recentVisits: [],
+};
+
+// Spec 4.6: a place is reached by tapping it anywhere, the dots of the map too. The map is brought to the month in 600 ms, and a dot is
+// where it is only once that is over: a click that comes too soon finds nothing there and is tried again (`toPass`), as a finger would be.
+test.describe("a dot of the month", () => {
+  test.use({ deviceScaleFactor: 1 });
+
+  const FLIGHT_MS = 600; // the camera's flight to the month (FIT_DURATION_MS of MapView)
+
+  test("month_view_tap_on_a_dot_opens_the_place", async ({ page }) => {
+    await mockApi(page, { ...answers, "places/1": HOME });
+    await page.goto("/month/2026-10");
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect(details(page).getByText("6 places", { exact: true })).toBeVisible();
+    const free = await middleOfWhatIsFree(page);
+    const [x, y] = [Math.round(free.x), Math.round(free.y)]; // Home's dot, the biggest and the middle of all that is drawn
+    await expect.poll(async () => sameColour(await pixelAt(page, x, y), PIN, 30), PIXEL_POLL).toBe(true);
+
+    await expect(async () => {
+      if (isWide(page)) await page.mouse.click(x, y);
+      else await page.touchscreen.tap(x, y); // the finger, on a phone
+      await expect(page).toHaveURL(/\/place\/1$/, { timeout: 1000 });
+    }).toPass({ timeout: 15_000 });
+
+    await expect(details(page).getByRole("heading", { level: 1, name: "Home" })).toBeVisible();
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+  });
+
+  test("month_view_a_pointer_over_a_dot_is_a_pointer_and_away_from_it_the_ordinary_cursor", async ({ page }) => {
+    await mockApi(page, { ...answers, "places/1": HOME });
+    await page.goto("/month/2026-10");
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect(details(page).getByText("6 places", { exact: true })).toBeVisible();
+    const free = await middleOfWhatIsFree(page);
+    const [x, y] = [Math.round(free.x), Math.round(free.y)];
+    const canvas = map(page).locator("canvas.maplibregl-canvas");
+    await expect.poll(async () => sameColour(await pixelAt(page, x, y), PIN, 30), PIXEL_POLL).toBe(true);
+
+    await expect(async () => {
+      await page.mouse.move(x + 2, y + 2);
+      await page.mouse.move(x, y);
+      await expect(canvas).toHaveCSS("cursor", "pointer", { timeout: 500 });
+    }).toPass({ timeout: 15_000 });
+
+    await page.mouse.move(x, y + 140); // plain map, well below the dot
+    await expect(canvas).not.toHaveCSS("cursor", "pointer");
+  });
+
+  // A drag that ends over a dot is no tap on it: the dot goes with the map, so the pointer is over it again where the drag ends.
+  test("month_view_a_drag_that_ends_on_a_dot_does_not_open_it", async ({ page }) => {
+    await mockApi(page, { ...answers, "places/1": HOME });
+    await page.goto("/month/2026-10");
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect(details(page).getByText("6 places", { exact: true })).toBeVisible();
+    const free = await middleOfWhatIsFree(page);
+    const [x, y] = [Math.round(free.x), Math.round(free.y)];
+    await expect.poll(async () => sameColour(await pixelAt(page, x, y), PIN, 30), PIXEL_POLL).toBe(true);
+    await page.evaluate((ms) => new Promise((resolve) => setTimeout(resolve, ms)), FLIGHT_MS + 300); // the camera has come to rest
+    expect(sameColour(await pixelAt(page, x, y), PIN, 30)).toBe(true);
+
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 60, y + 40, { steps: 8 });
+    await page.mouse.up();
+
+    // The dot went with the map, and is under the pointer: where a click would have found it.
+    await expect.poll(async () => sameColour(await pixelAt(page, x + 60, y + 40), PIN, 30), PIXEL_POLL).toBe(true);
+    await expect(page).toHaveURL(/\/month\/2026-10$/);
+  });
+});
+
 /**
  * The heat of the month: 81 cells of equal time in a grid of about 100 m round Home, the middle of everything drawn. The glow of so many
  * on one another is as strong as it gets wherever there are cells, which is what makes it the same to read on a phone and on a desktop,

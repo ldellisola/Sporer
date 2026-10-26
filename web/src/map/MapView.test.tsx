@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConfigResponse } from "../api/types";
 import { boundsOf } from "./bounds";
 import { LAYER_IDS, ROUTE_LAYERS, routeOpacity, SOURCE_IDS } from "./layers";
-import type { Feature, FeatureCollection, HeatCollection, LineString, Point } from "./layers";
+import type { Feature, FeatureCollection, HeatCollection, LineString, Point, StopCollection } from "./layers";
 import type { MapLibreLoader, MapLibreModule } from "./maplibre";
 import { MapView, type MapViewHandle, type MapViewProps } from "./MapView";
 
@@ -179,10 +179,10 @@ function routes(id = 1, ...lonLat: [number, number][]): FeatureCollection<LineSt
   };
 }
 
-function stops(): FeatureCollection<Point, { order: number; label: string; name: string | null; id: number }> {
+function stops(): StopCollection {
   return {
     type: "FeatureCollection",
-    features: [{ type: "Feature", properties: { order: 1, label: "1", name: "Home", id: 5 }, geometry: { type: "Point", coordinates: [10, 59] } }],
+    features: [{ type: "Feature", properties: { order: 1, label: "1", name: "Home", id: 5, placeId: 50 }, geometry: { type: "Point", coordinates: [10, 59] } }],
   };
 }
 
@@ -1123,6 +1123,110 @@ describe("MapView", () => {
       await quietly();
 
       expect(urls).toHaveLength(1);
+    });
+  });
+
+  // Spec 4.6: a place is reached by tapping it anywhere. MapLibre's own click does not fire for the end of a drag, and a tap is a click
+  // to it, so the layers' `click` is all there is to listen to (and `mouseenter` and `mouseleave` for the pointer over them, on a desktop).
+  describe("opening a place", () => {
+    const DOT = { layer: LAYER_IDS.places, properties: { id: 7, radius: 9 }, place: 7 };
+    const PIN = { layer: LAYER_IDS.stops, properties: { order: 2, label: "2 · 4", name: "Home", id: 301, placeId: 11 }, place: 11 };
+    const NUMBER = { layer: LAYER_IDS.stopNumbers, properties: { order: 2, label: "2 · 4", name: "Home", id: 301, placeId: 11 }, place: 11 };
+
+    test.each([
+      ["a_dot_of_a_period", DOT],
+      ["a_pin_of_a_day", PIN],
+      ["the_number_on_a_pin", NUMBER],
+    ])("MapView_calls_onPlaceTap_with_the_place_when_%s_is_clicked", async (_name, { layer, properties, place }) => {
+      goodStyle();
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      render(view({ onPlaceTap }));
+      const map = await mapUp();
+
+      map.hit("click", layer, properties);
+
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+      expect(onPlaceTap).toHaveBeenCalledWith(place); // the place, and not the stay that the pin's `id` is
+    });
+
+    test("MapView_does_not_open_a_place_for_a_click_on_any_other_layer_or_a_feature_that_has_none", async () => {
+      goodStyle();
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      render(view({ onPlaceTap }));
+      const map = await mapUp();
+
+      map.hit("click", LAYER_IDS.dayRoute, { id: 11, mode: "walk" });
+      map.hit("click", LAYER_IDS.heat, { weight: 1 });
+      map.hit("click", LAYER_IDS.stops, { order: 1, label: "1", name: null, id: 5 }); // a pin that says no place
+      map.hit("click", LAYER_IDS.places, {});
+
+      expect(onPlaceTap).not.toHaveBeenCalled();
+    });
+
+    test("MapView_calls_the_latest_onPlaceTap_and_copes_without_one", async () => {
+      goodStyle();
+      const first = vi.fn<(id: number) => void>();
+      const second = vi.fn<(id: number) => void>();
+      const { rerender } = render(view({ onPlaceTap: first }));
+      const map = await mapUp();
+
+      rerender(view({ onPlaceTap: second })); // a new function on each render of the parent is the usual
+      map.hit("click", DOT.layer, DOT.properties);
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledWith(7);
+
+      rerender(view());
+      expect(() => map.hit("click", DOT.layer, DOT.properties)).not.toThrow();
+      expect(map.layerListenerCount("click")).toBe(2); // the dots and the pins: one listener for each, whatever it is rendered with
+    });
+
+    test.each([
+      ["a_dot", DOT.layer],
+      ["a_pin", PIN.layer],
+      ["the_number_on_a_pin", NUMBER.layer],
+    ])("MapView_shows_a_pointer_over_%s_and_the_ordinary_cursor_away_from_it", async (_name, layer) => {
+      goodStyle();
+      render(view());
+      const map = await mapUp();
+      expect(map.canvas.style.cursor).toBe("");
+
+      map.hit("mouseenter", layer);
+      expect(map.canvas.style.cursor).toBe("pointer");
+
+      map.hit("mouseleave", layer);
+      expect(map.canvas.style.cursor).toBe("");
+    });
+
+    test("MapView_listens_for_taps_once_for_each_map_and_stops_when_it_is_gone", async () => {
+      goodStyle();
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { unmount } = render(<StrictMode>{view({ onPlaceTap })}</StrictMode>);
+      const map = await mapUp();
+      await styleApplied();
+      map.emit("style.load"); // a style that loads (a theme switch too) is no reason to listen again: the listeners are the map's
+
+      expect(map.layerListenerCount("click")).toBe(2);
+      expect(map.layerListenerCount("mouseenter")).toBe(1);
+      expect(map.layerListenerCount("mouseleave")).toBe(1);
+      map.hit("click", DOT.layer, DOT.properties);
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+
+      unmount();
+
+      for (const type of ["click", "mouseenter", "mouseleave"]) expect(map.layerListenerCount(type), type).toBe(0);
+    });
+
+    test("MapView_taps_open_places_also_when_the_map_is_made_after_the_data_arrived", async () => {
+      goodStyle();
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const slow = slowLoader();
+      render(view({ loadMapLibre: slow.load, onPlaceTap, data: { routes: EMPTY_ROUTES, stops: stops() } }));
+
+      await slow.arrive();
+      const map = await mapUp();
+      map.hit("click", LAYER_IDS.stops, { id: 5, placeId: 50 });
+
+      expect(onPlaceTap).toHaveBeenCalledWith(50);
     });
   });
 

@@ -13,7 +13,7 @@ import { RangePanel } from "../views/RangePanel";
 import { StatusBanner } from "../views/StatusBanner";
 import { TopBar } from "../views/TopBar";
 import styles from "./App.module.css";
-import { useRoute, type Route } from "./router";
+import { navigate, useRoute, type Route } from "./router";
 import { useBottomEdge } from "./useBottomEdge";
 import { useLastDay } from "./useLastDay";
 import { useMediaQuery } from "./useMediaQuery";
@@ -114,6 +114,7 @@ export function App() {
           home={map.home}
           padding={padding}
           heatToggle={map.heat.available ? { on: heatOn, onChange: setHeatOn } : undefined}
+          onPlaceTap={(id) => navigate({ view: "place", id })}
           onStyleError={() => setMapUnavailable(true)}
           onStyleLoad={() => setMapUnavailable(false)}
         />

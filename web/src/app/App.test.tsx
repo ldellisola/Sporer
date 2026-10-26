@@ -338,6 +338,26 @@ describe("App map note", () => {
   });
 });
 
+describe("App map taps", () => {
+  test("App_opens_the_place_that_a_tap_on_the_map_reports_as_a_new_history_entry_that_Back_leaves", async () => {
+    stubApi();
+    renderApp();
+    const before = window.history.length;
+
+    act(() => mapProps().onPlaceTap?.(7)); // a dot, or a pin: the map says which place
+
+    expect(window.location.pathname).toBe("/place/7");
+    expect(screen.getByRole("button", { name: "Back" })).toBeInTheDocument(); // the place's panel
+    expect(window.history.length).toBe(before + 1);
+
+    act(() => mapProps().onPlaceTap?.(7)); // the same place again is no new entry
+    expect(window.history.length).toBe(before + 1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" })); // the view it came from, as for a place that a row opened
+    await waitFor(() => expect(window.location.pathname).toBe("/day/2026-10-22"));
+  });
+});
+
 describe("App prefetch", () => {
   test("App_prefetches_the_neighbours_of_every_route_it_shows", async () => {
     const prefetch = vi.fn(async () => undefined);

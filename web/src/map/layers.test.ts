@@ -79,9 +79,9 @@ describe("dayGeoJson", () => {
     // The day starts and ends at home: one pin for the place, with both numbers (ruling P2-R20).
     expect(stops.type).toBe("FeatureCollection");
     expect(stops.features).toEqual([
-      { type: "Feature", properties: { order: 1, label: "1 · 4", name: "Home", id: 10 }, geometry: { type: "Point", coordinates: [10.0, 59.0] } },
-      { type: "Feature", properties: { order: 2, label: "2", name: "Café", id: 12 }, geometry: { type: "Point", coordinates: [10.1, 59.1] } },
-      { type: "Feature", properties: { order: 3, label: "3", name: null, id: 14 }, geometry: { type: "Point", coordinates: [10.2, 59.2] } },
+      { type: "Feature", properties: { order: 1, label: "1 · 4", name: "Home", id: 10, placeId: 1 }, geometry: { type: "Point", coordinates: [10.0, 59.0] } },
+      { type: "Feature", properties: { order: 2, label: "2", name: "Café", id: 12, placeId: 2 }, geometry: { type: "Point", coordinates: [10.1, 59.1] } },
+      { type: "Feature", properties: { order: 3, label: "3", name: null, id: 14, placeId: 3 }, geometry: { type: "Point", coordinates: [10.2, 59.2] } },
     ]);
   });
 
@@ -100,6 +100,16 @@ describe("dayGeoJson", () => {
     expect(stops.features.map((feature) => [feature.properties.label, feature.properties.order, feature.properties.id])).toEqual([
       ["1 · 3 · 4", 1, 1], // in the order of the day, at the first of its stays: the stay at no place (4) took no number
       ["2 · 5", 2, 2],
+    ]);
+  });
+
+  test("dayGeoJson_gives_each_pin_the_id_of_its_place_which_is_not_the_id_of_its_stay", () => {
+    // A tap on a pin opens its place: the `id` of the pin is a stay's (the first of its stays), and a merged pin is the one place.
+    const { stops } = dayGeoJson(day(stay(40, HOME), stay(41, CAFE), stay(42, HOME)));
+
+    expect(stops.features.map((feature) => [feature.properties.id, feature.properties.placeId])).toEqual([
+      [40, 1],
+      [41, 2],
     ]);
   });
 
@@ -150,12 +160,12 @@ describe("placeGeoJson", () => {
     expect(routes).toEqual({ type: "FeatureCollection", features: [] });
     expect(stops.features).toEqual([
       // The pin of a stop of a day, which says its number: this one is no stop of a day, so the label is empty and the pin shows none.
-      { type: "Feature", geometry: { type: "Point", coordinates: [10.1, 59.1] }, properties: { order: 1, label: "", name: "Café", id: 2 } },
+      { type: "Feature", geometry: { type: "Point", coordinates: [10.1, 59.1] }, properties: { order: 1, label: "", name: "Café", id: 2, placeId: 2 } },
     ]);
   });
 
   test("placeGeoJson_gives_a_place_with_no_name_a_pin_with_none", () => {
-    expect(placeGeoJson(OFFICE).stops.features[0]?.properties).toEqual({ order: 1, label: "", name: null, id: 3 });
+    expect(placeGeoJson(OFFICE).stops.features[0]?.properties).toEqual({ order: 1, label: "", name: null, id: 3, placeId: 3 });
   });
 });
 

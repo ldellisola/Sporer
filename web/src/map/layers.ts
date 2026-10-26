@@ -26,10 +26,11 @@ export type RouteProperties = { id: number; mode: RouteMode };
 /**
  * A pin is one place of the day, however many of its stays there are. `order` is the number of the first of them (counted from 1,
  * see `stopOrders`) and `id` its id; `label` lists the numbers of all of them ("1 · 4" for a day that starts and ends at home), and
- * is what the pin shows; `name` is null for a place that has none (yet).
+ * is what the pin shows; `name` is null for a place that has none (yet). `placeId` is the place the pin is, which a tap on it opens:
+ * it is not `id`, which is a stay's, and one place for a pin that merges several stays.
  */
-export type StopProperties = { order: number; label: string; name: string | null; id: number };
-/** `radius` is in pixels; `label` is only there for the places that are named on the map. */
+export type StopProperties = { order: number; label: string; name: string | null; id: number; placeId: number };
+/** `id` is the place, which a tap on its dot opens; `radius` is in pixels; `label` is only there for the places that are named on the map. */
 export type PlaceProperties = { id: number; radius: number; label?: string };
 export type HeatProperties = { weight: number };
 
@@ -100,7 +101,7 @@ export function dayGeoJson(day: DayResponse): { routes: RouteCollection; stops: 
       const order = orders.get(segment.id) ?? 0;
       const pin = pinOf.get(place.id);
       if (pin === undefined) {
-        const created = point(place.lon, place.lat, { order, label: String(order), name: place.name, id: segment.id });
+        const created = point(place.lon, place.lat, { order, label: String(order), name: place.name, id: segment.id, placeId: place.id });
         pinOf.set(place.id, created);
         stops.features.push(created);
       } else {
@@ -118,7 +119,7 @@ export function dayGeoJson(day: DayResponse): { routes: RouteCollection; stops: 
 export function placeGeoJson(place: PlaceRef): { routes: RouteCollection; stops: StopCollection } {
   return {
     routes: { type: "FeatureCollection", features: [] },
-    stops: { type: "FeatureCollection", features: [point(place.lon, place.lat, { order: 1, label: "", name: place.name, id: place.id })] },
+    stops: { type: "FeatureCollection", features: [point(place.lon, place.lat, { order: 1, label: "", name: place.name, id: place.id, placeId: place.id })] },
   };
 }
 

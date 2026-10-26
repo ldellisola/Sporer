@@ -1,4 +1,4 @@
-import type { GeoJSONSource, MapLibreMap } from "maplibre-gl";
+import type { GeoJSONSource, MapLayerMouseEvent, MapLibreMap } from "maplibre-gl";
 import {
   useCallback,
   useEffect,
@@ -15,6 +15,7 @@ import {
 import { useConfig } from "../api/queries";
 import { boundsOf, type Bounds } from "./bounds";
 import {
+  LAYER_IDS,
   layerSpecs,
   ROUTE_LAYERS,
   routeOpacity,
@@ -102,6 +103,11 @@ export interface MapViewProps {
   /** The heat button, a button of the map's own like Recenter. Given only where there is a period to show the heat of: without it there is no button. */
   heatToggle?: HeatToggle;
   /**
+   * Called with the id of the place when one is tapped (clicked, on a desktop): a dot of a period, or a pin of a day (the number on it
+   * too). The map does not know of routes: the parent takes the owner there. A drag that ends over a dot is no tap, as MapLibre has it.
+   */
+  onPlaceTap?: (id: number) => void;
+  /**
    * Called once for each style that cannot be loaded (the request fails, it is not a style, MapLibre will not take it), and for
    * a map that cannot start (no WebGL, or MapLibre itself could not be fetched), and again for each attempt that fails once more
    * (see `MapViewHandle`). The map then draws on a plain background, and everything else on the page goes on. A style that cannot
@@ -116,6 +122,10 @@ export interface MapViewProps {
    */
   onStyleLoad?: () => void;
 }
+
+/** The layers of the dots of a period, and of the pins of a day with the numbers on them: what a tap opens the place of. */
+const DOT_LAYERS = [LAYER_IDS.places];
+const PIN_LAYERS = [LAYER_IDS.stops, LAYER_IDS.stopNumbers];
 
 const NO_PADDING: MapPadding = { top: 0, right: 0, bottom: 0, left: 0 };
 
@@ -263,6 +273,7 @@ function MapSurface({
   home,
   padding = NO_PADDING,
   heatToggle,
+  onPlaceTap,
   onStyleError,
   onStyleLoad,
   loadMapLibre: load = loadMapLibre,
@@ -286,7 +297,7 @@ function MapSurface({
   const bounds = useMemo(() => (fitTo === null ? null : boundsOf(fitTo)), [fitTo]);
   const homeBounds = useMemo(() => (home === undefined ? bounds : home === null ? null : boundsOf(home)), [home, bounds]);
 
-  const latest = useLatest({ data, dark, padding, onStyleError, onStyleLoad, source, retrySource, bounds, homeBounds, load });
+  const latest = useLatest({ data, dark, padding, onPlaceTap, onStyleError, onStyleLoad, source, retrySource, bounds, homeBounds, load });
   const styleUrl = source !== null && "url" in source ? source.url : null;
   const styleFailed = source !== null && "error" in source;
 
@@ -445,6 +456,37 @@ function MapSurface({
       readyRef.current = false;
     };
   }, [map, styleUrl, styleFailed, dark, latest, styleAttempts]);
+
+  // A tap on a place opens it. The listeners are the map's, not the style's: they are made once for each map and stay through every
+  // style (a theme switch drops the layers, and the map finds them again by id at the time of a click). `click` is MapLibre's, which
+  // is not fired for a drag that ends where it began (a pan that happens to end over a dot) and is what a tap is to it. The dot has
+  // the place as its `id`; a pin's `id` is a stay's (the first of them), so it says the place in `placeId`.
+  useEffect(() => {
+    if (map === null) return;
+    const canvas = map.getCanvas();
+    const open = (id: unknown): void => {
+      if (typeof id === "number") latest.current.onPlaceTap?.(id);
+    };
+    const onDot = (event: MapLayerMouseEvent): void => open(event.features?.[0]?.properties["id"]);
+    const onPin = (event: MapLayerMouseEvent): void => open(event.features?.[0]?.properties["placeId"]);
+    const pointer = (): void => {
+      canvas.style.cursor = "pointer";
+    };
+    const ordinary = (): void => {
+      canvas.style.cursor = "";
+    };
+    const tappable = [...DOT_LAYERS, ...PIN_LAYERS];
+    map.on("click", DOT_LAYERS, onDot);
+    map.on("click", PIN_LAYERS, onPin);
+    map.on("mouseenter", tappable, pointer);
+    map.on("mouseleave", tappable, ordinary);
+    return () => {
+      map.off("click", DOT_LAYERS, onDot);
+      map.off("click", PIN_LAYERS, onPin);
+      map.off("mouseenter", tappable, pointer);
+      map.off("mouseleave", tappable, ordinary);
+    };
+  }, [map, latest]);
 
   // Tries again what failed, once. Whoever asks (the owner's Retry, the page coming back, the network coming back) gets one attempt at
   // most, and none while there is nothing to put right or an attempt is on its way (`failureRef` is null then), so that a phone that
