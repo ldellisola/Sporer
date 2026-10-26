@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using FastEndpoints;
 using FastEndpoints.Swagger;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -64,6 +65,13 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.KnownIPNetworks.Clear();
     options.KnownProxies.Clear();
 });
+// ASP.NET compresses at its Fastest level unless told otherwise, and there Brotli (quality 1) comes out larger than gzip for JavaScript:
+// the web app's three scripts were 680 kB with Brotli and 626 kB with gzip, against 525 kB at Optimal for both, which also takes the
+// year's answer from 166 kB to 155 kB. Optimal costs next to nothing (the year takes 77 ms at p95 against 65, the largest script 27 ms
+// against 11). The level above it saves a further 17 % on the scripts but takes up to two seconds for one of them and over a second for
+// the year, so it is not used. Measured in docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md.
+builder.Services.Configure<BrotliCompressionProviderOptions>(options => options.Level = CompressionLevel.Optimal);
+builder.Services.Configure<GzipCompressionProviderOptions>(options => options.Level = CompressionLevel.Optimal);
 builder.Services.AddResponseCompression(options =>
 {
     options.EnableForHttps = true; // TLS ends at Traefik, but the app may also be asked over https directly

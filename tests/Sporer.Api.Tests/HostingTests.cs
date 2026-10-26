@@ -3,6 +3,9 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Npgsql;
 
 namespace Sporer.Api.Tests;
@@ -214,6 +217,20 @@ public class HostingTests(DatabaseFixture db)
 
         var icon = await GetAsync(client, "/favicon.svg", acceptEncoding: "br");
         Assert.Equal("br", Assert.Single(icon.Content.Headers.ContentEncoding));
+    }
+
+    [Fact]
+    public async Task Compression_is_at_the_optimal_level_for_both_encodings()
+    {
+        // ASP.NET's default for both is Fastest, and at that Brotli (quality 1) is larger than gzip for JavaScript: the web app's three
+        // scripts were 680 kB with Brotli against 626 kB with gzip, and a browser that accepts both is given Brotli. At Optimal they are
+        // 525 kB with either. The level above it (SmallestSize) takes two seconds for the biggest script and over a second for the
+        // year's answer. See the performance document of Plan 2.
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+
+        Assert.Equal(CompressionLevel.Optimal, api.Services.GetRequiredService<IOptions<BrotliCompressionProviderOptions>>().Value.Level);
+        Assert.Equal(CompressionLevel.Optimal, api.Services.GetRequiredService<IOptions<GzipCompressionProviderOptions>>().Value.Level);
     }
 
     // --- map configuration ---------------------------------------------------------------------------------------------
