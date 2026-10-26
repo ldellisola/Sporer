@@ -239,6 +239,9 @@ access gets a plain background instead of a map; the rest of the page works.
 | `npm run typecheck` | `tsc --noEmit`, with `strict` on. |
 | `npm test` | The unit and component tests (Vitest, jsdom). |
 | `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. |
+| `npm run perf` | The web performance run (spec §8): times the panel's rows and the map's idle for a day, a month and a year on a phone-sized page with the processor held back 4 times, against API answers recorded by `npm run perf:record` from a server over the synthetic history. Not part of `npm run e2e` or CI; takes about four minutes. How to run it, and its results, are in `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md`. |
+| `npm run perf:record` | Records those API answers (`node scripts/perf/record.mjs <api-url> <first-date> <last-date>`) into `web/perf/recorded/`, which git ignores. |
+| `npm run perf:bundle` | After a build: the size of each JavaScript file of the production bundle, gzipped and Brotli-compressed. |
 | `npm run build` | Type checks and builds the web app into `src/Sporer.Api/wwwroot`, which the API serves (and git ignores). |
 | `npm run icons` | Draws the PNG icons in `public/icons/` again from `icon.svg`. Only when the icon changes. |
 
@@ -255,5 +258,7 @@ dotnet run --project tools/Sporer.SyntheticData -c Release -- --connection "<Npg
 ```
 
 `5s` gives about a million rows; `500ms` gives 10.7 million. `tools/perf/day-latency.sh` and `tools/perf/ingest-latency.sh`
-time the day view and ingest. The measurements at 10 million rows, and how to repeat them, are in
-`docs/superpowers/plans/2026-10-23-sporer-plan-1-perf.md`.
+time the day view and ingest, `tools/perf/api-latency.sh` the range, heat and place endpoints too, and `tools/perf/explain.sql` shows
+the plans of their queries. The measurements at 10 million rows, and how to repeat them, are in
+`docs/superpowers/plans/2026-10-23-sporer-plan-1-perf.md` (server) and `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md`
+(range, heat, place, the web app).
