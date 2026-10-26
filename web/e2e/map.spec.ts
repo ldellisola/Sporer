@@ -181,3 +181,33 @@ test.describe("a style that cannot be had the first time", () => {
     await expect.poll(() => showsColour(page, LIGHT), PIXEL_POLL).toBe(true); // the style that came, and not the plain one it had meanwhile
   });
 });
+
+// A style of the old kind writes its labels as functions of the zoom, which `toEnglishLabels` turns into expressions (a unit test pins
+// what they are). MapLibre has the last word on whether it takes them: it refuses a style with an expression that does not parse, and
+// the map would then say it is unavailable.
+test("map_takes_a_style_whose_labels_were_legacy_functions", async ({ page }) => {
+  const nothing = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+  const label = (id: string, textField: unknown) => ({ id, type: "symbol", source: "places", layout: { "text-field": textField, "text-font": ["Noto Sans Regular"] } });
+  await page.route("**/map-style-legacy.json", (route) =>
+    route.fulfill({
+      json: {
+        version: 8,
+        glyphs: "/glyphs/{fontstack}/{range}.pbf", // never asked for: there is nothing to label
+        sources: { places: nothing },
+        layers: [
+          { id: "background", type: "background", paint: { "background-color": "#dfe6ea" } },
+          label("zoomed", { base: 1.2, stops: [[0, ""], [6, "{name}"], [10, "{name:latin}\n{name:nonlatin}"], [14, "{ref}"]] }),
+          label("by-property", { property: "rank", type: "interval", stops: [[1, "{name}"], [5, "{name:latin}"]] }),
+          label("identity", { property: "name", type: "identity" }),
+          label("plain", "{name_int}"),
+        ],
+      },
+    }),
+  );
+  await mockApi(page, { config: { mapStyleLight: "/map-style-legacy.json", mapStyleDark: "/map-style-legacy.json" } });
+
+  await page.goto("/day/2026-10-22");
+
+  await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+  await expect(page.getByRole("status").filter({ hasText: "Map unavailable" })).toHaveCount(0);
+});
