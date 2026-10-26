@@ -18,20 +18,14 @@ public sealed class TimelineWorker(
     TimeProvider time,
     ILogger<TimelineWorker> logger) : BackgroundService
 {
-    /// <summary>How many times in a row a backfill step may fail before it is set aside so that the backfill can go on.</summary>
-    private const int MaxBackfillFailures = 3;
-
-    // A backfill step that keeps failing is retried with the same growing delay as a dirty range, so a step that cannot
-    // be processed does not repeat its error every poll, and is set aside after MaxBackfillFailures failures: while the
-    // backfill is open the live ranges wait for it (see RunOnceAsync), so one step that can never succeed would freeze
-    // everything after it. Kept in memory: a restart tries again at once.
-    private int _backfillFailures;
+    // A backfill step that fails is retried with the same growing delay as a dirty range, so a step that cannot be processed
+    // does not repeat its error every poll. How often it has been started without finishing is counted in the database (see
+    // ProcessingQueue.CountBackfillAttemptAsync), and after SetAsideAfterAttempts the step is set aside: while the backfill
+    // is open the live ranges wait for it (see RunOnceAsync), so one step that can never succeed would freeze everything
+    // after it. The delay and the error are kept in memory: a restart tries again at once, and the count tells whether that
+    // is still worth doing.
     private DateTime _backfillRetryAt = DateTime.MinValue;
     private string? _backfillError;
-
-    // Where the step after a set-aside one begins. Its rebuild must not be widened back to the last stored stay, which lies
-    // before the set-aside step (nothing of that was stored): it would load the same data again and fail on it again.
-    private DateTime? _anchorFloor;
 
     /// <summary>
     /// One pass: starts a backfill if the algorithm version changed, processes the dirty ranges that are due, and does
@@ -88,36 +82,7 @@ public sealed class TimelineWorker(
             var chunkEnd = backfillTo - cursor <= ChunkLength ? backfillTo : cursor + ChunkLength;
 
             didWork = true;
-            try
-            {
-                await processor.ReprocessAsync(cursor, chunkEnd, ct, _anchorFloor);
-                state = state with { BackfillCursor = chunkEnd };
-                (_backfillFailures, _backfillRetryAt, _backfillError) = (0, DateTime.MinValue, null);
-                _anchorFloor = null;
-                pause = true;
-            }
-            catch (Exception ex) when (!ct.IsCancellationRequested)
-            {
-                var failedAt = Now();
-                _backfillFailures++;
-                _backfillRetryAt = failedAt + ProcessingQueue.Backoff(_backfillFailures);
-                _backfillError = Describe(ex);
-
-                if (_backfillFailures < MaxBackfillFailures)
-                {
-                    logger.LogError(ex, "Backfill of {FromUtc:o} to {ToUtc:o} failed; it will be retried after {RetryAt:o}", cursor, chunkEnd, _backfillRetryAt);
-                }
-                else
-                {
-                    // Not a transient error. The step becomes a failed dirty range, retried behind the cursor with the usual
-                    // backoff (a fix or a changed setting may let it through), and the backfill goes on after it.
-                    logger.LogError(ex, "Backfill of {FromUtc:o} to {ToUtc:o} failed {Attempts} times; setting it aside to be retried later and going on", cursor, chunkEnd, _backfillFailures);
-                    await queue.SetBackfillStepAsideAsync(cursor, chunkEnd, _backfillFailures, _backfillError, failedAt, ct);
-                    state = state with { BackfillCursor = chunkEnd };
-                    (_backfillFailures, _backfillRetryAt, _backfillError) = (0, DateTime.MinValue, null);
-                    _anchorFloor = chunkEnd;
-                }
-            }
+            (state, pause) = await BackfillStepAsync(state, cursor, chunkEnd, backfillTo, ct);
         }
 
         // 4. Saved before the pause, so a stop during it keeps the cursor.
@@ -127,6 +92,68 @@ public sealed class TimelineWorker(
             await Task.Delay(options.BackfillPause, ct);
 
         return didWork;
+    }
+
+    /// <summary>
+    /// Runs the backfill chunk <paramref name="cursor"/> to <paramref name="chunkEnd"/>. The start is counted and stored
+    /// first: a process that dies in the middle of the chunk (it ran out of memory) leaves the count behind, and the start
+    /// that finds it at <see cref="ProcessingQueue.SetAsideAfterAttempts"/> sets the chunk aside without running it. A failure
+    /// that is caught counts the same way, and a counted start is never taken back, so every kind of stop converges. A chunk that is set aside becomes a failed dirty range (retried behind the cursor
+    /// with the usual backoff: a fix or a changed setting may let it through), the cursor moves on, and the rebuilds after it
+    /// stay clear of it (see <see cref="SegmentStore.FindAnchorsAsync"/>). Returns the new state, and whether the chunk was done
+    /// (the backfill then pauses).
+    /// </summary>
+    private async Task<(ProcessingState State, bool Pause)> BackfillStepAsync(
+        ProcessingState state, DateTime cursor, DateTime chunkEnd, DateTime backfillTo, CancellationToken ct)
+    {
+        if (state.BackfillChunkAttempts >= ProcessingQueue.SetAsideAfterAttempts)
+        {
+            logger.LogError(
+                "Backfill of {FromUtc:o} to {ToUtc:o} was started {Attempts} times without finishing (the process stopped during it); setting it aside to be retried later and going on",
+                cursor, chunkEnd, state.BackfillChunkAttempts);
+            return (await SetAsideAsync(state, cursor, chunkEnd, backfillTo,
+                _backfillError ?? $"The process stopped during this range {state.BackfillChunkAttempts} times in a row (out of memory, or killed)", ct), false);
+        }
+
+        var attempts = await queue.CountBackfillAttemptAsync(ct);
+        try
+        {
+            await processor.ReprocessAsync(cursor, chunkEnd, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            var failedAt = Now();
+            _backfillRetryAt = failedAt + ProcessingQueue.Backoff(attempts);
+            _backfillError = Describe(ex);
+            state = state with { BackfillChunkAttempts = attempts };
+
+            if (attempts < ProcessingQueue.SetAsideAfterAttempts)
+            {
+                logger.LogError(ex, "Backfill of {FromUtc:o} to {ToUtc:o} failed; it will be retried after {RetryAt:o}", cursor, chunkEnd, _backfillRetryAt);
+                return (state, false);
+            }
+
+            // Not a transient error.
+            logger.LogError(ex, "Backfill of {FromUtc:o} to {ToUtc:o} failed {Attempts} times; setting it aside to be retried later and going on", cursor, chunkEnd, attempts);
+            return (await SetAsideAsync(state, cursor, chunkEnd, backfillTo, _backfillError, ct), false);
+        }
+
+        (_backfillRetryAt, _backfillError) = (DateTime.MinValue, null);
+        return (state with { BackfillCursor = chunkEnd, BackfillChunkAttempts = 0 }, true);
+    }
+
+    /// <summary>
+    /// Records the chunk as a set-aside dirty range and moves the cursor past it. The range covers the chunk after it too
+    /// (up to where the backfill ends): that one is rebuilt without reaching back into this one, which can leave a cut stay
+    /// at their edge, and the retry of this range rebuilds both.
+    /// </summary>
+    private async Task<ProcessingState> SetAsideAsync(
+        ProcessingState state, DateTime cursor, DateTime chunkEnd, DateTime backfillTo, string error, CancellationToken ct)
+    {
+        var coveredTo = chunkEnd + ChunkLength < backfillTo ? chunkEnd + ChunkLength : backfillTo;
+        await queue.SetBackfillStepAsideAsync(cursor, chunkEnd, coveredTo, error, Now(), ct);
+        (_backfillRetryAt, _backfillError) = (DateTime.MinValue, null);
+        return state with { BackfillCursor = chunkEnd, BackfillChunkAttempts = 0 };
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -169,11 +196,11 @@ public sealed class TimelineWorker(
         DateTime? to = from is null ? null : Now(); // no points, no backfill
         await queue.RestartBackfillAsync(version, from, to, ct);
 
-        (_backfillFailures, _backfillRetryAt, _backfillError, _anchorFloor) = (0, DateTime.MinValue, null, null);
+        (_backfillRetryAt, _backfillError) = (DateTime.MinValue, null);
         logger.LogInformation(
             "Algorithm version is {Version} (was {Previous}); rebuilding the timeline from {FromUtc:o}",
             version, state.AlgorithmVersion ?? "none", from);
-        return state with { AlgorithmVersion = version, BackfillFrom = from, BackfillTo = to, BackfillCursor = from, LastError = null };
+        return state with { AlgorithmVersion = version, BackfillFrom = from, BackfillTo = to, BackfillCursor = from, LastError = null, BackfillChunkAttempts = 0 };
     }
 
     private async Task TryRecordErrorAsync(Exception error, CancellationToken ct)

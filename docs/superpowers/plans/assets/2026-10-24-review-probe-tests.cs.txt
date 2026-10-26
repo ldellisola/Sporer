@@ -1,0 +1,162 @@
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Time.Testing;
+using Sporer.Api.Features.Timeline;
+using Sporer.Testing;
+using Sporer.Timeline;
+
+namespace Sporer.Api.Tests;
+
+// Reviewer probes (scratch copy only, never committed).
+[Collection("db")]
+public class ReviewProbeTests(DatabaseFixture db)
+{
+    private static readonly DateTime Day = new(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly TimeSpan Every10s = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan Every2min = TimeSpan.FromMinutes(2);
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+    private static DateTime T(int hour, int minute, int day = 0) => Day.AddDays(day).AddHours(hour).AddMinutes(minute);
+
+    private static List<TrackPoint> CommuteDay(int day) => new TrackBuilder(T(7, 0, day), Spots.Home)
+        .Stay(TimeSpan.FromHours(1), Every2min)
+        .Travel(Spots.Cafe, 5, Every10s)
+        .Stay(TimeSpan.FromMinutes(25), Every2min)
+        .Travel(Spots.Office, 18, Every10s)
+        .Stay(TimeSpan.FromHours(8), Every2min)
+        .Build();
+
+    /// <summary>Fails a rebuild when the data it would load contains the poison time (a data-dependent failure).</summary>
+    private sealed class PoisonProcessor(ITimelineProcessor inner, SegmentStore store) : ITimelineProcessor
+    {
+        public DateTime? Poison { get; set; }
+        public Func<DateTime, bool>? FailFrom { get; set; }
+        public List<(DateTime From, DateTime To, DateTime? Floor)> Calls { get; } = [];
+
+        public async Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct, DateTime? anchorFloorUtc = null)
+        {
+            Calls.Add((fromUtc, toUtc, anchorFloorUtc));
+            if (FailFrom?.Invoke(fromUtc) == true)
+                throw new InvalidOperationException("step fails");
+            if (Poison is { } poison)
+            {
+                var (t0, t1) = await store.FindAnchorsAsync(fromUtc, toUtc, ct, anchorFloorUtc);
+                var last = await store.FindLastEndAsync(ct);
+                var upper = t1 ?? (last is { } l && l > toUtc ? l : toUtc);
+                if (t0 <= poison && poison <= upper)
+                    throw new InvalidOperationException("poisoned data loaded");
+            }
+            return await inner.ReprocessAsync(fromUtc, toUtc, ct, anchorFloorUtc);
+        }
+    }
+
+    private static WebApplicationFactory<Program> Start(string cs, TimeProvider time, IDictionary<string, string?>? settings = null)
+        => new ApiFactory(cs, settings, time).WithWebHostBuilder(b => b.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<ITimelineProcessor>();
+            services.AddSingleton<ITimelineProcessor>(sp =>
+                new PoisonProcessor(ActivatorUtilities.CreateInstance<TimelineProcessor>(sp), sp.GetRequiredService<SegmentStore>()));
+        }));
+
+    private static async Task Drain(TimelineWorker worker)
+    {
+        for (var pass = 0; await worker.RunOnceAsync(Ct); pass++)
+            Assert.True(pass < 100);
+    }
+
+    private sealed record Row(string Kind, DateTime StartUtc, DateTime EndUtc, int Attempts);
+
+    [Fact]
+    public async Task Probe_last_step_set_aside_then_live_range()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = new FakeTimeProvider(new DateTimeOffset(T(0, 0, 22)));
+        await using var api = Start(cs, clock, new Dictionary<string, string?> { ["Processing:BackfillPause"] = "00:00:00" });
+        var worker = api.Services.GetRequiredService<TimelineWorker>();
+        var processor = (PoisonProcessor)api.Services.GetRequiredService<ITimelineProcessor>();
+        await PointSeeder.InsertAsync(cs, Enumerable.Range(0, 21).SelectMany(CommuteDay), Ct);
+        processor.Poison = T(12, 0, 16); // in the third step [d14 07:00, d21 07:00]
+
+        await worker.RunOnceAsync(Ct); // week 1
+        await worker.RunOnceAsync(Ct); // week 2
+        await worker.RunOnceAsync(Ct); // week 3 fail 1
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await worker.RunOnceAsync(Ct); // fail 2
+        clock.Advance(TimeSpan.FromMinutes(4));
+        await worker.RunOnceAsync(Ct); // fail 3: set aside
+        await Drain(worker);           // last step [d21 07:00, d22] with floor
+        var cursorDone = await Sql.ScalarAsync<bool>(cs, "select backfill_cursor >= backfill_to from processing_state", ct: Ct);
+        Assert.True(cursorDone);
+
+        // Live data arrives on day 22.
+        await PointSeeder.InsertAsync(cs, CommuteDay(22), Ct);
+        clock.Advance(TimeSpan.FromDays(1));
+        await Sql.ExecAsync(cs, "insert into dirty_range (from_utc, to_utc, created_at) values (@f, @t, @c)",
+            new { f = T(7, 0, 22), t = T(18, 0, 22), c = clock.GetUtcNow().UtcDateTime.AddMinutes(-5) }, Ct);
+        processor.Calls.Clear();
+        await worker.RunOnceAsync(Ct);
+
+        var rows = (await Sql.QueryAsync(cs,
+            "select (from_utc::text || ' -> ' || to_utc::text || ' attempts=' || attempts || ' err=' || coalesce(last_error,'')) as r from dirty_range order by from_utc", ct: Ct)).Select(x => (string)x.r).ToList();
+        var stays22 = await Sql.ScalarAsync<long>(cs, "select count(*) from segment where kind='stay' and start_utc >= @f", new { f = T(0, 0, 22) }, Ct);
+        File.AppendAllText("/tmp/claude-0/-home-user-Sporer/6e739e45-513f-52a4-a4a9-6516a16bb0cd/scratchpad/probe-out.txt", "\n==== " + $"calls={string.Join(";", processor.Calls)} rows={string.Join(";", rows)} stays22={stays22}" + "\n");
+        // Expectation of I-2 ("live ranges processed"):
+        Assert.True(stays22 > 0, $"live day not processed; rows: {string.Join(" | ", rows)}");
+    }
+
+    [Fact]
+    public async Task Probe_seam_after_set_aside_retry()
+    {
+        var home = Spots.Home;
+        var east60 = Geo.Offset(home, 0, 60);
+        var west50 = Geo.Offset(home, 0, -50);
+        var b = new TrackBuilder(T(8, 0, 0), Spots.Office)
+            .Stay(TimeSpan.FromHours(2), Every2min)
+            .Travel(home, 18, Every10s);
+        b.Stay(T(9, 0, 1) - b.Now, Every2min).Travel(Spots.Office, 18, Every10s); // home overnight to d1 09:00
+        b.Stay(T(17, 0, 1) - b.Now, Every2min).Travel(home, 18, Every10s);
+        b.Stay(T(7, 58, 2) - b.Now, Every2min);
+        b.Teleport(east60, T(8, 1, 2) - b.Now).Stay(TimeSpan.FromMinutes(29), Every2min) // 08:01..08:29 at 60 m east
+         .Teleport(west50, TimeSpan.FromMinutes(2)).Stay(TimeSpan.FromMinutes(18), Every2min) // 08:32..08:50 at 50 m west
+         .Travel(Spots.Office, 18, Every10s).Stay(TimeSpan.FromHours(8), Every2min);
+        var track = b.Build();
+
+        // Reference: the same points processed in one go.
+        var csRef = await db.CreateDatabaseAsync(Ct);
+        await using (var refApi = new ApiFactory(csRef))
+        {
+            var refProcessor = refApi.Services.GetRequiredService<ITimelineProcessor>();
+            await PointSeeder.InsertAsync(csRef, track, Ct);
+            await refApi.Services.GetRequiredService<ITimelineProcessor>().ReprocessAsync(T(0, 0, 0), T(0, 0, 4), Ct);
+        }
+        var reference = await Sql.QueryAsync<Row>(csRef, "select kind as Kind, start_utc as StartUtc, end_utc as EndUtc, 0 as Attempts from segment order by start_utc, id", ct: Ct);
+
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = new FakeTimeProvider(new DateTimeOffset(T(0, 0, 4)));
+        await using var api = Start(cs, clock, new Dictionary<string, string?> { ["Processing:BackfillPause"] = "00:00:00", ["Processing:BackfillChunkDays"] = "1" });
+        var worker = api.Services.GetRequiredService<TimelineWorker>();
+        var processor = (PoisonProcessor)api.Services.GetRequiredService<ITimelineProcessor>();
+        await PointSeeder.InsertAsync(cs, track, Ct);
+        processor.FailFrom = from => from == T(8, 0, 1); // the second step [d1 08:00, d2 08:00]
+
+        await worker.RunOnceAsync(Ct); // step 1
+        await worker.RunOnceAsync(Ct); // step 2 fail 1
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await worker.RunOnceAsync(Ct);
+        clock.Advance(TimeSpan.FromMinutes(4));
+        await worker.RunOnceAsync(Ct); // set aside
+        await Drain(worker);
+        var floored = await Sql.QueryAsync<Row>(cs, "select kind as Kind, start_utc as StartUtc, end_utc as EndUtc, 0 as Attempts from segment where start_utc >= @f order by start_utc, id", new { f = T(8, 0, 2) }, Ct);
+
+        processor.FailFrom = null; // the cause is fixed (no version change)
+        clock.Advance(TimeSpan.FromMinutes(9));
+        await Drain(worker);
+        Assert.Empty(await Sql.QueryAsync<Row>(cs, "select 'x' as Kind, from_utc as StartUtc, to_utc as EndUtc, attempts as Attempts from dirty_range", ct: Ct));
+        var after = await Sql.QueryAsync<Row>(cs, "select kind as Kind, start_utc as StartUtc, end_utc as EndUtc, 0 as Attempts from segment order by start_utc, id", ct: Ct);
+
+        string Show(IEnumerable<Row> r) => string.Join("\n", r.Where(s => s.EndUtc >= T(0, 0, 2) && s.StartUtc < T(12, 0, 2)).Select(s => $"{s.Kind} {s.StartUtc:dd HH:mm:ss}-{s.EndUtc:dd HH:mm:ss}"));
+        File.AppendAllText("/tmp/claude-0/-home-user-Sporer/6e739e45-513f-52a4-a4a9-6516a16bb0cd/scratchpad/probe-out.txt", "\n==== " + $"REFERENCE:\n{Show(reference)}\nFLOORED STEP:\n{Show(floored)}\nAFTER RETRY:\n{Show(after)}" + "\n");
+        Assert.Equal(Show(reference), Show(after));
+    }
+}

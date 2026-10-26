@@ -1,0 +1,1851 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createRef, StrictMode, type ReactElement } from "react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { ConfigResponse } from "../api/types";
+import { boundsOf } from "./bounds";
+import { LAYER_IDS, ROUTE_LAYERS, routeOpacity, SOURCE_IDS } from "./layers";
+import type { Feature, FeatureCollection, HeatCollection, LineString, Point, StopCollection } from "./layers";
+import type { MapLibreLoader, MapLibreModule } from "./maplibre";
+import { MapView, type MapViewHandle, type MapViewProps } from "./MapView";
+
+// jsdom has no WebGL, so `maplibre-gl` is replaced by a map that records what it is asked to do and fires the events a
+// real one fires, when the test says so (`emit`). It is as strict as the real one is helpful: adding a source twice, or a
+// layer for a source that is not there, throws here where MapLibre only logs.
+const maplibre = vi.hoisted(() => {
+  type Listener = (event: unknown) => void;
+
+  class FakeSource {
+    setDataCalls = 0;
+    constructor(public data: unknown) {}
+    setData(data: unknown): void {
+      this.data = data;
+      this.setDataCalls += 1;
+    }
+  }
+
+  class FakeMap {
+    static instances: FakeMap[] = [];
+    static failWith: Error | null = null;
+    static failRotation: Error | null = null;
+
+    readonly options: Record<string, unknown>;
+    removed = false;
+    contextLost = false;
+    rotationDisabled = false;
+    readonly styleCalls: { style: unknown; options: unknown }[] = [];
+    readonly fitCalls: { bounds: unknown; options: Record<string, unknown> }[] = [];
+    readonly visibilityCalls: [string, unknown][] = [];
+    readonly paintCalls: [id: string, name: string, value: unknown][] = [];
+    readonly sources = new Map<string, FakeSource>();
+    readonly layers = new Map<string, Record<string, any>>();
+    private readonly listeners = new Map<string, Set<Listener>>();
+    /** The canvas the real map draws on, for the cursor over it. */
+    readonly canvas = document.createElement("canvas");
+    /**
+     * What is drawn at positions of the screen, for `queryRenderedFeatures`: a feature is at the pixel that its coordinates are, in this
+     * double (see `project`), so a test says where on the screen a dot is by where it puts it.
+     */
+    readonly drawn: { layerId: string; properties: Record<string, unknown>; at: [number, number] }[] = [];
+    /** The boxes and layers that `queryRenderedFeatures` was asked, in order. */
+    readonly queries: { box: unknown; layers: string[] }[] = [];
+    readonly touchZoomRotate = {
+      disableRotation: () => {
+        if (FakeMap.failRotation) throw FakeMap.failRotation;
+        this.rotationDisabled = true;
+      },
+    };
+
+    constructor(options: Record<string, unknown>) {
+      if (FakeMap.failWith) throw FakeMap.failWith;
+      this.options = options;
+      FakeMap.instances.push(this);
+    }
+
+    on(type: string, listener: Listener): this {
+      const set = this.listeners.get(type) ?? new Set<Listener>();
+      set.add(listener);
+      this.listeners.set(type, set);
+      return this;
+    }
+    off(type: string, listener: Listener): this {
+      this.listeners.get(type)?.delete(listener);
+      return this;
+    }
+    listenerCount(type: string): number {
+      return this.listeners.get(type)?.size ?? 0;
+    }
+    emit(type: string, event: unknown = {}): void {
+      for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event);
+    }
+    /** An event of the pointer at the pixel (`x`, `y`) of the map, as MapLibre tells of one (`click`, `mousemove`). */
+    pointer(type: string, x: number, y: number): void {
+      this.emit(type, { point: { x, y } });
+    }
+    getCanvas(): HTMLCanvasElement {
+      return this.canvas;
+    }
+    /** The pixel that a position is at: the position itself, so that a test places things where it wants them. */
+    project([x, y]: [number, number]): { x: number; y: number } {
+      return { x, y };
+    }
+    /**
+     * The features of `layers` that are in the box, as MapLibre gives them: like the real one it will not look in a layer that is not in
+     * the style (it reports an error and finds nothing), which here is a test that fails.
+     */
+    queryRenderedFeatures(box: [[number, number], [number, number]], options: { layers: string[] }): object[] {
+      this.requireStyle();
+      this.queries.push({ box, layers: options.layers });
+      for (const id of options.layers) if (!this.layers.has(id)) throw new Error(`The layer '${id}' does not exist in the map's style and cannot be queried for features.`);
+      const [[left, top], [right, bottom]] = box;
+      return this.drawn
+        .filter(({ layerId, at: [x, y] }) => options.layers.includes(layerId) && x >= left && x <= right && y >= top && y <= bottom)
+        .map(({ layerId, properties, at }) => ({ properties, layer: { id: layerId }, geometry: { type: "Point", coordinates: at } }));
+    }
+
+    private requireStyle(): void {
+      if (this.contextLost) throw new TypeError("Cannot read properties of null (reading 'getSource')");
+    }
+    setStyle(style: unknown, options: unknown): this {
+      this.styleCalls.push({ style, options });
+      this.sources.clear();
+      this.layers.clear();
+      return this;
+    }
+    getSource(id: string): FakeSource | undefined {
+      this.requireStyle();
+      return this.sources.get(id);
+    }
+    addSource(id: string, spec: { data: unknown }): this {
+      this.requireStyle();
+      if (this.sources.has(id)) throw new Error(`Source "${id}" already exists.`);
+      this.sources.set(id, new FakeSource(spec.data));
+      return this;
+    }
+    getLayer(id: string): Record<string, any> | undefined {
+      this.requireStyle();
+      return this.layers.get(id);
+    }
+    addLayer(spec: Record<string, any>): this {
+      this.requireStyle();
+      if (this.layers.has(spec.id)) throw new Error(`Layer "${spec.id}" already exists.`);
+      if (!this.sources.has(spec.source)) throw new Error(`Layer "${spec.id}" needs the missing source "${spec.source}".`);
+      this.layers.set(spec.id, structuredClone(spec));
+      return this;
+    }
+    setLayoutProperty(id: string, name: string, value: unknown): void {
+      this.requireStyle();
+      this.visibilityCalls.push([id, value]);
+      const layer = this.layers.get(id);
+      if (layer) layer.layout = { ...layer.layout, [name]: value };
+    }
+    setPaintProperty(id: string, name: string, value: unknown): void {
+      this.requireStyle();
+      this.paintCalls.push([id, name, value]);
+      const layer = this.layers.get(id);
+      if (layer) layer.paint = { ...layer.paint, [name]: value };
+    }
+    fitBounds(bounds: unknown, options: Record<string, unknown>): this {
+      this.fitCalls.push({ bounds, options });
+      return this;
+    }
+    remove(): void {
+      this.removed = true;
+    }
+  }
+
+  const workerUrls: string[] = [];
+
+  return { FakeMap, workerUrls, setWorkerUrl: (url: string) => workerUrls.push(url) };
+});
+
+vi.mock("maplibre-gl", () => ({ MapLibreMap: maplibre.FakeMap, Map: maplibre.FakeMap, setWorkerUrl: maplibre.setWorkerUrl }));
+
+const { FakeMap } = maplibre;
+
+const liveMaps = () => FakeMap.instances.filter((map) => !map.removed);
+const theMap = () => {
+  const maps = liveMaps();
+  if (maps.length !== 1) throw new Error(`expected one live map, found ${maps.length}`);
+  return maps[0]!;
+};
+
+const NONE = { top: 0, right: 0, bottom: 0, left: 0 };
+
+function routes(id = 1, ...lonLat: [number, number][]): FeatureCollection<LineString, { id: number; mode: "walk" }> {
+  return {
+    type: "FeatureCollection",
+    features: [{
+      type: "Feature",
+      properties: { id, mode: "walk" },
+      geometry: { type: "LineString", coordinates: lonLat.length > 0 ? lonLat : [[10, 59], [10.1, 59.1]] },
+    }],
+  };
+}
+
+function stops(): StopCollection {
+  return {
+    type: "FeatureCollection",
+    features: [{ type: "Feature", properties: { order: 1, label: "1", name: "Home", id: 5, placeId: 50 }, geometry: { type: "Point", coordinates: [10, 59] } }],
+  };
+}
+
+/** The heat of one cell, as the map is given it: a point with its weight. */
+function heatCells(...weights: number[]): HeatCollection {
+  return {
+    type: "FeatureCollection",
+    features: (weights.length > 0 ? weights : [1]).map((weight, i) => ({
+      type: "Feature",
+      properties: { weight },
+      geometry: { type: "Point", coordinates: [10 + i / 100, 59] },
+    })),
+  };
+}
+
+const EMPTY_ROUTES = routes();
+const STYLE = { version: 8, name: "light", sources: {}, layers: [{ id: "city", type: "symbol", source: "t", layout: { "text-field": "{name}" } }] };
+
+/** Answers every fetch with `answer(url)`; returns the URLs asked for, in order. */
+function stubFetch(answer: (url: string, init?: RequestInit) => Response | Promise<Response>): string[] {
+  const urls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    urls.push(url);
+    return answer(url, init);
+  }));
+  return urls;
+}
+
+const goodStyle = () => stubFetch(() => Response.json(STYLE));
+
+/** What `toEnglishLabels` makes of the text field of `STYLE`. */
+const ENGLISH_LABEL = ["coalesce", ["get", "name:en"], ["get", "name_en"], ["get", "name:latin"], ["get", "name"]];
+
+function view(props: Partial<MapViewProps> = {}): ReactElement {
+  return <MapView styleUrl="/style.json" data={{ routes: EMPTY_ROUTES }} fitTo={null} padding={NONE} {...props} />;
+}
+
+/** Waits until MapLibre has arrived and the component has taken the map it made over (it is a chunk of its own, fetched when the map mounts); returns the map. */
+const mapUp = async (): Promise<InstanceType<typeof FakeMap>> => {
+  const map = await waitFor(() => theMap());
+  await act(async () => undefined); // the component takes the map over (its effects run) in the render that follows its arrival
+  return map;
+};
+
+/** Waits until the map has been given the style it fetched. */
+async function styleApplied(count = 1): Promise<void> {
+  await waitFor(() => expect(theMap().styleCalls).toHaveLength(count));
+}
+
+const region = () => screen.getByRole("region", { name: "Map view" });
+
+/** A loader whose module arrives when the test says so (`arrive`), or never does (`fail`). */
+function slowLoader() {
+  let arrive: () => void = () => undefined;
+  let fail: (error: Error) => void = () => undefined;
+  const load = vi.fn<MapLibreLoader>(
+    () => new Promise((resolve, reject) => {
+      arrive = () => resolve({ MapLibreMap: FakeMap, setWorkerUrl: () => undefined, workerUrl: "/w.mjs" } as unknown as MapLibreModule);
+      fail = reject;
+    }),
+  );
+  return { load, arrive: () => act(async () => arrive()), fail: (error: Error) => act(async () => fail(error)) };
+}
+
+const CONFIG: ConfigResponse = { mapStyleLight: "/styles/liberty", mapStyleDark: "/styles/dark" };
+
+function withConfig(client: QueryClient, props: Partial<MapViewProps> = {}): ReactElement {
+  return (
+    <QueryClientProvider client={client}>
+      <MapView data={{ routes: EMPTY_ROUTES }} fitTo={null} padding={NONE} {...props} />
+    </QueryClientProvider>
+  );
+}
+
+function clientWithConfig(): QueryClient {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["config"], CONFIG);
+  return client;
+}
+
+/** `window.matchMedia` for the colour scheme; the function it returns switches the scheme and tells whoever listens. */
+function stubColourScheme(initial: "light" | "dark"): (next: "light" | "dark") => void {
+  let scheme = initial;
+  const listeners = new Set<() => void>();
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    media: query,
+    get matches() { return query === "(prefers-color-scheme: dark)" && scheme === "dark"; },
+    addEventListener: (_type: string, listener: () => void) => listeners.add(listener),
+    removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener),
+  }));
+  return (next) => {
+    scheme = next;
+    act(() => listeners.forEach((listener) => listener()));
+  };
+}
+
+beforeEach(() => {
+  FakeMap.instances.length = 0;
+  FakeMap.failWith = null;
+  FakeMap.failRotation = null;
+});
+
+afterEach(() => {
+  FakeMap.failWith = null;
+  FakeMap.failRotation = null;
+});
+
+describe("MapView", () => {
+  test("MapView_tells_MapLibre_where_the_build_put_its_worker", async () => {
+    goodStyle();
+    render(view());
+    await mapUp();
+
+    // Once, when the module has arrived, before any map is made. MapLibre would look for it next to itself, in a chunk: not there.
+    expect(maplibre.workerUrls).toHaveLength(1);
+    expect(maplibre.workerUrls[0]).toContain("maplibre-gl-worker");
+  });
+
+  test("MapView_reports_style_failure_without_throwing", async () => {
+    stubFetch(() => Promise.reject(new TypeError("Failed to fetch"))); // OpenFreeMap down or blocked
+    const onStyleError = vi.fn<(error: Error) => void>();
+
+    const { rerender } = render(view({ onStyleError }));
+
+    await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20)); // nothing reports it a second time
+    expect(onStyleError).toHaveBeenCalledTimes(1);
+    expect(onStyleError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+    expect(onStyleError.mock.calls[0]?.[0].message).toBe("Failed to fetch");
+    // The component is still on the page, still has its button, and the map got a plain style to draw the routes on.
+    expect(region()).toBeInTheDocument();
+    expect(region()).toHaveAttribute("data-map-state", "unavailable");
+    expect(screen.getByRole("button", { name: "Recenter map" })).toBeInTheDocument();
+    await styleApplied();
+    expect(theMap().styleCalls[0]?.style).toEqual({ version: 8, sources: {}, layers: [] });
+    theMap().emit("style.load");
+    expect([...theMap().sources.keys()].sort()).toEqual(Object.values(SOURCE_IDS).sort());
+
+    // And it keeps working: new data still reaches the map.
+    const next = routes(2);
+    expect(() => rerender(view({ onStyleError, data: { routes: next } }))).not.toThrow();
+    expect(theMap().sources.get(SOURCE_IDS.routes)?.data).toBe(next);
+    expect(onStyleError).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["an error status", () => new Response("down", { status: 503 }), /503/],
+    ["a body that is not JSON", () => new Response("<html>oops</html>"), undefined],
+    ["JSON that is not a style", () => Response.json({ hello: "world" }), /style/i],
+  ])("MapView_reports_%s_as_a_style_failure_once", async (_name, response, message) => {
+    stubFetch(() => response());
+    const onStyleError = vi.fn<(error: Error) => void>();
+
+    render(view({ onStyleError }));
+
+    await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+    if (message) expect(onStyleError.mock.calls[0]?.[0].message).toMatch(message);
+    expect(region()).toHaveAttribute("data-map-state", "unavailable");
+    await styleApplied();
+    expect(theMap().styleCalls[0]?.style).toEqual({ version: 8, sources: {}, layers: [] });
+  });
+
+  test("MapView_reports_a_style_that_MapLibre_rejects_once_and_falls_back", async () => {
+    goodStyle();
+    const onStyleError = vi.fn<(error: Error) => void>();
+    render(view({ onStyleError }));
+    await styleApplied();
+
+    // MapLibre reports every validation problem of a style it will not load as an error event, one after the other, and never
+    // fires style.load.
+    theMap().emit("error", { error: new Error("layers[3].paint: unknown property") });
+    theMap().emit("error", { error: new Error("layers[4].paint: unknown property") });
+
+    expect(onStyleError).toHaveBeenCalledTimes(1);
+    expect(onStyleError.mock.calls[0]?.[0].message).toContain("unknown property");
+    // The plain style is not set from inside the reporting: MapLibre would drop the errors that are still to come on the floor.
+    expect(theMap().styleCalls).toHaveLength(1);
+    await waitFor(() => expect(theMap().styleCalls).toHaveLength(2));
+    expect(theMap().styleCalls[1]?.style).toEqual({ version: 8, sources: {}, layers: [] });
+    expect(region()).toHaveAttribute("data-map-state", "unavailable");
+    theMap().emit("style.load"); // the plain style loads
+    expect(region()).toHaveAttribute("data-map-state", "unavailable");
+    expect(theMap().sources.size).toBe(4);
+  });
+
+  test("MapView_calls_onStyleLoad_for_every_style_that_loads_but_not_for_the_plain_one_it_falls_back_to", async () => {
+    goodStyle();
+    const onStyleLoad = vi.fn<() => void>();
+    const onStyleError = vi.fn<(error: Error) => void>();
+    const { rerender } = render(view({ onStyleLoad, onStyleError }));
+    await styleApplied();
+    const map = theMap();
+    expect(onStyleLoad).not.toHaveBeenCalled(); // the style is on its way
+
+    map.emit("style.load");
+    expect(onStyleLoad).toHaveBeenCalledTimes(1);
+
+    // The other colour scheme's style: loaded again, and told again.
+    map.setStyle({ version: 8, sources: {}, layers: [] }, { diff: false });
+    map.emit("style.load");
+    expect(onStyleLoad).toHaveBeenCalledTimes(2);
+
+    // A style that MapLibre refuses is an error, and the plain style it falls back to is not a map that is available.
+    rerender(view({ onStyleLoad, onStyleError, styleUrl: "/other.json" }));
+    await styleApplied(3);
+    map.emit("error", { error: new Error("layers[3].paint: unknown property") });
+    await waitFor(() => expect(map.styleCalls).toHaveLength(4));
+    map.emit("style.load");
+    expect(onStyleError).toHaveBeenCalledTimes(1);
+    expect(onStyleLoad).toHaveBeenCalledTimes(2);
+
+    // A good one after that: told, so that whoever noted the failure can take the note back.
+    rerender(view({ onStyleLoad, onStyleError, styleUrl: "/third.json" }));
+    await styleApplied(5);
+    map.emit("style.load");
+    expect(onStyleLoad).toHaveBeenCalledTimes(3);
+  });
+
+  test("MapView_works_without_onStyleLoad", async () => {
+    goodStyle();
+    render(view());
+    await styleApplied();
+
+    expect(() => theMap().emit("style.load")).not.toThrow();
+    expect(region()).toHaveAttribute("data-map-state", "ready");
+  });
+
+  test("MapView_leaves_map_errors_after_the_style_loaded_to_the_console", async () => {
+    goodStyle();
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const onStyleError = vi.fn<(error: Error) => void>();
+    render(view({ onStyleError }));
+    await styleApplied();
+    theMap().emit("style.load");
+
+    const tileError = new Error("Failed to fetch tile");
+    theMap().emit("error", { error: tileError });
+
+    expect(onStyleError).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(tileError);
+    expect(region()).toHaveAttribute("data-map-state", "ready");
+  });
+
+  test("MapView_reports_a_map_that_cannot_start_and_stays_rendered", async () => {
+    goodStyle();
+    FakeMap.failWith = new Error("Failed to initialize WebGL");
+    const onStyleError = vi.fn<(error: Error) => void>();
+
+    expect(() => render(view({ onStyleError }))).not.toThrow();
+
+    await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+    expect(onStyleError.mock.calls[0]?.[0].message).toBe("Failed to initialize WebGL");
+    expect(region()).toHaveAttribute("data-map-state", "unavailable");
+    expect(screen.getByRole("button", { name: "Recenter map" })).toBeInTheDocument();
+  });
+
+  test("MapView_creates_one_map_under_StrictMode_and_removes_it_on_unmount", async () => {
+    // The first mount of StrictMode is torn down at once, before MapLibre has arrived: no map is made for it, and the style is asked for
+    // once, by the map that is made.
+    const signals: AbortSignal[] = [];
+    stubFetch((_url, init) => {
+      signals.push(init!.signal!);
+      return new Promise<Response>((resolve, reject) => {
+        init!.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        setTimeout(() => resolve(Response.json(STYLE)), 5);
+      });
+    });
+    const onStyleError = vi.fn<(error: Error) => void>();
+
+    const { unmount } = render(<StrictMode>{view({ onStyleError })}</StrictMode>);
+
+    const map = await mapUp();
+    await styleApplied();
+    expect(FakeMap.instances).toEqual([map]);
+    expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+    unmount();
+
+    expect(map.removed).toBe(true);
+    expect(liveMaps()).toHaveLength(0);
+    expect(map.listenerCount("style.load")).toBe(0);
+    expect(map.listenerCount("error")).toBe(0);
+    expect(onStyleError).not.toHaveBeenCalled();
+  });
+
+  test("MapView_aborts_the_style_request_and_stays_quiet_when_unmounted_while_it_fails", async () => {
+    let fail: (reason: unknown) => void = () => undefined;
+    stubFetch((_url, init) => new Promise<Response>((_resolve, reject) => {
+      fail = reject;
+      init!.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    }));
+    const onStyleError = vi.fn<(error: Error) => void>();
+    const { unmount } = render(view({ onStyleError }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const map = theMap();
+
+    unmount();
+    fail(new TypeError("Failed to fetch")); // too late: nobody is interested any more
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(onStyleError).not.toHaveBeenCalled();
+    expect(map.styleCalls).toHaveLength(0);
+  });
+
+  test("MapView_creates_the_map_with_compact_attribution_and_a_north_up_view", async () => {
+    goodStyle();
+
+    render(view());
+
+    const { options, rotationDisabled } = await mapUp();
+    expect(options["container"]).toBeInstanceOf(HTMLElement);
+    expect(region()).toContainElement(options["container"] as HTMLElement);
+    expect(options["attributionControl"]).toMatchObject({ compact: true });
+    expect(JSON.stringify(options["attributionControl"])).toContain("OpenStreetMap");
+    expect(options["dragRotate"]).toBe(false);
+    expect(options["maxPitch"]).toBe(0);
+    expect(rotationDisabled).toBe(true);
+  });
+
+  test("MapView_loads_the_style_with_English_labels_and_without_diffing", async () => {
+    const urls = goodStyle();
+
+    render(view({ styleUrl: "/styles/liberty" }));
+    await styleApplied();
+
+    expect(urls).toEqual(["/styles/liberty"]);
+    const { style, options } = theMap().styleCalls[0]!;
+    expect(options).toEqual({ diff: false });
+    expect((style as typeof STYLE).layers[0]?.layout["text-field"]).toEqual([
+      "coalesce", ["get", "name:en"], ["get", "name_en"], ["get", "name:latin"], ["get", "name"],
+    ]);
+    expect(region()).toHaveAttribute("data-map-state", "loading");
+  });
+
+  test("MapView_adds_sources_and_layers_after_every_style_load_and_updates_with_setData", async () => {
+    goodStyle();
+    const first = routes(1);
+    const { rerender } = render(view({ data: { routes: first } }));
+    await styleApplied();
+    const map = theMap();
+    expect(map.sources.size).toBe(0); // nothing can be added before the style is there
+
+    map.emit("style.load");
+
+    expect([...map.sources.keys()].sort()).toEqual(Object.values(SOURCE_IDS).sort());
+    expect(map.sources.get(SOURCE_IDS.routes)?.data).toBe(first);
+    expect([...map.layers.keys()]).toEqual(Object.values(LAYER_IDS));
+    expect(region()).toHaveAttribute("data-map-state", "ready");
+
+    // New data goes in with setData, to the source it belongs to, and nothing is added a second time.
+    const second = routes(2);
+    rerender(view({ data: { routes: second } }));
+    expect(map.sources.get(SOURCE_IDS.routes)?.data).toBe(second);
+    expect(map.sources.get(SOURCE_IDS.routes)?.setDataCalls).toBe(1);
+    for (const id of [SOURCE_IDS.stops, SOURCE_IDS.places, SOURCE_IDS.heat]) expect(map.sources.get(id)?.setDataCalls, id).toBe(0);
+
+    // The same collections in a new object, as a parent that builds `data` in its render gives, is no change.
+    rerender(view({ data: { routes: second } }));
+    expect(map.sources.get(SOURCE_IDS.routes)?.setDataCalls).toBe(1);
+
+    // Stops arrive, then go: the source is emptied, not left with the old pins.
+    const pins = stops();
+    rerender(view({ data: { routes: second, stops: pins } }));
+    expect(map.sources.get(SOURCE_IDS.stops)?.data).toBe(pins);
+    rerender(view({ data: { routes: second } }));
+    expect((map.sources.get(SOURCE_IDS.stops)?.data as FeatureCollection<Point, unknown>).features).toEqual([]);
+
+    // A theme switch loads another style: its sources and layers are gone, and come back with the latest data.
+    map.setStyle({ version: 8, sources: {}, layers: [] }, { diff: false });
+    expect(map.sources.size).toBe(0);
+    map.emit("style.load");
+    expect(map.sources.get(SOURCE_IDS.routes)?.data).toBe(second);
+    expect(map.sources.get(SOURCE_IDS.routes)?.setDataCalls).toBe(0);
+    expect([...map.layers.keys()]).toEqual(Object.values(LAYER_IDS));
+  });
+
+  test("MapView_keeps_the_latest_data_for_a_style_that_is_still_loading", async () => {
+    goodStyle();
+    const { rerender } = render(view());
+    await styleApplied();
+    const map = theMap();
+    const latest = routes(9);
+
+    rerender(view({ data: { routes: latest } })); // the style has not loaded: the map is not touched
+    expect(map.sources.size).toBe(0);
+    map.emit("style.load");
+
+    expect(map.sources.get(SOURCE_IDS.routes)?.data).toBe(latest);
+  });
+
+  test("MapView_shows_the_day_routes_when_there_are_stops_and_the_range_routes_when_there_are_not", async () => {
+    goodStyle();
+    const { rerender } = render(view());
+    await styleApplied();
+    const map = theMap();
+    map.emit("style.load");
+    const visibility = (id: string) => map.layers.get(id)?.layout?.visibility;
+
+    expect([LAYER_IDS.rangeRoute, LAYER_IDS.rangeFlight].map(visibility)).toEqual(["visible", "visible"]);
+    expect([LAYER_IDS.routeCasing, LAYER_IDS.dayRoute, LAYER_IDS.dayFlight].map(visibility)).toEqual(["none", "none", "none"]);
+
+    rerender(view({ data: { routes: EMPTY_ROUTES, stops: stops() } }));
+
+    expect([LAYER_IDS.rangeRoute, LAYER_IDS.rangeFlight].map(visibility)).toEqual(["none", "none"]);
+    expect([LAYER_IDS.routeCasing, LAYER_IDS.dayRoute, LAYER_IDS.dayFlight].map(visibility)).toEqual(["visible", "visible", "visible"]);
+
+    const calls = map.visibilityCalls.length;
+    rerender(view({ data: { routes: routes(3), stops: stops() } })); // same kind of view: no layer is touched
+    expect(map.visibilityCalls).toHaveLength(calls);
+  });
+
+  test("MapView_stays_off_the_map_between_a_lost_WebGL_context_and_its_restored_style", async () => {
+    goodStyle();
+    const { rerender } = render(view());
+    await styleApplied();
+    const map = theMap();
+    map.emit("style.load");
+
+    map.contextLost = true; // MapLibre drops its style when the context goes; any call into it would throw
+    map.emit("webglcontextlost");
+    expect(() => rerender(view({ data: { routes: routes(4) } }))).not.toThrow();
+
+    map.contextLost = false; // restored: MapLibre sets the style again, with the sources and layers it had
+    map.emit("style.load");
+    expect(map.sources.get(SOURCE_IDS.routes)).toBeDefined();
+  });
+
+  describe("MapLibre arriving later", () => {
+    const FLIGHT: Feature<LineString, object> = {
+      type: "Feature",
+      properties: {},
+      geometry: { type: "LineString", coordinates: [[10.5, 59.8], [10.9, 60.1]] },
+    };
+    const PADDING = { top: 120, right: 20, bottom: 300, left: 340 };
+
+    test("MapView_shows_the_plain_background_until_MapLibre_has_arrived_and_makes_no_map_before", async () => {
+      goodStyle();
+      const slow = slowLoader();
+
+      render(view({ loadMapLibre: slow.load }));
+
+      expect(slow.load).toHaveBeenCalledTimes(1);
+      expect(region()).toHaveAttribute("data-map-state", "loading");
+      expect(screen.getByRole("button", { name: "Recenter map" })).toBeInTheDocument(); // the page around it is all there
+      expect(FakeMap.instances).toHaveLength(0);
+      expect(fetch).not.toHaveBeenCalled(); // no style is asked for before there is a map to give it to
+
+      await slow.arrive();
+      await styleApplied();
+      expect(FakeMap.instances).toHaveLength(1);
+      theMap().emit("style.load");
+      expect(region()).toHaveAttribute("data-map-state", "ready");
+    });
+
+    test("MapView_applies_what_it_was_given_while_MapLibre_was_on_its_way_and_fits_once", async () => {
+      goodStyle();
+      const slow = slowLoader();
+      const early = routes(1);
+      const { rerender } = render(view({ loadMapLibre: slow.load, data: { routes: early }, fitTo: [FLIGHT], padding: PADDING }));
+
+      // The day was polled and the sheet moved while the module was coming: only the latest of each is what counts.
+      const latest = routes(2);
+      const elsewhere: Feature<Point, object> = { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [-0.1, 51.5] } };
+      const sheet = { ...PADDING, bottom: 500 };
+      const target = [elsewhere];
+      const day = { routes: latest, stops: stops() };
+      rerender(view({ loadMapLibre: slow.load, data: day, fitTo: target, home: target, padding: sheet }));
+      expect(FakeMap.instances).toHaveLength(0);
+
+      await slow.arrive();
+      const map = await mapUp();
+      await styleApplied();
+
+      // The camera: one fit, to the latest `fitTo`, with the padding of now.
+      expect(map.fitCalls).toHaveLength(1);
+      expect(map.fitCalls[0]?.bounds).toEqual([[-0.1, 51.5], [-0.1, 51.5]]);
+      expect(map.fitCalls[0]?.options).toMatchObject({ padding: sheet });
+      // The data: the latest, once the style has loaded, and as a day (it has stops).
+      map.emit("style.load");
+      expect(map.sources.get(SOURCE_IDS.routes)?.data).toBe(latest);
+      expect((map.sources.get(SOURCE_IDS.stops)?.data as FeatureCollection<Point, unknown>).features).toHaveLength(1);
+      expect(map.layers.get(LAYER_IDS.dayRoute)?.layout?.visibility).toBe("visible");
+      // And Recenter goes to the latest `home`.
+      fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+      expect(map.fitCalls).toHaveLength(2);
+      expect(map.fitCalls[1]?.bounds).toEqual(boundsOf([elsewhere]));
+      // Nothing is fitted again for being rendered again.
+      rerender(view({ loadMapLibre: slow.load, data: day, fitTo: target, home: target, padding: sheet }));
+      expect(map.fitCalls).toHaveLength(2);
+    });
+
+    test("MapView_makes_no_map_when_it_is_unmounted_before_MapLibre_arrives", async () => {
+      goodStyle();
+      const slow = slowLoader();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const { unmount } = render(view({ loadMapLibre: slow.load, onStyleError }));
+
+      unmount();
+      await slow.arrive();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(FakeMap.instances).toHaveLength(0);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(onStyleError).not.toHaveBeenCalled();
+    });
+
+    test("MapView_makes_one_map_for_one_arrival_under_StrictMode", async () => {
+      goodStyle();
+      const slow = slowLoader();
+
+      render(<StrictMode>{view({ loadMapLibre: slow.load })}</StrictMode>);
+      await slow.arrive();
+      await mapUp();
+
+      expect(FakeMap.instances).toHaveLength(1);
+      expect(liveMaps()).toHaveLength(1);
+    });
+
+    test("MapView_reports_MapLibre_that_cannot_be_fetched_as_map_unavailable_once_and_stays_rendered", async () => {
+      goodStyle();
+      const slow = slowLoader();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const rejections: unknown[] = [];
+      const onRejection = (event: PromiseRejectionEvent) => rejections.push(event.reason);
+      window.addEventListener("unhandledrejection", onRejection);
+      const { rerender } = render(view({ loadMapLibre: slow.load, onStyleError, fitTo: [FLIGHT] }));
+
+      await slow.fail(new TypeError("Failed to fetch dynamically imported module: /assets/maplibre-abc.js"));
+
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(onStyleError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+      expect(onStyleError.mock.calls[0]?.[0].message).toContain("dynamically imported module");
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+      expect(screen.getByRole("button", { name: "Recenter map" })).toBeEnabled();
+      // It stays a page: more data, another fit, a re-render, all of them go nowhere, quietly.
+      expect(() => rerender(view({ loadMapLibre: slow.load, onStyleError, fitTo: [{ ...FLIGHT }], data: { routes: routes(3) } }))).not.toThrow();
+      fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      window.removeEventListener("unhandledrejection", onRejection);
+      expect(FakeMap.instances).toHaveLength(0);
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(rejections).toEqual([]);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    test("MapView_reports_a_map_that_fails_while_it_is_set_up_and_gives_it_back", async () => {
+      // Making the map is not the only thing that can throw: so can what follows it, and nobody is waiting on the promise to catch that.
+      goodStyle();
+      FakeMap.failRotation = new Error("Cannot set up the touch handlers");
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const slow = slowLoader();
+      render(view({ loadMapLibre: slow.load, onStyleError, fitTo: [FLIGHT] }));
+
+      await slow.arrive();
+
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(onStyleError.mock.calls[0]?.[0].message).toBe("Cannot set up the touch handlers");
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+      expect(FakeMap.instances).toHaveLength(1);
+      expect(FakeMap.instances[0]?.removed).toBe(true); // the one that was made is not kept
+      expect(screen.getByRole("button", { name: "Recenter map" })).toBeEnabled();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    test("MapView_reports_a_loader_that_throws_instead_of_rejecting", async () => {
+      goodStyle();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const throwing: MapLibreLoader = () => {
+        throw new Error("No loader");
+      };
+
+      expect(() => render(view({ loadMapLibre: throwing, onStyleError }))).not.toThrow();
+
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      expect(onStyleError.mock.calls[0]?.[0].message).toBe("No loader");
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+    });
+
+    test("MapView_asks_for_the_style_that_is_the_latest_when_MapLibre_arrives", async () => {
+      // The style was changed while MapLibre was on its way (another address): the first was never asked for, the second is.
+      const urls = goodStyle();
+      const slow = slowLoader();
+      const { rerender } = render(view({ loadMapLibre: slow.load, styleUrl: "/styles/first" }));
+      rerender(view({ loadMapLibre: slow.load, styleUrl: "/styles/second" }));
+      expect(urls).toEqual([]);
+
+      await slow.arrive();
+      await styleApplied();
+
+      expect(urls).toEqual(["/styles/second"]);
+      expect(theMap().styleCalls).toHaveLength(1);
+    });
+
+    test("MapView_keeps_quiet_when_the_style_changes_after_MapLibre_failed", async () => {
+      // No map to give a style to: a new style address is no reason to try again, to throw, or to report a second time.
+      const urls = goodStyle();
+      const slow = slowLoader();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const onStyleLoad = vi.fn<() => void>();
+      const { rerender } = render(view({ loadMapLibre: slow.load, onStyleError, onStyleLoad, styleUrl: "/styles/first" }));
+      await slow.fail(new TypeError("Failed to fetch dynamically imported module"));
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+
+      expect(() => rerender(view({ loadMapLibre: slow.load, onStyleError, onStyleLoad, styleUrl: "/styles/second" }))).not.toThrow();
+      expect(() => rerender(view({ loadMapLibre: slow.load, onStyleError, onStyleLoad, styleUrl: "/styles/first", data: { routes: routes(2) } }))).not.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(onStyleLoad).not.toHaveBeenCalled();
+      expect(slow.load).toHaveBeenCalledTimes(1); // not asked again, so no loop
+      expect(urls).toEqual([]);
+      expect(FakeMap.instances).toHaveLength(0);
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+    });
+  });
+
+  // A home-screen app has no reload button, and a network blip (or a VPN that is still connecting when the app is opened) must not leave the
+  // basemap blank until the owner kills it: what failed is tried again, once for each Retry and for each time the page comes back.
+  describe("recovering from a failure", () => {
+    /** Whether the page is on show, as the browser tells it; the test says when it comes back (`show`). */
+    function stubPageVisibility(initial: "visible" | "hidden") {
+      let state = initial;
+      vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+      return (next: "visible" | "hidden") => {
+        state = next;
+        act(() => void document.dispatchEvent(new Event("visibilitychange")));
+      };
+    }
+    const comesOnline = () => act(() => void window.dispatchEvent(new Event("online")));
+    const retryOf = (handle: { current: MapViewHandle | null }) => act(() => handle.current!.retry());
+    /** Lets whatever a failed attempt would do next (a loop, say) happen, if it is going to. */
+    const quietly = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 30)));
+
+    /** Answers the first `failures` requests with a failure (the network is down), the ones after them with a style. */
+    function flakyFetch(failures: number): string[] {
+      let seen = 0;
+      return stubFetch(() => (++seen <= failures ? Promise.reject(new TypeError("Failed to fetch")) : Response.json(STYLE)));
+    }
+
+    test("MapView_asks_the_loader_again_for_MapLibre_when_it_could_not_be_fetched_and_Retry_is_called", async () => {
+      goodStyle();
+      const handle = createRef<MapViewHandle>();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const onStyleLoad = vi.fn<() => void>();
+      const slow = slowLoader();
+      render(view({ ref: handle, loadMapLibre: slow.load, onStyleError, onStyleLoad }));
+      await slow.fail(new TypeError("Failed to fetch dynamically imported module"));
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+
+      retryOf(handle);
+      expect(slow.load).toHaveBeenCalledTimes(2);
+      expect(region()).toHaveAttribute("data-map-state", "loading");
+      await slow.arrive();
+      await mapUp();
+      await styleApplied();
+      theMap().emit("style.load");
+
+      expect(region()).toHaveAttribute("data-map-state", "ready");
+      expect(onStyleLoad).toHaveBeenCalledTimes(1); // the app takes its note back
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(FakeMap.instances).toHaveLength(1);
+    });
+
+    test("MapView_tries_a_map_that_could_not_start_again_on_Retry_and_reports_it_again_when_it_still_cannot", async () => {
+      goodStyle();
+      FakeMap.failWith = new Error("Failed to initialize WebGL");
+      const handle = createRef<MapViewHandle>();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      render(view({ ref: handle, onStyleError }));
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+
+      retryOf(handle);
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(2)); // still no WebGL: told once more, for the one more attempt
+      await quietly();
+      expect(onStyleError).toHaveBeenCalledTimes(2); // and no attempt of its own after that
+
+      FakeMap.failWith = null;
+      retryOf(handle);
+      await mapUp();
+      await styleApplied();
+      expect(FakeMap.instances).toHaveLength(1);
+    });
+
+    test("MapView_loads_the_style_again_when_it_could_not_be_had_and_Retry_is_called", async () => {
+      const urls = flakyFetch(1);
+      const handle = createRef<MapViewHandle>();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const onStyleLoad = vi.fn<() => void>();
+      render(view({ ref: handle, onStyleError, onStyleLoad }));
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load"); // the plain style that it fell back to
+      expect(onStyleLoad).not.toHaveBeenCalled();
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+
+      retryOf(handle);
+      await waitFor(() => expect(map.styleCalls).toHaveLength(2));
+      expect(urls).toEqual(["/style.json", "/style.json"]);
+      expect((map.styleCalls[1]?.style as typeof STYLE).layers[0]?.layout["text-field"]).toEqual(ENGLISH_LABEL); // the real style, with English labels
+      map.emit("style.load");
+
+      expect(region()).toHaveAttribute("data-map-state", "ready");
+      expect(onStyleLoad).toHaveBeenCalledTimes(1);
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(liveMaps()).toEqual([map]); // the same map: nothing is made again for a style
+      expect([...map.sources.keys()].sort()).toEqual(Object.values(SOURCE_IDS).sort());
+    });
+
+    test("MapView_leaves_the_plain_style_alone_when_the_style_cannot_be_had_a_second_time", async () => {
+      const urls = flakyFetch(2);
+      const handle = createRef<MapViewHandle>();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const first = routes(1);
+      const { rerender } = render(view({ ref: handle, onStyleError, data: { routes: first } }));
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+
+      retryOf(handle);
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(2));
+      await quietly();
+
+      expect(urls).toHaveLength(2);
+      expect(map.styleCalls).toHaveLength(1); // the plain style is on the map, and is not set again
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+      // And the map is not frozen: what arrives meanwhile is drawn on the plain style.
+      const next = routes(2);
+      rerender(view({ ref: handle, onStyleError, data: { routes: next } }));
+      expect(map.sources.get(SOURCE_IDS.routes)?.data).toBe(next);
+    });
+
+    test("MapView_keeps_the_style_on_screen_when_the_one_of_the_new_colour_scheme_cannot_be_had", async () => {
+      // The system goes dark with the network down: the map that works is not taken away for one that is blank.
+      let darkWorks = false;
+      const urls = stubFetch((url) => (url === "/styles/dark" && !darkWorks ? Promise.reject(new TypeError("Failed to fetch")) : Response.json({ ...STYLE, name: url })));
+      const setScheme = stubColourScheme("light");
+      const handle = createRef<MapViewHandle>();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const onStyleLoad = vi.fn<() => void>();
+      const first = routes(1);
+      const { rerender } = render(withConfig(clientWithConfig(), { ref: handle, onStyleError, onStyleLoad, data: { routes: first } }));
+      await styleApplied(1);
+      const map = theMap();
+      map.emit("style.load");
+      expect(onStyleLoad).toHaveBeenCalledTimes(1);
+
+      setScheme("dark");
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      await quietly();
+
+      expect(map.styleCalls).toHaveLength(1); // not the plain style: the light one stays
+      expect(map.sources.size).toBe(4);
+      expect([...map.layers.keys()]).toEqual(Object.values(LAYER_IDS));
+      expect(region()).toHaveAttribute("data-map-state", "unavailable"); // reported, so that a note with its Retry can be shown
+      // It goes on working: data that comes meanwhile reaches the style that is there.
+      const next = routes(2);
+      rerender(withConfig(clientWithConfig(), { ref: handle, onStyleError, onStyleLoad, data: { routes: next } }));
+      expect(map.sources.get(SOURCE_IDS.routes)?.data).toBe(next);
+
+      darkWorks = true;
+      retryOf(handle);
+      await styleApplied(2);
+      expect(urls.filter((url) => url === "/styles/dark")).toHaveLength(2);
+      expect((map.styleCalls[1]?.style as { name: string }).name).toBe("/styles/dark");
+      map.emit("style.load");
+      expect(region()).toHaveAttribute("data-map-state", "ready");
+      expect(onStyleLoad).toHaveBeenCalledTimes(2);
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+    });
+
+    test("MapView_puts_the_style_that_worked_back_when_MapLibre_refuses_the_one_of_the_new_colour_scheme", async () => {
+      const urls = stubFetch((url) => Response.json({ ...STYLE, name: url }));
+      const setScheme = stubColourScheme("light");
+      const onStyleError = vi.fn<(error: Error) => void>();
+      render(withConfig(clientWithConfig(), { onStyleError }));
+      await styleApplied(1);
+      const map = theMap();
+      map.emit("style.load");
+      const working = map.styleCalls[0]?.style;
+
+      setScheme("dark");
+      await styleApplied(2); // MapLibre has the dark style, which drops the light one, and finds that it will not take it
+      map.emit("error", { error: new Error("layers[3].paint: unknown property") });
+
+      await waitFor(() => expect(map.styleCalls).toHaveLength(3));
+      expect(urls).toEqual(["/styles/liberty", "/styles/dark"]);
+      expect(map.styleCalls[2]?.style).toBe(working); // the light style again, and not the blank one
+      expect(map.styleCalls[2]?.options).toEqual({ diff: false });
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      map.emit("style.load");
+      expect(region()).toHaveAttribute("data-map-state", "unavailable"); // still not the style that was asked for
+      expect(map.sources.size).toBe(4); // but it is drawn on
+    });
+
+    // The app says "Couldn't switch the map style" when a basemap is still drawn and only the switch failed, and "Map unavailable" when
+    // there is none: the second argument of `onStyleError` tells which.
+    describe("whether a basemap is kept", () => {
+      type Told = (error: Error, basemapKept: boolean) => void;
+      const kept = (onStyleError: { mock: { calls: Parameters<Told>[] } }) => onStyleError.mock.calls.map(([, basemapKept]) => basemapKept);
+
+      test("MapView_says_there_is_no_basemap_when_the_first_style_cannot_be_had_or_MapLibre_or_the_map_cannot_start", async () => {
+        flakyFetch(1);
+        const first = vi.fn<Told>();
+        const view1 = render(view({ onStyleError: first }));
+        await waitFor(() => expect(first).toHaveBeenCalledTimes(1));
+        expect(kept(first)).toEqual([false]);
+        view1.unmount();
+
+        goodStyle();
+        const slow = slowLoader();
+        const second = vi.fn<Told>();
+        const view2 = render(view({ loadMapLibre: slow.load, onStyleError: second }));
+        await slow.fail(new TypeError("Failed to fetch dynamically imported module"));
+        expect(kept(second)).toEqual([false]);
+        view2.unmount();
+
+        FakeMap.failWith = new Error("Failed to initialize WebGL");
+        const third = vi.fn<Told>();
+        render(view({ onStyleError: third }));
+        await waitFor(() => expect(third).toHaveBeenCalledTimes(1));
+        expect(kept(third)).toEqual([false]);
+      });
+
+      test("MapView_says_a_basemap_is_kept_when_only_the_switch_to_the_other_colour_scheme_failed_and_when_it_fails_again", async () => {
+        let darkWorks = false;
+        stubFetch((url) => (url === "/styles/dark" && !darkWorks ? Promise.reject(new TypeError("Failed to fetch")) : Response.json({ ...STYLE, name: url })));
+        const setScheme = stubColourScheme("light");
+        const handle = createRef<MapViewHandle>();
+        const onStyleError = vi.fn<Told>();
+        render(withConfig(clientWithConfig(), { ref: handle, onStyleError }));
+        await styleApplied(1);
+        theMap().emit("style.load");
+
+        setScheme("dark");
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+        retryOf(handle); // and it still cannot
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(2));
+
+        expect(kept(onStyleError)).toEqual([true, true]);
+      });
+
+      test("MapView_says_a_basemap_is_kept_when_MapLibre_refuses_the_style_of_the_other_colour_scheme_and_the_old_one_is_put_back", async () => {
+        stubFetch((url) => Response.json({ ...STYLE, name: url }));
+        const setScheme = stubColourScheme("light");
+        const onStyleError = vi.fn<Told>();
+        render(withConfig(clientWithConfig(), { onStyleError }));
+        await styleApplied(1);
+        theMap().emit("style.load");
+
+        setScheme("dark");
+        await styleApplied(2);
+        theMap().emit("error", { error: new Error("layers[3].paint: unknown property") });
+
+        expect(kept(onStyleError)).toEqual([true]);
+      });
+
+      test("MapView_says_there_is_still_no_basemap_when_the_first_style_failed_and_so_does_the_switch_after_it", async () => {
+        stubFetch(() => Promise.reject(new TypeError("Failed to fetch")));
+        const setScheme = stubColourScheme("light");
+        const onStyleError = vi.fn<Told>();
+        render(withConfig(clientWithConfig(), { onStyleError }));
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+        await styleApplied(1);
+        theMap().emit("style.load"); // the plain style: no map to speak of
+
+        setScheme("dark");
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(2));
+
+        expect(kept(onStyleError)).toEqual([false, false]);
+      });
+
+      test("MapView_says_a_basemap_is_kept_for_a_switch_that_fails_after_a_failed_first_style_was_put_right", async () => {
+        let lightAsked = 0;
+        stubFetch((url) => {
+          if (url === "/styles/dark") return Promise.reject(new TypeError("Failed to fetch"));
+          return ++lightAsked === 1 ? Promise.reject(new TypeError("Failed to fetch")) : Response.json({ ...STYLE, name: url });
+        });
+        const setScheme = stubColourScheme("light");
+        const handle = createRef<MapViewHandle>();
+        const onStyleError = vi.fn<Told>();
+        render(withConfig(clientWithConfig(), { ref: handle, onStyleError }));
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1)); // the first style: nothing to draw
+        await styleApplied(1);
+        theMap().emit("style.load"); // the plain style
+        retryOf(handle);
+        await styleApplied(2);
+        theMap().emit("style.load"); // the light style, which is a basemap now
+
+        setScheme("dark"); // and the dark one cannot be had
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(2));
+
+        expect(kept(onStyleError)).toEqual([false, true]);
+      });
+    });
+
+    test("MapView_retries_when_the_page_comes_back_into_view_but_only_while_something_has_failed_and_only_once", async () => {
+      const urls = flakyFetch(2);
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const show = stubPageVisibility("visible");
+      render(view({ onStyleError }));
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      await styleApplied();
+
+      show("hidden"); // the page going away is not a reason
+      await quietly();
+      expect(urls).toHaveLength(1);
+
+      show("visible");
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(2)); // the second request fails too
+      expect(urls).toHaveLength(2);
+      await quietly();
+      expect(urls).toHaveLength(2); // no attempt of its own: it waits for the next reason
+
+      show("hidden");
+      show("visible");
+      await waitFor(() => expect(theMap().styleCalls).toHaveLength(2)); // the third request has the style
+      expect(urls).toHaveLength(3);
+      theMap().emit("style.load");
+      expect(region()).toHaveAttribute("data-map-state", "ready");
+
+      show("hidden");
+      show("visible");
+      comesOnline();
+      await quietly();
+      expect(urls).toHaveLength(3); // the map works: nothing is tried
+    });
+
+    test("MapView_retries_when_the_network_comes_back_and_the_two_reasons_at_once_make_one_attempt", async () => {
+      const urls = flakyFetch(1);
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const show = stubPageVisibility("visible");
+      render(view({ onStyleError }));
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      await styleApplied();
+
+      comesOnline(); // a phone that wakes up says both, one after the other
+      show("visible");
+      await waitFor(() => expect(theMap().styleCalls).toHaveLength(2));
+      await quietly();
+
+      expect(urls).toHaveLength(2);
+    });
+
+    test("MapView_retries_MapLibre_when_the_page_comes_back_or_the_network_does", async () => {
+      goodStyle();
+      const slow = slowLoader();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const show = stubPageVisibility("visible");
+      render(view({ loadMapLibre: slow.load, onStyleError }));
+      await slow.fail(new TypeError("Failed to fetch dynamically imported module"));
+
+      comesOnline();
+      expect(slow.load).toHaveBeenCalledTimes(2);
+      await slow.fail(new TypeError("Failed to fetch dynamically imported module"));
+      expect(onStyleError).toHaveBeenCalledTimes(2);
+      await quietly();
+      expect(slow.load).toHaveBeenCalledTimes(2); // no loop
+
+      show("visible");
+      expect(slow.load).toHaveBeenCalledTimes(3);
+      await slow.arrive();
+      await mapUp();
+      expect(FakeMap.instances).toHaveLength(1);
+    });
+
+    test("MapView_does_nothing_on_Retry_or_on_events_when_nothing_has_failed", async () => {
+      const urls = goodStyle();
+      const handle = createRef<MapViewHandle>();
+      const loader = vi.fn<MapLibreLoader>(async () => ({ MapLibreMap: FakeMap, setWorkerUrl: () => undefined, workerUrl: "/w.mjs" }) as unknown as MapLibreModule);
+      const show = stubPageVisibility("visible");
+      render(view({ ref: handle, loadMapLibre: loader }));
+      await styleApplied();
+      theMap().emit("style.load");
+
+      retryOf(handle);
+      show("visible");
+      comesOnline();
+      await quietly();
+
+      expect(loader).toHaveBeenCalledTimes(1);
+      expect(urls).toHaveLength(1);
+      expect(theMap().styleCalls).toHaveLength(1);
+      expect(region()).toHaveAttribute("data-map-state", "ready");
+    });
+
+    test("MapView_does_not_start_a_second_attempt_while_one_is_on_its_way", async () => {
+      const slow = slowLoader();
+      goodStyle();
+      const handle = createRef<MapViewHandle>();
+      render(view({ ref: handle, loadMapLibre: slow.load }));
+      await slow.fail(new TypeError("Failed to fetch dynamically imported module"));
+
+      retryOf(handle);
+      retryOf(handle);
+      comesOnline();
+
+      expect(slow.load).toHaveBeenCalledTimes(2);
+    });
+
+    test("MapView_takes_the_config_again_when_that_is_what_failed_and_Retry_is_called", async () => {
+      let configWorks = false;
+      const urls = stubFetch((url) => {
+        if (url !== "/api/config") return Response.json(STYLE);
+        return configWorks ? Response.json({ mapStyleLight: "/styles/liberty", mapStyleDark: "/styles/dark" }) : new Response("{}", { status: 500 });
+      });
+      const handle = createRef<MapViewHandle>();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const onStyleLoad = vi.fn<() => void>();
+      render(withConfig(new QueryClient({ defaultOptions: { queries: { retry: false } } }), { ref: handle, onStyleError, onStyleLoad }));
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      await styleApplied();
+      theMap().emit("style.load"); // the plain style
+
+      configWorks = true;
+      retryOf(handle);
+      await waitFor(() => expect(theMap().styleCalls).toHaveLength(2));
+      theMap().emit("style.load");
+
+      expect(urls).toEqual(["/api/config", "/api/config", "/styles/liberty"]);
+      expect(region()).toHaveAttribute("data-map-state", "ready");
+      expect(onStyleLoad).toHaveBeenCalledTimes(1);
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+    });
+
+    test("MapView_stops_listening_for_the_page_and_the_network_when_it_is_unmounted", async () => {
+      const urls = flakyFetch(5);
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const show = stubPageVisibility("visible");
+      const { unmount } = render(view({ onStyleError }));
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      unmount();
+
+      show("visible");
+      comesOnline();
+      await quietly();
+
+      expect(urls).toHaveLength(1);
+    });
+  });
+
+  // Spec 4.6: a place is reached by tapping it anywhere. A finger is wider than a dot (4 px at the least), so a tap or a click looks for a
+  // dot or a pin in a box of 12 px round the point (`queryRenderedFeatures`), and the nearest one wins. MapLibre's own `click` is not
+  // fired for the end of a drag, and a tap is a click to it; the pointer over what a click would open is the same look.
+  describe("opening a place", () => {
+    /** Something drawn on the map: the layer it is in, what MapLibre says of it (its properties), and the place that a tap on it opens (0: none). */
+    interface Thing {
+      layer: string;
+      properties: Record<string, unknown>;
+      place: number;
+    }
+    const DOT: Thing = { layer: LAYER_IDS.places, properties: { id: 7, radius: 9 }, place: 7 };
+    const PIN: Thing = { layer: LAYER_IDS.stops, properties: { order: 2, label: "2 · 4", name: "Home", id: 301, placeId: 11 }, place: 11 };
+    const NUMBER: Thing = { layer: LAYER_IDS.stopNumbers, properties: { order: 2, label: "2 · 4", name: "Home", id: 301, placeId: 11 }, place: 11 };
+
+    /** A map with its style loaded (its layers are there to be looked in), and `things` drawn where `at` says. */
+    async function drawn(things: [Thing, [number, number]][], props: Partial<MapViewProps> = {}) {
+      goodStyle();
+      const view_ = render(view(props));
+      const map = await mapUp();
+      await styleApplied();
+      map.emit("style.load");
+      for (const [{ layer, properties }, at] of things) map.drawn.push({ layerId: layer, properties, at });
+      return { map, ...view_ };
+    }
+
+    test.each([
+      ["a_dot_of_a_period", DOT],
+      ["a_pin_of_a_day", PIN],
+      ["the_number_on_a_pin", NUMBER],
+    ])("MapView_calls_onPlaceTap_with_the_place_when_%s_is_clicked", async (_name, thing) => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { map } = await drawn([[thing, [200, 300]]], { onPlaceTap });
+
+      map.pointer("click", 200, 300);
+
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+      expect(onPlaceTap).toHaveBeenCalledWith(thing.place); // the place, and not the stay that the pin's `id` is
+    });
+
+    test("MapView_looks_for_dots_and_pins_in_a_box_of_12px_round_the_point_in_those_layers_only", async () => {
+      const { map } = await drawn([]);
+
+      map.pointer("click", 200, 300);
+
+      expect(map.queries).toEqual([
+        { box: [[188, 288], [212, 312]], layers: [LAYER_IDS.places, LAYER_IDS.stops, LAYER_IDS.stopNumbers] },
+      ]);
+    });
+
+    test("MapView_opens_a_dot_that_a_finger_missed_by_10px_and_does_nothing_for_a_tap_farther_off", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { map } = await drawn([[DOT, [200, 300]]], { onPlaceTap });
+
+      map.pointer("click", 208, 306); // 10 px away
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+      expect(onPlaceTap).toHaveBeenLastCalledWith(7);
+
+      map.pointer("click", 200, 313); // 13 px away: a tap on the map, which has nothing to open
+      map.pointer("click", 225, 300);
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+    });
+
+    test("MapView_opens_the_nearer_of_two_places_when_a_tap_is_in_reach_of_both", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const other: Thing = { ...DOT, properties: { id: 8, radius: 5 }, place: 8 };
+      const { map } = await drawn([[DOT, [200, 300]], [other, [215, 300]]], { onPlaceTap });
+
+      map.pointer("click", 212, 300); // 12 from one, 3 from the other
+      expect(onPlaceTap).toHaveBeenLastCalledWith(8);
+      map.pointer("click", 203, 300); // 3 from the first, 12 from the other
+      expect(onPlaceTap).toHaveBeenLastCalledWith(7);
+      map.pointer("click", 207, 302); // 7.3 and 8.2: the first, and not the one that is drawn on top or comes first in the answer
+      expect(onPlaceTap).toHaveBeenLastCalledWith(7);
+      expect(onPlaceTap).toHaveBeenCalledTimes(3);
+    });
+
+    test("MapView_picks_the_nearest_across_the_kinds_of_feature_and_by_the_position_of_the_place_not_by_the_edge_of_what_was_hit", async () => {
+      // A big dot's edge is near, and its middle is far: the place whose middle is nearest is the one meant.
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const big: Thing = { ...DOT, properties: { id: 3, radius: 16 }, place: 3 };
+      const { map } = await drawn([[big, [190, 300]], [PIN, [208, 300]]], { onPlaceTap });
+
+      map.pointer("click", 200, 300); // 10 from the big dot's middle, 8 from the pin's
+
+      expect(onPlaceTap).toHaveBeenCalledWith(11);
+    });
+
+    test("MapView_skips_a_feature_that_names_no_place_for_the_next_one_in_reach", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const noPlace: Thing = { layer: LAYER_IDS.stops, properties: { order: 1, label: "1", name: null, id: 5 }, place: 0 }; // a pin that says no place
+      const { map } = await drawn([[noPlace, [200, 300]], [DOT, [208, 300]]], { onPlaceTap });
+
+      map.pointer("click", 201, 300);
+
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+      expect(onPlaceTap).toHaveBeenCalledWith(7);
+      map.drawn.splice(1, 1);
+      map.pointer("click", 201, 300);
+      expect(onPlaceTap).toHaveBeenCalledTimes(1); // and with none in reach there is nothing to open
+    });
+
+    test("MapView_does_nothing_for_a_click_where_there_is_nothing_in_the_box_or_only_other_layers", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { map } = await drawn([[{ layer: LAYER_IDS.dayRoute, properties: { id: 11, mode: "walk" }, place: 0 }, [200, 300]]], { onPlaceTap });
+
+      map.pointer("click", 200, 300);
+      map.pointer("click", 10, 10);
+
+      expect(onPlaceTap).not.toHaveBeenCalled();
+    });
+
+    test("MapView_looks_in_no_layer_that_the_style_does_not_have_yet", async () => {
+      // Before the style has loaded (or while another is on its way, or the context is lost) there are no layers: the real map reports an
+      // error for each one that it is asked to look in, and a click must not make that.
+      goodStyle();
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      render(view({ onPlaceTap }));
+      const map = await mapUp();
+      await styleApplied();
+
+      expect(() => map.pointer("click", 200, 300)).not.toThrow();
+      expect(() => map.pointer("mousemove", 200, 300)).not.toThrow();
+
+      expect(map.queries).toEqual([]);
+      expect(onPlaceTap).not.toHaveBeenCalled();
+    });
+
+    test("MapView_calls_the_latest_onPlaceTap_and_copes_without_one", async () => {
+      const first = vi.fn<(id: number) => void>();
+      const second = vi.fn<(id: number) => void>();
+      const { map, rerender } = await drawn([[DOT, [200, 300]]], { onPlaceTap: first });
+
+      rerender(view({ onPlaceTap: second })); // a new function on each render of the parent is the usual
+      map.pointer("click", 200, 300);
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledWith(7);
+
+      rerender(view());
+      expect(() => map.pointer("click", 200, 300)).not.toThrow();
+      expect(map.listenerCount("click")).toBe(1); // one listener, whatever it is rendered with
+    });
+
+    test("MapView_shows_a_pointer_where_a_click_would_open_a_place_and_the_ordinary_cursor_elsewhere", async () => {
+      const { map } = await drawn([[DOT, [200, 300]], [PIN, [400, 300]]]);
+      expect(map.canvas.style.cursor).toBe("");
+
+      map.pointer("mousemove", 205, 300);
+      expect(map.canvas.style.cursor).toBe("pointer");
+      map.pointer("mousemove", 207, 309); // 12 px off, as a click would still find it
+      expect(map.canvas.style.cursor).toBe("pointer");
+      map.pointer("mousemove", 300, 300);
+      expect(map.canvas.style.cursor).toBe("");
+      map.pointer("mousemove", 400, 305);
+      expect(map.canvas.style.cursor).toBe("pointer");
+      map.emit("mouseout"); // the pointer leaves the map
+      expect(map.canvas.style.cursor).toBe("");
+    });
+
+    test("MapView_leaves_the_cursor_alone_over_a_feature_that_names_no_place", async () => {
+      const noPlace: Thing = { layer: LAYER_IDS.stops, properties: { order: 1, label: "1", name: null, id: 5 }, place: 0 };
+      const { map } = await drawn([[noPlace, [200, 300]]]);
+
+      map.pointer("mousemove", 200, 300);
+
+      expect(map.canvas.style.cursor).toBe("");
+    });
+
+    test("MapView_listens_for_taps_once_for_each_map_and_stops_when_it_is_gone", async () => {
+      goodStyle();
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { unmount } = render(<StrictMode>{view({ onPlaceTap })}</StrictMode>);
+      const map = await mapUp();
+      await styleApplied();
+      map.emit("style.load"); // a style that loads (a theme switch too) is no reason to listen again: the listeners are the map's
+      map.drawn.push({ layerId: DOT.layer, properties: DOT.properties, at: [200, 300] });
+
+      expect(map.listenerCount("click")).toBe(1);
+      expect(map.listenerCount("mousemove")).toBe(1);
+      expect(map.listenerCount("mouseout")).toBe(1);
+      map.pointer("click", 200, 300);
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+
+      unmount();
+
+      for (const type of ["click", "mousemove", "mouseout"]) expect(map.listenerCount(type), type).toBe(0);
+    });
+
+    test("MapView_taps_open_places_also_when_the_map_is_made_after_the_data_arrived", async () => {
+      goodStyle();
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const slow = slowLoader();
+      render(view({ loadMapLibre: slow.load, onPlaceTap, data: { routes: EMPTY_ROUTES, stops: stops() } }));
+
+      await slow.arrive();
+      const map = await mapUp();
+      await styleApplied();
+      map.emit("style.load");
+      map.drawn.push({ layerId: LAYER_IDS.stops, properties: { id: 5, placeId: 50 }, at: [200, 300] });
+      map.pointer("click", 203, 303);
+
+      expect(onPlaceTap).toHaveBeenCalledWith(50);
+    });
+  });
+
+  describe("heat", () => {
+    const toggle = (on: boolean, onChange: (on: boolean) => void = () => undefined) => ({ on, onChange });
+    const opacityOf = (map: InstanceType<typeof FakeMap>, id: string) => map.layers.get(id)?.paint?.["line-opacity"];
+
+    test("MapView_has_a_heat_button_only_when_the_parent_says_heat_is_available", () => {
+      goodStyle();
+      const { rerender } = render(view());
+      expect(screen.queryByRole("button", { name: "Heat map" })).not.toBeInTheDocument();
+
+      rerender(view({ heatToggle: toggle(false) }));
+      expect(screen.getByRole("button", { name: "Heat map" })).toBeInTheDocument();
+
+      rerender(view()); // a place has no period to show the heat of: the button goes
+      expect(screen.queryByRole("button", { name: "Heat map" })).not.toBeInTheDocument();
+    });
+
+    test("MapView_heat_button_says_whether_heat_is_on_and_asks_for_the_other_when_pressed", () => {
+      goodStyle();
+      const onChange = vi.fn<(on: boolean) => void>();
+      const { rerender } = render(view({ heatToggle: toggle(false, onChange) }));
+      const button = screen.getByRole("button", { name: "Heat map" });
+      expect(button).toHaveAttribute("type", "button");
+      expect(button).toHaveAttribute("aria-pressed", "false");
+
+      fireEvent.click(button);
+      expect(onChange).toHaveBeenLastCalledWith(true);
+      expect(button).toHaveAttribute("aria-pressed", "false"); // the parent holds the state: it is on when the parent says so
+
+      rerender(view({ heatToggle: toggle(true, onChange) }));
+      expect(button).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(button);
+      expect(onChange).toHaveBeenLastCalledWith(false);
+      expect(onChange).toHaveBeenCalledTimes(2);
+    });
+
+    test("MapView_heat_button_sits_with_the_recenter_button_inside_what_is_left_of_the_map", () => {
+      // The one group of buttons is what the style sheet insets by the padding: a button of the group is not under the sheet or the bar.
+      goodStyle();
+      render(view({ heatToggle: toggle(false), padding: { top: 120, right: 20, bottom: 300, left: 340 } }));
+
+      const group = screen.getByRole("button", { name: "Recenter map" }).parentElement;
+      expect(screen.getByRole("button", { name: "Heat map" }).parentElement).toBe(group);
+      expect(region().contains(group)).toBe(true);
+    });
+
+    test("MapView_gives_the_heat_to_its_source_and_fades_the_routes_to_a_fifth_without_making_the_layers_again", async () => {
+      goodStyle();
+      const data = { routes: routes(1) };
+      const { rerender } = render(view({ data }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      const layers = new Map(map.layers); // the layers as they are, to be told if one is made again
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([undefined, undefined, undefined, 0.35, 0.35]); // as the specs have them
+      expect(map.paintCalls).toEqual([]);
+
+      const heat = heatCells(1, 0.5);
+      rerender(view({ data: { ...data, heat } }));
+
+      expect(map.sources.get(SOURCE_IDS.heat)?.data).toBe(heat);
+      expect(map.paintCalls).toEqual(ROUTE_LAYERS.map((id) => [id, "line-opacity", 0.2]));
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]); // the routes of the other view too
+      expect(opacityOf(map, LAYER_IDS.places)).toBeUndefined(); // only routes fade: the dots and pins stay as they are
+      expect(map.layers.size).toBe(layers.size);
+      for (const [id, layer] of layers) expect(map.layers.get(id), id).toBe(layer);
+
+      // A new heat (another period) is new data for the source, and the routes are not touched again.
+      const other = heatCells(1);
+      rerender(view({ data: { ...data, heat: other } }));
+      expect(map.sources.get(SOURCE_IDS.heat)?.data).toBe(other);
+      expect(map.paintCalls).toHaveLength(ROUTE_LAYERS.length);
+
+      // Heat gone: the routes are as they were, and the heat source is emptied.
+      rerender(view({ data }));
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual(ROUTE_LAYERS.map((id) => routeOpacity(id, false)));
+      expect((map.sources.get(SOURCE_IDS.heat)?.data as HeatCollection).features).toEqual([]);
+      expect(map.layers.size).toBe(layers.size);
+    });
+
+    test("MapView_leaves_the_routes_alone_for_a_heat_with_no_cell_in_it", async () => {
+      // Nothing glows, so nothing is behind the routes to let through: they stay as they are.
+      goodStyle();
+      const data = { routes: routes(1) };
+      const { rerender } = render(view({ data }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+
+      rerender(view({ data: { ...data, heat: { type: "FeatureCollection", features: [] } } }));
+
+      expect(map.paintCalls).toEqual([]);
+    });
+
+    test("MapView_fades_the_routes_of_a_style_that_loads_while_heat_is_on", async () => {
+      // A theme switch loads another style, whose layers have the routes as the specs say; the heat is still on.
+      goodStyle();
+      const data = { routes: routes(1), heat: heatCells() };
+      render(view({ data }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]); // a style that loads with the heat given
+
+      map.setStyle({ version: 8, sources: {}, layers: [] }, { diff: false });
+      map.emit("style.load");
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
+      expect(map.layers.get(LAYER_IDS.heat)).toBeDefined();
+    });
+  });
+
+  describe("camera", () => {
+    const flight: Feature<LineString, object> = {
+      type: "Feature",
+      properties: {},
+      geometry: { type: "LineString", coordinates: [[10.5, 59.8], [10.9, 60.1]] },
+    };
+    const PADDING = { top: 120, right: 20, bottom: 300, left: 340 };
+
+    test("MapView_fits_to_the_features_with_padding", async () => {
+      goodStyle();
+
+      render(view({ fitTo: [flight], padding: PADDING }));
+
+      const map = await mapUp();
+      expect(map.fitCalls).toHaveLength(1);
+      expect(map.fitCalls[0]?.bounds).toEqual([[10.5, 59.8], [10.9, 60.1]]);
+      expect(map.fitCalls[0]?.options).toMatchObject({ padding: PADDING });
+      expect(map.fitCalls[0]?.options["duration"]).toBeGreaterThan(0); // animated
+      expect(map.fitCalls[0]?.options["maxZoom"]).toBeLessThanOrEqual(18); // one point does not zoom in to the street
+    });
+
+    test("MapView_fits_again_for_every_new_fitTo_even_when_it_is_the_same_box_and_not_for_the_same_object", async () => {
+      goodStyle();
+      const home = [flight];
+      const { rerender } = render(view({ fitTo: home, padding: PADDING }));
+      const map = await mapUp();
+      expect(map.fitCalls).toHaveLength(1);
+
+      // The same array again (the parent rendered for another reason): the map is where the owner left it.
+      rerender(view({ fitTo: home, padding: PADDING }));
+      rerender(view({ fitTo: home, padding: { ...PADDING, bottom: 500 } })); // nor does padding, such as a sheet changing its height
+      expect(map.fitCalls).toHaveLength(1);
+
+      // Another day with the same box (two days spent at home), or a row of the timeline tapped a second time: the owner has
+      // panned away since, and is brought back.
+      const sameBox = [{ ...flight }];
+      rerender(view({ fitTo: sameBox, padding: { ...PADDING, bottom: 500 } }));
+      expect(map.fitCalls).toHaveLength(2);
+      expect(map.fitCalls[1]?.bounds).toEqual(map.fitCalls[0]?.bounds);
+      expect(map.fitCalls[1]?.options).toMatchObject({ padding: { ...PADDING, bottom: 500 } }); // with the padding as it is now
+
+      // And somewhere else, of course.
+      const elsewhere: Feature<Point, object> = { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [-0.1, 51.5] } };
+      rerender(view({ fitTo: [elsewhere], padding: { ...PADDING, bottom: 500 } }));
+      expect(map.fitCalls).toHaveLength(3);
+      expect(map.fitCalls[2]?.bounds).toEqual([[-0.1, 51.5], [-0.1, 51.5]]);
+    });
+
+    test("MapView_does_not_fit_to_nothing", async () => {
+      goodStyle();
+      const { rerender } = render(view({ fitTo: null }));
+      const map = await mapUp();
+      rerender(view({ fitTo: [] }));
+      rerender(view({ fitTo: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [] } }] }));
+
+      expect(map.fitCalls).toEqual([]);
+    });
+
+    test("MapView_recenter_button_refits_the_current_data_with_the_current_padding", async () => {
+      goodStyle();
+      const home = [flight];
+      const { rerender } = render(view({ fitTo: home, padding: PADDING }));
+      const map = await mapUp();
+      const button = screen.getByRole("button", { name: "Recenter map" });
+      expect(button).toBeEnabled();
+
+      rerender(view({ fitTo: home, padding: { ...PADDING, bottom: 500 } }));
+      fireEvent.click(button);
+
+      expect(map.fitCalls).toHaveLength(2);
+      expect(map.fitCalls[1]?.bounds).toEqual(boundsOf([flight]));
+      expect(map.fitCalls[1]?.options).toMatchObject({ padding: { ...PADDING, bottom: 500 } });
+    });
+
+    describe("home", () => {
+      const row: Feature<Point, object> = { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [10.7, 59.9] } };
+      const whole = [flight, row];
+
+      test("MapView_recenter_brings_back_home_when_the_map_was_taken_to_a_row", async () => {
+        goodStyle();
+        const { rerender } = render(view({ fitTo: whole, home: whole, padding: PADDING }));
+        const map = await mapUp();
+        rerender(view({ fitTo: [row], home: whole, padding: PADDING })); // a row of the timeline tapped
+        expect(map.fitCalls).toHaveLength(2);
+        expect(map.fitCalls[1]?.bounds).toEqual(boundsOf([row]));
+
+        fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+
+        expect(map.fitCalls).toHaveLength(3); // the whole day, and not the row it was last taken to
+        expect(map.fitCalls[2]?.bounds).toEqual(boundsOf(whole));
+        expect(map.fitCalls[2]?.options).toMatchObject({ padding: PADDING });
+      });
+
+      test("MapView_home_alone_does_not_move_the_map_and_the_latest_home_is_the_one_recentered_to", async () => {
+        goodStyle();
+        const tapped = [row];
+        const { rerender } = render(view({ fitTo: tapped, home: [row], padding: PADDING }));
+        const map = await mapUp();
+        expect(map.fitCalls).toHaveLength(1);
+
+        rerender(view({ fitTo: tapped, home: whole, padding: PADDING })); // the day was polled and has more in it: the map stays
+        expect(map.fitCalls).toHaveLength(1);
+
+        fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+        expect(map.fitCalls).toHaveLength(2);
+        expect(map.fitCalls[1]?.bounds).toEqual(boundsOf(whole));
+      });
+
+      test("MapView_recenter_goes_to_the_fit_when_there_is_no_home_given", async () => {
+        goodStyle();
+        render(view({ fitTo: [row], padding: PADDING }));
+        const map = await mapUp();
+
+        fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+
+        expect(map.fitCalls[1]?.bounds).toEqual(boundsOf([row]));
+      });
+
+      test("MapView_recenter_is_disabled_when_home_is_null_whatever_the_fit_is", async () => {
+        goodStyle();
+        const { rerender } = render(view({ fitTo: [row], home: null }));
+        const map = await mapUp();
+        const button = screen.getByRole("button", { name: "Recenter map" });
+
+        expect(button).toBeDisabled();
+        fireEvent.click(button);
+        expect(map.fitCalls).toHaveLength(1); // the fit that was asked for, and no more
+
+        rerender(view({ fitTo: [row], home: whole }));
+        expect(button).toBeEnabled();
+        rerender(view({ fitTo: [row], home: [] })); // nothing in it to bring back
+        expect(button).toBeDisabled();
+      });
+    });
+
+    test("MapView_recenter_button_is_disabled_when_there_is_nothing_to_show", () => {
+      goodStyle();
+      const { rerender } = render(view({ fitTo: null }));
+      const button = screen.getByRole("button", { name: "Recenter map" });
+      expect(button).toBeDisabled();
+
+      rerender(view({ fitTo: [flight] }));
+      expect(button).toBeEnabled();
+    });
+
+    test("MapView_hands_the_padding_to_the_style_sheet_for_its_controls_to_sit_inside", () => {
+      // The style sheet (see the e2e test of the attribution) sets the buttons and MapLibre's controls, the attribution among
+      // them, in by these, so that a bottom sheet, a sidebar or a bar does not cover them.
+      goodStyle();
+      const { rerender } = render(view({ padding: PADDING }));
+
+      const root = region();
+      const padding = () => ["top", "right", "bottom", "left"].map((side) => root.style.getPropertyValue(`--map-padding-${side}`));
+      expect(padding()).toEqual(["120px", "20px", "300px", "340px"]);
+
+      rerender(view({ padding: { top: 0, right: 0, bottom: 96, left: 0 } })); // the peek of the sheet
+      expect(padding()).toEqual(["0px", "0px", "96px", "0px"]);
+    });
+
+    test("MapView_without_padding_leaves_the_controls_at_the_corners", () => {
+      goodStyle();
+      render(view({ padding: undefined }));
+
+      expect(["top", "right", "bottom", "left"].map((side) => region().style.getPropertyValue(`--map-padding-${side}`))).toEqual(["0px", "0px", "0px", "0px"]);
+    });
+  });
+
+  describe("theme", () => {
+    test("MapView_picks_the_light_or_dark_style_from_the_config_and_switches_live", async () => {
+      const urls = stubFetch((url) => Response.json({ ...STYLE, name: url }));
+      const setScheme = stubColourScheme("light");
+
+      render(withConfig(clientWithConfig()));
+      await styleApplied(1);
+      expect(urls).toEqual(["/styles/liberty"]);
+      const map = theMap();
+      map.emit("style.load");
+      expect(map.sources.size).toBe(4);
+
+      setScheme("dark");
+      await styleApplied(2);
+      expect(urls).toEqual(["/styles/liberty", "/styles/dark"]);
+      expect((map.styleCalls[1]?.style as { name: string }).name).toBe("/styles/dark");
+      expect(map.styleCalls[1]?.options).toEqual({ diff: false });
+      expect(liveMaps()).toEqual([map]); // the same map: its view is kept
+      map.emit("style.load"); // the new style is loaded: layers and sources come back
+      expect([...map.layers.keys()]).toEqual(Object.values(LAYER_IDS));
+
+      setScheme("light");
+      await styleApplied(3);
+      expect(urls).toEqual(["/styles/liberty", "/styles/dark", "/styles/liberty"]);
+    });
+
+    test("MapView_starts_with_the_dark_style_when_the_system_is_dark", async () => {
+      const urls = stubFetch(() => Response.json(STYLE));
+      stubColourScheme("dark");
+
+      render(withConfig(clientWithConfig()));
+      await styleApplied();
+
+      expect(urls).toEqual(["/styles/dark"]);
+    });
+
+    test("MapView_asks_for_the_style_of_the_scheme_it_is_in_when_MapLibre_arrives", async () => {
+      // The system went dark while MapLibre was on its way: the light style is never asked for.
+      const urls = stubFetch(() => Response.json(STYLE));
+      const setScheme = stubColourScheme("light");
+      const slow = slowLoader();
+      render(withConfig(clientWithConfig(), { loadMapLibre: slow.load }));
+
+      setScheme("dark");
+      await slow.arrive();
+      await styleApplied();
+
+      expect(urls).toEqual(["/styles/dark"]);
+      expect(theMap().styleCalls).toHaveLength(1);
+    });
+
+    test("MapView_keeps_quiet_when_the_colour_scheme_changes_after_MapLibre_failed", async () => {
+      const urls = stubFetch(() => Response.json(STYLE));
+      const setScheme = stubColourScheme("light");
+      const slow = slowLoader();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      render(withConfig(clientWithConfig(), { loadMapLibre: slow.load, onStyleError }));
+      await slow.fail(new TypeError("Failed to fetch dynamically imported module"));
+
+      setScheme("dark");
+      setScheme("light");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(slow.load).toHaveBeenCalledTimes(1);
+      expect(urls).toEqual([]);
+      expect(FakeMap.instances).toHaveLength(0);
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+    });
+
+    test("MapView_reads_the_light_style_when_the_browser_cannot_tell_the_scheme", async () => {
+      const urls = stubFetch(() => Response.json(STYLE));
+
+      render(withConfig(clientWithConfig())); // jsdom has no matchMedia
+      await styleApplied();
+
+      expect(urls).toEqual(["/styles/liberty"]);
+    });
+
+    test("MapView_keeps_the_old_style_on_screen_until_the_new_one_has_been_fetched", async () => {
+      let release: () => void = () => undefined;
+      const urls = stubFetch((url) => url === "/styles/dark"
+        ? new Promise<Response>((resolve) => { release = () => resolve(Response.json(STYLE)); })
+        : Response.json(STYLE));
+      const setScheme = stubColourScheme("light");
+      render(withConfig(clientWithConfig()));
+      await styleApplied(1);
+      const map = theMap();
+
+      setScheme("dark");
+      await waitFor(() => expect(urls).toHaveLength(2));
+      expect(map.styleCalls).toHaveLength(1); // not blanked while the dark style is on its way
+      release();
+      await styleApplied(2);
+    });
+
+    test("MapView_waits_for_the_config_before_it_asks_for_a_style", async () => {
+      let release: () => void = () => undefined;
+      const urls = stubFetch((url) => url === "/api/config"
+        ? new Promise<Response>((resolve) => { release = () => resolve(Response.json(CONFIG)); })
+        : Response.json(STYLE));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+      render(withConfig(client));
+      const map = await mapUp();
+      expect(map.styleCalls).toHaveLength(0);
+      expect(urls).toEqual(["/api/config"]); // the map is there and has no style to ask for yet
+
+      release();
+      await styleApplied();
+
+      expect(urls).toEqual(["/api/config", "/styles/liberty"]);
+    });
+
+    test("MapView_reports_a_config_that_cannot_be_read_as_a_style_failure", async () => {
+      stubFetch(() => new Response("{}", { status: 500 }));
+      const onStyleError = vi.fn<(error: Error) => void>();
+
+      render(withConfig(new QueryClient({ defaultOptions: { queries: { retry: false } } }), { onStyleError }));
+
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      await styleApplied();
+      expect(theMap().styleCalls[0]?.style).toEqual({ version: 8, sources: {}, layers: [] });
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+    });
+
+    test("MapView_uses_styleUrl_instead_of_the_config_and_needs_no_query_client", async () => {
+      const urls = stubFetch(() => Response.json(STYLE));
+
+      render(view({ styleUrl: "/styles/custom" })); // no QueryClientProvider
+      await styleApplied();
+
+      expect(urls).toEqual(["/styles/custom"]);
+    });
+  });
+});

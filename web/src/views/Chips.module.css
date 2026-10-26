@@ -1,0 +1,23 @@
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 12px;
+}
+
+.chips:empty {
+  display: none;
+}
+
+.chip {
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.updating {
+  color: var(--accent-ink);
+}

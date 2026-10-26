@@ -1,0 +1,18 @@
+{
+  "id": 2,
+  "name": "Café",
+  "address": "Storgata 12, Oslo",
+  "city": "Oslo",
+  "country": "Norway",
+  "lat": 59.914,
+  "lon": 10.764,
+  "totalSeconds": 8640,
+  "visits": 3,
+  "firstVisit": "2026-09-29T21:30:00Z",
+  "lastVisit": "2026-10-22T06:46:00Z",
+  "recentVisits": [
+    { "start": "2026-10-22T06:46:00Z", "end": "2026-10-22T07:10:00Z", "date": "2026-10-22", "timeZone": "Europe/Oslo" },
+    { "start": "2026-10-15T15:30:00Z", "end": "2026-10-15T16:45:00Z", "date": "2026-10-15", "timeZone": "Europe/Oslo" },
+    { "start": "2026-09-29T21:30:00Z", "end": "2026-09-29T22:15:00Z", "date": "2026-09-29", "timeZone": "Europe/Oslo" }
+  ]
+}

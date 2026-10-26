@@ -1,6 +1,6 @@
 # Sporer Plan 1 — rulings, open findings and deferred minors
 
-Decisions made on the owner's behalf while building Plan 1 (subagent-driven, sonnet builders, opus reviewers), each with what it costs if wrong. Generated from the build ledger on 2026-10-23.
+Decisions made on the owner's behalf while building Plan 1 (built task by task with a separate review of each task), each with what it costs if wrong. Generated from the build ledger on 2026-10-23.
 
 ## Open before the first release
 

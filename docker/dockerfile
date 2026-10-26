@@ -1,3 +1,14 @@
+# The web app is built first and on its own: Node is only in this stage, and the .NET stages below never see it. The package files
+# come before the sources, so that the dependencies are installed again only when they change. `npm run build` type-checks the app
+# (tsc) and then builds it; the output goes to /web-dist instead of the web root of the API's source tree, where vite.config.ts
+# puts it for local work.
+FROM node:22-alpine AS build-web
+WORKDIR /web
+COPY ./web/package.json ./web/package-lock.json ./
+RUN npm ci
+COPY ./web ./
+RUN npm run build -- --outDir /web-dist
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build-backend
 WORKDIR /src
 
@@ -19,6 +30,8 @@ ENV ASPNETCORE_ENVIRONMENT=Production
 WORKDIR /app
 
 COPY --from=build-backend /app ./
+# The API serves the web app from its web root, /app/wwwroot (see Program.cs).
+COPY --from=build-web /web-dist ./wwwroot
 ENTRYPOINT ["dotnet", "Sporer.Api.dll"]
 
 LABEL org.opencontainers.image.source=https://github.com/ldellisola/sporer

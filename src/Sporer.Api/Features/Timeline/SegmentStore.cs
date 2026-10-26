@@ -55,12 +55,24 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
     /// rebuild starts at a stay and stops at the end of one: <c>T0</c> is the start of the last stored stay that starts
     /// before <paramref name="fromUtc"/> (or <paramref name="fromUtc"/> itself when there is none), <c>T1</c> the end of the
     /// first stored stay that starts after <paramref name="toUtc"/> (or null when there is none: the processor then
-    /// bounds the rebuild itself, see <see cref="FindLastEndAsync"/>). With <paramref name="floorUtc"/>, <c>T0</c> is not
-    /// earlier than it (and still not later than <paramref name="fromUtc"/>): the rebuild then does not reach back
-    /// across a stretch that was set aside unprocessed, which it would load again and fail on again.
+    /// bounds the rebuild itself, see <see cref="FindLastEndAsync"/>).
+    /// <para>
+    /// <c>T0</c> is then raised, never past <paramref name="fromUtc"/>, so that the rebuild does not reach back across a
+    /// stretch that was <em>set aside</em>: a dirty range with <see cref="ProcessingQueue.SetAsideAfterAttempts"/> or more
+    /// attempts, whose rebuild keeps failing (loading the same data again would fail again, and every range after it with it).
+    /// The stretch is read from the table each time, so it holds across restarts and for every rebuild, backfill chunks and
+    /// live ranges alike; when its range is retried and succeeds the row is deleted and the floor is gone.
+    /// </para>
+    /// <para>
+    /// Only a set-aside range that began after <c>T0</c> and before <paramref name="fromUtc"/> counts, and <c>T0</c> goes up
+    /// to the smaller of its end and <paramref name="fromUtc"/>. One that began at or before <c>T0</c> has the stay inside
+    /// it or behind it, and a stay there is not in what failed but in what was rebuilt since: the chunk after a set-aside
+    /// one (its range runs on over that chunk, so that the retry rebuilds the edge between them), or an earlier piece of the
+    /// retry itself, which rebuilds a long range piece by piece. Reaching back to that stay is right, and flooring at the
+    /// range's end instead would cut the stay that crosses it. A range that starts where the rebuild does (its own retry) never counts.
+    /// </para>
     /// </summary>
-    public async Task<(DateTime T0, DateTime? T1)> FindAnchorsAsync(
-        DateTime fromUtc, DateTime toUtc, CancellationToken ct = default, DateTime? floorUtc = null)
+    public async Task<(DateTime T0, DateTime? T1)> FindAnchorsAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         var anchors = await connection.QuerySingleAsync<AnchorRow>(new CommandDefinition(
@@ -72,8 +84,15 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
             new { FromUtc = fromUtc, ToUtc = toUtc }, cancellationToken: ct));
 
         var start = anchors.T0 is { } t0 ? AsUtc(t0) : fromUtc;
-        if (floorUtc is { } floor && floor > start)
-            start = floor < fromUtc ? floor : fromUtc;
+        var floor = await connection.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
+            """
+            select max(least(to_utc, @FromUtc))
+            from dirty_range
+            where attempts >= @SetAside and from_utc > @T0 and from_utc < @FromUtc
+            """,
+            new { FromUtc = fromUtc, T0 = start, SetAside = ProcessingQueue.SetAsideAfterAttempts }, cancellationToken: ct));
+        if (floor is { } raised && AsUtc(raised) > start)
+            start = AsUtc(raised);
 
         return (start, anchors.T1 is { } t1 ? AsUtc(t1) : null);
     }

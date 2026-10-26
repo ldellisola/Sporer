@@ -1,0 +1,10 @@
+{
+  "algorithmVersion": "test",
+  "backfill": { "from": null, "to": null, "cursor": null, "percent": 100, "paused": false },
+  "pendingRanges": 0,
+  "failedRanges": [],
+  "lastRunAt": null,
+  "lastError": null,
+  "places": { "total": 0, "unnamed": 0, "failed": 0 },
+  "warnings": []
+}

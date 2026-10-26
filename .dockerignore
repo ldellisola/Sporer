@@ -6,3 +6,14 @@
 .superpowers/
 docs/
 tests/
+# The web app is always built in the image (the build-web stage), never taken from what a local build left behind: its
+# dependencies are installed there, and the API's web root is filled from the stage's output.
+web/node_modules
+web/dist
+web/test-results
+web/playwright-report
+# What the performance runs leave behind (see web/scripts/perf): recordings of a synthetic history and the results of a run, big, and not part of the app.
+web/perf/recorded
+web/perf/recorded.partial
+web/perf/results
+src/Sporer.Api/wwwroot

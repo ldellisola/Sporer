@@ -51,13 +51,10 @@ public class TimelineWorkerTests(DatabaseFixture db)
         private Exception? _failNext;
         private Func<DateTime, DateTime, bool>? _failWhen;
 
-        private readonly ConcurrentQueue<(DateTime From, DateTime To, DateTime? Floor)> _calls = new();
+        private readonly ConcurrentQueue<(DateTime From, DateTime To)> _calls = new();
 
         /// <summary>The ranges asked for, in order.</summary>
-        public IEnumerable<(DateTime From, DateTime To)> Calls => _calls.Select(c => (c.From, c.To));
-
-        /// <summary>The anchor floor each call carried, in the same order.</summary>
-        public IEnumerable<DateTime?> Floors => _calls.Select(c => c.Floor);
+        public IEnumerable<(DateTime From, DateTime To)> Calls => _calls;
 
         public void FailNext(Exception error) => _failNext = error;
 
@@ -71,14 +68,14 @@ public class TimelineWorkerTests(DatabaseFixture db)
             return calls;
         }
 
-        public async Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct, DateTime? anchorFloorUtc = null)
+        public async Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
         {
-            _calls.Enqueue((fromUtc, toUtc, anchorFloorUtc));
+            _calls.Enqueue((fromUtc, toUtc));
             if (Interlocked.Exchange(ref _failNext, null) is { } error)
                 throw error;
             if (_failWhen?.Invoke(fromUtc, toUtc) == true)
                 throw new InvalidOperationException("this range cannot be processed");
-            return await inner.ReprocessAsync(fromUtc, toUtc, ct, anchorFloorUtc);
+            return await inner.ReprocessAsync(fromUtc, toUtc, ct);
         }
     }
 
@@ -658,9 +655,10 @@ public class TimelineWorkerTests(DatabaseFixture db)
         var (h, _, cs, setAsideAt) = await SetAsideSecondWeekAsync(db, liveRangeAhead: true);
         await using var owner = h;
 
-        // The step is a failed dirty range now (three attempts, the error, the usual backoff), and the cursor is past it.
+        // The step is a failed dirty range now (three attempts, the error, the usual backoff), and the cursor is past it. The
+        // range reaches over the step after it as well (a week further), so that its retry rebuilds the edge between them.
         var failed = Assert.Single(await DirtyAsync(cs, onlyFailed: true));
-        Assert.Equal((T(7, 0, 7), T(7, 0, 14)), (failed.FromUtc, failed.ToUtc));
+        Assert.Equal((T(7, 0, 7), T(7, 0, 21)), (failed.FromUtc, failed.ToUtc));
         Assert.Equal(3, failed.Attempts);
         Assert.Contains("this range cannot be processed", failed.LastError);
         Assert.Equal(setAsideAt + ProcessingQueue.Backoff(3), failed.NextAttemptAt);
@@ -669,18 +667,20 @@ public class TimelineWorkerTests(DatabaseFixture db)
         Assert.Null(state.LastError); // the backfill is not stuck: the failed range says what went wrong
 
         // The rest of the history is processed, and so is the live range that waited for it. Week 3 starts at its own first
-        // point: its rebuild is not widened back to the last stay before it, which would load week 2 and fail again.
+        // point: its rebuild is not widened back to the last stay before it (the set-aside range in the table stops it), which
+        // would load week 2 and fail again.
         h.Processor.TakeCalls();
         await FinishBackfillAsync(h.Worker);
 
         var calls = h.Processor.Calls.ToArray();
         Assert.Equal([(T(7, 0, 14), T(7, 0, 21)), (T(8, 0, 18), T(9, 0, 18)), (T(7, 0, 21), T(0, 0, 22))], calls); // the backfill ends where "now" was when it began
-        Assert.Equal([T(7, 0, 14), null, null], h.Processor.Floors.ToArray());
         state = await StateAsync(cs);
         Assert.True(state.BackfillCursor >= state.BackfillTo);
         Assert.Null(state.LastError);
         Assert.Equal(failed.Id, Assert.Single(await DirtyAsync(cs)).Id); // only the set-aside step is left
         Assert.Equal(0, await StaysBetweenAsync(cs, T(0, 0, 8), T(7, 0, 14)));  // week 2 was not rebuilt by anything
+        Assert.Equal(T(7, 0, 14), await Sql.ScalarAsync<DateTime>(cs, "select min(start_utc) from segment where start_utc >= @from",
+            new { from = T(0, 0, 8) }, Ct)); // week 3 starts at its own first point
         Assert.True(await StaysBetweenAsync(cs, T(7, 0, 14), T(0, 0, 21)) >= 7 * 3);
         Assert.True(await StaysBetweenAsync(cs, T(0, 0), T(0, 0, 7)) >= 7 * 3);
 
@@ -690,7 +690,7 @@ public class TimelineWorkerTests(DatabaseFixture db)
         using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
         var failedRange = Assert.Single(body.RootElement.GetProperty("failedRanges").EnumerateArray());
         Assert.Equal(T(7, 0, 7), failedRange.GetProperty("from").GetDateTime());
-        Assert.Equal(T(7, 0, 14), failedRange.GetProperty("to").GetDateTime());
+        Assert.Equal(T(7, 0, 21), failedRange.GetProperty("to").GetDateTime());
         Assert.Equal(3, failedRange.GetProperty("attempts").GetInt32());
         Assert.Contains("this range cannot be processed", failedRange.GetProperty("lastError").GetString());
         Assert.Equal(100.0, body.RootElement.GetProperty("backfill").GetProperty("percent").GetDouble());
@@ -704,13 +704,14 @@ public class TimelineWorkerTests(DatabaseFixture db)
         await FinishBackfillAsync(h.Worker);
         h.Processor.TakeCalls();
         var week2 = (T(7, 0, 7), T(7, 0, 14));
+        var week3 = (T(7, 0, 14), T(7, 0, 21)); // the set-aside range covers the week after the failed one as well: a second piece
 
         // Not due before the backoff has passed...
         clock.Advance(TimeSpan.FromMinutes(7));
         Assert.False(await h.Worker.RunOnceAsync(Ct));
         Assert.Empty(h.Processor.Calls);
 
-        // ...then it is tried again, as a dirty range behind the cursor (no floor), and fails again: a longer wait.
+        // ...then it is tried again, as a dirty range behind the cursor, and fails again (on its first piece): a longer wait.
         clock.Advance(TimeSpan.FromMinutes(1));
         Assert.True(await h.Worker.RunOnceAsync(Ct));
         Assert.Equal([week2], h.Processor.TakeCalls());
@@ -722,7 +723,7 @@ public class TimelineWorkerTests(DatabaseFixture db)
         h.Processor.FailWhen(null);
         clock.Advance(ProcessingQueue.Backoff(4));
         Assert.True(await h.Worker.RunOnceAsync(Ct));
-        Assert.Equal([week2], h.Processor.TakeCalls());
+        Assert.Equal([week2, week3], h.Processor.TakeCalls());
         Assert.Empty(await DirtyAsync(cs));
         Assert.Equal(21, await Sql.ScalarAsync<long>(cs, "select count(distinct local_start_date) from segment where kind = 'stay'", ct: Ct));
         Assert.Equal(3, await CountAsync(cs, "place"));

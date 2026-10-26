@@ -1,0 +1,17 @@
+.notice {
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 12px;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--shadow-card);
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.error {
+  color: var(--danger-ink);
+}

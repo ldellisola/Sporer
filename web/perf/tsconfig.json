@@ -1,0 +1,7 @@
+{
+  // The performance run is checked as a project of its own (`npm run typecheck` runs both). It runs in Node, under Playwright, and has
+  // the few ambient declarations of Node's modules in node-modules.d.ts; the app (`src`) is checked without them, so that
+  // code of the app that imports a Node module fails its typecheck instead of the build.
+  "extends": "../tsconfig.json",
+  "include": ["."]
+}

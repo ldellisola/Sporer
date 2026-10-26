@@ -1,0 +1,165 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { prefetchNeighbours } from "../api/queries";
+import type { FitFeatures } from "../map/layers";
+import { MapView, type MapPadding, type MapViewHandle } from "../map/MapView";
+import { BottomSheet, SHEET_PEEK, SHEET_TOP_CLEARANCE, sheetHalfHeight, type BottomSheetHandle } from "../sheet/BottomSheet";
+import { Sidebar, SIDEBAR_WIDTH } from "../sheet/Sidebar";
+import { periodRange } from "../time/dates";
+import { DayPanel } from "../views/DayPanel";
+import { Notice } from "../views/Notice";
+import { PlacePanel } from "../views/PlacePanel";
+import { RangePanel } from "../views/RangePanel";
+import { StatusBanner } from "../views/StatusBanner";
+import { TopBar } from "../views/TopBar";
+import styles from "./App.module.css";
+import { navigate, useRoute, type Route } from "./router";
+import { useBottomEdge } from "./useBottomEdge";
+import { useDayRollover } from "./useDayRollover";
+import { useLastDay } from "./useLastDay";
+import { useMediaQuery } from "./useMediaQuery";
+import { useSideInsets } from "./useSideInsets";
+import { useStoredFlag } from "./useStoredFlag";
+import { useViewMap } from "./useViewMap";
+import { useViewportHeight } from "./useViewportHeight";
+
+/** From this width the day's panel is a sidebar, below it a bottom sheet. */
+const DESKTOP_QUERY = "(min-width: 900px)";
+
+/** What is left between what covers the map and what the map is made to show: a pin is never right at the edge of a sheet. */
+const AIR = 16;
+
+/**
+ * The panel of the view of the route. The day and the place have their own, and the week, the month, the year and the range share one
+ * (the period they cover is what differs). A place is a panel of its own, made again for another place (`key`), so that nothing of one
+ * place is ever under the name of another. `onFocus` is how a panel asks for the map to be brought to something (a row tapped): the
+ * map is the shell's, and the one.
+ */
+function Panel({ route, onFocus }: { route: Route; onFocus: (features: FitFeatures) => void }) {
+  if (route.view === "day") return <DayPanel date={route.date} onFocus={onFocus} />;
+  if (route.view === "place") return <PlacePanel key={route.id} id={route.id} />;
+  const { from, to } = periodRange(route);
+  return <RangePanel from={from} to={to} />;
+}
+
+/**
+ * The shell every view lives in: the map fills the screen, the top bar floats over it with the notes under it, and the panel of the
+ * view is a bottom sheet on a phone and a sidebar from 900 px up. The map is padded by what covers it (see `padding`), so that
+ * what it shows lies in the part that is free. What the map draws and where it is brought to come from the route (`useViewMap`),
+ * and a panel asks the shell to move it (`onFocus`). Whether the heat is on is the owner's to set with the map's button, and is
+ * remembered; it holds for every view that has a period to show it for. A day that was today moves on to the new today when the page is
+ * brought back after midnight (`useDayRollover`).
+ */
+export function App() {
+  const route = useRoute();
+  useDayRollover(route);
+  const queryClient = useQueryClient();
+  const desktop = useMediaQuery(DESKTOP_QUERY);
+  const viewportHeight = useViewportHeight();
+  const lastDay = useLastDay(route);
+  const [heatOn, setHeatOn] = useStoredFlag("heat", false);
+  const map = useViewMap(route, heatOn);
+  const sheetRef = useRef<BottomSheetHandle>(null);
+  const mapRef = useRef<MapViewHandle>(null);
+  /**
+   * What the note over the map says, if it says anything: that there is no basemap ("Map unavailable": MapLibre or the map did not start, or
+   * the first style could not be had), or that the map still draws the style it had and only the switch to the one of the other colour
+   * scheme failed ("Couldn't switch the map style"). Both have the map's Retry.
+   */
+  const [mapNote, setMapNote] = useState<"unavailable" | "switch" | null>(null);
+  const [sheetHeight, setSheetHeight] = useState(SHEET_PEEK);
+  const barRef = useRef<HTMLDivElement>(null);
+  const barBottom = useBottomEdge(barRef);
+  const leftProbe = useRef<HTMLSpanElement>(null);
+  const rightProbe = useRef<HTMLSpanElement>(null);
+  const sides = useSideInsets(leftProbe, rightProbe);
+
+  // The periods either side are fetched ahead of time, so that ‹ and › find them at hand. Best effort: it is not waited for, and a
+  // failure of it (a date there is no neighbour of) is nobody's concern; the period is asked for again when it is shown.
+  useEffect(() => {
+    void prefetchNeighbours(queryClient, route).catch(() => undefined);
+  }, [queryClient, route]);
+
+  // What covers the map, and some air round it: the bar at the top (as measured), on a phone the sheet at the bottom, on a desktop
+  // the sidebar at the left, and at the sides what the device keeps for itself (a phone on its side has the Dynamic Island at one of
+  // them, and the map's buttons and credit, and what it is brought to, must not sit under it). The sheet counts up to half the screen
+  // and no further: above that it is a page to read, which covers the map and the credit under it (the credit is part of the map it
+  // credits), and padding for all of it would leave the map no room to fit anything into, and put its buttons and credit under the
+  // bar. A new object only when a number changes, for the map hands it to its controls.
+  const sheetCovers = Math.min(sheetHeight, sheetHalfHeight(viewportHeight));
+  const padding = useMemo<MapPadding>(
+    () => ({
+      top: barBottom + AIR,
+      right: sides.right + AIR,
+      bottom: desktop ? AIR : sheetCovers + AIR,
+      left: desktop ? SIDEBAR_WIDTH + AIR : sides.left + AIR, // the sidebar has the left inset inside its own width
+    }),
+    [barBottom, desktop, sheetCovers, sides],
+  );
+
+  // A panel asks for the map to be moved to something (a row tapped). On a phone the sheet may be over the map by then, up to the whole
+  // screen: it is brought down to half, where the map shows what it was moved to (the map is padded for half at the most, so that is
+  // where it fits things). A sheet at half or at its peek stays; on a desktop there is no sheet.
+  const { onFocus: moveMap } = map;
+  const onFocus = useCallback(
+    (features: FitFeatures) => {
+      moveMap(features);
+      sheetRef.current?.lowerTo("half");
+    },
+    [moveMap],
+  );
+
+  // A place is opened to be seen on the map, which flies to it: a sheet that is over the map at full (a place was tapped in its list)
+  // comes down to half, as for a row, once for each place that is shown, and the owner may raise it again.
+  const placeId = route.view === "place" ? route.id : null;
+  useEffect(() => {
+    if (placeId !== null) sheetRef.current?.lowerTo("half");
+  }, [placeId]);
+
+  const panel = <Panel route={route} onFocus={onFocus} />;
+  return (
+    <main className={styles.shell} data-layout={desktop ? "desktop" : "phone"}>
+      {/* Take no room and show nothing: their widths are the left and right safe areas, which only the style sheet can say. */}
+      <span ref={leftProbe} className={`${styles.probe} ${styles.probeLeft}`} aria-hidden="true" />
+      <span ref={rightProbe} className={`${styles.probe} ${styles.probeRight}`} aria-hidden="true" />
+      <div className={styles.map}>
+        <MapView
+          ref={mapRef}
+          data={map.data}
+          fitTo={map.fitTo}
+          home={map.home}
+          padding={padding}
+          heatToggle={map.heat.available ? { on: heatOn, onChange: setHeatOn } : undefined}
+          onPlaceTap={(id) => navigate({ view: "place", id })}
+          onStyleError={(_error, basemapKept) => setMapNote(basemapKept ? "switch" : "unavailable")}
+          onStyleLoad={() => setMapNote(null)}
+        />
+      </div>
+      <div className={styles.scrim} aria-hidden="true" />
+      <div className={styles.top}>
+        <div ref={barRef} className={styles.bar}>
+          <TopBar route={route} lastDay={lastDay} />
+        </div>
+        <div className={styles.notices}>
+          <StatusBanner />
+          {mapNote !== null && (
+            <Notice onRetry={() => mapRef.current?.retry()}>{mapNote === "switch" ? "Couldn't switch the map style" : "Map unavailable"}</Notice>
+          )}
+          {map.heat.failed && (
+            <Notice tone="error" onRetry={map.heat.retry}>
+              Couldn't load the heat map
+            </Notice>
+          )}
+        </div>
+      </div>
+      {desktop ? (
+        <Sidebar>{panel}</Sidebar>
+      ) : (
+        // The sheet at its highest stops short of the bar, which is taller with the range fields and lower under a notch.
+        <BottomSheet ref={sheetRef} topClearance={Math.max(SHEET_TOP_CLEARANCE, barBottom + 8)} onHeightChange={setSheetHeight}>
+          {panel}
+        </BottomSheet>
+      )}
+    </main>
+  );
+}

@@ -1,11 +1,16 @@
+using System.IO.Compression;
 using FastEndpoints;
 using FastEndpoints.Swagger;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using Sporer.Api.Configuration;
 using Sporer.Api.Database;
 using Sporer.Api.Features.Places;
+using Sporer.Api.Features.Range;
 using Sporer.Api.Features.Timeline;
+using Sporer.Api.Http;
 using Sporer.Timeline;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -20,6 +25,7 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<PointStore>();
 builder.Services.AddSingleton<PlaceStore>();
 builder.Services.AddSingleton<SegmentStore>();
+builder.Services.AddSingleton<RangeStore>();
 builder.Services.AddSingleton<ITimelineProcessor, TimelineProcessor>();
 builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConfiguration>().GetSection("Processing").Get<ProcessingOptions>() ?? new ProcessingOptions());
@@ -49,6 +55,37 @@ var nominatimEnabled = builder.Configuration.GetValue("Nominatim:Enabled", true)
 var nominatimUserAgentSet = !string.IsNullOrWhiteSpace(builder.Configuration["Nominatim:UserAgent"]);
 if (builder.Configuration.GetValue("Processing:Enabled", true) && nominatimEnabled && nominatimUserAgentSet)
     builder.Services.AddHostedService(sp => sp.GetRequiredService<PlaceNamer>());
+builder.Services.AddSingleton(sp =>
+    sp.GetRequiredService<IConfiguration>().GetSection("Map").Get<MapOptions>() ?? new MapOptions());
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    // The app is reachable only through Traefik, over the VPN, and Traefik is not on loopback (the only address trusted
+    // by default): whatever connects is the proxy, so any proxy is trusted. Never publish the app's own port.
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+});
+// ASP.NET compresses at its Fastest level unless told otherwise, and there Brotli (quality 1) comes out larger than gzip for JavaScript:
+// the web app's three scripts were 680 kB with Brotli and 626 kB with gzip, against 525 kB at Optimal for both, which also takes the
+// year's answer from 166 kB to 155 kB. Optimal costs next to nothing (the year takes 80 ms at p95 against 71, the largest script 26 ms
+// against 11). The level above it saves a further 17 % on the scripts but takes up to two seconds for one of them and over a second for
+// the year, so it is not used. Measured in docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md.
+builder.Services.Configure<BrotliCompressionProviderOptions>(options => options.Level = CompressionLevel.Optimal);
+builder.Services.Configure<GzipCompressionProviderOptions>(options => options.Level = CompressionLevel.Optimal);
+builder.Services.AddResponseCompression(options =>
+{
+    // Traefik ends TLS and sends X-Forwarded-Proto: https, which the forwarded-headers middleware (above) turns into Request.IsHttps. The
+    // compression middleware skips every https request unless told not to, so without this compression would silently stop in production
+    // only: the app itself speaks plain http, and so does every test that does not send the header.
+    options.EnableForHttps = true;
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    // text/javascript is what .NET serves .js files as (application/javascript before .NET 9).
+    options.MimeTypes =
+    [
+        "application/json", "text/html", "text/css", "application/javascript", "text/javascript", "image/svg+xml",
+    ];
+});
 builder.Services
     .AddFastEndpoints([Sporer.Api.DiscoveredTypes.All])
     .SwaggerDocument();
@@ -75,16 +112,42 @@ if (nominatimEnabled && !nominatimUserAgentSet)
 if (string.IsNullOrEmpty(app.Services.GetRequiredService<IOptions<OverlandOptions>>().Value.Token))
     app.Logger.LogWarning("{Warning}", OverlandOptions.OpenIngestWarning);
 
+// The order is the design. Forwarded headers first, so that everything after sees the client's address and scheme.
+// Compression wraps the rest, so the tag that conditional GET makes is over the uncompressed body, and a 304 needs no encoding.
+// The exception handler wraps conditional GET, which holds a body back and so leaves the response clean for the handler.
+app.UseForwardedHeaders();
+// Compression is for what is read. A write's answer, above all Overland's {"result":"ok"}, goes out as it is.
+app.UseWhen(
+    context => HttpMethods.IsGet(context.Request.Method) || HttpMethods.IsHead(context.Request.Method),
+    reads => reads.UseResponseCompression());
+app.UseDefaultExceptionHandler();
+app.UseMiddleware<ConditionalGetMiddleware>();
 app
     .UseFastEndpoints(t=>
     {
         t.Endpoints.RoutePrefix = "api";
     })
-    .UseDefaultExceptionHandler()
     .UseSwaggerGen();
 
-app.UseStaticFiles();
-app.MapFallbackToFile("index.html");
+// The web app: files of the web root, and its own routes (/day/2026-10-22, ...) answered with index.html so that a deep link
+// or a reload works. The API has no part in either: under /api a path that no endpoint serves is a 404, never index.html.
+var webFiles = new StaticFileOptions
+{
+    OnPrepareResponse = file =>
+    {
+        // Vite names a bundle after its content, so a file under /assets never changes. The page that names the bundles does,
+        // and so does everything else: those are asked about every time, which the files' own ETag makes cheap.
+        // (index.html also comes here as the answer to a route, whose path may well start with /assets.)
+        var hashed = file.Context.Request.Path.StartsWithSegments("/assets")
+                     && !file.File.Name.Equals("index.html", StringComparison.OrdinalIgnoreCase);
+        file.Context.Response.Headers.CacheControl = hashed ? "public, max-age=31536000, immutable" : "no-cache";
+    },
+};
+app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api"), files => files.UseStaticFiles(webFiles));
+// Not the default pattern, {*path:nonfile}: it calls a last segment with a dot a file, and so would answer
+// /range/2026-10-01..2026-10-22 with a 404. A file, here, is a segment that ends in a dot and letters or digits only.
+app.MapFallbackToFile(@"{*path:regex(^(?!api($|/))(?!.*\.\w+$).*$)}", "index.html", webFiles);
+app.MapFallbackToFile("/", "index.html", webFiles); // a catch-all with a constraint has no value to test at the root
 
 app.Run();
 

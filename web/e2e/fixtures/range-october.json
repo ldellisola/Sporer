@@ -1,0 +1,89 @@
+{
+  "from": "2026-10-01",
+  "to": "2026-10-31",
+  "state": "done",
+  "summary": { "places": 6, "distanceMeters": 41280, "movingSeconds": 8760, "moves": 9 },
+  "moves": [
+    {
+      "id": 201,
+      "mode": "walk",
+      "start": "2026-10-05T06:30:00Z",
+      "end": "2026-10-05T06:44:00Z",
+      "geometry": [[10.75, 59.91], [10.757, 59.912], [10.764, 59.914]]
+    },
+    {
+      "id": 202,
+      "mode": "cycle",
+      "start": "2026-10-05T07:10:00Z",
+      "end": "2026-10-05T07:23:00Z",
+      "geometry": [[10.764, 59.914], [10.782, 59.922], [10.8, 59.93]]
+    },
+    {
+      "id": 203,
+      "mode": "walk",
+      "start": "2026-10-06T06:30:00Z",
+      "end": "2026-10-06T06:55:00Z",
+      "geometry": [[10.75, 59.91], [10.725, 59.9], [10.7, 59.89]]
+    },
+    {
+      "id": 204,
+      "mode": "drive",
+      "start": "2026-10-12T15:40:00Z",
+      "end": "2026-10-12T15:51:00Z",
+      "geometry": [[10.8, 59.93], [10.775, 59.92], [10.75, 59.91]]
+    },
+    {
+      "id": 205,
+      "mode": "walk",
+      "start": "2026-10-19T06:30:00Z",
+      "end": "2026-10-19T06:44:00Z",
+      "geometry": [[10.75, 59.91], [10.757, 59.912], [10.764, 59.914]]
+    },
+    {
+      "id": 206,
+      "mode": "cycle",
+      "start": "2026-10-20T07:10:00Z",
+      "end": "2026-10-20T07:23:00Z",
+      "geometry": [[10.764, 59.914], [10.782, 59.922], [10.8, 59.93]]
+    },
+    {
+      "id": 207,
+      "mode": "drive",
+      "start": "2026-10-21T15:40:00Z",
+      "end": "2026-10-21T15:51:00Z",
+      "geometry": [[10.8, 59.93], [10.79, 59.915], [10.78, 59.9]]
+    },
+    {
+      "id": 208,
+      "mode": "drive",
+      "start": "2026-10-22T16:10:00Z",
+      "end": "2026-10-22T16:30:00Z",
+      "geometry": [[10.78, 59.9], [10.765, 59.905], [10.75, 59.91]]
+    },
+    {
+      "id": 209,
+      "mode": "cycle",
+      "start": "2026-10-23T07:00:00Z",
+      "end": "2026-10-23T07:25:00Z",
+      "geometry": [[10.75, 59.91], [10.725, 59.9], [10.7, 59.89]]
+    }
+  ],
+  "places": [
+    { "id": 1, "name": "Home", "city": "Oslo", "country": "Norway", "lat": 59.91, "lon": 10.75, "seconds": 1440000, "visits": 22 },
+    { "id": 3, "name": "Office", "city": "Oslo", "country": "Norway", "lat": 59.93, "lon": 10.8, "seconds": 360000, "visits": 9 },
+    { "id": 6, "name": "Gym", "city": "Oslo", "country": "Norway", "lat": 59.89, "lon": 10.7, "seconds": 72000, "visits": 6 },
+    { "id": 7, "name": "Parents", "city": "Oslo", "country": "Norway", "lat": 59.9, "lon": 10.78, "seconds": 36000, "visits": 2 },
+    { "id": 2, "name": "Café", "city": "Oslo", "country": "Norway", "lat": 59.914, "lon": 10.764, "seconds": 28800, "visits": 5 },
+    { "id": 4, "name": null, "city": "Oslo", "country": "Norway", "lat": 59.905, "lon": 10.73, "seconds": 14400, "visits": 1 }
+  ],
+  "days": [
+    { "date": "2026-10-05", "distanceMeters": 4500, "movingSeconds": 1620, "places": 3 },
+    { "date": "2026-10-06", "distanceMeters": 2900, "movingSeconds": 1500, "places": 2 },
+    { "date": "2026-10-12", "distanceMeters": 4800, "movingSeconds": 660, "places": 2 },
+    { "date": "2026-10-19", "distanceMeters": 1100, "movingSeconds": 840, "places": 2 },
+    { "date": "2026-10-20", "distanceMeters": 3400, "movingSeconds": 780, "places": 3 },
+    { "date": "2026-10-21", "distanceMeters": 9700, "movingSeconds": 660, "places": 2 },
+    { "date": "2026-10-22", "distanceMeters": 6900, "movingSeconds": 1200, "places": 2 },
+    { "date": "2026-10-23", "distanceMeters": 7980, "movingSeconds": 1500, "places": 2 }
+  ]
+}

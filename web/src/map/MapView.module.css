@@ -1,0 +1,132 @@
+.root {
+  --map-background: #f3f1ec;
+  --control-background: rgba(255, 255, 255, 0.88);
+  --control-foreground: #3a3a3c;
+  --control-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+  --control-focus: #007aff;
+  --control-divider: rgba(0, 0, 0, 0.08);
+  --control-on-background: rgba(0, 122, 255, 0.16);
+  --control-on-foreground: #0062cc;
+
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  /* Under the map: what shows where there is no style (it could not be loaded), and before the first frame. */
+  background: var(--map-background);
+}
+
+@media (prefers-color-scheme: dark) {
+  .root {
+    --map-background: #20242c;
+    --control-background: rgba(44, 44, 46, 0.88);
+    --control-foreground: #e5e5ea;
+    --control-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    --control-focus: #0a84ff;
+    --control-divider: rgba(255, 255, 255, 0.08);
+    --control-on-background: rgba(10, 132, 255, 0.28);
+    --control-on-foreground: #64b5ff;
+  }
+}
+
+/*
+ * MapLibre's own style sheet comes with its chunk, after this one, and gives its element `position: relative` (the same weight as
+ * a lone class): the element must fill the map's area whichever sheet is later, so this is two classes.
+ */
+.root > .map {
+  position: absolute;
+  inset: 0;
+}
+
+/*
+ * What covers the map (the component sets its size from the padding in the variables below) does not cover the controls: they
+ * sit inside what is left, with a margin of 12px: the buttons at its top right, MapLibre's own (the attribution, bottom right,
+ * stays in view above a bottom sheet) at the corners of it. What the device keeps at the sides of the screen (the Dynamic Island
+ * of a phone on its side) covers the map as well, and is in the padding that the shell gives (see App.tsx), so the buttons and the
+ * credit are clear of it too.
+ */
+.controls {
+  position: absolute;
+  top: calc(var(--map-padding-top, 0px) + 12px);
+  right: calc(var(--map-padding-right, 0px) + 12px);
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--control-background);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--control-shadow);
+}
+
+.root :global(.maplibregl-ctrl-top-left) {
+  top: var(--map-padding-top, 0px);
+  left: var(--map-padding-left, 0px);
+}
+
+.root :global(.maplibregl-ctrl-top-right) {
+  top: var(--map-padding-top, 0px);
+  right: var(--map-padding-right, 0px);
+}
+
+.root :global(.maplibregl-ctrl-bottom-left) {
+  bottom: var(--map-padding-bottom, 0px);
+  left: var(--map-padding-left, 0px);
+}
+
+.root :global(.maplibregl-ctrl-bottom-right) {
+  bottom: var(--map-padding-bottom, 0px);
+  right: var(--map-padding-right, 0px);
+}
+
+.button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--control-foreground);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.button + .button {
+  border-top: 1px solid var(--control-divider);
+}
+
+/* A button that holds a setting (the heat) shows it when it is on. */
+.button[aria-pressed="true"] {
+  background: var(--control-on-background);
+  color: var(--control-on-foreground);
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--control-focus);
+  outline-offset: -2px;
+}
+
+.button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The attribution is MapLibre's own, white by default; on a dark map it is dark too, with the same credit and links. */
+@media (prefers-color-scheme: dark) {
+  .root :global(.maplibregl-ctrl.maplibregl-ctrl-attrib) {
+    background: rgba(44, 44, 46, 0.8);
+    color: #e5e5ea;
+  }
+
+  .root :global(.maplibregl-ctrl-attrib a) {
+    color: #e5e5ea;
+  }
+
+  .root :global(.maplibregl-ctrl-attrib-button) {
+    filter: invert(1);
+  }
+}
