@@ -7,6 +7,7 @@ on:
     paths:
       - src/**
       - tests/**
+      - web/**
       - docker/dockerfile
       - .dockerignore
       - .github/workflows/docker-publish.yml
@@ -37,8 +38,53 @@ jobs:
       - name: Run tests
         run: dotnet test src/Sporer.sln
 
+  # The web app's checks: types, unit tests and the browser tests. The browser tests draw the map with software WebGL
+  # (see web/playwright.config.ts), which needs no GPU, so the runner as it is will do.
+  web:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser tests
+        run: npm run e2e
+
+      # The report holds the traces of the tests that failed, which is what a red run is diagnosed from.
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 14
+
   build:
-    needs: test
+    needs: [test, web]
     runs-on: ubuntu-latest
     permissions:
       contents: read

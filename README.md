@@ -6,7 +6,7 @@ Sporer is a (very) simple alternative to Google Timelines. It receives GPS point
 and local date. The raw points are the source of truth and are never modified; the timeline is derived from them and can
 be rebuilt at any time.
 
-The server is a .NET 10 API. It exposes:
+The server is a .NET 10 API, and it also serves the web app that shows the timeline (see "The web app" below). It exposes:
 
 | Endpoint | What it does |
 | --- | --- |
@@ -16,6 +16,22 @@ The server is a .NET 10 API. It exposes:
 | `GET /api/heat?from=yyyy-MM-dd&to=yyyy-MM-dd` | Where the time of a range (the same dates, the same limit as `/api/range`) was spent, for a heat layer: `cells` are `[lon, lat, seconds]`, the most seconds first, one per cell of a grid of 0.001 degrees (about 110 m), weighted by the time of the stays in it, not by points; `maxSeconds` is the first one's weight (0 when there are none). |
 | `GET /api/places/{id}` | A place and the time spent at it: name, address, centre, total seconds, number of visits, first and last visit, and the latest 50 stays (`start`, `end`, local `date`, `timeZone`), newest first. A place merged into another is served as the one it was merged into, with the time of both. `404` for an id that is no place of the timeline (unknown, or no stay names the place it leads to or any place merged into it), `400` for one that is not a positive whole number. |
 | `GET /api/status` | Processing health: algorithm version, backfill progress, pending and failed work, place naming progress, warnings. |
+| `GET /api/config` | What the web app needs to know before it can draw: the map styles for the light and the dark colour scheme (`Map__StyleLight`, `Map__StyleDark`, see below). |
+
+## The web app
+
+The web app is at `https://sporer.lud.ar` (that is, at `/` of wherever you publish the container). It shows one day, week,
+month, year or range of the timeline on a map with a panel beside it (a sidebar on a wide window, a bottom sheet you pull up
+on a phone), and a place with the time you have spent at it. The address says what is shown, so a view can be bookmarked
+and the Back button works: `/day/2026-10-22`, `/week/2026-10-19`, `/month/2026-10`, `/year/2026`,
+`/range/2026-10-01..2026-10-22`, `/place/7`. Anything else opens today. The map follows the light or dark setting of the
+device, and the ◐ button of the map draws where the time of a period was spent as a heat layer.
+
+**On an iPhone**, open `https://sporer.lud.ar` in Safari, tap Share, then **Add to Home Screen**. It opens from the home
+screen in a window of its own, without Safari's bars. On a desktop browser it is just a page. It does not work offline yet.
+
+The web app is built into the image: nothing else needs to be installed or run next to it. It is served by the same process
+as the API, from `wwwroot` next to `Sporer.Api.dll`.
 
 ## Running it
 
@@ -50,6 +66,20 @@ Everything is set through environment variables. A `:` in a configuration key is
 | `TSDB_CONNECTION_STRING` | none | Npgsql connection string of the TimescaleDB database. Set it: without it the app falls back to `ConnectionStrings__TSDB`, and that falls back to a `localhost` connection string meant for development. |
 | `OVERLAND_TOKEN` | empty | Shared secret that Overland must send, as `?token=<OVERLAND_TOKEN>` or as an `Authorization: Bearer` header. It can also be set as `Overland__Token` (the `Overland:Token` configuration key); `OVERLAND_TOKEN` is used when both are set. When neither is set the ingest endpoint is **open** and the app logs a warning (also shown in `/api/status`). Set it. |
 | `Nominatim__UserAgent` | empty | Identifies your installation to OpenStreetMap's Nominatim, as its usage policy requires: the app name and a way to reach you, for example `Sporer/1.0 (you@example.com)`. **Places are only named when this is set**; without it Sporer makes no Nominatim requests and warns at start-up. |
+
+### Map (`Map__*`)
+
+The map is drawn in the browser from a MapLibre style, which names its own tile server. The browser asks for the style and the
+tiles itself, so the device that shows Sporer must be able to reach the host of the style (the server does not).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `Map__StyleLight` | `https://tiles.openfreemap.org/styles/liberty` | URL of the MapLibre style the map uses while the device prefers a light colour scheme. |
+| `Map__StyleDark` | `https://tiles.openfreemap.org/styles/dark` | The same for a dark colour scheme. |
+
+The defaults are [OpenFreeMap](https://openfreemap.org/)'s, which need no key. A blank value keeps the default. Any style
+that uses OpenMapTiles-style layers will do (street names are shown in English where the tiles have an English name). The
+OpenStreetMap credit stays on the map whatever the style says. The web app reads the two values from `GET /api/config`.
 
 ### Place naming (`Nominatim__*`)
 
@@ -112,7 +142,7 @@ using the same value as the server's `OVERLAND_TOKEN`. Overland deletes a batch 
 
 Sporer sits behind a Traefik ingress that terminates TLS, and the service is reachable over the VPN only. When
 Authentik forward-auth is added in front of it, **exempt `/api/overland` from forward-auth**: Overland cannot log in, and
-that endpoint is protected by `OVERLAND_TOKEN` instead. Everything else (the read API and, later, the UI) belongs behind
+that endpoint is protected by `OVERLAND_TOKEN` instead. Everything else (the read API and the web app) belongs behind
 forward-auth.
 
 ## First release
@@ -154,9 +184,11 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The workflow runs the test suite, then builds the image and publishes it as `ghcr.io/ldellisola/sporer` with the tags
-`1.2.3`, `1.2`, `1` and `latest` (among others). The server pulls `:latest` daily. Pushes to `main` that touch `src/`, `tests/`,
-`docker/dockerfile`, `.dockerignore` or the workflow file build and publish a branch-tagged image; pull requests run the tests and a build without publishing.
+The workflow runs the .NET tests and the web app's checks (type check, unit tests and the browser tests), then builds the
+image (the web app is built inside it) and publishes it as `ghcr.io/ldellisola/sporer` with the tags `1.2.3`, `1.2`, `1` and
+`latest` (among others). Only a `v*.*.*` tag publishes `latest`. The server pulls `:latest` daily. Pushes to `main` that touch
+`src/`, `tests/`, `web/`, `docker/dockerfile`, `.dockerignore` or the workflow file build and publish a branch-tagged image;
+pull requests run the tests and a build without publishing.
 
 ## Local development
 
@@ -184,7 +216,31 @@ docker build -f docker/dockerfile -t sporer:dev .
 ```
 
 The image builds `src/Sporer.Api` only. The solution also references the test projects, so it is not restored or built
-in the image.
+in the image. The web app is built in a Node stage of its own (`node:22-alpine`) and copied into the image's `wwwroot`;
+whatever `web/node_modules`, `web/dist` or `src/Sporer.Api/wwwroot` hold locally is left out of the build.
+
+### Front-end development
+
+The web app is in `web/`: React, TypeScript, Vite and MapLibre, with CSS Modules and no other UI libraries. You need
+Node.js 22 (22.22.2 or later), 24 (24.15 or later) or 26 and up.
+
+```sh
+cd web
+npm ci
+npm run dev
+```
+
+Start the API first (`dotnet run --project src/Sporer.Api`, on `http://localhost:5097` as above): the Vite dev server, at
+`http://localhost:5173`, passes `/api` on to it. The map needs the tile server of its style, so a machine without internet
+access gets a plain background instead of a map; the rest of the page works.
+
+| Command | What it does |
+| --- | --- |
+| `npm run typecheck` | `tsc --noEmit`, with `strict` on. |
+| `npm test` | The unit and component tests (Vitest, jsdom). |
+| `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. |
+| `npm run build` | Type checks and builds the web app into `src/Sporer.Api/wwwroot`, which the API serves (and git ignores). |
+| `npm run icons` | Draws the PNG icons in `public/icons/` again from `icon.svg`. Only when the icon changes. |
 
 ### Synthetic data and performance checks
 
