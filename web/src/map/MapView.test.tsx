@@ -6,6 +6,7 @@ import type { ConfigResponse } from "../api/types";
 import { boundsOf } from "./bounds";
 import { LAYER_IDS, ROUTE_LAYERS, routeOpacity, SOURCE_IDS } from "./layers";
 import type { Feature, FeatureCollection, HeatCollection, LineString, Point } from "./layers";
+import type { MapLibreLoader, MapLibreModule } from "./maplibre";
 import { MapView, type MapViewProps } from "./MapView";
 
 // jsdom has no WebGL, so `maplibre-gl` is replaced by a map that records what it is asked to do and fires the events a
@@ -181,6 +182,13 @@ function view(props: Partial<MapViewProps> = {}): ReactElement {
   return <MapView styleUrl="/style.json" data={{ routes: EMPTY_ROUTES }} fitTo={null} padding={NONE} {...props} />;
 }
 
+/** Waits until MapLibre has arrived and the component has taken the map it made over (it is a chunk of its own, fetched when the map mounts); returns the map. */
+const mapUp = async (): Promise<InstanceType<typeof FakeMap>> => {
+  const map = await waitFor(() => theMap());
+  await act(async () => undefined); // the component takes the map over (its effects run) in the render that follows its arrival
+  return map;
+};
+
 /** Waits until the map has been given the style it fetched. */
 async function styleApplied(count = 1): Promise<void> {
   await waitFor(() => expect(theMap().styleCalls).toHaveLength(count));
@@ -198,8 +206,12 @@ afterEach(() => {
 });
 
 describe("MapView", () => {
-  test("MapView_tells_MapLibre_where_the_build_put_its_worker", () => {
-    // Once, when the module loads, before any map is made. MapLibre would look for it next to itself, in a bundle: not there.
+  test("MapView_tells_MapLibre_where_the_build_put_its_worker", async () => {
+    goodStyle();
+    render(view());
+    await mapUp();
+
+    // Once, when the module has arrived, before any map is made. MapLibre would look for it next to itself, in a chunk: not there.
     expect(maplibre.workerUrls).toHaveLength(1);
     expect(maplibre.workerUrls[0]).toContain("maplibre-gl-worker");
   });
@@ -329,21 +341,22 @@ describe("MapView", () => {
     expect(region()).toHaveAttribute("data-map-state", "ready");
   });
 
-  test("MapView_reports_a_map_that_cannot_start_and_stays_rendered", () => {
+  test("MapView_reports_a_map_that_cannot_start_and_stays_rendered", async () => {
     goodStyle();
     FakeMap.failWith = new Error("Failed to initialize WebGL");
     const onStyleError = vi.fn<(error: Error) => void>();
 
     expect(() => render(view({ onStyleError }))).not.toThrow();
 
-    expect(onStyleError).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
     expect(onStyleError.mock.calls[0]?.[0].message).toBe("Failed to initialize WebGL");
     expect(region()).toHaveAttribute("data-map-state", "unavailable");
     expect(screen.getByRole("button", { name: "Recenter map" })).toBeInTheDocument();
   });
 
   test("MapView_creates_one_map_under_StrictMode_and_removes_it_on_unmount", async () => {
-    // The first mount of StrictMode is torn down at once: its map is removed, its style request aborted and not reported.
+    // The first mount of StrictMode is torn down at once, before MapLibre has arrived: no map is made for it, and the style is asked for
+    // once, by the map that is made.
     const signals: AbortSignal[] = [];
     stubFetch((_url, init) => {
       signals.push(init!.signal!);
@@ -356,14 +369,10 @@ describe("MapView", () => {
 
     const { unmount } = render(<StrictMode>{view({ onStyleError })}</StrictMode>);
 
-    expect(FakeMap.instances).toHaveLength(2);
-    expect(liveMaps()).toHaveLength(1);
-    expect(FakeMap.instances[0]?.removed).toBe(true);
+    const map = await mapUp();
     await styleApplied();
-    expect(FakeMap.instances[0]?.styleCalls).toHaveLength(0); // the aborted request never reached its map
-    expect(signals.map((signal) => signal.aborted)).toEqual([true, false]);
-
-    const map = theMap();
+    expect(FakeMap.instances).toEqual([map]);
+    expect(signals.map((signal) => signal.aborted)).toEqual([false]);
     unmount();
 
     expect(map.removed).toBe(true);
@@ -392,12 +401,12 @@ describe("MapView", () => {
     expect(map.styleCalls).toHaveLength(0);
   });
 
-  test("MapView_creates_the_map_with_compact_attribution_and_a_north_up_view", () => {
+  test("MapView_creates_the_map_with_compact_attribution_and_a_north_up_view", async () => {
     goodStyle();
 
     render(view());
 
-    const { options, rotationDisabled } = theMap();
+    const { options, rotationDisabled } = await mapUp();
     expect(options["container"]).toBeInstanceOf(HTMLElement);
     expect(region()).toContainElement(options["container"] as HTMLElement);
     expect(options["attributionControl"]).toMatchObject({ compact: true });
@@ -513,6 +522,138 @@ describe("MapView", () => {
     map.contextLost = false; // restored: MapLibre sets the style again, with the sources and layers it had
     map.emit("style.load");
     expect(map.sources.get(SOURCE_IDS.routes)).toBeDefined();
+  });
+
+  describe("MapLibre arriving later", () => {
+    /** A loader whose module arrives when the test says so (`arrive`), or never does (`fail`). */
+    function slowLoader() {
+      let arrive: () => void = () => undefined;
+      let fail: (error: Error) => void = () => undefined;
+      const load = vi.fn<MapLibreLoader>(
+        () => new Promise((resolve, reject) => {
+          arrive = () => resolve({ MapLibreMap: FakeMap, setWorkerUrl: () => undefined, workerUrl: "/w.mjs" } as unknown as MapLibreModule);
+          fail = reject;
+        }),
+      );
+      return { load, arrive: () => act(async () => arrive()), fail: (error: Error) => act(async () => fail(error)) };
+    }
+
+    const FLIGHT: Feature<LineString, object> = {
+      type: "Feature",
+      properties: {},
+      geometry: { type: "LineString", coordinates: [[10.5, 59.8], [10.9, 60.1]] },
+    };
+    const PADDING = { top: 120, right: 20, bottom: 300, left: 340 };
+
+    test("MapView_shows_the_plain_background_until_MapLibre_has_arrived_and_makes_no_map_before", async () => {
+      goodStyle();
+      const slow = slowLoader();
+
+      render(view({ loadMapLibre: slow.load }));
+
+      expect(slow.load).toHaveBeenCalledTimes(1);
+      expect(region()).toHaveAttribute("data-map-state", "loading");
+      expect(screen.getByRole("button", { name: "Recenter map" })).toBeInTheDocument(); // the page around it is all there
+      expect(FakeMap.instances).toHaveLength(0);
+      expect(fetch).not.toHaveBeenCalled(); // no style is asked for before there is a map to give it to
+
+      await slow.arrive();
+      await styleApplied();
+      expect(FakeMap.instances).toHaveLength(1);
+      theMap().emit("style.load");
+      expect(region()).toHaveAttribute("data-map-state", "ready");
+    });
+
+    test("MapView_applies_what_it_was_given_while_MapLibre_was_on_its_way_and_fits_once", async () => {
+      goodStyle();
+      const slow = slowLoader();
+      const early = routes(1);
+      const { rerender } = render(view({ loadMapLibre: slow.load, data: { routes: early }, fitTo: [FLIGHT], padding: PADDING }));
+
+      // The day was polled and the sheet moved while the module was coming: only the latest of each is what counts.
+      const latest = routes(2);
+      const elsewhere: Feature<Point, object> = { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [-0.1, 51.5] } };
+      const sheet = { ...PADDING, bottom: 500 };
+      const target = [elsewhere];
+      const day = { routes: latest, stops: stops() };
+      rerender(view({ loadMapLibre: slow.load, data: day, fitTo: target, home: target, padding: sheet }));
+      expect(FakeMap.instances).toHaveLength(0);
+
+      await slow.arrive();
+      const map = await mapUp();
+      await styleApplied();
+
+      // The camera: one fit, to the latest `fitTo`, with the padding of now.
+      expect(map.fitCalls).toHaveLength(1);
+      expect(map.fitCalls[0]?.bounds).toEqual([[-0.1, 51.5], [-0.1, 51.5]]);
+      expect(map.fitCalls[0]?.options).toMatchObject({ padding: sheet });
+      // The data: the latest, once the style has loaded, and as a day (it has stops).
+      map.emit("style.load");
+      expect(map.sources.get(SOURCE_IDS.routes)?.data).toBe(latest);
+      expect((map.sources.get(SOURCE_IDS.stops)?.data as FeatureCollection<Point, unknown>).features).toHaveLength(1);
+      expect(map.layers.get(LAYER_IDS.dayRoute)?.layout?.visibility).toBe("visible");
+      // And Recenter goes to the latest `home`.
+      fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+      expect(map.fitCalls).toHaveLength(2);
+      expect(map.fitCalls[1]?.bounds).toEqual(boundsOf([elsewhere]));
+      // Nothing is fitted again for being rendered again.
+      rerender(view({ loadMapLibre: slow.load, data: day, fitTo: target, home: target, padding: sheet }));
+      expect(map.fitCalls).toHaveLength(2);
+    });
+
+    test("MapView_makes_no_map_when_it_is_unmounted_before_MapLibre_arrives", async () => {
+      goodStyle();
+      const slow = slowLoader();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const { unmount } = render(view({ loadMapLibre: slow.load, onStyleError }));
+
+      unmount();
+      await slow.arrive();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(FakeMap.instances).toHaveLength(0);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(onStyleError).not.toHaveBeenCalled();
+    });
+
+    test("MapView_makes_one_map_for_one_arrival_under_StrictMode", async () => {
+      goodStyle();
+      const slow = slowLoader();
+
+      render(<StrictMode>{view({ loadMapLibre: slow.load })}</StrictMode>);
+      await slow.arrive();
+      await mapUp();
+
+      expect(FakeMap.instances).toHaveLength(1);
+      expect(liveMaps()).toHaveLength(1);
+    });
+
+    test("MapView_reports_MapLibre_that_cannot_be_fetched_as_map_unavailable_once_and_stays_rendered", async () => {
+      goodStyle();
+      const slow = slowLoader();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const rejections: unknown[] = [];
+      const onRejection = (event: PromiseRejectionEvent) => rejections.push(event.reason);
+      window.addEventListener("unhandledrejection", onRejection);
+      const { rerender } = render(view({ loadMapLibre: slow.load, onStyleError, fitTo: [FLIGHT] }));
+
+      await slow.fail(new TypeError("Failed to fetch dynamically imported module: /assets/maplibre-abc.js"));
+
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(onStyleError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+      expect(onStyleError.mock.calls[0]?.[0].message).toContain("dynamically imported module");
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+      expect(screen.getByRole("button", { name: "Recenter map" })).toBeEnabled();
+      // It stays a page: more data, another fit, a re-render, all of them go nowhere, quietly.
+      expect(() => rerender(view({ loadMapLibre: slow.load, onStyleError, fitTo: [{ ...FLIGHT }], data: { routes: routes(3) } }))).not.toThrow();
+      fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      window.removeEventListener("unhandledrejection", onRejection);
+      expect(FakeMap.instances).toHaveLength(0);
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(rejections).toEqual([]);
+      expect(fetch).not.toHaveBeenCalled();
+    });
   });
 
   describe("heat", () => {
@@ -634,12 +775,12 @@ describe("MapView", () => {
     };
     const PADDING = { top: 120, right: 20, bottom: 300, left: 340 };
 
-    test("MapView_fits_to_the_features_with_padding", () => {
+    test("MapView_fits_to_the_features_with_padding", async () => {
       goodStyle();
 
       render(view({ fitTo: [flight], padding: PADDING }));
 
-      const map = theMap();
+      const map = await mapUp();
       expect(map.fitCalls).toHaveLength(1);
       expect(map.fitCalls[0]?.bounds).toEqual([[10.5, 59.8], [10.9, 60.1]]);
       expect(map.fitCalls[0]?.options).toMatchObject({ padding: PADDING });
@@ -647,11 +788,11 @@ describe("MapView", () => {
       expect(map.fitCalls[0]?.options["maxZoom"]).toBeLessThanOrEqual(18); // one point does not zoom in to the street
     });
 
-    test("MapView_fits_again_for_every_new_fitTo_even_when_it_is_the_same_box_and_not_for_the_same_object", () => {
+    test("MapView_fits_again_for_every_new_fitTo_even_when_it_is_the_same_box_and_not_for_the_same_object", async () => {
       goodStyle();
       const home = [flight];
       const { rerender } = render(view({ fitTo: home, padding: PADDING }));
-      const map = theMap();
+      const map = await mapUp();
       expect(map.fitCalls).toHaveLength(1);
 
       // The same array again (the parent rendered for another reason): the map is where the owner left it.
@@ -674,20 +815,21 @@ describe("MapView", () => {
       expect(map.fitCalls[2]?.bounds).toEqual([[-0.1, 51.5], [-0.1, 51.5]]);
     });
 
-    test("MapView_does_not_fit_to_nothing", () => {
+    test("MapView_does_not_fit_to_nothing", async () => {
       goodStyle();
       const { rerender } = render(view({ fitTo: null }));
+      const map = await mapUp();
       rerender(view({ fitTo: [] }));
       rerender(view({ fitTo: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [] } }] }));
 
-      expect(theMap().fitCalls).toEqual([]);
+      expect(map.fitCalls).toEqual([]);
     });
 
-    test("MapView_recenter_button_refits_the_current_data_with_the_current_padding", () => {
+    test("MapView_recenter_button_refits_the_current_data_with_the_current_padding", async () => {
       goodStyle();
       const home = [flight];
       const { rerender } = render(view({ fitTo: home, padding: PADDING }));
-      const map = theMap();
+      const map = await mapUp();
       const button = screen.getByRole("button", { name: "Recenter map" });
       expect(button).toBeEnabled();
 
@@ -703,10 +845,10 @@ describe("MapView", () => {
       const row: Feature<Point, object> = { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [10.7, 59.9] } };
       const whole = [flight, row];
 
-      test("MapView_recenter_brings_back_home_when_the_map_was_taken_to_a_row", () => {
+      test("MapView_recenter_brings_back_home_when_the_map_was_taken_to_a_row", async () => {
         goodStyle();
         const { rerender } = render(view({ fitTo: whole, home: whole, padding: PADDING }));
-        const map = theMap();
+        const map = await mapUp();
         rerender(view({ fitTo: [row], home: whole, padding: PADDING })); // a row of the timeline tapped
         expect(map.fitCalls).toHaveLength(2);
         expect(map.fitCalls[1]?.bounds).toEqual(boundsOf([row]));
@@ -718,11 +860,11 @@ describe("MapView", () => {
         expect(map.fitCalls[2]?.options).toMatchObject({ padding: PADDING });
       });
 
-      test("MapView_home_alone_does_not_move_the_map_and_the_latest_home_is_the_one_recentered_to", () => {
+      test("MapView_home_alone_does_not_move_the_map_and_the_latest_home_is_the_one_recentered_to", async () => {
         goodStyle();
         const tapped = [row];
         const { rerender } = render(view({ fitTo: tapped, home: [row], padding: PADDING }));
-        const map = theMap();
+        const map = await mapUp();
         expect(map.fitCalls).toHaveLength(1);
 
         rerender(view({ fitTo: tapped, home: whole, padding: PADDING })); // the day was polled and has more in it: the map stays
@@ -733,24 +875,25 @@ describe("MapView", () => {
         expect(map.fitCalls[1]?.bounds).toEqual(boundsOf(whole));
       });
 
-      test("MapView_recenter_goes_to_the_fit_when_there_is_no_home_given", () => {
+      test("MapView_recenter_goes_to_the_fit_when_there_is_no_home_given", async () => {
         goodStyle();
         render(view({ fitTo: [row], padding: PADDING }));
-        const map = theMap();
+        const map = await mapUp();
 
         fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
 
         expect(map.fitCalls[1]?.bounds).toEqual(boundsOf([row]));
       });
 
-      test("MapView_recenter_is_disabled_when_home_is_null_whatever_the_fit_is", () => {
+      test("MapView_recenter_is_disabled_when_home_is_null_whatever_the_fit_is", async () => {
         goodStyle();
         const { rerender } = render(view({ fitTo: [row], home: null }));
+        const map = await mapUp();
         const button = screen.getByRole("button", { name: "Recenter map" });
 
         expect(button).toBeDisabled();
         fireEvent.click(button);
-        expect(theMap().fitCalls).toHaveLength(1); // the fit that was asked for, and no more
+        expect(map.fitCalls).toHaveLength(1); // the fit that was asked for, and no more
 
         rerender(view({ fitTo: [row], home: whole }));
         expect(button).toBeEnabled();
@@ -886,11 +1029,18 @@ describe("MapView", () => {
     });
 
     test("MapView_waits_for_the_config_before_it_asks_for_a_style", async () => {
-      const urls = stubFetch((url) => url === "/api/config" ? Response.json(CONFIG) : Response.json(STYLE));
+      let release: () => void = () => undefined;
+      const urls = stubFetch((url) => url === "/api/config"
+        ? new Promise<Response>((resolve) => { release = () => resolve(Response.json(CONFIG)); })
+        : Response.json(STYLE));
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
       render(withConfig(client));
-      expect(theMap().styleCalls).toHaveLength(0);
+      const map = await mapUp();
+      expect(map.styleCalls).toHaveLength(0);
+      expect(urls).toEqual(["/api/config"]); // the map is there and has no style to ask for yet
+
+      release();
       await styleApplied();
 
       expect(urls).toEqual(["/api/config", "/styles/liberty"]);

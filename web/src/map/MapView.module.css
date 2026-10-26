@@ -29,7 +29,11 @@
   }
 }
 
-.map {
+/*
+ * MapLibre's own style sheet comes with its chunk, after this one, and gives its element `position: relative` (the same weight as
+ * a lone class): the element must fill the map's area whichever sheet is later, so this is two classes.
+ */
+.root > .map {
   position: absolute;
   inset: 0;
 }

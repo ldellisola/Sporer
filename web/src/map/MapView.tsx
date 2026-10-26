@@ -1,7 +1,5 @@
-import "maplibre-gl/dist/maplibre-gl.css";
-import { MapLibreMap, setWorkerUrl, type GeoJSONSource } from "maplibre-gl";
-import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
-import { useEffect, useMemo, useRef, useSyncExternalStore, type CSSProperties, type ReactElement, type RefObject } from "react";
+import type { GeoJSONSource, MapLibreMap } from "maplibre-gl";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactElement, type RefObject } from "react";
 import { useConfig } from "../api/queries";
 import { boundsOf, type Bounds } from "./bounds";
 import {
@@ -17,13 +15,9 @@ import {
   type RouteView,
   type StopCollection,
 } from "./layers";
+import { loadMapLibre, type MapLibreLoader } from "./maplibre";
 import styles from "./MapView.module.css";
 import { loadStyle, type StyleSpecification } from "./style";
-
-// MapLibre looks for its worker next to its own module. Once a bundler has put the module into a bundle of its own that is not
-// where the worker is, and the map never draws. So the worker is an asset of the build (Vite gives it a hashed name under
-// /assets, which the API serves as a script) and MapLibre is told where it is.
-setWorkerUrl(workerUrl);
 
 /** What the map draws. Routes are drawn as a day (bold, with a casing) when `stops` is given, else as part of a period (faint). */
 export interface MapData {
@@ -55,6 +49,13 @@ export interface MapViewProps {
   /** A style to load in place of the one `/api/config` gives for the colour scheme; for tests and previews. */
   styleUrl?: string;
   /**
+   * How MapLibre is fetched, when the map is made; for tests and previews. The default is the module's own chunk (see `./maplibre`).
+   * Until it has arrived the map's place is the plain background, and what is given meanwhile (`data`, `fitTo`, `home`, `padding`)
+   * is kept: the map is made with the latest of it as soon as the module is there, and brought to `fitTo` once. A module that cannot be
+   * fetched is reported like a style that cannot be loaded, through `onStyleError`.
+   */
+  loadMapLibre?: MapLibreLoader;
+  /**
    * What to draw. A collection is sent to the map when it is another object than the last time, so a parent keeps them (a
    * `useMemo` of the response) and builds a new one only when the data is new.
    */
@@ -77,7 +78,8 @@ export interface MapViewProps {
   heatToggle?: HeatToggle;
   /**
    * Called once for each style that cannot be loaded (the request fails, it is not a style, MapLibre will not take it), and for
-   * a map that cannot start (no WebGL). The map then draws on a plain background, and everything else on the page goes on.
+   * a map that cannot start (no WebGL, or MapLibre itself could not be fetched). The map then draws on a plain background, and
+   * everything else on the page goes on.
    */
   onStyleError?: (error: Error) => void;
   /**
@@ -229,10 +231,12 @@ function MapSurface({
   heatToggle,
   onStyleError,
   onStyleLoad,
+  loadMapLibre: load = loadMapLibre,
 }: SurfaceProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<MapLibreMap | null>(null);
+  /** The map, once MapLibre has arrived and has made it; null before that, and the effects below wait for it. */
+  const [map, setMap] = useState<MapLibreMap | null>(null);
   /** Whether the style of the map has loaded, so that sources and layers may be added to it. */
   const readyRef = useRef(false);
   const pushedRef = useRef<Pushed>(newPushed());
@@ -241,44 +245,58 @@ function MapSurface({
   const bounds = useMemo(() => (fitTo === null ? null : boundsOf(fitTo)), [fitTo]);
   const homeBounds = useMemo(() => (home === undefined ? bounds : home === null ? null : boundsOf(home)), [home, bounds]);
 
-  const latest = useLatest({ data, dark, padding, onStyleError, onStyleLoad, source, bounds, homeBounds });
+  const latest = useLatest({ data, dark, padding, onStyleError, onStyleLoad, source, bounds, homeBounds, load });
   const styleUrl = source !== null && "url" in source ? source.url : null;
   const styleFailed = source !== null && "error" in source;
 
-  // One map for as long as the component is on the page. Under StrictMode this runs, is undone and runs again, and the first
-  // map is removed before the second is made.
+  // One map for as long as the component is on the page, made as soon as MapLibre has arrived: it is a chunk of its own, fetched when
+  // this mounts so that the panel next to the map does not wait for it, and until then there is the plain background. Under StrictMode
+  // this runs, is undone and runs again: the first run is cancelled, so that the module's arrival makes one map.
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return;
-    let map: MapLibreMap;
-    try {
-      map = new MapLibreMap({
-        container,
-        center: [0, 20],
-        zoom: 1,
-        attributionControl: { compact: true, customAttribution: OSM_ATTRIBUTION },
-        // North stays up: there is no compass to put it right again.
-        dragRotate: false,
-        maxPitch: 0,
-      });
-    } catch (error) {
-      // No WebGL, most likely. The page goes on without a map.
+    let cancelled = false;
+    let made: MapLibreMap | null = null;
+    showState(rootRef.current, "loading");
+    const unavailable = (error: unknown): void => {
+      // No WebGL, most likely, or no MapLibre. The page goes on without a map.
       showState(rootRef.current, "unavailable");
       latest.current.onStyleError?.(toError(error));
-      return;
-    }
-    map.touchZoomRotate.disableRotation();
-    // MapLibre drops its style when the context is lost, and sets it again when the context is back; until then it is not to be touched.
-    map.on("webglcontextlost", () => {
-      readyRef.current = false;
-    });
-    mapRef.current = map;
-    readyRef.current = false;
-    pushedRef.current = newPushed();
-    showState(rootRef.current, "loading");
+    };
+    latest.current.load().then(
+      (maplibre) => {
+        if (cancelled) return;
+        try {
+          made = new maplibre.MapLibreMap({
+            container,
+            center: [0, 20],
+            zoom: 1,
+            attributionControl: { compact: true, customAttribution: OSM_ATTRIBUTION },
+            // North stays up: there is no compass to put it right again.
+            dragRotate: false,
+            maxPitch: 0,
+          });
+        } catch (error) {
+          unavailable(error);
+          return;
+        }
+        made.touchZoomRotate.disableRotation();
+        // MapLibre drops its style when the context is lost, and sets it again when the context is back; until then it is not to be touched.
+        made.on("webglcontextlost", () => {
+          readyRef.current = false;
+        });
+        readyRef.current = false;
+        pushedRef.current = newPushed();
+        showState(rootRef.current, "loading");
+        setMap(made); // the effects below take it from here: the style, the data, and the camera, each with the latest of what was given
+      },
+      (error: unknown) => {
+        if (!cancelled) unavailable(error);
+      },
+    );
     return () => {
-      map.remove();
-      mapRef.current = null;
+      cancelled = true;
+      made?.remove();
       readyRef.current = false;
     };
   }, [latest]);
@@ -287,7 +305,6 @@ function MapSurface({
   // A new one (the colour scheme changed) replaces the old one only once it is fetched, and the sources and layers come back
   // with the latest data when it has loaded.
   useEffect(() => {
-    const map = mapRef.current;
     if (map === null || (styleUrl === null && !styleFailed)) return;
     const request = new AbortController();
     // fetching: the style is on its way. applying: the map has it, and neither loaded it nor refused it yet.
@@ -352,25 +369,23 @@ function MapSurface({
       map.off("error", onError);
       readyRef.current = false;
     };
-  }, [styleUrl, styleFailed, dark, latest]);
+  }, [map, styleUrl, styleFailed, dark, latest]);
 
   // New data goes to the sources it belongs to. While there is no style the map is not touched: the style that loads picks up
   // the latest data by itself.
   useEffect(() => {
-    const map = mapRef.current;
     if (map !== null && readyRef.current) {
       syncData(map, { routes, stops, places, heat }, latest.current.dark, pushedRef.current);
     }
-  }, [routes, stops, places, heat, latest]);
+  }, [map, routes, stops, places, heat, latest]);
 
+  // A map that was not there yet when `fitTo` was given is brought to it, with the padding of now, the moment it is there.
   useEffect(() => {
-    const map = mapRef.current;
     const target = latest.current.bounds;
     if (map !== null && target !== null) fit(map, target, latest.current.padding);
-  }, [fitTo, latest]); // each new `fitTo` moves the map, whether or not its box is the one it is already at; padding does not
+  }, [map, fitTo, latest]); // each new `fitTo` moves the map, whether or not its box is the one it is already at; padding does not
 
   const recenter = (): void => {
-    const map = mapRef.current;
     const target = latest.current.homeBounds;
     if (map !== null && target !== null) fit(map, target, latest.current.padding);
   };
