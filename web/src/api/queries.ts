@@ -64,10 +64,11 @@ export function heatQueryOptions(from: string | null, to: string | null, keepPre
   });
 }
 
-export function placeQueryOptions(id: number) {
+/** A place. Nothing is asked for while `id` is null (the view on show is not a place): the query is skipped, as for a day or a period. */
+export function placeQueryOptions(id: number | null) {
   return queryOptions({
     queryKey: ["place", id] as const,
-    queryFn: ({ signal }) => getJson<PlaceResponse>(`/api/places/${id}`, signal),
+    queryFn: id === null ? skipToken : ({ signal }) => getJson<PlaceResponse>(`/api/places/${id}`, signal),
     staleTime: STALE_MS,
     // No keepPreviousData: another place's name and visits under this place's heading would be wrong, not just old.
   });
@@ -98,7 +99,7 @@ export const useRange = (from: string | null, to: string | null, keepPrevious = 
 export const useHeat = (from: string | null, to: string | null, enabled: boolean, keepPrevious = true) =>
   useQuery({ ...heatQueryOptions(from, to, keepPrevious), enabled });
 
-export const usePlace = (id: number) => useQuery(placeQueryOptions(id));
+export const usePlace = (id: number | null) => useQuery(placeQueryOptions(id));
 
 export const useStatus = () => useQuery(statusQueryOptions());
 

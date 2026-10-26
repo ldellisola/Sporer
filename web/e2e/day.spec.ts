@@ -2,6 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./base";
 import newYorkDay from "./fixtures/day-new-york.json" with { type: "json" };
 import osloDay from "./fixtures/day-oslo-new-york.json" with { type: "json" };
+import placeCafe from "./fixtures/place-cafe.json" with { type: "json" };
 import { mockApi } from "./mockApi";
 import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
 
@@ -33,7 +34,7 @@ async function openTimeline(page: Page): Promise<void> {
   await expect(rows(page).first()).toBeInViewport();
 }
 
-const DAYS = { "day/2026-10-22": osloDay, "day/2026-10-23": newYorkDay };
+const DAYS = { "day/2026-10-22": osloDay, "day/2026-10-23": newYorkDay, "places/2": placeCafe }; // the place is what the name of a stop opens
 
 test("day_view_lists_timeline_and_steps_days", async ({ page }) => {
   await fixToday(page);
@@ -113,6 +114,7 @@ test("day_view_row_tap_leaves_the_address_and_a_place_name_opens_the_place", asy
   // The name of a place opens the place, and does not do what the row does besides.
   await details(page).getByRole("button", { name: "Café", exact: true }).click();
   await expect(page).toHaveURL(/\/place\/2$/);
+  await expect(details(page).getByRole("heading", { level: 1, name: "Café" })).toBeVisible(); // and the place is what is shown
 });
 
 test("day_view_says_when_a_day_is_empty_and_when_it_is_being_updated", async ({ page }) => {

@@ -3,11 +3,12 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MapPadding, MapViewProps } from "../map/MapView";
-import type { DayResponse, RangeResponse, StatusResponse, StaySegment } from "../api/types";
-import { dayGeoJson, placePoint, rangeGeoJson } from "../map/layers";
+import type { DayResponse, PlaceResponse, RangeResponse, StatusResponse, StaySegment } from "../api/types";
+import { dayGeoJson, placeGeoJson, placePoint, rangeGeoJson } from "../map/layers";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
+import cafe from "../../e2e/fixtures/place-cafe.json";
 import october from "../../e2e/fixtures/range-october.json";
-import { periodDays } from "../time/dates";
+import { periodDays, periodLabel, today } from "../time/dates";
 import { App } from "./App";
 import { navigate } from "./router";
 
@@ -79,10 +80,32 @@ function emptyRange(path: string): RangeResponse {
   };
 }
 
+/** A place with nothing known of it and no visit, for the id that a request of `/api/places/{id}` asks for. */
+function emptyPlace(path: string): PlaceResponse {
+  return {
+    id: Number(path.split("/").pop()),
+    name: null,
+    address: null,
+    city: null,
+    country: null,
+    lat: 59,
+    lon: 10,
+    totalSeconds: 0,
+    visits: 0,
+    firstVisit: "2026-10-01T08:00:00Z",
+    lastVisit: "2026-10-01T08:00:00Z",
+    recentVisits: [],
+  };
+}
+
 type Answer = (path: string) => Response | Promise<Response>;
 
-/** Answers a day with a day and a period with a period, none of them with anything in it. */
-const answerEmpty: Answer = (path) => Response.json(path.startsWith("/api/range") ? emptyRange(path) : day(path.split("/").pop()!));
+/** Answers a day with a day, a period with a period and a place with a place, none of them with anything in it. */
+const answerEmpty: Answer = (path) => {
+  if (path.startsWith("/api/range")) return Response.json(emptyRange(path));
+  if (path.startsWith("/api/places/")) return Response.json(emptyPlace(path));
+  return Response.json(day(path.split("/").pop()!));
+};
 
 /** Answers the API: the status always, everything else by `answer`; returns the paths asked for. */
 function stubApi(answer: Answer = answerEmpty): string[] {
@@ -803,5 +826,132 @@ describe("App period panels", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open Home" }));
 
     expect(window.location.pathname).toBe("/place/1");
+  });
+});
+
+describe("App place", () => {
+  const CAFE = cafe as PlaceResponse; // place 2, the Café of the 22nd
+  const OSLO_DAY = flightDay as DayResponse;
+  /** The Café for place 2 and the day of the fixture for the 22nd; a 404 for any other place, and nothing in any other day or period. */
+  const answerWithTheCafe: Answer = (path) => {
+    if (path === "/api/places/2") return Response.json(CAFE);
+    if (path.startsWith("/api/places/")) return new Response("{}", { status: 404 });
+    return path.endsWith("2026-10-22") ? Response.json(OSLO_DAY) : answerEmpty(path);
+  };
+
+  test("App_shows_the_place_of_the_address_and_draws_its_pin_with_no_heat_button", async () => {
+    window.history.replaceState(null, "", "/place/2");
+    stubApi(answerWithTheCafe);
+
+    renderApp();
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Café" })).toBeInTheDocument();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    expect(mapProps().data).toEqual(placeGeoJson(CAFE));
+    expect(mapProps().fitTo).toEqual(placeGeoJson(CAFE).stops.features);
+    expect(mapProps().home).toEqual(placeGeoJson(CAFE).stops.features);
+    expect(mapProps().heatToggle).toBeUndefined(); // there is no period to show the heat of
+    expect(screen.getByRole("button", { name: "Back" })).toBeInTheDocument();
+    expect(screen.queryByText("Coming soon: the place view.")).not.toBeInTheDocument();
+  });
+
+  test("App_asks_for_the_place_and_for_no_day_or_period_to_draw_it", async () => {
+    window.history.replaceState(null, "", "/place/2");
+    const paths = stubApi(answerWithTheCafe);
+
+    renderApp();
+    await screen.findByRole("heading", { level: 1, name: "Café" });
+
+    // The panel and the map ask for the same place, and the cache gives them the one request (StrictMode may make it twice, as it does
+    // for every query: it mounts what it shows twice).
+    expect(new Set(paths.filter((path) => path !== "/api/status"))).toEqual(new Set(["/api/places/2"]));
+  });
+
+  test("App_says_a_place_no_longer_exists_and_draws_nothing_of_it", async () => {
+    window.history.replaceState(null, "", "/place/9");
+    stubApi(answerWithTheCafe);
+
+    renderApp();
+
+    expect(await screen.findByText("This place no longer exists")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(mapProps().data.stops).toBeUndefined();
+    expect(mapProps().data.routes.features).toEqual([]);
+    expect(mapProps().fitTo).toBeNull();
+    expect(mapProps().home).toBeNull();
+  });
+
+  test("App_a_visit_of_the_place_opens_its_day", async () => {
+    window.history.replaceState(null, "", "/place/2");
+    stubApi(answerWithTheCafe);
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Thu 22 Oct 2026/ }));
+
+    expect(window.location.pathname).toBe("/day/2026-10-22");
+    expect(await screen.findByText("5 places")).toBeInTheDocument(); // the day, in the same shell
+    expect(screen.queryByRole("heading", { level: 1, name: "Café" })).not.toBeInTheDocument();
+  });
+
+  test("App_a_place_opened_from_a_full_sheet_lowers_it_to_half_so_that_the_map_flies_to_somewhere_that_can_be_seen", async () => {
+    stubApi(answerWithTheCafe);
+    stubLayout(120);
+    renderApp();
+    await screen.findByRole("list");
+    const sheet = screen.getByRole("region", { name: "Details" });
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
+    expect(sheet).toHaveAttribute("data-snap", "full");
+
+    fireEvent.click(screen.getByRole("button", { name: "Café" }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Café" })).toBeInTheDocument();
+    expect(sheet).toHaveAttribute("data-snap", "half");
+  });
+
+  test("App_a_place_leaves_a_sheet_that_is_at_its_peek_or_at_half_where_it_is_and_lets_it_be_raised_again", async () => {
+    window.history.replaceState(null, "", "/place/2");
+    stubApi(answerWithTheCafe);
+    stubLayout(120);
+    renderApp();
+    await screen.findByRole("heading", { level: 1, name: "Café" });
+    const sheet = screen.getByRole("region", { name: "Details" });
+    expect(sheet).toHaveAttribute("data-snap", "peek"); // the page was opened on the place: the sheet is as it always starts
+
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
+    expect(sheet).toHaveAttribute("data-snap", "full"); // raised by the owner on the place: not brought down again by anything
+    act(() => void window.dispatchEvent(new Event("resize")));
+    expect(sheet).toHaveAttribute("data-snap", "full");
+  });
+
+  test("App_back_from_a_place_that_a_day_opened_is_that_day_and_the_map_comes_back_to_it", async () => {
+    stubApi(answerWithTheCafe);
+    renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "Café" })); // the name of a stop opens the place
+    expect(await screen.findByRole("heading", { level: 1, name: "Café" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/place/2");
+    await waitFor(() => expect(mapProps().data).toEqual(placeGeoJson(CAFE)));
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/day/2026-10-22")); // the browser's own Back
+    expect(await screen.findByText("5 places")).toBeInTheDocument();
+    await waitFor(() => expect(mapProps().data).toEqual(dayGeoJson(OSLO_DAY)));
+    expect(mapProps().fitTo).toEqual([...dayGeoJson(OSLO_DAY).routes.features, ...dayGeoJson(OSLO_DAY).stops.features]);
+  });
+
+  test("App_back_from_a_place_that_was_opened_as_a_page_is_today", async () => {
+    window.history.replaceState(null, "", "/place/2"); // a deep link
+    stubApi(answerWithTheCafe);
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Back" }));
+
+    expect(window.location.pathname).toBe(`/day/${today()}`);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(periodLabel({ view: "day", date: today() })); // the day view of today, with its bar
+    expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
   });
 });

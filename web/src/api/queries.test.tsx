@@ -342,6 +342,36 @@ describe("query hooks", () => {
     expect((result.current.error as ApiError).status).toBe(404);
   });
 
+  test("usePlace_with_no_id_asks_for_nothing_even_when_every_place_is_refetched", async () => {
+    const urls = stubApi(() => json({}));
+    const client = newClient();
+    const { result } = renderHook(() => usePlace(null), { wrapper: wrapperFor(client) });
+
+    await act(async () => undefined);
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["place"] });
+      await client.refetchQueries({ queryKey: ["place"] });
+    });
+
+    expect(urls).toEqual([]); // the view on show is not a place, and none is asked for as `/api/places/null`
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(result.current.data).toBeUndefined();
+  });
+
+  test("usePlace_keeps_no_other_place_for_the_one_that_loads", async () => {
+    // The name and the visits of one place under the heading of another would be wrong, and not just old.
+    let releaseSecond: (response: Response) => void = () => {};
+    stubApi((url) => (url.endsWith("/7") ? json({ id: 7 }) : new Promise<Response>((resolve) => (releaseSecond = resolve))));
+    const { result, rerender } = renderHook(({ id }) => usePlace(id), { initialProps: { id: 7 }, wrapper: wrapperFor(newClient()) });
+    await waitFor(() => expect(result.current.data?.id).toBe(7));
+
+    rerender({ id: 8 });
+
+    expect(result.current.data).toBeUndefined();
+    await act(async () => releaseSecond(json({ id: 8 })));
+    await waitFor(() => expect(result.current.data?.id).toBe(8));
+  });
+
   test("useStatus_polls_every_30_seconds", async () => {
     vi.useFakeTimers();
     const urls = stubApi(() => json({}));

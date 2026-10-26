@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { formatRoute, navigate, parseRoute, resolveRoute, useRoute, type Route } from "./router";
+import { formatRoute, goBack, navigate, parseRoute, reachedInApp, resolveRoute, useRoute, type Route } from "./router";
 
 const TODAY = "2026-10-24";
 const TODAY_ROUTE: Route = { view: "day", date: TODAY };
@@ -228,5 +228,106 @@ describe("useRoute and navigate", () => {
     act(() => navigate({ view: "year", year: 2026 }));
 
     expect(result.current).toBe(first);
+  });
+});
+
+// Back is the browser's only where there is something of the app behind the view. `history.length` cannot say (it counts the first page
+// and other sites), so `navigate` marks each entry it pushes, and an entry that carries the mark was reached from a view of the app.
+describe("reaching a view in the app", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 24, 12, 0, 0));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("reachedInApp_is_false_for_a_page_that_was_opened_and_true_for_what_navigate_pushed", () => {
+    window.history.replaceState(null, "", "/place/5"); // a deep link, a fresh tab
+    expect(reachedInApp()).toBe(false);
+
+    act(() => navigate({ view: "day", date: "2026-10-22" }));
+    expect(reachedInApp()).toBe(true);
+
+    act(() => navigate({ view: "place", id: 5 }));
+    expect(reachedInApp()).toBe(true);
+  });
+
+  test("reachedInApp_is_not_taken_in_by_a_state_that_is_not_the_apps", () => {
+    for (const state of [null, undefined, "pushed", 42, {}, { sporer: "other" }, { reached: true }]) {
+      window.history.replaceState(state, "", "/place/5");
+      expect(reachedInApp(), JSON.stringify(state)).toBe(false);
+    }
+  });
+
+  test("replacing_an_entry_leaves_it_as_it_was_reached", () => {
+    window.history.replaceState(null, "", "/day/2026-10-22");
+    act(() => navigate({ view: "week", start: "2026-10-19" }, { replace: true })); // an entry that was opened, rewritten
+    expect(window.location.pathname).toBe("/week/2026-10-19");
+    expect(reachedInApp()).toBe(false);
+
+    act(() => navigate({ view: "month", month: "2026-10" })); // an entry that was pushed, rewritten
+    act(() => navigate({ view: "year", year: 2026 }, { replace: true }));
+    expect(window.location.pathname).toBe("/year/2026");
+    expect(reachedInApp()).toBe(true);
+  });
+
+  test("useRoute_keeps_the_mark_of_the_entry_it_normalises", () => {
+    // A deep link to a week by a day other than its Monday is rewritten to the Monday: still a page that was opened.
+    window.history.replaceState(null, "", "/week/2026-10-22");
+    const opened = renderHook(() => useRoute());
+    expect(window.location.pathname).toBe("/week/2026-10-19");
+    expect(reachedInApp()).toBe(false);
+    opened.unmount();
+
+    // And the same address on an entry the app pushed (a history of its own making) stays an entry of the app.
+    act(() => navigate({ view: "day", date: "2026-10-22" }));
+    window.history.replaceState(window.history.state, "", "/range/2025-01-01..2026-12-31"); // beyond what the API answers for
+    const pushed = renderHook(() => useRoute());
+    expect(window.location.pathname).toBe("/range/2025-01-01..2026-02-04");
+    expect(reachedInApp()).toBe(true);
+    pushed.unmount();
+  });
+
+  test("reachedInApp_holds_for_a_view_that_is_mounted_afresh_as_after_a_reload_of_an_entry_the_app_pushed", () => {
+    // The mark is in the history entry, which a reload keeps (as it keeps the entries behind it): back from that entry still goes to the
+    // view the owner came from, and not to today. Nothing about it is in the memory of the page.
+    act(() => navigate({ view: "place", id: 5 }));
+    const first = renderHook(() => useRoute());
+    first.unmount();
+
+    const again = renderHook(() => useRoute());
+
+    expect(again.result.current).toEqual({ view: "place", id: 5 });
+    expect(reachedInApp()).toBe(true);
+    again.unmount();
+  });
+
+  test("goBack_goes_back_in_history_when_the_view_was_reached_in_the_app_and_adds_nothing", () => {
+    act(() => navigate({ view: "day", date: "2026-10-22" }));
+    act(() => navigate({ view: "place", id: 5 }));
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => undefined);
+    const lengthBefore = window.history.length;
+
+    goBack();
+
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(window.location.pathname).toBe("/place/5"); // the browser moves the address, and tells of it with popstate
+    expect(window.history.length).toBe(lengthBefore);
+  });
+
+  test("goBack_goes_to_today_in_place_of_the_page_that_was_opened_and_does_not_leave_it_behind", () => {
+    window.history.replaceState(null, "", "/place/5");
+    const { result } = renderHook(() => useRoute());
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => undefined);
+    const lengthBefore = window.history.length;
+
+    act(() => goBack());
+
+    expect(back).not.toHaveBeenCalled();
+    expect(result.current).toEqual(TODAY_ROUTE); // today in the zone of the browser
+    expect(window.location.pathname).toBe("/day/2026-10-24");
+    expect(window.history.length).toBe(lengthBefore); // replaced: Back from here is where the owner was before the page, not the place again
+    expect(reachedInApp()).toBe(false); // and today's day is a page that was opened too
   });
 });

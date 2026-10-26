@@ -2,10 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { DayResponse, HeatResponse, RangeResponse, StaySegment } from "../api/types";
-import { dayGeoJson, heatGeoJson, placePoint, rangeGeoJson } from "../map/layers";
+import type { DayResponse, HeatResponse, PlaceResponse, RangeResponse, StaySegment } from "../api/types";
+import { dayGeoJson, heatGeoJson, placeGeoJson, placePoint, rangeGeoJson } from "../map/layers";
 import newYorkDay from "../../e2e/fixtures/day-new-york.json";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
+import cafe from "../../e2e/fixtures/place-cafe.json";
 import october from "../../e2e/fixtures/range-october.json";
 import type { Route } from "./router";
 import { useViewMap } from "./useViewMap";
@@ -13,6 +14,7 @@ import { useViewMap } from "./useViewMap";
 const OSLO_DAY = flightDay as DayResponse; // 2026-10-22: 4 moves and 5 pins
 const NEW_YORK_DAY = newYorkDay as DayResponse; // 2026-10-23
 const OCTOBER = october as RangeResponse; // 2026-10-01 to 2026-10-31: 9 moves and 6 places
+const CAFE = cafe as PlaceResponse; // place 2, the Café of the 22nd
 
 /** Two weeks of the month, each with some of its moves and places, so that one is told from the other by what is drawn. */
 const weekOf = (from: string, to: string, moves: number[], places: number[], over: Partial<RangeResponse> = {}): RangeResponse => ({
@@ -31,6 +33,7 @@ const DAY_23: Route = { view: "day", date: "2026-10-23" };
 const WEEK_19: Route = { view: "week", start: "2026-10-19" };
 const WEEK_26: Route = { view: "week", start: "2026-10-26" };
 const MONTH: Route = { view: "month", month: "2026-10" };
+const PLACE_2: Route = { view: "place", id: 2 };
 
 const emptyDay = (date: string, state: DayResponse["state"] = "done"): DayResponse => ({
   date,
@@ -40,15 +43,19 @@ const emptyDay = (date: string, state: DayResponse["state"] = "done"): DayRespon
   segments: [],
 });
 
-type Answer = DayResponse | RangeResponse | HeatResponse | Response | (() => Response | Promise<Response>);
+type Answer = DayResponse | RangeResponse | HeatResponse | PlaceResponse | Response | (() => Response | Promise<Response>);
 
-/** What a request is answered by: the date of a day (`2026-10-22`), the dates of a range (`2026-10-19..2026-10-25`), `heatKey` of a heat. */
+/** What a request is answered by: the date of a day (`2026-10-22`), the dates of a range (`2026-10-19..2026-10-25`), `heatKey` of a heat, `placeKey` of a place. */
 function keyOf(path: string): string {
+  if (path.startsWith("/api/places/")) return placeKey(Number(path.split("/").pop()));
   if (!path.startsWith("/api/range") && !path.startsWith("/api/heat")) return path.split("/").pop()!;
   const query = new URLSearchParams(path.split("?")[1]);
   const dates = `${query.get("from")}..${query.get("to")}`;
   return path.startsWith("/api/heat") ? `heat:${dates}` : dates;
 }
+
+/** The key that a place is answered by. */
+const placeKey = (id: number): string => `place:${id}`;
 
 /** The key that a heat of these dates is answered by. */
 const heatKey = (from: string, to = from): string => `heat:${from}..${to}`;
@@ -88,6 +95,12 @@ function setup(route: Route, heatOn = false) {
     });
   };
   /** Refetches a heat, and lets the observers hear how it went (they are told on the next tick, which a refetch does not wait for). */
+  const refetchPlace = async (id: number) => {
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["place", id] });
+      await new Promise((resolve) => setTimeout(resolve, 0)); // the observers are told on the next tick
+    });
+  };
   const refetchHeat = async (from: string, to = from) => {
     await act(async () => {
       await client.refetchQueries({ queryKey: ["heat", from, to] });
@@ -102,6 +115,7 @@ function setup(route: Route, heatOn = false) {
     refetch,
     refetchRange,
     refetchHeat,
+    refetchPlace,
     /** Renders again on the same route with the heat as it was, for a render that is made for another reason. */
     again: () => rerender({ at, on }),
     go: (next: Route) => {
@@ -156,18 +170,19 @@ describe("useViewMap data", () => {
     expect(result.current.data.stops).toBe(before.stops);
   });
 
-  test("useViewMap_draws_nothing_for_a_place_and_asks_for_nothing", async () => {
-    const { paths } = stubApi({ "2026-10-22": OSLO_DAY, "2026-10-01..2026-10-31": OCTOBER });
+  test("useViewMap_draws_a_place_as_one_pin_and_asks_for_that_place_only", async () => {
+    const { paths } = stubApi({ "2026-10-22": OSLO_DAY, "2026-10-01..2026-10-31": OCTOBER, [placeKey(2)]: CAFE });
 
-    const { result } = setup({ view: "place", id: 3 });
+    const { result } = setup(PLACE_2);
 
-    await act(async () => undefined);
+    expect(result.current.data.stops).toBeUndefined(); // nothing yet, and no pin to draw: the map is waiting for the place
     expect(result.current.data.routes.features).toEqual([]);
-    expect(result.current.data.stops).toBeUndefined();
+    await waitFor(() => expect(result.current.data.stops).toBeDefined());
+    expect(result.current.data).toEqual(placeGeoJson(CAFE));
+    expect(result.current.data.stops?.features).toHaveLength(1);
+    expect(result.current.data.stops?.features[0]?.properties).toMatchObject({ label: "", name: "Café" }); // a pin of a stop, with no number
     expect(result.current.data.places).toBeUndefined();
-    expect(result.current.fitTo).toBeNull();
-    expect(result.current.home).toBeNull();
-    expect(paths).toEqual([]); // neither a day nor a period was asked for to draw nothing of it
+    expect(paths).toEqual(["/api/places/2"]); // neither a day nor a period was asked for to draw the place
   });
 
   test("useViewMap_stops_drawing_the_day_when_the_view_is_not_a_day_and_draws_it_again_after", async () => {
@@ -757,6 +772,123 @@ describe("useViewMap period fit", () => {
   });
 });
 
+// --- Places ---
+
+const featuresOfPlace = (place: PlaceResponse) => placeGeoJson(place).stops.features;
+
+describe("useViewMap places", () => {
+  test("useViewMap_brings_the_map_to_the_pin_of_a_place_once_and_has_the_pin_as_home", async () => {
+    stubApi({ [placeKey(2)]: CAFE });
+
+    const { result } = setup(PLACE_2);
+
+    expect(result.current.fitTo).toBeNull(); // nothing to bring the map to before the place is there
+    expect(result.current.home).toBeNull();
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    expect(result.current.fitTo).toEqual(featuresOfPlace(CAFE));
+    expect(result.current.home).toEqual(featuresOfPlace(CAFE)); // what Recenter brings back
+    expect(result.current.heat.available).toBe(false); // there is no period to show the heat of
+  });
+
+  test("useViewMap_does_not_fit_a_place_again_when_it_is_refetched", async () => {
+    const { answers } = stubApi({ [placeKey(2)]: CAFE });
+    const { result, refetchPlace } = setup(PLACE_2);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    const fit = result.current.fitTo;
+    const drawn = result.current.data;
+
+    answers[placeKey(2)] = { ...CAFE, name: "Coffee corner" }; // the place was renamed since: what is drawn is new
+    await refetchPlace(2);
+
+    await waitFor(() => expect(result.current.data.stops?.features[0]?.properties.name).toBe("Coffee corner"));
+    expect(result.current.data.stops).not.toBe(drawn.stops);
+    expect(result.current.fitTo).toBe(fit); // and the map, which the owner may have moved, is not asked to move
+  });
+
+  test("useViewMap_fits_a_place_each_time_it_is_shown_and_has_it_in_the_render_that_shows_it_when_it_is_in_the_cache", async () => {
+    stubApi({ [placeKey(2)]: CAFE, "2026-10-22": OSLO_DAY });
+    const { result, go } = setup(PLACE_2);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    const first = result.current.fitTo;
+    go(DAY_22);
+    await waitFor(() => expect(result.current.data.stops?.features).toHaveLength(5));
+
+    go(PLACE_2); // back to a place that was looked at before: the cache has it, and the map comes back to it at once
+
+    expect(result.current.data).toEqual(placeGeoJson(CAFE));
+    expect(result.current.fitTo).toEqual(first);
+    expect(result.current.fitTo).not.toBe(first);
+  });
+
+  test("useViewMap_draws_nothing_for_a_place_that_no_longer_exists", async () => {
+    stubApi({}); // a 404 for everything
+    const { result, client } = setup(PLACE_2);
+
+    await waitFor(() => expect(client.getQueryState(["place", 2])?.status).toBe("error"));
+
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.stops).toBeUndefined();
+    expect(result.current.fitTo).toBeNull();
+    expect(result.current.home).toBeNull();
+  });
+
+  test("useViewMap_stops_drawing_a_place_that_turns_out_to_be_gone_when_it_is_asked_for_again", async () => {
+    // A 404 is not a failure to try again: the place is not there, and the panel says so in place of what it had. The map is the same.
+    const { answers } = stubApi({ [placeKey(2)]: CAFE });
+    const { result, refetchPlace } = setup(PLACE_2);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    const fit = result.current.fitTo;
+
+    answers[placeKey(2)] = new Response("{}", { status: 404 });
+    await refetchPlace(2);
+
+    await waitFor(() => expect(result.current.data.stops).toBeUndefined());
+    expect(result.current.home).toBeNull(); // nothing to go back to
+    expect(result.current.fitTo).toBe(fit); // and the map is not moved by it
+  });
+
+  test("useViewMap_keeps_the_pin_when_a_refetch_of_the_place_fails_for_another_reason", async () => {
+    const { answers } = stubApi({ [placeKey(2)]: CAFE });
+    const { result, refetchPlace } = setup(PLACE_2);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    const drawn = result.current.data;
+    const fit = result.current.fitTo;
+
+    answers[placeKey(2)] = new Response("{}", { status: 500 });
+    await refetchPlace(2);
+
+    expect(result.current.data.stops).toBe(drawn.stops); // as the panel keeps what it showed, under its error and Retry
+    expect(result.current.fitTo).toBe(fit);
+  });
+
+  test("useViewMap_does_not_draw_the_place_that_was_left_while_a_day_loads", async () => {
+    // The panel of a day that is shown after a place starts afresh, and says "Loading…": the map must say the same.
+    stubApi({ [placeKey(2)]: CAFE, "2026-10-22": () => new Promise<Response>(() => undefined) });
+    const { result, go } = setup(PLACE_2);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+
+    go(DAY_22);
+
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.stops).toBeUndefined(); // not the pin of the place under the day that loads
+    expect(result.current.fitTo).toBeNull();
+    expect(result.current.home).toBeNull();
+  });
+
+  test("useViewMap_does_not_draw_the_day_that_was_left_while_a_place_loads", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY, [placeKey(2)]: () => new Promise<Response>(() => undefined) });
+    const { result, go } = setup(DAY_22);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+
+    go(PLACE_2);
+
+    expect(result.current.data.routes.features).toEqual([]); // not the day's routes and pins
+    expect(result.current.data.stops).toBeUndefined();
+    expect(result.current.fitTo).toBeNull();
+    expect(result.current.home).toBeNull();
+  });
+});
+
 // --- Heat ---
 
 /** The heat of a day or a period: cells at places of the fixtures, and a first cell that is told apart by its weight. */
@@ -819,14 +951,14 @@ describe("useViewMap heat", () => {
   });
 
   test("useViewMap_has_no_heat_for_a_place_whatever_the_setting_and_asks_for_none", async () => {
-    const { paths } = stubApi({ "2026-10-22": OSLO_DAY });
+    const { paths } = stubApi({ "2026-10-22": OSLO_DAY, [placeKey(2)]: CAFE });
 
-    const { result } = setup({ view: "place", id: 3 }, true);
-    await act(async () => undefined);
+    const { result } = setup(PLACE_2, true);
+    await waitFor(() => expect(result.current.data.stops).toBeDefined());
 
     expect(result.current.heat).toMatchObject({ available: false, failed: false }); // no button: there is no period to show the heat of
     expect(result.current.data.heat).toBeUndefined();
-    expect(paths).toEqual([]);
+    expect(paths).toEqual(["/api/places/2"]); // the place, and no heat
   });
 
   test("useViewMap_has_heat_for_the_day_again_when_the_view_comes_back_from_a_place", async () => {

@@ -8,6 +8,7 @@ import { Sidebar, SIDEBAR_WIDTH } from "../sheet/Sidebar";
 import { periodRange } from "../time/dates";
 import { DayPanel } from "../views/DayPanel";
 import { Notice } from "../views/Notice";
+import { PlacePanel } from "../views/PlacePanel";
 import { RangePanel } from "../views/RangePanel";
 import { StatusBanner } from "../views/StatusBanner";
 import { TopBar } from "../views/TopBar";
@@ -27,13 +28,14 @@ const DESKTOP_QUERY = "(min-width: 900px)";
 const AIR = 16;
 
 /**
- * The panel of the view of the route. The day has its own, and the week, the month, the year and the range share one (the period
- * they cover is what differs); the place is a placeholder until its panel arrives. `onFocus` is how a panel asks for the map to be
- * brought to something (a row tapped): the map is the shell's, and the one.
+ * The panel of the view of the route. The day and the place have their own, and the week, the month, the year and the range share one
+ * (the period they cover is what differs). A place is a panel of its own, made again for another place (`key`), so that nothing of one
+ * place is ever under the name of another. `onFocus` is how a panel asks for the map to be brought to something (a row tapped): the
+ * map is the shell's, and the one.
  */
 function Panel({ route, onFocus }: { route: Route; onFocus: (features: FitFeatures) => void }) {
   if (route.view === "day") return <DayPanel date={route.date} onFocus={onFocus} />;
-  if (route.view === "place") return <p className={styles.placeholder}>Coming soon: the place view.</p>;
+  if (route.view === "place") return <PlacePanel key={route.id} id={route.id} />;
   const { from, to } = periodRange(route);
   return <RangePanel from={from} to={to} />;
 }
@@ -92,6 +94,14 @@ export function App() {
     },
     [moveMap],
   );
+
+  // A place is opened to be seen on the map, which flies to it: a sheet that is over the map at full (a place was tapped in its list)
+  // comes down to half, as for a row, once for each place that is shown, and the owner may raise it again.
+  const placeId = route.view === "place" ? route.id : null;
+  useEffect(() => {
+    if (placeId !== null) sheetRef.current?.lowerTo("half");
+  }, [placeId]);
+
   const panel = <Panel route={route} onFocus={onFocus} />;
   return (
     <main className={styles.shell} data-layout={desktop ? "desktop" : "phone"}>

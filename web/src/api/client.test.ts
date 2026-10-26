@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { ApiError, getJson } from "./client";
+import { ApiError, getJson, isNotFound } from "./client";
 
 function respond(status: number, body: unknown = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -56,5 +56,17 @@ describe("getJson", () => {
 
     await expect(getJson("/api/x", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
     await expect(getJson("/api/x")).rejects.toBeInstanceOf(TypeError);
+  });
+});
+
+describe("isNotFound", () => {
+  test("isNotFound_is_true_for_a_404_of_the_api_and_for_nothing_else", () => {
+    expect(isNotFound(new ApiError(404, "/api/places/9"))).toBe(true);
+    for (const status of [400, 403, 500, 503]) expect(isNotFound(new ApiError(status, "/api/places/9")), String(status)).toBe(false);
+    expect(isNotFound(new Error("GET /api/places/9 failed with status 404"))).toBe(false); // the words of a message are not a status
+    expect(isNotFound(new TypeError("Failed to fetch"))).toBe(false);
+    expect(isNotFound(null)).toBe(false);
+    expect(isNotFound(undefined)).toBe(false);
+    expect(isNotFound({ status: 404 })).toBe(false);
   });
 });

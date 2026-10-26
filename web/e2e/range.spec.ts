@@ -52,9 +52,26 @@ const PICKED = {
   days: october.days.slice(0, 3),
 };
 
+/** The Gym of the fixture (a place of the ranking, 6 visits and 20 hours) as the place view has it, for the row that opens it. */
+const GYM = {
+  id: 6,
+  name: "Gym",
+  address: "Storgata 40, Oslo",
+  city: "Oslo",
+  country: "Norway",
+  lat: 59.89,
+  lon: 10.7,
+  totalSeconds: 72_000,
+  visits: 6,
+  firstVisit: "2026-10-05T16:00:00Z",
+  lastVisit: "2026-10-22T16:00:00Z",
+  recentVisits: [],
+};
+
 /** The month of the fixture, the range that is picked, and nothing for any other dates (the periods either side are asked for too). */
 const RANGES: Record<string, object> = { "2026-10-01..2026-10-31": october, "2026-10-05..2026-10-12": PICKED };
 const answers = {
+  "places/6": GYM,
   range: (request: Request): Reply => {
     const { searchParams } = new URL(request.url());
     const [from, to] = [searchParams.get("from")!, searchParams.get("to")!];
@@ -63,6 +80,9 @@ const answers = {
 };
 
 test("month_view_and_range_picker", async ({ page }) => {
+  // A walk through the month, a day, a place and the range picker, on the phone's canvas of three pixels to a CSS pixel drawn in software:
+  // 15 s on a quiet machine and the 30 s that Playwright gives a test on a busy one (the two workers share four processors).
+  test.setTimeout(60_000);
   await fixToday(page);
   const api = await mockApi(page, answers);
   await page.goto("/day/2026-10-22");
@@ -112,6 +132,7 @@ test("month_view_and_range_picker", async ({ page }) => {
   await page.goBack();
   await details(page).getByRole("button", { name: "Open Gym" }).click();
   await expect(page).toHaveURL(/\/place\/6$/);
+  await expect(details(page).getByRole("heading", { level: 1, name: "Gym" })).toBeVisible();
   await page.goBack();
 
   // Range: its fields start as the month, and the dates are entered with fill (the field takes a valid date after a pause).

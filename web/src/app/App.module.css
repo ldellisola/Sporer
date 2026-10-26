@@ -55,9 +55,3 @@
 .notices > * {
   pointer-events: auto;
 }
-
-.placeholder {
-  margin: 24px 0;
-  text-align: center;
-  color: var(--ink-muted);
-}

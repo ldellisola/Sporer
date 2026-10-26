@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
-import { useDay, useHeat, useRange } from "../api/queries";
-import type { DayResponse, RangeResponse } from "../api/types";
-import { dayGeoJson, heatGeoJson, rangeGeoJson, type FitFeatures, type HeatCollection } from "../map/layers";
+import { isNotFound } from "../api/client";
+import { useDay, useHeat, usePlace, useRange } from "../api/queries";
+import type { DayResponse, PlaceResponse, RangeResponse } from "../api/types";
+import { dayGeoJson, heatGeoJson, placeGeoJson, rangeGeoJson, type FitFeatures, type HeatCollection } from "../map/layers";
 import type { MapData } from "../map/MapView";
 import { periodRange } from "../time/dates";
 import { useKeptData } from "../views/useKeptData";
@@ -93,6 +94,24 @@ function usePeriodMap(route: Route): Drawn {
   return useDrawn(range.data, period !== null, drawPeriod, (response) => response.from === period?.from && response.to === period.to);
 }
 
+/** A place: its one pin, which the map is brought to. */
+function drawPlace(place: PlaceResponse): Drawing {
+  const data = placeGeoJson(place);
+  return { data, features: data.stops.features };
+}
+
+/**
+ * The map of a place. Nothing is asked for on a route that is not a place. The query keeps no other place for the one that loads, so
+ * what it has is the place that is asked for, and it is drawn as soon as it has it (there is no `useDrawn` here: nothing is carried over
+ * from a place to another, or from another kind of view, and under an error the query keeps what it had, as the panel shows what it had).
+ * A place that is gone (a 404) is drawn as nothing, as the panel says it no longer exists in place of what it showed.
+ */
+function usePlaceMap(route: Route): Drawn {
+  const place = usePlace(route.view === "place" ? route.id : null);
+  const found = isNotFound(place.error) ? undefined : place.data;
+  return useMemo(() => (found === undefined ? NOTHING : { ...drawPlace(found), ready: true }), [found]);
+}
+
 /**
  * The heat of the period of the route: a day is a period of its one date, and a place has none. Asked for only while the heat is `on`.
  * What is given to draw is the heat of the period that is asked for, and only while the routes drawn are that period's too (`ready`):
@@ -123,7 +142,7 @@ interface Fit {
 
 /**
  * What the map of the shell shows for the route: the data of the view (the day's, or the period's of a week, a month, a year or a
- * range; a place draws nothing yet), the heat of its period when `heatOn` (see `useHeatMap`), and where the map is brought to.
+ * range, or the pin of a place), the heat of its period when `heatOn` (see `useHeatMap`; a place has none), and where the map is brought to.
  *
  * The map is brought to what is drawn once for each time a route is shown, at the first data of it that has anything to fit to: a
  * poll or a refetch of the same day or period never moves a map that the owner has panned, and a route that is shown again (stepped
@@ -135,7 +154,8 @@ interface Fit {
 export function useViewMap(route: Route, heatOn: boolean): ViewMap {
   const day = useDayMap(route);
   const period = usePeriodMap(route);
-  const { data: routes, features, ready } = route.view === "day" ? day : period; // for a place, neither is asked for and the period is nothing
+  const place = usePlaceMap(route);
+  const { data: routes, features, ready } = route.view === "day" ? day : route.view === "place" ? place : period;
   const { heat, state } = useHeatMap(route, heatOn, ready);
   const data = useMemo(() => (heat === undefined ? routes : { ...routes, heat }), [routes, heat]);
   const key = formatRoute(route);

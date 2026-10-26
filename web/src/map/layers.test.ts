@@ -17,6 +17,7 @@ import {
   LAYER_IDS,
   MODE_COLORS,
   PIN_COLOR,
+  placeGeoJson,
   rangeGeoJson,
   ROUTE_LAYERS,
   routeOpacity,
@@ -139,6 +140,22 @@ describe("dayGeoJson", () => {
 
     expect(routes.features[0]?.geometry.coordinates).toEqual(arc);
     expect(routes.features[0]?.properties.mode).toBe("flight");
+  });
+});
+
+describe("placeGeoJson", () => {
+  test("placeGeoJson_is_one_pin_at_the_place_with_no_number_and_its_name", () => {
+    const { routes, stops } = placeGeoJson(CAFE);
+
+    expect(routes).toEqual({ type: "FeatureCollection", features: [] });
+    expect(stops.features).toEqual([
+      // The pin of a stop of a day, which says its number: this one is no stop of a day, so the label is empty and the pin shows none.
+      { type: "Feature", geometry: { type: "Point", coordinates: [10.1, 59.1] }, properties: { order: 1, label: "", name: "Café", id: 2 } },
+    ]);
+  });
+
+  test("placeGeoJson_gives_a_place_with_no_name_a_pin_with_none", () => {
+    expect(placeGeoJson(OFFICE).stops.features[0]?.properties).toEqual({ order: 1, label: "", name: null, id: 3 });
   });
 });
 

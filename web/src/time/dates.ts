@@ -148,6 +148,11 @@ export function shortDayLabel(date: string): string {
   return format(parse(date), "EEE d MMM");
 }
 
+/** A date as a list that runs over years says it: "Thu 22 Oct 2026" (`shortDayLabel` with the year). */
+export function dateLabel(date: string): string {
+  return format(parse(date), "EEE d MMM yyyy");
+}
+
 function dateRangeLabel(from: string, to: string, collapseMonth: boolean): string {
   const start = parse(from);
   const end = parse(to);

@@ -101,15 +101,42 @@ function subscribe(onChange: () => void): () => void {
 const getPathname = (): string => window.location.pathname;
 
 /**
+ * What `navigate` writes into the `history.state` of each entry it pushes: the mark of an entry that was reached from a view of the app
+ * (see `reachedInApp`). The browser keeps the state of an entry for as long as the entry is there, a reload included.
+ */
+const PUSHED_STATE = { sporer: "pushed" } as const;
+
+/**
  * Goes to a route: a new history entry, or with `replace` the current one rewritten. Going where the address already is
- * adds nothing. Only the path is kept: the routes carry all there is to a view.
+ * adds nothing. Only the path is kept: the routes carry all there is to a view. A new entry is marked as one that the app made, and
+ * a rewritten entry stays what it was (opened by the owner, or made by the app), because rewriting does not change how it was reached.
  */
 export function navigate(route: Route, opts: { replace?: boolean } = {}): void {
   const path = formatRoute(route);
   if (window.location.pathname === path) return;
-  if (opts.replace) window.history.replaceState(null, "", path);
-  else window.history.pushState(null, "", path);
+  if (opts.replace) window.history.replaceState(window.history.state, "", path);
+  else window.history.pushState(PUSHED_STATE, "", path);
   window.dispatchEvent(new Event(NAVIGATE_EVENT));
+}
+
+/**
+ * Whether the entry on show was reached from a view of the app, so that there is one of the app's behind it: it was made by `navigate`.
+ * A page that was opened (a deep link, a bookmark, a fresh tab, a typed address) is not, and what is behind it may be another site or
+ * nothing. `history.length` could not tell: it counts the first page of the tab, and the sites before it.
+ */
+export function reachedInApp(): boolean {
+  const state: unknown = window.history.state;
+  return typeof state === "object" && state !== null && (state as { sporer?: unknown }).sporer === PUSHED_STATE.sporer;
+}
+
+/**
+ * What a back control does: back in the history when the view was reached from one of the app's, so that it is the view the owner came
+ * from (a day, a month, a range), else today's day, which is where the app starts. The day replaces the page that was opened and does not
+ * follow it: Back from today's day then goes where the owner was before, and not to the view that was just left.
+ */
+export function goBack(): void {
+  if (reachedInApp()) window.history.back();
+  else navigate({ view: "day", date: todayInBrowser() }, { replace: true });
 }
 
 /**

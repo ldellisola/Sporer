@@ -2,6 +2,7 @@
  * What the rows of the panels have in common. A row that can be tapped is a button (the whole of the row, or laid over it) and shows
  * what a tap is going to do under the finger, under the pointer, and where the keyboard is. The rows say how long in the same way.
  * A button has `tap` next to the class of its panel, which sets what is its own (where it is, how big): the two share no property.
+ * The lists of rows have a head, as the mockup has them (small, bold, capitals), and a section of a panel to hold the two.
  */
 .tap {
   border: 0;
@@ -31,4 +32,42 @@
   color: var(--ink-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.heading {
+  margin: 2px 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.section {
+  margin: 0 0 18px;
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/*
+ * A row of a list that is one button, the whole of the row, and that is all there is to it: unlike a row of the day's timeline it has
+ * nothing else in it to tap. It reaches a little past the text on each side, which is what shows under the finger or the pointer
+ * (how it shows is `tap`, which is on the button with this). The columns are the panel's, in a class next to this one. Type and colour
+ * are not set here: a button has the page's (global.css), and a class of a panel that set its own would win or lose by which of the
+ * two style sheets comes last.
+ */
+.row {
+  display: grid;
+  align-items: center;
+  column-gap: 10px;
+  box-sizing: border-box;
+  width: calc(100% + 12px);
+  min-height: 36px;
+  margin: 0 -6px;
+  padding: 4px 6px;
+  text-align: left;
 }

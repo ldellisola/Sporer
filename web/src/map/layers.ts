@@ -111,6 +111,17 @@ export function dayGeoJson(day: DayResponse): { routes: RouteCollection; stops: 
   return { routes, stops };
 }
 
+/**
+ * The map of a place: no routes, and one pin where the place is, drawn as the pin of a stop of a day (so it is the same pink pin, with
+ * the place's name beside it). It is no stop of a day, and has no number: its label, which the pins show, is empty.
+ */
+export function placeGeoJson(place: PlaceRef): { routes: RouteCollection; stops: StopCollection } {
+  return {
+    routes: { type: "FeatureCollection", features: [] },
+    stops: { type: "FeatureCollection", features: [point(place.lon, place.lat, { order: 1, label: "", name: place.name, id: place.id })] },
+  };
+}
+
 /** How many places carry a name on the map. */
 const LABELLED_PLACES = 5;
 const MIN_DOT_RADIUS = 4;

@@ -86,7 +86,7 @@ function PlaceRow({ ranked, ref }: { ranked: Ranked; ref?: Ref<HTMLButtonElement
       <button
         ref={ref}
         type="button"
-        className={`${rows.tap} ${styles.row} ${styles.place}`}
+        className={`${rows.tap} ${rows.row} ${styles.place}`}
         aria-label={label}
         onClick={() => navigate({ view: "place", id: place.id })}
       >
@@ -110,7 +110,7 @@ function DayRow({ date, day }: Listed) {
     <li>
       <button
         type="button"
-        className={day === undefined ? `${rows.tap} ${styles.row} ${styles.day} ${styles.still}` : `${rows.tap} ${styles.row} ${styles.day}`}
+        className={day === undefined ? `${rows.tap} ${rows.row} ${styles.day} ${styles.still}` : `${rows.tap} ${rows.row} ${styles.day}`}
         aria-label={`Open ${when}`}
         onClick={() => navigate({ view: "day", date })}
       >
@@ -171,28 +171,28 @@ function Period({ range, asked, loading }: { range: RangeResponse; asked: boolea
       ) : (
         <>
           {ranked.length > 0 && (
-            <div className={styles.section}>
-              <h2 id={placesHeading} className={styles.heading}>
+            <div className={rows.section}>
+              <h2 id={placesHeading} className={rows.heading}>
                 Where your time went
               </h2>
-              <ol className={styles.list} aria-labelledby={placesHeading}>
+              <ol className={rows.list} aria-labelledby={placesHeading}>
                 {places.map((one, index) => (
                   <PlaceRow key={one.place.id} ranked={one} ref={all && index === TOP_PLACES ? firstOfTheRest : undefined} />
                 ))}
               </ol>
               {places.length < ranked.length && (
-                <button type="button" className={`${rows.tap} ${styles.row} ${styles.more}`} onClick={() => setOpenedFor(periodKey)}>
+                <button type="button" className={`${rows.tap} ${rows.row} ${styles.more}`} onClick={() => setOpenedFor(periodKey)}>
                   {`Show all ${formatCount(ranked.length, "place")}`}
                 </button>
               )}
             </div>
           )}
           {days.length > 0 && (
-            <div className={styles.section}>
-              <h2 id={daysHeading} className={styles.heading}>
+            <div className={rows.section}>
+              <h2 id={daysHeading} className={rows.heading}>
                 Days
               </h2>
-              <ul className={styles.list} aria-labelledby={daysHeading}>
+              <ul className={rows.list} aria-labelledby={daysHeading}>
                 {days.map((one) => (
                   <DayRow key={one.date} {...one} />
                 ))}

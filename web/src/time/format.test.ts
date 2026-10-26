@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { formatCount, formatDistance, formatDuration, formatTime } from "./format";
+import { formatCount, formatDistance, formatDuration, formatInteger, formatTime } from "./format";
 
 describe("formatTime", () => {
   test("formatTime_uses_segment_zone", () => {
@@ -72,6 +72,14 @@ describe("formatDuration", () => {
     expect(formatDistance(41_203_000)).toBe("41,203 km");
     expect(formatDistance(-20)).toBe("0 m");
     expect(formatDistance(Number.NaN)).toBe("0 m");
+  });
+});
+
+describe("formatInteger", () => {
+  test("formatInteger_groups_by_thousands", () => {
+    expect(formatInteger(0)).toBe("0");
+    expect(formatInteger(999)).toBe("999");
+    expect(formatInteger(1284)).toBe("1,284");
   });
 });
 

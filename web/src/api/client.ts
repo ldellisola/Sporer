@@ -19,3 +19,6 @@ export async function getJson<T>(path: string, signal?: AbortSignal): Promise<T>
   if (!response.ok) throw new ApiError(response.status, path);
   return (await response.json()) as T;
 }
+
+/** Whether `error` is the server saying there is no such thing (a 404): a place that was merged away or never was. Asking again cannot help. */
+export const isNotFound = (error: unknown): boolean => error instanceof ApiError && error.status === 404;

@@ -39,9 +39,14 @@ export function formatDuration(seconds: number): string {
   return `${total}s`;
 }
 
+/** A whole number as the app writes one: grouped by thousands ("1,284"). */
+export function formatInteger(count: number): string {
+  return integer.format(count);
+}
+
 /** "1 place" or "5 places": the count (grouped, as the distances are) and the noun, with an s unless the count is one. */
 export function formatCount(count: number, noun: string): string {
-  return `${integer.format(count)} ${count === 1 ? noun : `${noun}s`}`;
+  return `${formatInteger(count)} ${count === 1 ? noun : `${noun}s`}`;
 }
 
 /** "850 m", "1.1 km" (one decimal below 100 km) or "412 km". */
