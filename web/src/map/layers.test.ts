@@ -85,6 +85,14 @@ describe("dayGeoJson", () => {
     ]);
   });
 
+  test("dayGeoJson_draws_a_move_whose_mode_the_server_left_out_as_unknown", () => {
+    const { mode: _left, ...withoutMode } = move(5, "walk", [[10, 59], [10.1, 59.1]]);
+
+    const { routes } = dayGeoJson(day(withoutMode));
+
+    expect(routes.features.map((feature) => feature.properties)).toEqual([{ id: 5, mode: "unknown" }]);
+  });
+
   test("dayGeoJson_merges_the_stops_of_one_place_into_one_pin_that_lists_their_numbers", () => {
     const { stops } = dayGeoJson(
       day(
@@ -280,12 +288,14 @@ describe("rangeGeoJson", () => {
         { id: 7, mode: "cycle", start: WHEN.start, end: WHEN.end, geometry: [[10, 59], [10.1, 59.1]] },
         { id: 8, mode: null, start: WHEN.start, end: WHEN.end, geometry: [[10, 59], [10.2, 59.2]] },
         { id: 9, mode: "walk", start: WHEN.start, end: WHEN.end, geometry: [[10, 59]] },
+        { id: 10, start: WHEN.start, end: WHEN.end, geometry: [[10, 59], [10.3, 59.3]] }, // the server leaves a mode it could not tell out of the JSON
       ]),
     );
 
     expect(routes.features.map((feature) => feature.properties)).toEqual([
       { id: 7, mode: "cycle" },
       { id: 8, mode: "unknown" },
+      { id: 10, mode: "unknown" },
     ]);
     expect(routes.features[0]?.geometry).toEqual({ type: "LineString", coordinates: [[10, 59], [10.1, 59.1]] });
   });

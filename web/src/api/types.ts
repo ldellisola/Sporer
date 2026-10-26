@@ -56,10 +56,10 @@ export interface StaySegment extends SegmentBase {
   place: PlaceRef | null;
 }
 
-/** Travel between two stays; `geometry` is the stored (detail) line. */
+/** Travel between two stays; `geometry` is the stored (detail) line. A mode the server could not tell is left out of the JSON, as null is. */
 export interface MoveSegment extends SegmentBase {
   kind: "move";
-  mode: Mode | null;
+  mode?: Mode | null;
   distanceMeters: number;
   geometry: LonLat[];
 }
@@ -94,10 +94,10 @@ export interface RangeSummary {
   moves: number;
 }
 
-/** A move to draw; `geometry` is the coarse line. */
+/** A move to draw; `geometry` is the coarse line. A mode the server could not tell is left out of the JSON, as null is. */
 export interface RangeMove {
   id: number;
-  mode: Mode | null;
+  mode?: Mode | null;
   start: string;
   end: string;
   geometry: LonLat[];

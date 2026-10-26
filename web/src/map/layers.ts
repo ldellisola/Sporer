@@ -61,7 +61,7 @@ function point<P>(lon: number, lat: number, properties: P): Feature<Point, P> {
 }
 
 /** A move is a line only with two positions or more; the server never sends fewer, and the map would refuse them. */
-function route(id: number, mode: Mode | null, geometry: LonLat[]): Feature<LineString, RouteProperties>[] {
+function route(id: number, mode: Mode | null | undefined, geometry: LonLat[]): Feature<LineString, RouteProperties>[] {
   if (geometry.length < 2) return [];
   return [{ type: "Feature", properties: { id, mode: mode ?? "unknown" }, geometry: { type: "LineString", coordinates: geometry } }];
 }
