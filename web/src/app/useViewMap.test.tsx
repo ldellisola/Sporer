@@ -94,13 +94,14 @@ function setup(route: Route, heatOn = false) {
       await client.refetchQueries({ queryKey: ["range", from, to] });
     });
   };
-  /** Refetches a heat, and lets the observers hear how it went (they are told on the next tick, which a refetch does not wait for). */
+  /** Refetches a place, and lets the observers hear how it went. */
   const refetchPlace = async (id: number) => {
     await act(async () => {
       await client.refetchQueries({ queryKey: ["place", id] });
       await new Promise((resolve) => setTimeout(resolve, 0)); // the observers are told on the next tick
     });
   };
+  /** Refetches a heat, and lets the observers hear how it went (they are told on the next tick, which a refetch does not wait for). */
   const refetchHeat = async (from: string, to = from) => {
     await act(async () => {
       await client.refetchQueries({ queryKey: ["heat", from, to] });

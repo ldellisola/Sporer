@@ -6,6 +6,7 @@ import { ApiError } from "./client";
 import {
   createQueryClient,
   dayQueryOptions,
+  placeOf,
   prefetchNeighbours,
   rangeQueryOptions,
   refreshInterval,
@@ -16,7 +17,7 @@ import {
   useRange,
   useStatus,
 } from "./queries";
-import type { DayResponse, LoadState, RangeResponse } from "./types";
+import type { DayResponse, LoadState, PlaceResponse, RangeResponse } from "./types";
 
 const SUMMARY = { places: 0, distanceMeters: 0, movingSeconds: 0 };
 
@@ -417,6 +418,31 @@ describe("query hooks", () => {
 
     expect(result.current.error).toBeInstanceOf(ApiError);
     expect((result.current.error as ApiError).status).toBe(404);
+  });
+
+  // The panel and the map both show a place by this, so that a place that is gone is gone for both.
+  describe("placeOf", () => {
+    const PLACE = { id: 7, name: "Home" } as PlaceResponse;
+
+    test("placeOf_shows_the_place_the_query_has", () => {
+      expect(placeOf({ data: PLACE, error: null })).toEqual({ gone: false, shown: PLACE });
+    });
+
+    test("placeOf_shows_nothing_while_there_is_nothing_yet", () => {
+      expect(placeOf({ data: undefined, error: null })).toEqual({ gone: false, shown: undefined });
+    });
+
+    test("placeOf_drops_the_place_the_query_still_holds_when_the_server_says_it_is_gone", () => {
+      // A 404 is for good: what the query kept of the place from before is not shown any more, on the map or in the panel.
+      expect(placeOf({ data: PLACE, error: new ApiError(404, "/api/places/7") })).toEqual({ gone: true, shown: undefined });
+      expect(placeOf({ data: undefined, error: new ApiError(404, "/api/places/7") })).toEqual({ gone: true, shown: undefined });
+    });
+
+    test("placeOf_keeps_the_place_under_any_other_failure", () => {
+      for (const error of [new ApiError(500, "/api/places/7"), new ApiError(400, "/api/places/7"), new TypeError("Failed to fetch")]) {
+        expect(placeOf({ data: PLACE, error }), String(error)).toEqual({ gone: false, shown: PLACE });
+      }
+    });
   });
 
   test("usePlace_with_no_id_asks_for_nothing_even_when_every_place_is_refetched", async () => {

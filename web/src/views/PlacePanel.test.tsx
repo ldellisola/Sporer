@@ -185,6 +185,14 @@ describe("PlacePanel", () => {
     expect(none.container.querySelector("p")).toBeNull(); // nothing is said of where it is when nothing is known
   });
 
+  test("PlacePanel_falls_back_to_the_city_for_an_address_that_is_empty_as_for_one_that_is_missing", async () => {
+    stubApi({ 2: { ...CAFE, address: "", city: "Oslo", country: "Norway" } });
+
+    mount();
+
+    expect(await screen.findByText("Oslo, Norway")).toBeInTheDocument();
+  });
+
   test("PlacePanel_counts_one_visit_as_one", async () => {
     stubApi({ 2: { ...CAFE, visits: 1, totalSeconds: 1440, recentVisits: [CAFE.recentVisits[0]!] } });
 

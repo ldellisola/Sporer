@@ -1,6 +1,5 @@
 import { useId } from "react";
-import { isNotFound } from "../api/client";
-import { usePlace } from "../api/queries";
+import { placeOf, usePlace } from "../api/queries";
 import type { PlaceResponse, PlaceVisit } from "../api/types";
 import { goBack, navigate } from "../app/router";
 import { dateLabel, dateOf } from "../time/dates";
@@ -16,7 +15,7 @@ export interface PlacePanelProps {
 
 /** What the line under the name says of where the place is: the address (which names the city) or else the city, and the country. */
 function whereIs(place: PlaceResponse): string | null {
-  const parts = [place.address ?? place.city, place.country].filter((part): part is string => part !== null && part !== "");
+  const parts = [place.address || place.city, place.country].filter((part): part is string => part !== null && part !== "");
   return parts.length === 0 ? null : parts.join(", ");
 }
 
@@ -108,8 +107,7 @@ function Place({ place }: { place: PlaceResponse }) {
  */
 export function PlacePanel({ id }: PlacePanelProps) {
   const place = usePlace(id);
-  const gone = isNotFound(place.error);
-  const shown = gone ? undefined : place.data;
+  const { gone, shown } = placeOf(place);
   return (
     <>
       <BackButton />

@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { isNotFound } from "../api/client";
-import { useDay, useHeat, usePlace, useRange } from "../api/queries";
+import { placeOf, useDay, useHeat, usePlace, useRange } from "../api/queries";
 import type { DayResponse, PlaceResponse, RangeResponse } from "../api/types";
 import { dayGeoJson, heatGeoJson, placeGeoJson, rangeGeoJson, type FitFeatures, type HeatCollection } from "../map/layers";
 import type { MapData } from "../map/MapView";
@@ -107,8 +106,7 @@ function drawPlace(place: PlaceResponse): Drawing {
  * A place that is gone (a 404) is drawn as nothing, as the panel says it no longer exists in place of what it showed.
  */
 function usePlaceMap(route: Route): Drawn {
-  const place = usePlace(route.view === "place" ? route.id : null);
-  const found = isNotFound(place.error) ? undefined : place.data;
+  const { shown: found } = placeOf(usePlace(route.view === "place" ? route.id : null));
   return useMemo(() => (found === undefined ? NOTHING : { ...drawPlace(found), ready: true }), [found]);
 }
 

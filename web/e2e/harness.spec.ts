@@ -121,7 +121,7 @@ test("fixTime_fixes_the_date_of_the_page_and_leaves_its_timers_and_frames_alone"
     return {
       now: new Date().toISOString(),
       timestamp: Date.now(),
-      called: typeof Date() === "string" && Date().includes("2026"),
+      called: Date() === new Date("2026-10-22T22:30:00Z").toString(), // the string of that moment, not of the machine's: a date that is asked for is as it was
       given: new Date("2020-02-29T12:00:00Z").toISOString(),
       zero: new Date(0).getTime(),
       parsed: Date.parse("2001-01-01T00:00:00Z"),

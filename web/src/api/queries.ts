@@ -1,7 +1,7 @@
 import { keepPreviousData, QueryClient, queryOptions, skipToken, useQuery } from "@tanstack/react-query";
 import { MAX_RANGE_DAYS, step, periodDays, periodRange, today } from "../time/dates";
 import type { Route } from "../app/router";
-import { ApiError, getJson } from "./client";
+import { ApiError, getJson, isNotFound } from "./client";
 import type {
   ConfigResponse,
   DayResponse,
@@ -111,6 +111,16 @@ export const useHeat = (from: string | null, to: string | null, enabled: boolean
   useQuery({ ...heatQueryOptions(from, to, keepPrevious), enabled });
 
 export const usePlace = (id: number | null) => useQuery(placeQueryOptions(id));
+
+/**
+ * What a place query shows, for the panel and for the map alike so that they never disagree: `shown` is its place, and `gone` says the
+ * place no longer exists (a 404, which asking again cannot change). A place that is gone is shown as none, whatever the query still holds
+ * of it from before; under any other failure the place stays, and is what is shown under the error.
+ */
+export function placeOf(query: { data?: PlaceResponse; error: Error | null }): { gone: boolean; shown: PlaceResponse | undefined } {
+  const gone = isNotFound(query.error);
+  return { gone, shown: gone ? undefined : query.data };
+}
 
 export const useStatus = () => useQuery(statusQueryOptions());
 

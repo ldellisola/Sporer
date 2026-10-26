@@ -132,7 +132,9 @@ function DayRow({ date, day }: Listed) {
  */
 function Period({ range, asked, loading }: { range: RangeResponse; asked: boolean; loading: boolean }) {
   const ranked = useMemo(() => rank(range.places), [range.places]);
-  const date = today(); // read on every render, so that a panel that is left open over midnight lists the new day
+  // Read on every render, so that a render after midnight lists the new day. Nothing renders at midnight itself: the panel catches up with
+  // the next render (a poll of the period, every minute while it holds today, that brings something new; a tap), not at the stroke of twelve.
+  const date = today();
   const days = useMemo(() => listDays(range, date), [range, date]);
   const periodKey = `${range.from}..${range.to}`;
   const [openedFor, setOpenedFor] = useState<string | null>(null); // the period whose rest of the places is shown

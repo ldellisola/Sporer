@@ -2,6 +2,7 @@ import type { Page } from "@playwright/test";
 
 /**
  * Makes the page's `Date` stand still at `iso`: `new Date()`, `Date.now()` and `Date()` give that moment, any other date is as it was.
+ * `Date.prototype.constructor` stays the native `Date`, so a date made by the page is an `instanceof` the proxy but is not `=== Date` by its `constructor`.
  * The page's date and nothing else. Not `page.clock`, the obvious tool and a trap here: it also replaces the page's
  * `requestAnimationFrame`, `performance.now` and timers. A fake `requestAnimationFrame` fires on a timer, at any rate, where the
  * browser's own waits for the last frame to be on screen, and MapLibre draws a frame for each call. A page under `page.clock` drew
