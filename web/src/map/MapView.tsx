@@ -1,4 +1,4 @@
-import type { GeoJSONSource, MapLayerMouseEvent, MapLibreMap } from "maplibre-gl";
+import type { GeoJSONSource, MapLibreMap, MapMouseEvent } from "maplibre-gl";
 import {
   useCallback,
   useEffect,
@@ -104,7 +104,8 @@ export interface MapViewProps {
   heatToggle?: HeatToggle;
   /**
    * Called with the id of the place when one is tapped (clicked, on a desktop): a dot of a period, or a pin of a day (the number on it
-   * too). The map does not know of routes: the parent takes the owner there. A drag that ends over a dot is no tap, as MapLibre has it.
+   * too), or the one nearest to the point of those within 12 px of it, so that a finger need not hit a dot of 8 px. The map does not know
+   * of routes: the parent takes the owner there. A drag that ends over a dot is no tap, as MapLibre has it.
    */
   onPlaceTap?: (id: number) => void;
   /**
@@ -112,9 +113,10 @@ export interface MapViewProps {
    * a map that cannot start (no WebGL, or MapLibre itself could not be fetched), and again for each attempt that fails once more
    * (see `MapViewHandle`). The map then draws on a plain background, and everything else on the page goes on. A style that cannot
    * be had for a map that already has one (the colour scheme changed) leaves the one it has on screen: a working map is not swapped
-   * for a blank one.
+   * for a blank one. `basemapKept` says which of the two it is: true when the map still draws the style it had (only the switch to
+   * another failed), false when there is no basemap (MapLibre or the map did not start, or the first style failed).
    */
-  onStyleError?: (error: Error) => void;
+  onStyleError?: (error: Error, basemapKept: boolean) => void;
   /**
    * Called each time a style has finished loading: the first one, the one of the other colour scheme after a switch, and the one of an
    * attempt that has put right a failure, so that a parent that noted the failure can take the note back. Not for the plain style the
@@ -124,8 +126,13 @@ export interface MapViewProps {
 }
 
 /** The layers of the dots of a period, and of the pins of a day with the numbers on them: what a tap opens the place of. */
-const DOT_LAYERS = [LAYER_IDS.places];
-const PIN_LAYERS = [LAYER_IDS.stops, LAYER_IDS.stopNumbers];
+const TAPPABLE_LAYERS = [LAYER_IDS.places, LAYER_IDS.stops, LAYER_IDS.stopNumbers];
+
+/**
+ * How far from a dot or a pin a tap still opens it, in pixels. A finger is some 40 px wide and the smallest dot is 8 px across, so a tap
+ * is looked for in a box of this much round the point, which is also what the pointer over the map asks.
+ */
+const TAP_SLOP_PX = 12;
 
 const NO_PADDING: MapPadding = { top: 0, right: 0, bottom: 0, left: 0 };
 
@@ -251,6 +258,33 @@ function fit(map: MapLibreMap, bounds: Bounds, padding: MapPadding): void {
   map.fitBounds(bounds, { padding, maxZoom: FIT_MAX_ZOOM, duration: FIT_DURATION_MS });
 }
 
+/**
+ * The place that a tap at `point` (pixels of the map) opens: the dot or the pin nearest to it, of those that are drawn within
+ * `TAP_SLOP_PX` of it, or undefined when there is none. Near is by the position of the place (where its dot or pin is centred), not by
+ * how much of a feature lies in the box: a big dot's edge is near where its middle is not. The dot says the place as its `id`; a pin's `id`
+ * is a stay's (the first of them), so it says it as `placeId`. A feature that says no place is passed over. Only layers that the style has
+ * are looked in: MapLibre reports an error for one that it has not (before the style has loaded, say), and finds nothing there.
+ */
+function placeAt(map: MapLibreMap, { x, y }: { x: number; y: number }): number | undefined {
+  const layers = TAPPABLE_LAYERS.filter((id) => map.getLayer(id) !== undefined);
+  if (layers.length === 0) return undefined;
+  const box: [[number, number], [number, number]] = [[x - TAP_SLOP_PX, y - TAP_SLOP_PX], [x + TAP_SLOP_PX, y + TAP_SLOP_PX]];
+  let nearest: number | undefined;
+  let nearestDistance = Infinity;
+  for (const feature of map.queryRenderedFeatures(box, { layers })) {
+    const id: unknown = feature.properties[feature.layer.id === LAYER_IDS.places ? "id" : "placeId"];
+    if (typeof id !== "number" || feature.geometry.type !== "Point") continue;
+    const [lon, lat] = feature.geometry.coordinates;
+    const at = map.project([lon!, lat!]);
+    const distance = Math.hypot(at.x - x, at.y - y);
+    if (distance < nearestDistance) {
+      nearest = id;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
+}
+
 // --- The map ---
 
 /** Where the style comes from: an address, a reason it cannot be had, or nothing yet (the config is still on its way). */
@@ -315,7 +349,7 @@ function MapSurface({
       // No WebGL, most likely, or no MapLibre. The page goes on without a map, and tries again when it is asked to (`retry`).
       failureRef.current = "map";
       showState(rootRef.current, "unavailable");
-      latest.current.onStyleError?.(toError(error));
+      latest.current.onStyleError?.(toError(error), false);
     };
     // A loader that throws, as one that rejects, is a MapLibre that cannot be had.
     new Promise<MapLibreModule>((resolve) => resolve(latest.current.load())).then(
@@ -385,7 +419,8 @@ function MapSurface({
       phase = "failed";
       failureRef.current = "style";
       showState(rootRef.current, "unavailable");
-      latest.current.onStyleError?.(error);
+      // Whether there is a basemap to keep: a style that loaded, and not the plain one that stands in for one that did not.
+      latest.current.onStyleError?.(error, shownRef.current !== null && shownRef.current !== FALLBACK_STYLE);
       if (!replaced && shownRef.current !== null) {
         // The map has not been touched, and what it shows is a style that works (the one of the other colour scheme, or the plain one
         // of an earlier failure): it stays, and draws what comes, instead of being swapped for a blank map.
@@ -458,33 +493,30 @@ function MapSurface({
   }, [map, styleUrl, styleFailed, dark, latest, styleAttempts]);
 
   // A tap on a place opens it. The listeners are the map's, not the style's: they are made once for each map and stay through every
-  // style (a theme switch drops the layers, and the map finds them again by id at the time of a click). `click` is MapLibre's, which
-  // is not fired for a drag that ends where it began (a pan that happens to end over a dot) and is what a tap is to it. The dot has
-  // the place as its `id`; a pin's `id` is a stay's (the first of them), so it says the place in `placeId`.
+  // style (a theme switch drops the layers, and they are looked for by id at the time of a click). `click` is MapLibre's, which is not
+  // fired for a drag that ends where it began (a pan that happens to end over a dot) and is what a tap is to it. The pointer over a
+  // place asks what a click would find, so that it says what a click would do.
   useEffect(() => {
     if (map === null) return;
     const canvas = map.getCanvas();
-    const open = (id: unknown): void => {
-      if (typeof id === "number") latest.current.onPlaceTap?.(id);
+    const onClick = ({ point }: MapMouseEvent): void => {
+      const id = placeAt(map, point);
+      if (id !== undefined) latest.current.onPlaceTap?.(id);
     };
-    const onDot = (event: MapLayerMouseEvent): void => open(event.features?.[0]?.properties["id"]);
-    const onPin = (event: MapLayerMouseEvent): void => open(event.features?.[0]?.properties["placeId"]);
-    const pointer = (): void => {
-      canvas.style.cursor = "pointer";
+    const onMove = ({ point }: MapMouseEvent): void => {
+      const cursor = placeAt(map, point) === undefined ? "" : "pointer";
+      if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
     };
-    const ordinary = (): void => {
+    const onOut = (): void => {
       canvas.style.cursor = "";
     };
-    const tappable = [...DOT_LAYERS, ...PIN_LAYERS];
-    map.on("click", DOT_LAYERS, onDot);
-    map.on("click", PIN_LAYERS, onPin);
-    map.on("mouseenter", tappable, pointer);
-    map.on("mouseleave", tappable, ordinary);
+    map.on("click", onClick);
+    map.on("mousemove", onMove);
+    map.on("mouseout", onOut);
     return () => {
-      map.off("click", DOT_LAYERS, onDot);
-      map.off("click", PIN_LAYERS, onPin);
-      map.off("mouseenter", tappable, pointer);
-      map.off("mouseleave", tappable, ordinary);
+      map.off("click", onClick);
+      map.off("mousemove", onMove);
+      map.off("mouseout", onOut);
     };
   }, [map, latest]);
 

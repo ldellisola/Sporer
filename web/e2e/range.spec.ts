@@ -243,6 +243,25 @@ test.describe("a dot of the month", () => {
     await expect(map(page)).toHaveAttribute("data-map-state", "ready");
   });
 
+  // Home's dot is the biggest, 16 px of radius with its 2 px outline: a tap 22 px below its middle is beside it, not on it, and is where a
+  // finger lands when it aims at the dot. It is within 12 px of the dot, and the other places are some 50 px away at the least.
+  test("month_view_a_tap_a_few_pixels_beside_a_dot_still_opens_it", async ({ page }) => {
+    await mockApi(page, { ...answers, "places/1": HOME });
+    await page.goto("/month/2026-10");
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect(details(page).getByText("6 places", { exact: true })).toBeVisible();
+    const free = await middleOfWhatIsFree(page);
+    const [x, y] = [Math.round(free.x), Math.round(free.y)];
+    await expect.poll(async () => sameColour(await pixelAt(page, x, y), PIN, 30), PIXEL_POLL).toBe(true);
+    await expect.poll(async () => sameColour(await pixelAt(page, x, y + 22), PIN, 30), PIXEL_POLL).toBe(false); // there is no dot there: it is beside it
+
+    await expect(async () => {
+      if (isWide(page)) await page.mouse.click(x, y + 22);
+      else await page.touchscreen.tap(x, y + 22);
+      await expect(page).toHaveURL(/\/place\/1$/, { timeout: 1000 });
+    }).toPass({ timeout: 15_000 });
+  });
+
   test("month_view_a_pointer_over_a_dot_is_a_pointer_and_away_from_it_the_ordinary_cursor", async ({ page }) => {
     await mockApi(page, { ...answers, "places/1": HOME });
     await page.goto("/month/2026-10");

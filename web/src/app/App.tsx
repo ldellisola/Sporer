@@ -61,7 +61,12 @@ export function App() {
   const map = useViewMap(route, heatOn);
   const sheetRef = useRef<BottomSheetHandle>(null);
   const mapRef = useRef<MapViewHandle>(null);
-  const [mapUnavailable, setMapUnavailable] = useState(false);
+  /**
+   * What the note over the map says, if it says anything: that there is no basemap ("Map unavailable": MapLibre or the map did not start, or
+   * the first style could not be had), or that the map still draws the style it had and only the switch to the one of the other colour
+   * scheme failed ("Couldn't switch the map style"). Both have the map's Retry.
+   */
+  const [mapNote, setMapNote] = useState<"unavailable" | "switch" | null>(null);
   const [sheetHeight, setSheetHeight] = useState(SHEET_PEEK);
   const barRef = useRef<HTMLDivElement>(null);
   const barBottom = useBottomEdge(barRef);
@@ -126,8 +131,8 @@ export function App() {
           padding={padding}
           heatToggle={map.heat.available ? { on: heatOn, onChange: setHeatOn } : undefined}
           onPlaceTap={(id) => navigate({ view: "place", id })}
-          onStyleError={() => setMapUnavailable(true)}
-          onStyleLoad={() => setMapUnavailable(false)}
+          onStyleError={(_error, basemapKept) => setMapNote(basemapKept ? "switch" : "unavailable")}
+          onStyleLoad={() => setMapNote(null)}
         />
       </div>
       <div className={styles.scrim} aria-hidden="true" />
@@ -137,7 +142,9 @@ export function App() {
         </div>
         <div className={styles.notices}>
           <StatusBanner />
-          {mapUnavailable && <Notice onRetry={() => mapRef.current?.retry()}>Map unavailable</Notice>}
+          {mapNote !== null && (
+            <Notice onRetry={() => mapRef.current?.retry()}>{mapNote === "switch" ? "Couldn't switch the map style" : "Map unavailable"}</Notice>
+          )}
           {map.heat.failed && (
             <Notice tone="error" onRetry={map.heat.retry}>
               Couldn't load the heat map

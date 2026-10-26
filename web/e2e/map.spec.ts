@@ -132,6 +132,45 @@ test.describe("colour scheme", () => {
   });
 });
 
+// The system goes dark while the network is down: the style of the dark scheme cannot be had. The map that works stays on screen (it is
+// not swapped for a blank one), the note says that only the switch failed, and Retry brings the dark style.
+test.describe("a switch of the colour scheme that fails", () => {
+  test.use({ deviceScaleFactor: 1 });
+
+  test("map_keeps_its_style_and_says_the_switch_failed_until_Retry_brings_the_other_one", async ({ page }) => {
+    test.setTimeout(30_000 + 3 * PIXEL_POLL.timeout);
+    let darkAsked = 0;
+    await page.route("**/map-style-light.json", (route) => route.fulfill({ json: flatStyle("#dfe6ea") }));
+    await page.route("**/map-style-dark.json", (route) => {
+      darkAsked += 1;
+      return darkAsked === 1
+        ? route.fulfill({ status: 200, contentType: "application/json", body: "<html>blocked</html>" })
+        : route.fulfill({ json: flatStyle("#1b2733") });
+    });
+    await mockApi(page, { config: { mapStyleLight: "/map-style-light.json", mapStyleDark: "/map-style-dark.json" } });
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.goto("/day/2026-10-22");
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect.poll(() => showsColour(page, LIGHT), PIXEL_POLL).toBe(true);
+
+    await page.emulateMedia({ colorScheme: "dark" });
+
+    const note = page.getByRole("status").filter({ hasText: "Couldn't switch the map style" });
+    await expect(note).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "Map unavailable" })).toHaveCount(0); // there is a basemap
+    await expect(map(page)).toHaveAttribute("data-map-state", "unavailable");
+    expect(darkAsked).toBe(1); // it does not try again by itself
+    await expect.poll(() => showsColour(page, LIGHT), PIXEL_POLL).toBe(true); // the map that worked is still what is drawn
+
+    await note.getByRole("button", { name: "Retry" }).click();
+
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect(note).toHaveCount(0);
+    expect(darkAsked).toBe(2);
+    await expect.poll(() => showsColour(page, DARK), PIXEL_POLL).toBe(true);
+  });
+});
+
 // Review Focus 4: the map style cannot be had. The rest of the page goes on, the map stays, and the app is told.
 const BROKEN_STYLES = [
   ["a_response_that_is_not_json", () => ({ status: 200, contentType: "application/json", body: "<html>blocked</html>" })],

@@ -260,7 +260,7 @@ describe("App layout", () => {
     renderApp();
     const before = padding();
 
-    act(() => mapProps().onStyleError?.(new Error("no style"))); // the app renders again, for another reason
+    act(() => mapProps().onStyleError?.(new Error("no style"), false)); // the app renders again, for another reason
     act(() => mapProps().onStyleLoad?.());
 
     expect(padding()).toBe(before);
@@ -340,14 +340,50 @@ describe("App map note", () => {
     renderApp();
     expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
 
-    act(() => mapProps().onStyleError?.(new Error("blocked")));
+    act(() => mapProps().onStyleError?.(new Error("blocked"), false));
     expect(screen.getByRole("status")).toHaveTextContent("Map unavailable");
 
-    act(() => mapProps().onStyleError?.(new Error("blocked again")));
+    act(() => mapProps().onStyleError?.(new Error("blocked again"), false));
     expect(screen.getAllByText(/Map unavailable/)).toHaveLength(1);
 
     act(() => mapProps().onStyleLoad?.()); // the other colour scheme's style loaded: the map is back
     expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
+  });
+
+  test("App_says_that_only_the_switch_of_the_style_failed_when_the_map_keeps_the_one_it_had", () => {
+    stubApi();
+    renderApp();
+
+    act(() => mapProps().onStyleError?.(new Error("dark style blocked"), true)); // the system went dark with the network down
+    expect(screen.getByRole("status")).toHaveTextContent("Couldn't switch the map style — Retry");
+    expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(map.retries).toBe(1);
+
+    act(() => mapProps().onStyleError?.(new Error("still blocked"), true)); // the attempt failed again: still one note, still this one
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent("Couldn't switch the map style — Retry");
+
+    act(() => mapProps().onStyleLoad?.());
+    expect(screen.queryByText(/Couldn't switch the map style/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
+  test("App_says_map_unavailable_when_no_basemap_is_drawn_and_the_note_follows_what_the_map_says_last", () => {
+    stubApi();
+    renderApp();
+
+    act(() => mapProps().onStyleError?.(new Error("no style"), false)); // MapLibre, or the first style
+    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable — Retry");
+    expect(screen.queryByText(/Couldn't switch/)).not.toBeInTheDocument();
+
+    act(() => mapProps().onStyleError?.(new Error("the switch"), true)); // the map came up, and then a switch failed
+    expect(screen.getByRole("status")).toHaveTextContent("Couldn't switch the map style");
+    expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
+
+    act(() => mapProps().onStyleError?.(new Error("gone"), false)); // and the map went wrong again, with no basemap
+    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable");
   });
 
   test("App_offers_a_Retry_with_the_map_note_that_asks_the_map_to_try_again_once_for_each_press", () => {
@@ -355,7 +391,7 @@ describe("App map note", () => {
     renderApp();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
 
-    act(() => mapProps().onStyleError?.(new Error("blocked")));
+    act(() => mapProps().onStyleError?.(new Error("blocked"), false));
     expect(screen.getByRole("status")).toHaveTextContent("Map unavailable — Retry");
     expect(map.retries).toBe(0);
 
@@ -455,7 +491,7 @@ describe("App prefetch", () => {
     await waitFor(() => expect(prefetch).toHaveBeenCalled());
     const calls = prefetch.mock.calls.length;
 
-    act(() => mapProps().onStyleError?.(new Error("no style")));
+    act(() => mapProps().onStyleError?.(new Error("no style"), false));
     fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
 
     expect(prefetch.mock.calls.length).toBe(calls);

@@ -40,10 +40,15 @@ const maplibre = vi.hoisted(() => {
     readonly sources = new Map<string, FakeSource>();
     readonly layers = new Map<string, Record<string, any>>();
     private readonly listeners = new Map<string, Set<Listener>>();
-    /** What was given to `on(type, layer, listener)`: the real map keeps these apart from its plain listeners, and so does the double. */
-    private readonly layerListeners: { type: string; layers: string[]; listener: Listener }[] = [];
     /** The canvas the real map draws on, for the cursor over it. */
     readonly canvas = document.createElement("canvas");
+    /**
+     * What is drawn at positions of the screen, for `queryRenderedFeatures`: a feature is at the pixel that its coordinates are, in this
+     * double (see `project`), so a test says where on the screen a dot is by where it puts it.
+     */
+    readonly drawn: { layerId: string; properties: Record<string, unknown>; at: [number, number] }[] = [];
+    /** The boxes and layers that `queryRenderedFeatures` was asked, in order. */
+    readonly queries: { box: unknown; layers: string[] }[] = [];
     readonly touchZoomRotate = {
       disableRotation: () => {
         if (FakeMap.failRotation) throw FakeMap.failRotation;
@@ -57,46 +62,45 @@ const maplibre = vi.hoisted(() => {
       FakeMap.instances.push(this);
     }
 
-    on(type: string, layers: string | string[] | Listener, listener?: Listener): this {
-      if (typeof layers !== "function") {
-        this.layerListeners.push({ type, layers: [layers].flat(), listener: listener! });
-        return this;
-      }
+    on(type: string, listener: Listener): this {
       const set = this.listeners.get(type) ?? new Set<Listener>();
-      set.add(layers);
+      set.add(listener);
       this.listeners.set(type, set);
       return this;
     }
-    off(type: string, layers: string | string[] | Listener, listener?: Listener): this {
-      if (typeof layers !== "function") {
-        const at = this.layerListeners.findIndex((entry) => entry.type === type && entry.listener === listener);
-        if (at >= 0) this.layerListeners.splice(at, 1);
-        return this;
-      }
-      this.listeners.get(type)?.delete(layers);
+    off(type: string, listener: Listener): this {
+      this.listeners.get(type)?.delete(listener);
       return this;
     }
     listenerCount(type: string): number {
       return this.listeners.get(type)?.size ?? 0;
     }
-    /** How many listeners are on layers of the map for `type` (a click on a pin, the cursor over a dot). */
-    layerListenerCount(type: string): number {
-      return this.layerListeners.filter((entry) => entry.type === type).length;
-    }
     emit(type: string, event: unknown = {}): void {
       for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event);
     }
-    /**
-     * What the real map does for an event over a feature of `layerId`: the listeners that asked for that layer hear it, with the
-     * feature as it is rendered (its properties). A listener of another layer hears nothing.
-     */
-    hit(type: string, layerId: string, properties: Record<string, unknown> = {}): void {
-      for (const entry of [...this.layerListeners]) {
-        if (entry.type === type && entry.layers.includes(layerId)) entry.listener({ features: [{ properties, layer: { id: layerId } }] });
-      }
+    /** An event of the pointer at the pixel (`x`, `y`) of the map, as MapLibre tells of one (`click`, `mousemove`). */
+    pointer(type: string, x: number, y: number): void {
+      this.emit(type, { point: { x, y } });
     }
     getCanvas(): HTMLCanvasElement {
       return this.canvas;
+    }
+    /** The pixel that a position is at: the position itself, so that a test places things where it wants them. */
+    project([x, y]: [number, number]): { x: number; y: number } {
+      return { x, y };
+    }
+    /**
+     * The features of `layers` that are in the box, as MapLibre gives them: like the real one it will not look in a layer that is not in
+     * the style (it reports an error and finds nothing), which here is a test that fails.
+     */
+    queryRenderedFeatures(box: [[number, number], [number, number]], options: { layers: string[] }): object[] {
+      this.requireStyle();
+      this.queries.push({ box, layers: options.layers });
+      for (const id of options.layers) if (!this.layers.has(id)) throw new Error(`The layer '${id}' does not exist in the map's style and cannot be queried for features.`);
+      const [[left, top], [right, bottom]] = box;
+      return this.drawn
+        .filter(({ layerId, at: [x, y] }) => options.layers.includes(layerId) && x >= left && x <= right && y >= top && y <= bottom)
+        .map(({ layerId, properties, at }) => ({ properties, layer: { id: layerId }, geometry: { type: "Point", coordinates: at } }));
     }
 
     private requireStyle(): void {
@@ -981,6 +985,107 @@ describe("MapView", () => {
       expect(map.sources.size).toBe(4); // but it is drawn on
     });
 
+    // The app says "Couldn't switch the map style" when a basemap is still drawn and only the switch failed, and "Map unavailable" when
+    // there is none: the second argument of `onStyleError` tells which.
+    describe("whether a basemap is kept", () => {
+      type Told = (error: Error, basemapKept: boolean) => void;
+      const kept = (onStyleError: { mock: { calls: Parameters<Told>[] } }) => onStyleError.mock.calls.map(([, basemapKept]) => basemapKept);
+
+      test("MapView_says_there_is_no_basemap_when_the_first_style_cannot_be_had_or_MapLibre_or_the_map_cannot_start", async () => {
+        flakyFetch(1);
+        const first = vi.fn<Told>();
+        const view1 = render(view({ onStyleError: first }));
+        await waitFor(() => expect(first).toHaveBeenCalledTimes(1));
+        expect(kept(first)).toEqual([false]);
+        view1.unmount();
+
+        goodStyle();
+        const slow = slowLoader();
+        const second = vi.fn<Told>();
+        const view2 = render(view({ loadMapLibre: slow.load, onStyleError: second }));
+        await slow.fail(new TypeError("Failed to fetch dynamically imported module"));
+        expect(kept(second)).toEqual([false]);
+        view2.unmount();
+
+        FakeMap.failWith = new Error("Failed to initialize WebGL");
+        const third = vi.fn<Told>();
+        render(view({ onStyleError: third }));
+        await waitFor(() => expect(third).toHaveBeenCalledTimes(1));
+        expect(kept(third)).toEqual([false]);
+      });
+
+      test("MapView_says_a_basemap_is_kept_when_only_the_switch_to_the_other_colour_scheme_failed_and_when_it_fails_again", async () => {
+        let darkWorks = false;
+        stubFetch((url) => (url === "/styles/dark" && !darkWorks ? Promise.reject(new TypeError("Failed to fetch")) : Response.json({ ...STYLE, name: url })));
+        const setScheme = stubColourScheme("light");
+        const handle = createRef<MapViewHandle>();
+        const onStyleError = vi.fn<Told>();
+        render(withConfig(clientWithConfig(), { ref: handle, onStyleError }));
+        await styleApplied(1);
+        theMap().emit("style.load");
+
+        setScheme("dark");
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+        retryOf(handle); // and it still cannot
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(2));
+
+        expect(kept(onStyleError)).toEqual([true, true]);
+      });
+
+      test("MapView_says_a_basemap_is_kept_when_MapLibre_refuses_the_style_of_the_other_colour_scheme_and_the_old_one_is_put_back", async () => {
+        stubFetch((url) => Response.json({ ...STYLE, name: url }));
+        const setScheme = stubColourScheme("light");
+        const onStyleError = vi.fn<Told>();
+        render(withConfig(clientWithConfig(), { onStyleError }));
+        await styleApplied(1);
+        theMap().emit("style.load");
+
+        setScheme("dark");
+        await styleApplied(2);
+        theMap().emit("error", { error: new Error("layers[3].paint: unknown property") });
+
+        expect(kept(onStyleError)).toEqual([true]);
+      });
+
+      test("MapView_says_there_is_still_no_basemap_when_the_first_style_failed_and_so_does_the_switch_after_it", async () => {
+        stubFetch(() => Promise.reject(new TypeError("Failed to fetch")));
+        const setScheme = stubColourScheme("light");
+        const onStyleError = vi.fn<Told>();
+        render(withConfig(clientWithConfig(), { onStyleError }));
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+        await styleApplied(1);
+        theMap().emit("style.load"); // the plain style: no map to speak of
+
+        setScheme("dark");
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(2));
+
+        expect(kept(onStyleError)).toEqual([false, false]);
+      });
+
+      test("MapView_says_a_basemap_is_kept_for_a_switch_that_fails_after_a_failed_first_style_was_put_right", async () => {
+        let lightAsked = 0;
+        stubFetch((url) => {
+          if (url === "/styles/dark") return Promise.reject(new TypeError("Failed to fetch"));
+          return ++lightAsked === 1 ? Promise.reject(new TypeError("Failed to fetch")) : Response.json({ ...STYLE, name: url });
+        });
+        const setScheme = stubColourScheme("light");
+        const handle = createRef<MapViewHandle>();
+        const onStyleError = vi.fn<Told>();
+        render(withConfig(clientWithConfig(), { ref: handle, onStyleError }));
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1)); // the first style: nothing to draw
+        await styleApplied(1);
+        theMap().emit("style.load"); // the plain style
+        retryOf(handle);
+        await styleApplied(2);
+        theMap().emit("style.load"); // the light style, which is a basemap now
+
+        setScheme("dark"); // and the dark one cannot be had
+        await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(2));
+
+        expect(kept(onStyleError)).toEqual([false, true]);
+      });
+    });
+
     test("MapView_retries_when_the_page_comes_back_into_view_but_only_while_something_has_failed_and_only_once", async () => {
       const urls = flakyFetch(2);
       const onStyleError = vi.fn<(error: Error) => void>();
@@ -1126,74 +1231,170 @@ describe("MapView", () => {
     });
   });
 
-  // Spec 4.6: a place is reached by tapping it anywhere. MapLibre's own click does not fire for the end of a drag, and a tap is a click
-  // to it, so the layers' `click` is all there is to listen to (and `mouseenter` and `mouseleave` for the pointer over them, on a desktop).
+  // Spec 4.6: a place is reached by tapping it anywhere. A finger is wider than a dot (4 px at the least), so a tap or a click looks for a
+  // dot or a pin in a box of 12 px round the point (`queryRenderedFeatures`), and the nearest one wins. MapLibre's own `click` is not
+  // fired for the end of a drag, and a tap is a click to it; the pointer over what a click would open is the same look.
   describe("opening a place", () => {
-    const DOT = { layer: LAYER_IDS.places, properties: { id: 7, radius: 9 }, place: 7 };
-    const PIN = { layer: LAYER_IDS.stops, properties: { order: 2, label: "2 · 4", name: "Home", id: 301, placeId: 11 }, place: 11 };
-    const NUMBER = { layer: LAYER_IDS.stopNumbers, properties: { order: 2, label: "2 · 4", name: "Home", id: 301, placeId: 11 }, place: 11 };
+    /** Something drawn on the map: the layer it is in, what MapLibre says of it (its properties), and the place that a tap on it opens (0: none). */
+    interface Thing {
+      layer: string;
+      properties: Record<string, unknown>;
+      place: number;
+    }
+    const DOT: Thing = { layer: LAYER_IDS.places, properties: { id: 7, radius: 9 }, place: 7 };
+    const PIN: Thing = { layer: LAYER_IDS.stops, properties: { order: 2, label: "2 · 4", name: "Home", id: 301, placeId: 11 }, place: 11 };
+    const NUMBER: Thing = { layer: LAYER_IDS.stopNumbers, properties: { order: 2, label: "2 · 4", name: "Home", id: 301, placeId: 11 }, place: 11 };
+
+    /** A map with its style loaded (its layers are there to be looked in), and `things` drawn where `at` says. */
+    async function drawn(things: [Thing, [number, number]][], props: Partial<MapViewProps> = {}) {
+      goodStyle();
+      const view_ = render(view(props));
+      const map = await mapUp();
+      await styleApplied();
+      map.emit("style.load");
+      for (const [{ layer, properties }, at] of things) map.drawn.push({ layerId: layer, properties, at });
+      return { map, ...view_ };
+    }
 
     test.each([
       ["a_dot_of_a_period", DOT],
       ["a_pin_of_a_day", PIN],
       ["the_number_on_a_pin", NUMBER],
-    ])("MapView_calls_onPlaceTap_with_the_place_when_%s_is_clicked", async (_name, { layer, properties, place }) => {
-      goodStyle();
+    ])("MapView_calls_onPlaceTap_with_the_place_when_%s_is_clicked", async (_name, thing) => {
       const onPlaceTap = vi.fn<(id: number) => void>();
-      render(view({ onPlaceTap }));
-      const map = await mapUp();
+      const { map } = await drawn([[thing, [200, 300]]], { onPlaceTap });
 
-      map.hit("click", layer, properties);
+      map.pointer("click", 200, 300);
 
       expect(onPlaceTap).toHaveBeenCalledTimes(1);
-      expect(onPlaceTap).toHaveBeenCalledWith(place); // the place, and not the stay that the pin's `id` is
+      expect(onPlaceTap).toHaveBeenCalledWith(thing.place); // the place, and not the stay that the pin's `id` is
     });
 
-    test("MapView_does_not_open_a_place_for_a_click_on_any_other_layer_or_a_feature_that_has_none", async () => {
-      goodStyle();
-      const onPlaceTap = vi.fn<(id: number) => void>();
-      render(view({ onPlaceTap }));
-      const map = await mapUp();
+    test("MapView_looks_for_dots_and_pins_in_a_box_of_12px_round_the_point_in_those_layers_only", async () => {
+      const { map } = await drawn([]);
 
-      map.hit("click", LAYER_IDS.dayRoute, { id: 11, mode: "walk" });
-      map.hit("click", LAYER_IDS.heat, { weight: 1 });
-      map.hit("click", LAYER_IDS.stops, { order: 1, label: "1", name: null, id: 5 }); // a pin that says no place
-      map.hit("click", LAYER_IDS.places, {});
+      map.pointer("click", 200, 300);
+
+      expect(map.queries).toEqual([
+        { box: [[188, 288], [212, 312]], layers: [LAYER_IDS.places, LAYER_IDS.stops, LAYER_IDS.stopNumbers] },
+      ]);
+    });
+
+    test("MapView_opens_a_dot_that_a_finger_missed_by_10px_and_does_nothing_for_a_tap_farther_off", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { map } = await drawn([[DOT, [200, 300]]], { onPlaceTap });
+
+      map.pointer("click", 208, 306); // 10 px away
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+      expect(onPlaceTap).toHaveBeenLastCalledWith(7);
+
+      map.pointer("click", 200, 313); // 13 px away: a tap on the map, which has nothing to open
+      map.pointer("click", 225, 300);
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+    });
+
+    test("MapView_opens_the_nearer_of_two_places_when_a_tap_is_in_reach_of_both", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const other: Thing = { ...DOT, properties: { id: 8, radius: 5 }, place: 8 };
+      const { map } = await drawn([[DOT, [200, 300]], [other, [215, 300]]], { onPlaceTap });
+
+      map.pointer("click", 212, 300); // 12 from one, 3 from the other
+      expect(onPlaceTap).toHaveBeenLastCalledWith(8);
+      map.pointer("click", 203, 300); // 3 from the first, 12 from the other
+      expect(onPlaceTap).toHaveBeenLastCalledWith(7);
+      map.pointer("click", 207, 302); // 7.3 and 8.2: the first, and not the one that is drawn on top or comes first in the answer
+      expect(onPlaceTap).toHaveBeenLastCalledWith(7);
+      expect(onPlaceTap).toHaveBeenCalledTimes(3);
+    });
+
+    test("MapView_picks_the_nearest_across_the_kinds_of_feature_and_by_the_position_of_the_place_not_by_the_edge_of_what_was_hit", async () => {
+      // A big dot's edge is near, and its middle is far: the place whose middle is nearest is the one meant.
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const big: Thing = { ...DOT, properties: { id: 3, radius: 16 }, place: 3 };
+      const { map } = await drawn([[big, [190, 300]], [PIN, [208, 300]]], { onPlaceTap });
+
+      map.pointer("click", 200, 300); // 10 from the big dot's middle, 8 from the pin's
+
+      expect(onPlaceTap).toHaveBeenCalledWith(11);
+    });
+
+    test("MapView_skips_a_feature_that_names_no_place_for_the_next_one_in_reach", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const noPlace: Thing = { layer: LAYER_IDS.stops, properties: { order: 1, label: "1", name: null, id: 5 }, place: 0 }; // a pin that says no place
+      const { map } = await drawn([[noPlace, [200, 300]], [DOT, [208, 300]]], { onPlaceTap });
+
+      map.pointer("click", 201, 300);
+
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+      expect(onPlaceTap).toHaveBeenCalledWith(7);
+      map.drawn.splice(1, 1);
+      map.pointer("click", 201, 300);
+      expect(onPlaceTap).toHaveBeenCalledTimes(1); // and with none in reach there is nothing to open
+    });
+
+    test("MapView_does_nothing_for_a_click_where_there_is_nothing_in_the_box_or_only_other_layers", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { map } = await drawn([[{ layer: LAYER_IDS.dayRoute, properties: { id: 11, mode: "walk" }, place: 0 }, [200, 300]]], { onPlaceTap });
+
+      map.pointer("click", 200, 300);
+      map.pointer("click", 10, 10);
 
       expect(onPlaceTap).not.toHaveBeenCalled();
     });
 
-    test("MapView_calls_the_latest_onPlaceTap_and_copes_without_one", async () => {
+    test("MapView_looks_in_no_layer_that_the_style_does_not_have_yet", async () => {
+      // Before the style has loaded (or while another is on its way, or the context is lost) there are no layers: the real map reports an
+      // error for each one that it is asked to look in, and a click must not make that.
       goodStyle();
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      render(view({ onPlaceTap }));
+      const map = await mapUp();
+      await styleApplied();
+
+      expect(() => map.pointer("click", 200, 300)).not.toThrow();
+      expect(() => map.pointer("mousemove", 200, 300)).not.toThrow();
+
+      expect(map.queries).toEqual([]);
+      expect(onPlaceTap).not.toHaveBeenCalled();
+    });
+
+    test("MapView_calls_the_latest_onPlaceTap_and_copes_without_one", async () => {
       const first = vi.fn<(id: number) => void>();
       const second = vi.fn<(id: number) => void>();
-      const { rerender } = render(view({ onPlaceTap: first }));
-      const map = await mapUp();
+      const { map, rerender } = await drawn([[DOT, [200, 300]]], { onPlaceTap: first });
 
       rerender(view({ onPlaceTap: second })); // a new function on each render of the parent is the usual
-      map.hit("click", DOT.layer, DOT.properties);
+      map.pointer("click", 200, 300);
       expect(first).not.toHaveBeenCalled();
       expect(second).toHaveBeenCalledWith(7);
 
       rerender(view());
-      expect(() => map.hit("click", DOT.layer, DOT.properties)).not.toThrow();
-      expect(map.layerListenerCount("click")).toBe(2); // the dots and the pins: one listener for each, whatever it is rendered with
+      expect(() => map.pointer("click", 200, 300)).not.toThrow();
+      expect(map.listenerCount("click")).toBe(1); // one listener, whatever it is rendered with
     });
 
-    test.each([
-      ["a_dot", DOT.layer],
-      ["a_pin", PIN.layer],
-      ["the_number_on_a_pin", NUMBER.layer],
-    ])("MapView_shows_a_pointer_over_%s_and_the_ordinary_cursor_away_from_it", async (_name, layer) => {
-      goodStyle();
-      render(view());
-      const map = await mapUp();
+    test("MapView_shows_a_pointer_where_a_click_would_open_a_place_and_the_ordinary_cursor_elsewhere", async () => {
+      const { map } = await drawn([[DOT, [200, 300]], [PIN, [400, 300]]]);
       expect(map.canvas.style.cursor).toBe("");
 
-      map.hit("mouseenter", layer);
+      map.pointer("mousemove", 205, 300);
       expect(map.canvas.style.cursor).toBe("pointer");
+      map.pointer("mousemove", 207, 309); // 12 px off, as a click would still find it
+      expect(map.canvas.style.cursor).toBe("pointer");
+      map.pointer("mousemove", 300, 300);
+      expect(map.canvas.style.cursor).toBe("");
+      map.pointer("mousemove", 400, 305);
+      expect(map.canvas.style.cursor).toBe("pointer");
+      map.emit("mouseout"); // the pointer leaves the map
+      expect(map.canvas.style.cursor).toBe("");
+    });
 
-      map.hit("mouseleave", layer);
+    test("MapView_leaves_the_cursor_alone_over_a_feature_that_names_no_place", async () => {
+      const noPlace: Thing = { layer: LAYER_IDS.stops, properties: { order: 1, label: "1", name: null, id: 5 }, place: 0 };
+      const { map } = await drawn([[noPlace, [200, 300]]]);
+
+      map.pointer("mousemove", 200, 300);
+
       expect(map.canvas.style.cursor).toBe("");
     });
 
@@ -1204,16 +1405,17 @@ describe("MapView", () => {
       const map = await mapUp();
       await styleApplied();
       map.emit("style.load"); // a style that loads (a theme switch too) is no reason to listen again: the listeners are the map's
+      map.drawn.push({ layerId: DOT.layer, properties: DOT.properties, at: [200, 300] });
 
-      expect(map.layerListenerCount("click")).toBe(2);
-      expect(map.layerListenerCount("mouseenter")).toBe(1);
-      expect(map.layerListenerCount("mouseleave")).toBe(1);
-      map.hit("click", DOT.layer, DOT.properties);
+      expect(map.listenerCount("click")).toBe(1);
+      expect(map.listenerCount("mousemove")).toBe(1);
+      expect(map.listenerCount("mouseout")).toBe(1);
+      map.pointer("click", 200, 300);
       expect(onPlaceTap).toHaveBeenCalledTimes(1);
 
       unmount();
 
-      for (const type of ["click", "mouseenter", "mouseleave"]) expect(map.layerListenerCount(type), type).toBe(0);
+      for (const type of ["click", "mousemove", "mouseout"]) expect(map.listenerCount(type), type).toBe(0);
     });
 
     test("MapView_taps_open_places_also_when_the_map_is_made_after_the_data_arrived", async () => {
@@ -1224,7 +1426,10 @@ describe("MapView", () => {
 
       await slow.arrive();
       const map = await mapUp();
-      map.hit("click", LAYER_IDS.stops, { id: 5, placeId: 50 });
+      await styleApplied();
+      map.emit("style.load");
+      map.drawn.push({ layerId: LAYER_IDS.stops, properties: { id: 5, placeId: 50 }, at: [200, 300] });
+      map.pointer("click", 203, 303);
 
       expect(onPlaceTap).toHaveBeenCalledWith(50);
     });
