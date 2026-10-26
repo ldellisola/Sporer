@@ -13,7 +13,7 @@ The server is a .NET 10 API, and it also serves the web app that shows the timel
 | `POST /api/overland` | Receives Overland batches. Answers `{"result":"ok"}` once the points are stored. |
 | `GET /api/day/{yyyy-MM-dd}` | One local day of the timeline. `state` is `pending` while work that affects that day is still waiting. |
 | `GET /api/range?from=yyyy-MM-dd&to=yyyy-MM-dd` | A stretch of local days (at most 400, both ends counted) in one answer: every move with its line (simplified further if there would be more than 50 000 vertices), the places with the time spent there inside the range, and a list of the days. `state` is `pending` while work that affects the range is still waiting. |
-| `GET /api/heat?from=yyyy-MM-dd&to=yyyy-MM-dd` | Where the time of a range (the same dates, the same limit as `/api/range`) was spent, for a heat layer: `cells` are `[lon, lat, seconds]`, the most seconds first, one per cell of a grid of 0.001 degrees (about 110 m), weighted by the time of the stays in it, not by points; `maxSeconds` is the first one's weight (0 when there are none). |
+| `GET /api/heat?from=yyyy-MM-dd&to=yyyy-MM-dd` | Where the time of a range (the same dates, the same limit as `/api/range`) was spent, for a heat layer: `cells` are `[lon, lat, seconds]`, the most seconds first, one per cell of a grid of 0.001 degrees (about 111 m of latitude; a degree of longitude is shorter the further you are from the equator, so a cell is narrower than it is tall), weighted by the time of the stays in it, not by points; `maxSeconds` is the first one's weight (0 when there are none). |
 | `GET /api/places/{id}` | A place and the time spent at it: name, address, centre, total seconds, number of visits, first and last visit, and the latest 50 stays (`start`, `end`, local `date`, `timeZone`), newest first. A place merged into another is served as the one it was merged into, with the time of both. `404` for an id that is no place of the timeline (unknown, or no stay names the place it leads to or any place merged into it), `400` for one that is not a positive whole number. |
 | `GET /api/status` | Processing health: algorithm version, backfill progress, pending and failed work, place naming progress, warnings. |
 | `GET /api/config` | What the web app needs to know before it can draw: the map styles for the light and the dark colour scheme (`Map__StyleLight`, `Map__StyleDark`, see below). |
@@ -36,12 +36,32 @@ as the API, from `wwwroot` next to `Sporer.Api.dll`.
 ## Running it
 
 Sporer needs a TimescaleDB (PostgreSQL) database. The image is published to `ghcr.io/ldellisola/sporer` and listens on
-port 80.
+port 80 inside the container.
+
+**In production the container's port is not published.** The app is meant to be reached through Traefik, over the VPN, and
+it trusts the forwarded headers of whatever connects to it. Once something like Authentik's forward auth sits in front of
+Traefik, a port published on the host is a way round it. Put the container on the Docker network that Traefik reaches its
+services by (and on one that reaches the database), and let Traefik be the only one that connects to it:
 
 ```sh
-docker run -d --name sporer --restart unless-stopped -p 8080:80 \
+docker run -d --name sporer --restart unless-stopped --network <the network Traefik is on> \
+  --label 'traefik.enable=true' \
+  --label 'traefik.http.routers.sporer.rule=Host(`sporer.example.com`)' \
+  --label 'traefik.http.services.sporer.loadbalancer.server.port=80' \
   -e TSDB_CONNECTION_STRING="Host=db;Port=5432;Username=postgres;Password=<password>;Database=postgres" \
   -e OVERLAND_TOKEN="<a long random string>" \
+  -e Nominatim__UserAgent="Sporer/1.0 (you@example.com)" \
+  ghcr.io/ldellisola/sporer:latest
+```
+
+(Add the entry point, TLS and authentication labels that your own Traefik uses for its other services.)
+
+**To try it on your own machine only**, publish the port on the loopback address, so that nothing but that machine can
+reach it, and open `http://localhost:8080`. Do not do this on a server:
+
+```sh
+docker run -d --name sporer-try -p 127.0.0.1:8080:80 --add-host=host.docker.internal:host-gateway \
+  -e TSDB_CONNECTION_STRING="Host=host.docker.internal;Port=5432;Username=postgres;Password=<password>;Database=postgres" \
   -e Nominatim__UserAgent="Sporer/1.0 (you@example.com)" \
   ghcr.io/ldellisola/sporer:latest
 ```

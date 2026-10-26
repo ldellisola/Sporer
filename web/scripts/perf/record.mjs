@@ -11,8 +11,10 @@
 // and, for each, what the app asks for on top of it: the status, and the two days or periods either side (it prefetches the one before and
 // the one after whatever is on show, so a step to the next one asks for the one after that).
 // Everything goes to perf/recorded/, as the server wrote it, with an index of the requests it answers. The directory is not
-// committed (a year of routes is half a megabyte): record again on the machine that measures.
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+// committed (a year of routes is half a megabyte): record again on the machine that measures. It is written to perf/recorded.partial/
+// first and takes the place of the old recording only when it is complete, so that a server that fails half-way (or a run that is
+// stopped) leaves the old recording as it was, and never a half of a new one.
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,7 +24,9 @@ if (!base || !first || !last) {
   process.exit(2);
 }
 
-const out = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "perf", "recorded");
+const perf = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "perf");
+const out = join(perf, "recorded");
+const partial = join(perf, "recorded.partial");
 
 // --- Dates, all in UTC and as yyyy-mm-dd, which is how the app writes them ---
 const DAY = 86_400_000;
@@ -49,7 +53,7 @@ async function record(path, name) {
   if (!response.ok) throw new Error(`GET ${path} answered ${response.status}`);
   const body = await response.text();
   const file = `${name}.json`;
-  writeFileSync(join(out, file), body);
+  writeFileSync(join(partial, file), body);
   index[path] = file;
   files[file] = { bytes: Buffer.byteLength(body) };
   return body;
@@ -94,9 +98,14 @@ for (let year = Number(first.slice(0, 4)); year <= Number(last.slice(0, 4)); yea
 const year = yearArg ? Number(yearArg) : [...years].sort((a, b) => b.bytes - a.bytes)[0].year;
 
 // --- Recording them, and what the app asks for around each ---
-// The old recording goes only now: a server that was not there, or that failed while the days were looked at, leaves it as it was.
-rmSync(out, { recursive: true, force: true });
-mkdirSync(out, { recursive: true });
+// Into a directory of its own: the old recording goes only once this one is complete (a server that was not there, that failed while
+// the days were looked at or that fails now, leaves it as it was), and what a failed run began is taken away again.
+rmSync(partial, { recursive: true, force: true }); // what an earlier run that was killed left
+mkdirSync(partial, { recursive: true });
+let complete = false;
+process.on("exit", () => {
+  if (!complete) rmSync(partial, { recursive: true, force: true }); // a failure on the way (the server went away, say) takes its half with it
+});
 const scenarios = [];
 const rangePath = ({ from, to }) => `/api/range?from=${from}&to=${to}`;
 
@@ -125,9 +134,13 @@ for (const scenario of scenarios) {
   scenario.bytes = files[file].bytes;
 }
 writeFileSync(
-  join(out, "index.json"),
+  join(partial, "index.json"),
   JSON.stringify({ recordedFrom: base, first, last, scenarios, requests: index, files }, null, 2),
 );
+// Complete: it takes the place of the old recording, which goes only now.
+rmSync(out, { recursive: true, force: true });
+renameSync(partial, out);
+complete = true;
 
 console.log(`Recorded ${Object.keys(index).length} responses to ${out}`);
 for (const s of scenarios) console.log(`  ${s.id.padEnd(12)} ${s.url.padEnd(20)} ${s.label}: ${(s.bytes / 1000).toFixed(1)} kB`);

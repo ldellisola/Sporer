@@ -64,7 +64,8 @@ Rulings that shaped what was changed and what was left, so that the numbers are 
   paint; and deferring the map would cost the owner's priority view, the map.
 - **P2-R67 (loader and tooling).** A failure anywhere in making or setting up the map is reported through `onStyleError`, never thrown; the
   tooling is checked up front, scoped and labelled correctly (commit of fix round 2).
-- **Compression.** Optimal for Brotli and gzip (commit `4f96769`), after comparing the levels on one set of requests.
+- **Compression.** Optimal for Brotli and gzip (commit `4f96769`, fix round 1), chosen after comparing the levels on requests that were drawn
+  anew for each level, and confirmed in fix round 2 by comparing them on one set of requests (the tables in "Compression").
 
 ## Machine and setup
 
@@ -227,10 +228,11 @@ The API compresses what it reads with ASP.NET's response compression, Brotli fir
 a browser that accepts both is given: measured from the API with the built web root (`curl -H 'Accept-Encoding: ...'`, which counts the
 body as it is sent), 679.9 kB with Brotli against 626.1 kB with gzip. Fix round 1 compared the levels of `CompressionLevel` for both
 providers (a temporary `Configure` of the two options, run as three API processes on the same history, the final web build in its web
-root; Brotli quality 1, 4 and 11 for Fastest, Optimal and SmallestSize; gzip level 1, 6 and 9). Static files: size, and the time of 15
-requests after 2 warm-up ones. API: `tools/perf/api-latency.sh` with its seed 1, so **the three levels were asked the same 200 dates and
-the same 120 windows**; the sizes are Brotli. (The first comparison drew other requests for each level, see "The seed", which made the
-day look 20 % smaller at Optimal and the year 6 %; on the same requests it is 14 % and 7 %. Both are below.)
+root; Brotli quality 1, 4 and 11 for Fastest, Optimal and SmallestSize; gzip level 1, 6 and 9) and chose Optimal. Its API requests were
+drawn anew for each level (the script's seed did nothing, see "The seed"), which made the day look 20 % smaller at Optimal and the year
+6 %. Fix round 2 measured the levels again on matched requests, and the tables below are that comparison: `tools/perf/api-latency.sh`
+with its seed 1, so **the three levels were asked the same 200 dates and the same 120 windows**, and on them the day is 14 % smaller
+and the year 7 %, which confirmed the choice. Static files: size, and the time of 15 requests after 2 warm-up ones. The sizes are Brotli.
 
 **The scripts** (bytes sent; time per request, median / p95 of 15, ms):
 
@@ -254,9 +256,10 @@ day look 20 % smaller at Optimal and the year 6 %; on the same requests it is 14
 
 (The `index` file in the first-pass comparison had another hash than the final build's, the same code, and the requests were
 other ones: the numbers of this table replace it. The calendar year takes 115-122 ms on a fresh server and 58-64 ms after a few hundred
-requests at every level; see the first requests of a fresh process in "Server / Results".)
+requests at Fastest and Optimal (at SmallestSize it is over a second); see the first requests of a fresh process in "Server / Results".)
 
-**Decision: Optimal for both** (`Program.cs`, commit `4f96769`; a hosting test pins the level). The ruling's condition was Brotli
+**Decision: Optimal for both** (`Program.cs`, commit `4f96769`; a hosting test pins the level). Made in fix round 1, and confirmed by the
+matched comparison of fix round 2, whose numbers these are. The ruling's condition was Brotli
 smaller than gzip at an acceptable cost, and at Optimal it is smaller for the scripts together (524.6 against 525.9 kB, in the noise of
 a tie: the library chunk 0.2 kB smaller, the worker 1.2 % smaller, `index` 0.7 % larger) and for the year's JSON (155.5 against 157.6 kB,
 1.3 %), where at Fastest it was 9 % larger for the scripts. Brotli is what a browser that takes both is given, so the real gain is
