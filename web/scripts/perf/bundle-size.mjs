@@ -2,10 +2,12 @@
 //
 //   node scripts/perf/bundle-size.mjs [dist-dir]
 //
-// Spec §8 / the plan's target: 450 kB gzip of JavaScript including MapLibre. MapLibre is two files, the library (a chunk of its
-// own, see vite.config.ts) and the worker it draws and parses in (an asset of the build). Gzip at level 9, as a server would at
-// its best: Vite's own report uses the default level (6) and comes out a little larger, so that is given too, and Brotli (quality 11).
-// Neither is what the API sends: its response compression is the fastest level of each, which comes out larger than both.
+// The plan's target, 450 kB gzip of JavaScript including MapLibre, is judged on main-thread JavaScript (ruling P2-R63): the chunks
+// the page runs. MapLibre is two files, the library (a chunk of its own, see vite.config.ts, fetched when the map mounts) and the
+// worker it parses in (an asset of the build, a file that is not run on the main thread); the worker is reported apart, and the
+// total of every file is given too. Gzip at level 9, as a server would at its best: Vite's own report uses the default level (6) and
+// comes out a little larger, so that is given too, and Brotli at quality 11. The API itself compresses at the Optimal level of both
+// (Program.cs), which comes out at about gzip 9; see the performance document.
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,11 +41,18 @@ for (const s of [...js].sort((a, b) => b.gzip - a.gzip)) console.log(`${s.name.p
 console.log("");
 const row = (label, list) =>
   console.log(`${label.padEnd(34)} ${kB(sum(list, "gzip")).padStart(10)} gzip 9 ${kB(sum(list, "gzip6")).padStart(10)} gzip 6 ${kB(sum(list, "brotli")).padStart(10)} brotli 11`);
-row("JavaScript, total", js);
-row("  MapLibre library chunk", library);
-row("  MapLibre worker", worker);
+// What the page starts with: the module script of index.html and what it preloads. MapLibre's chunk is not among them: the map fetches it
+// itself once it is mounted (src/map/maplibre.ts).
+const html = readFileSync(join(root, "index.html"), "utf8");
+const starting = new Set([...html.matchAll(/<(?:script|link)[^>]*\s(?:src|href)="\/assets\/([^"]+\.m?js)"/g)].map((match) => match[1]));
+const start = js.filter((s) => starting.has(s.name));
+
+row("JavaScript, all files", js);
+row("  main-thread JavaScript (target)", [...library, ...app]);
+row("    the page starts with", start);
+row("    MapLibre chunk, fetched by the map", library);
+row("  MapLibre's worker, apart", worker);
 row("  MapLibre together", [...library, ...worker]);
 row("  the rest (app, React, Query)", app);
-row("  without the worker", [...library, ...app]);
 row("CSS", css);
 console.log(`JavaScript raw: ${kB(sum(js, "raw"))}`);

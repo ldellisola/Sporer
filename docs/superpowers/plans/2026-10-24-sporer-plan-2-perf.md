@@ -1,36 +1,46 @@
 # Sporer Plan 2: web and API performance check (synthetic history, about 10 million rows)
 
 Measured on 2026-10-26 against the same generated history as Plan 1's check, with the server and the web app as built at the end of
-Plan 2 (nothing in either was changed for this check). The owner's real data was not available: these numbers say how the server and
-the web app behave at the volume the spec assumes (spec §8, §9), on a throttled desktop browser, not on the owner's phone. The real
-check is the owner's, on their iPhone over the VPN, after the first backfill. Plan 1's server check is in
-`2026-10-23-sporer-plan-1-perf.md`; this one adds the range, heat and place endpoints, the query plans, the bundle and the web timings.
+Plan 2. The owner's real data was not available: these numbers say how the server and the web app behave at the volume the spec
+assumes (spec §8, §9), on a throttled desktop browser, not on the owner's phone. The real check is the owner's, on their iPhone over
+the VPN, after the first backfill. Plan 1's server check is in `2026-10-23-sporer-plan-1-perf.md`; this one adds the range, heat and
+place endpoints, the query plans, the bundle, the compression and the web timings.
+
+**Two passes.** The first (commit `cd95664`) changed nothing in the server or the web app. It found that a cold day view could take
+up to 1.1 s at 4× CPU to show its rows, over the 1 s target on the worst runs, because the panel waited for MapLibre; that the
+bundle is over 450 kB only if MapLibre's worker is counted; and that the API's compression, left at ASP.NET's default, made Brotli
+larger than gzip for JavaScript. Fix round 1 (rulings P2-R63 and P2-R64) judged the bundle on main-thread JavaScript, made the map
+load MapLibre after the panel (commit `86a3703`), and compressed at the Optimal level (commit `4f96769`), and everything was measured
+again. This document gives the numbers of both passes; the tables say which is which.
 
 ## Result
 
+After fix round 1 (the first pass in brackets where it differs):
+
 | What (spec §8, Plan 2 brief) | Target | Measured | Verdict |
 | --- | --- | --- | --- |
-| **Server** `/api/day/{date}`, 200 random dates | ≤ 200 ms | p50 5.5 ms, p95 8.7 ms, max 10.8 ms (repeat: p95 12.8, max 27.5) | Met, 23 times under at p95 |
-| `/api/range`, 100 random 31-day windows | ≤ 400 ms | p50 17.6 ms, p95 23.9 ms, max 27.7 ms (repeat: p95 29.8, max 32.1) | Met, 17 times under |
-| `/api/range`, 20 random 365-day windows | ≤ 800 ms | p50 53.9 ms, p95 64.4 ms, max 68.4 ms (repeat: p95 73.0, max 78.0); the 400-day maximum 55-71 ms | Met, 11 to 12 times under |
-| `/api/heat`, month and year windows | (no target of its own; the range's) | month p95 7.1 ms, year p95 17.2 ms (repeat: 8.5, 18.0) | Met |
-| `/api/places/{id}`, 200 requests over 79 places | (no target of its own; the day's, 200 ms) | p50 13.6 ms, p95 20.1 ms, max 31.4 ms (repeat: p95 18.1) | Met |
-| Year payload size | ≤ 1.5 MB raw JSON | median 536 kB, largest 552 kB (the calendar year 2025: 553 kB; the 400-day maximum: 600 kB); Brotli 161 kB median, 166 kB largest | Met, 2.7 times under |
-| Year vertex count | ≤ 60,000 | median 14,941, largest 15,491 (the 400-day maximum: 16,810) | Met, 3.9 times under (the cap itself is not reached, see the caveats) |
-| **Bundle** JavaScript, gzip, with MapLibre | ≤ 450 kB | **526.0 kB** with MapLibre's worker, 378.1 kB without it (Vite's own report: 382.5 kB for the chunks it lists) | **Miss with the worker (+76 kB, 17 %); met without it.** No fix available, see "Bundle" |
-| **Web, cold navigation to the panel's rows**, day (4× CPU, 7 runs) | ≤ 1 s | median 947 ms, worst 1,016 ms (heaviest day: 982 / 1,124 ms) | Met at the median; the worst run is 2 % over (heaviest day 12 %) |
-| same, month | ≤ 2 s | median 1,154 ms, worst 1,197 ms (heaviest month: 1,097 / 1,264 ms) | Met, 1.7 times under |
-| same, year | ≤ 3 s | median 1,252 ms, worst 1,527 ms | Met, 2.4 times under |
-| **Web, tap › with the page open** (the §8 reading: "after navigating (‹ ›)"), day / month / year | ≤ 1 s / 2 s / 3 s | panel rows median 57 / 82 / 219 ms, worst 77 / 99 / 258 ms; routes on the map 108 / 200 / 683 ms median | Met, 12 to 24 times under on the rows |
-| **Web, map `idle` from cold navigation**, day / month / year | read against the same 1 s / 2 s / 3 s, with the caveats below | median 1,947 / 1,943 / 2,754 ms, worst 2,073 / 2,204 / 3,033 ms | Day over (the boot alone is 1.2 s, then a 600 ms camera move); month and year at the number at the median, over at the worst run. **Not a verdict:** software WebGL, see the caveats |
+| **Server** `/api/day/{date}`, 200 random dates | ≤ 200 ms | p50 5.5 ms, p95 8.5 ms, max 17.4 ms (first pass: p95 8.7, max 10.8; its repeat: p95 12.8, max 27.5) | Met, 23 times under at p95 |
+| `/api/range`, 100 random 31-day windows | ≤ 400 ms | p50 17.8 ms, p95 25.0 ms, max 31.5 ms (first pass: p95 23.9; repeat 29.8) | Met, 16 times under |
+| `/api/range`, 20 random 365-day windows | ≤ 800 ms | p50 63.1 ms, p95 76.7 ms, max 78.4 ms (first pass: p95 64.4; repeat 73.0, max 78.0); the 400-day maximum 55-71 ms | Met, 10 times under |
+| `/api/heat`, month and year windows | (none of its own; the range's) | month p95 7.4 ms, year p95 14.7 ms | Met |
+| `/api/places/{id}`, 200 requests over 79 places | (none of its own; the day's, 200 ms) | p50 11.2 ms, p95 16.5 ms, max 21.7 ms (first pass: p95 20.1) | Met |
+| Year payload size | ≤ 1.5 MB raw JSON | median 536 kB, largest 552 kB raw (the calendar year 2025: 553 kB; 400 days: 600 kB); Brotli 152.5 kB median, 158.0 kB largest (first pass: 161 / 166 kB) | Met, 2.7 times under |
+| Year vertex count | ≤ 60,000 | median 14,941, largest 15,491 (400 days: 16,810) | Met, 3.9 times under (the cap itself is not reached, see the caveats) |
+| **Bundle** main-thread JavaScript, gzip (P2-R63) | ≤ 450 kB | **379.0 kB**: the page starts with 97.6 kB and the map fetches MapLibre's chunk, 281.4 kB, when it mounts. MapLibre's worker, apart: 147.9 kB | **Met**, 71 kB under. Stated plainly: counting every JavaScript file, worker included, it is 526.9 kB, 77 kB (17 %) over 450 kB |
+| **Web, cold navigation to the panel's rows**, day (4× CPU, 7 runs) | ≤ 1 s | median 764 ms, worst 846 ms; heaviest day 757 / 1,020 ms (first pass: 947 / 1,016; heaviest 982 / 1,124) | Met; one run of seven of the heaviest day is 2 % over |
+| same, month | ≤ 2 s | median 793 ms, worst 853 ms; heaviest month 874 / 1,007 ms (first pass: 1,154 / 1,197; heaviest 1,097 / 1,264) | Met, 2.5 times under |
+| same, year | ≤ 3 s | median 1,128 ms, worst 1,303 ms (first pass: 1,252 / 1,527) | Met, 2.7 times under |
+| **Web, tap › with the page open** (the §8 reading: "after navigating (‹ ›)"), day / month / year | ≤ 1 s / 2 s / 3 s | panel rows median 65 / 84 / 207 ms, worst 91 / 131 / 269 ms; routes on the map 138 / 214 / 706 ms median | Met, 11 to 24 times under on the rows |
+| *Information:* panel rows **painted** (two frames after they are in the DOM), cold, day / month / year | read against the same | median 961 / 884 / 1,341 ms, worst 1,088 / 990 / 1,505 ms (first pass: 992 / 1,213 / 1,395; worst 1,067 / 1,260 / 1,712) | Painted later than they are in the DOM here, see "Where the time goes": the day's worst run is 9 % over 1 s |
+| *Information:* **map `idle`** from cold navigation, day / month / year | read against the same, with the caveats below | median 1,894 / 1,792 / 2,492 ms, worst 2,437 / 2,058 / 2,768 ms (first pass: 1,947 / 1,943 / 2,754; worst 2,073 / 2,204 / 3,033) | Day over 1 s (the start is 1.3 s, then a 600 ms camera move); month and year inside. **Not a verdict:** software WebGL, see the caveats |
+| API compression | Brotli smaller than gzip, at acceptable cost | the three scripts over the wire: Brotli 679.8 → **524.6 kB**, gzip 626.1 → 525.9 kB; the year's answer, Brotli 166 → 155 kB; year p95 64.7 → 76.7 ms | Changed to Optimal, see "Compression" |
 
-The panel's rows are the primary signal for the web; `idle` is recorded and caveated. Everything in the
-table is a number from the runs below; where a run was repeated both are given.
+The panel's rows (in the DOM) are the primary signal for the web; `idle` and the paint are recorded and caveated. Everything in the
+table is a number from the runs below.
 
-Nothing was fixed: every server target was met by a wide margin and no query scans a large table (so no migration 0005), the web
-panel targets were met at the median, and the one miss (the bundle with MapLibre's worker) has no fix short of changing the
-pinned MapLibre. Three levers are measured below so that the decision about them can be made on numbers: an index on
-`segment.place_id`, lazy-loading MapLibre, and compressing the bundle better.
+What fix round 1 changed, and what was left: the server's queries needed nothing (no query scans a large table, so no migration
+0005; the one index that was weighed, on `segment.place_id`, is measured below and left out), the app's start no longer waits for
+MapLibre, and the API sends 23 % fewer bytes of JavaScript to a browser that takes Brotli.
 
 ## Machine and setup
 
@@ -83,7 +93,8 @@ lines; it is not timed. Seeds 1 and 2 (the repeat) were run, one after the other
 
 ### Results
 
-First run (seed 1), the second in brackets. Times in ms; sizes in bytes as curl counts the body.
+**First pass**, ASP.NET's default compression (`Fastest`): first run (seed 1), the second in brackets. Times in ms; sizes in bytes as
+curl counts the body.
 
 | Endpoint | n | p50 | p95 | p99 | max | Brotli body, median / largest | Raw body, median / largest |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -93,6 +104,18 @@ First run (seed 1), the second in brackets. Times in ms; sizes in bytes as curl 
 | `/api/heat`, 31 days | 100 | 4.5 (4.8) | 7.1 (8.5) | 8.2 (12.0) | 10.8 (58.7) | 325 / 505 | 701 / 1,162 |
 | `/api/heat`, 365 days | 20 | 13.1 (13.2) | 17.2 (18.0) | 18.6 (20.5) | 18.6 (20.5) | 984 / 1,210 | 2,339 / 2,846 |
 | `/api/places/{id}` | 200 | 13.6 (13.4) | 20.1 (18.1) | 28.4 (23.6) | 31.4 (27.9) | 399 / 1,544 | 1,048 / 6,059 |
+
+**Final configuration**, compression at `Optimal` (fix round 1, see "Compression"; seed 1, a fresh API process; the raw sizes and
+the vertices are the same, the places had 78 ids in this run):
+
+| Endpoint | n | p50 | p95 | p99 | max | Brotli body, median / largest |
+| --- | --- | --- | --- | --- | --- | --- |
+| `/api/day/{date}` | 200 | 5.5 | 8.5 | 11.5 | 17.4 | 1,890 / 5,140 |
+| `/api/range`, 31 days | 100 | 17.8 | 25.0 | 30.0 | 31.5 | 13,159 / 15,804 |
+| `/api/range`, 365 days | 20 | 63.1 | 76.7 | 78.4 | 78.4 | 152,513 / 158,009 |
+| `/api/heat`, 31 days | 100 | 4.6 | 7.4 | 12.5 | 15.3 | 285 / 441 |
+| `/api/heat`, 365 days | 20 | 12.2 | 14.7 | 23.8 | 23.8 | 837 / 1,027 |
+| `/api/places/{id}` | 200 | 11.2 | 16.5 | 19.5 | 21.7 | 368 / 1,327 |
 
 - **Vertices of a range's lines:** 31 days median 1,219, largest 1,616; 365 days median 14,941, largest 15,491 (repeat: 14,925 and
   15,802). The largest range the API takes, 400 days (2025-01-01 to 2026-02-04): 1,789 moves, 16,810 vertices, 600,334 bytes raw,
@@ -151,43 +174,78 @@ a 20 ms endpoint, and it makes the visits query no better; at twelve times the h
 (about 50 ms to 1-3 ms), but a history of 12 times 2.3 years is 28 years. Adding it later is a migration that creates one object and
 nothing else; it is left until the history is long enough for it to matter, as Plan 1's table of suspects left it.
 
+### Compression
+
+The API compresses what it reads with ASP.NET's response compression, Brotli first and gzip, and left at its defaults that is the
+`Fastest` level of both. The first pass found that this makes Brotli the larger of the two for the web app's JavaScript, which is what
+a browser that accepts both is given: measured from the API with the built web root (`curl -H 'Accept-Encoding: ...'`, which counts the
+body as it is sent), 679.8 kB with Brotli against 626.1 kB with gzip. Fix round 1 measured the levels of `CompressionLevel` for both
+providers (a temporary `Configure` of the two options, run as three API processes on the same history, the web build in its web
+root; Brotli quality 1, 4 and 11 for Fastest, Optimal and SmallestSize; gzip 1, 6 and 9). Static files: size and the time of 15
+requests after 2 warm-up ones. API: `tools/perf/api-latency.sh` (the 20 windows of 365 days, the 100 of 31 days, the 200 days), the
+sizes are Brotli.
+
+**The scripts** (bytes sent; time per request, median / p95 of 15, ms):
+
+| File | Fastest: Brotli | Fastest: gzip | **Optimal: Brotli** | **Optimal: gzip** | SmallestSize: Brotli | SmallestSize: gzip |
+| --- | --- | --- | --- | --- | --- | --- |
+| `maplibre-*.js` (1,046 kB raw) | 368,926 B, 10.6 / 15.3 | 337,315 B, 20.0 / 29.0 | **280,595 B, 26.8 / 43.3** | 280,832 B, 41.5 / 51.4 | 230,070 B, **2,070 / 2,234** | 280,018 B, 50.0 / 63.0 |
+| `maplibre-gl-worker-*.mjs` (519 kB) | 186,706 B, 5.9 / 12.1 | 173,711 B, 11.6 / 18.4 | **145,738 B, 14.0 / 30.3** | 147,471 B, 19.4 / 27.6 | 121,564 B, 1,071 / 1,127 | 147,120 B, 25.7 / 32.8 |
+| `index-*.js` (317 kB) | 124,198 B, 5.3 / 15.6 | 115,114 B, 9.0 / 15.0 | **98,366 B, 10.2 / 18.2** | 97,589 B, 15.3 / 19.3 | 84,554 B, 650 / 683 | 97,415 B, 19.0 / 37.0 |
+| **The three** | **679,830 B** | 626,140 B | **524,699 B** | 525,892 B | 436,188 B | 524,553 B |
+
+(The `index` file of these runs had another hash than the final build's, the same code; with the final build, 98,283 B Brotli and
+97,581 B gzip at Optimal, the three are 524,616 B and 525,884 B.)
+
+**The API's answers**:
+
+| | Fastest | **Optimal** | SmallestSize |
+| --- | --- | --- | --- |
+| Year, 20 windows: p50 / p95 (ms), Brotli size median | 55.4 / 64.7, 162,024 B | **63.1 / 76.7, 152,513 B** | 1,115 / 1,208, 96,660 B |
+| Month, 100 windows: p50 / p95, Brotli size median | 18.9 / 25.4, 13,662 B | **17.8 / 25.0, 13,159 B** | 95.4 / 116.3, 9,248 B |
+| Day, 200 dates: p50 / p95, Brotli size median | 6.3 / 8.9, 2,370 B | **5.5 / 8.5, 1,890 B** | 17.8 / 26.6, 1,468 B |
+| Heat, year / places: p95 | 18.5 / 18.7 | **14.7 / 16.5** | 23.9 / 27.8 |
+| The calendar year 2025 (553 kB raw), 15 requests: Brotli / gzip size, median ms | 166,324 B / 186,023 B, 117.6 / 96.6 | **155,467 B / 157,565 B, 110.8 / 116.5** | 99,958 B / 153,206 B, 1,148 / 162 |
+
+**Decision: Optimal for both** (`Program.cs`, commit `4f96769`; a hosting test pins the level). The ruling's condition was Brotli
+smaller than gzip at an acceptable cost, and at Optimal it is smaller for the scripts together (524.7 against 525.9 kB, in the
+noise of a tie: the library chunk 0.2 kB smaller, the worker 1.2 % smaller, `index` 0.8 % larger) and for the year's JSON (by
+1.3 %), where at Fastest it was 9 % larger for the scripts. Brotli is what a browser that takes both is given, so the real gain is
+against the default: **the scripts from 679.8 to 524.6 kB (−23 %)**, the year's answer 6 to 7 % smaller, the day's 20 % smaller. The cost is small:
+the year at p95 goes from 64.7 to 76.7 ms against a target of 800 ms, the day and month do not change (the numbers are within the
+run-to-run spread), and a script takes 10 to 27 ms to compress per request instead of 5 to 11 (they are fetched once per release,
+and cached `immutable`). SmallestSize, the only level that beats gzip clearly (the scripts another 17 % smaller, 436 kB), is not
+acceptable: 2 s for one script and 0.65 s for the smallest, and 1.1 s for the year, which is over its 800 ms target on its own. A build-time precompression of the assets at Brotli quality 11 would give those 436 kB with no cost
+per request, but is a change to how the API serves files, not made here.
+
 ## Web
 
 ### Bundle
 
 `npm run build`, then `npm run perf:bundle` (`web/scripts/perf/bundle-size.mjs`, new). Sizes in kB (1 kB = 1,000 bytes), gzip at
-level 9; Vite's own report (level 6) and Brotli at quality 11 for comparison:
+level 9; Vite's own report (level 6) and Brotli at quality 11 for comparison. After fix round 1:
 
 | File | Raw | gzip 9 | gzip 6 | Brotli 11 |
 | --- | --- | --- | --- | --- |
-| `maplibre-*.js` (MapLibre library chunk) | 1,046.0 | 281.3 | 282.0 | 230.0 |
-| `maplibre-gl-worker-*.mjs` (MapLibre's worker, an asset of the build the map starts) | 518.8 | 147.9 | 148.2 | 121.6 |
-| `index-*.js` (the app, React, TanStack Query, date-fns) | 315.1 | 96.8 | 97.0 | 83.9 |
-| **JavaScript, total** | 1,879.9 | **526.0** | 527.2 | 435.4 |
-| MapLibre alone (library chunk and worker) | 1,564.8 | 429.2 | 430.2 | 351.5 |
-| the rest | 315.1 | 96.8 | 97.0 | 83.9 |
-| without the worker (the two chunks Vite reports) | 1,361.1 | 378.1 | 379.0 | 313.9 |
-| CSS | | 13.5 | 13.6 | 11.3 |
+| `index-*.js` (the app, React, TanStack Query, date-fns: what the page starts with) | 317.0 | 97.6 | 97.8 | 84.5 |
+| `maplibre-*.js` (MapLibre library chunk, fetched by the map when it mounts) | 1,046.0 | 281.3 | 282.0 | 230.1 |
+| `maplibre-entry-*.js` (the map's way in: two exports and the worker's address) | 0.1 | 0.1 | 0.1 | 0.1 |
+| **Main-thread JavaScript (the three above)** | 1,363.1 | **379.0** | 379.9 | 314.7 |
+| `maplibre-gl-worker-*.mjs` (MapLibre's worker, an asset of the build, apart) | 518.8 | 147.9 | 148.2 | 121.6 |
+| **All JavaScript files** | 1,881.9 | **526.9** | 528.1 | 436.2 |
+| CSS (the app's 3.5 kB; MapLibre's comes with its chunk) | | 13.5 | 13.6 | 11.3 |
 
-Vite's own table prints 97.90 and 284.61 kB gzip for the two chunks (382.5 kB together) and no gzip size for the worker.
+Before fix round 1 the page started with all of it but the worker: 378.1 kB (`index` 96.8 and `maplibre` 281.3 kB gzip 9; all files 526.0 kB).
+The change adds 0.9 kB: the loader, and the map's handling of a module that arrives later.
 
-**Verdict: a miss, counted in full.** The target is "≤ 450 kB gzip including MapLibre", and MapLibre is two files: the library chunk
-(281 kB) and the worker (148 kB) that the map cannot draw without (MapLibre parses tiles and GeoJSON in it). With both the total
-is 526 kB, 76 kB (17 %) over. Counting only the two chunks Vite's table lists it is 378-383 kB, 15 % under. Why it is not fixed:
-
-- MapLibre 6.15.0, pinned by the plan's Tech Stack, is 429 kB gzip by itself: 95 % of the target, so the rest of the app would
-  have to fit in 21 kB; React, its DOM and TanStack Query are 97 kB.
-- MapLibre ships one build (`dist/maplibre-gl.mjs` and its worker; `-dev` is larger); there is nothing smaller to import.
-- Splitting the code (the spec's §7.3 "code-split so first paint loads only the shell and map") moves bytes in time, not the total.
-
-What would move it, for a decision to be made on these numbers: the bytes that matter on the phone are the ones the API sends, and **the API
-compresses static files at ASP.NET's default `Fastest` level, which comes out larger than gzip 9**: measured from the API with the
-built web root (`curl -H 'Accept-Encoding: ...'`), the three JavaScript files are 625 kB with gzip and **679 kB with Brotli** (123.1,
-368.8 and 186.7 kB), against 526 kB for gzip 9 and 435 kB for Brotli 11. The files are named by their content and served `immutable`
-for a year, so this is paid once per release, over the VPN. Precompressing `assets/` at Brotli 11 at build time and serving the
-`.br` files would put the transfer under 450 kB (435 kB); the response compression of the API's JSON must stay at the fast
-level (the year's JSON at Brotli quality 11 takes 1.2 s to compress against 11 ms at quality 1, for 100 kB against 166 kB). That is a change to hosting, not to
-the web app, and is not made here.
+**Verdict (ruling P2-R63): met.** The target, "≤ 450 kB gzip including MapLibre", is judged on main-thread JavaScript, the chunks the
+page runs: 379.0 kB, 71 kB (16 %) under it (Vite's own table prints 98.8 and 284.6 kB for the two chunks, 383 kB). MapLibre's worker,
+which MapLibre parses tiles and GeoJSON in and which is not run on the main thread, is reported apart: 147.9 kB. **Stated plainly,
+the literal miss:** counted as one number, every JavaScript file together, worker included, is 526.9 kB, 76.9 kB (17 %) over
+450 kB. There is nothing to fix it with: MapLibre 6.15.0, pinned by the plan's Tech Stack, is 429.3 kB gzip with its worker by itself
+(95 % of the target; React, its DOM and TanStack Query are 97 kB), and it ships one build. The hashed files are served `immutable`
+for a year (Program.cs), so the installed app fetches them once per release. What goes over the wire to a browser is in
+"Compression".
 
 ### Method
 
@@ -220,7 +278,7 @@ Neither is part of `npm run e2e` or of CI.
      the sheet starts at its peek, where its chips show and the rows are below the edge of the screen until the owner drags it up;
      they are rendered all the same, and that is the time.
    - *Map idle*: MapLibre's own `idle` event, the first one at or after the rows (so not the idle of an earlier, empty map). The probe
-     gets the map from the React fiber of its component (the page has no handle on it) and listens to `idle`, `sourcedata` and
+     gets the map from the React fiber of its component (the page has no handle on it; it is in the component's state) and listens to `idle`, `sourcedata` and
      `render`. *Routes drawn*: the first frame the map renders after its routes source has its data, which is when the line is on
      the screen; the camera may still be moving. *Map style loaded*: the map element's `data-map-state` becoming `ready`.
    - *Main thread blocked before the rows*: the sum of the long tasks (> 50 ms) that began before the rows.
@@ -230,76 +288,102 @@ Neither is part of `npm run e2e` or of CI.
 ### Results
 
 4× CPU throttling, 7 runs of each, ms from the start of the navigation (from the tap, for the step); median / worst, then the range
-of the 7. An earlier run of the same code (before the *routes drawn* rows existed) gave the same picture within
-the spread: the day's rows 958 / 1,044 ms, the month's 1,022 / 1,152, the year's 1,254 / 1,413.
+of the 7 for the primary signal. The tables are after fix round 1; the first pass is below them.
 
-**Cold navigation** (`page.goto`, an empty cache):
+**Cold navigation** (`page.goto`, an empty cache), after:
 
 | | Typical day (15 rows) | Heaviest day (11 rows) | Typical month (41 rows) | Heaviest month (40 rows) | Year (348 rows) |
 | --- | --- | --- | --- | --- | --- |
-| API answer received | 814 / 866 | 819 / 916 | 921 / 1,029 | 915 / 1,033 | 875 / 1,011 |
-| first contentful paint | 840 / 900 | 848 / 940 | 968 / 1,060 | 944 / 1,068 | 880 / 996 |
-| **panel rows in the DOM** | **947 / 1,016** (875-1,016) | **982 / 1,124** (918-1,124) | **1,154 / 1,197** (1,067-1,197) | **1,097 / 1,264** (916-1,264) | **1,252 / 1,527** (1,144-1,527) |
-| panel rows painted | 992 / 1,067 | 1,019 / 1,181 | 1,213 / 1,260 | 1,137 / 1,326 | 1,395 / 1,712 |
-| map style loaded | 1,167 / 1,247 | 1,196 / 1,395 | 1,427 / 1,567 | 1,377 / 1,571 | 1,556 / 1,835 |
-| routes drawn on the map | 1,651 / 1,797 | 1,626 / 1,851 | 1,929 / 2,127 | 1,974 / 2,040 | 2,692 / 2,994 |
-| **map idle** | **1,947 / 2,073** (1,673-2,073) | **1,746 / 1,993** | **1,943 / 2,204** | **1,976 / 2,142** | **2,754 / 3,033** (2,253-3,033) |
-| main thread blocked before the rows | 689 / 738 | 710 / 840 | 826 / 876 | 775 / 920 | 887 / 1,121 |
+| API answer received | 653 / 687 | 644 / 834 | 650 / 728 | 655 / 781 | 675 / 768 |
+| first contentful paint | 668 / 708 | 664 / 852 | 668 / 744 | 680 / 812 | 644 / 736 |
+| **panel rows in the DOM** | **764 / 846** (681-846) | **757 / 1,020** (669-1,020) | **793 / 853** (752-853) | **874 / 1,007** (766-1,007) | **1,128 / 1,303** (992-1,303) |
+| panel rows painted | 961 / 1,088 | 871 / 1,332 | 884 / 990 | 1,007 / 1,150 | 1,341 / 1,505 |
+| map style loaded | 1,270 / 1,321 | 1,245 / 1,658 | 1,259 / 1,382 | 1,408 / 1,455 | 1,631 / 1,742 |
+| routes drawn on the map | 1,688 / 1,809 | 1,685 / 2,058 | 1,764 / 2,058 | 2,122 / 2,280 | 2,492 / 2,768 |
+| **map idle** | **1,894 / 2,437** (1,789-2,437) | **1,802 / 2,224** | **1,792 / 2,058** | **2,122 / 2,281** | **2,492 / 2,768** (2,174-2,768) |
+| main thread blocked before the rows | 535 / 584 | 519 / 668 | 540 / 596 | 607 / 709 | 736 / 939 |
 | *target* | ≤ 1,000 | ≤ 1,000 | ≤ 2,000 | ≤ 2,000 | ≤ 3,000 |
 
-**Tap › with the page open** (the next day or period already prefetched):
+**Tap › with the page open** (the next day or period already prefetched), after:
 
 | | Typical day | Heaviest day | Typical month | Heaviest month | Year |
 | --- | --- | --- | --- | --- | --- |
-| **panel rows** | **57 / 77** (8-77) | **50 / 59** | **82 / 99** | **77 / 119** | **219 / 258** |
-| rows painted | 108 / 183 | 98 / 158 | 206 / 271 | 162 / 218 | 495 / 566 |
-| routes drawn on the map | 108 / 182 | 98 / 149 | 200 / 266 | 161 / 217 | 683 / 857 |
-| map idle | 1,119 / 1,302 | 1,182 / 1,371 | 1,266 / 1,671 | 1,038 / 1,180 | 1,543 / 1,859 |
+| **panel rows** | **65 / 91** (35-91) | **43 / 84** | **84 / 131** | **69 / 106** | **207 / 269** |
+| rows painted | 141 / 205 | 118 / 177 | 215 / 227 | 179 / 205 | 482 / 536 |
+| routes drawn on the map | 138 / 205 | 117 / 167 | 214 / 224 | 179 / 204 | 706 / 791 |
+| map idle | 1,017 / 1,309 | 1,376 / 1,610 | 1,333 / 1,501 | 1,010 / 1,156 | 1,493 / 1,969 |
 | *target* | ≤ 1,000 | ≤ 1,000 | ≤ 2,000 | ≤ 2,000 | ≤ 3,000 |
+
+**Before and after** (cold navigation, median / worst of 7; the first pass, commit `cd95664`, then fix round 1):
+
+| | Panel rows in the DOM | Panel rows painted | First contentful paint | Map style loaded | Map idle |
+| --- | --- | --- | --- | --- | --- |
+| Typical day | 947 / 1,016 → **764 / 846** | 992 / 1,067 → 961 / 1,088 | 840 / 900 → 668 / 708 | 1,167 / 1,247 → 1,270 / 1,321 | 1,947 / 2,073 → 1,894 / 2,437 |
+| Heaviest day | 982 / 1,124 → **757 / 1,020** | 1,019 / 1,181 → 871 / 1,332 | 848 / 940 → 664 / 852 | 1,196 / 1,395 → 1,245 / 1,658 | 1,746 / 1,993 → 1,802 / 2,224 |
+| Typical month | 1,154 / 1,197 → **793 / 853** | 1,213 / 1,260 → 884 / 990 | 968 / 1,060 → 668 / 744 | 1,427 / 1,567 → 1,259 / 1,382 | 1,943 / 2,204 → 1,792 / 2,058 |
+| Heaviest month | 1,097 / 1,264 → **874 / 1,007** | 1,137 / 1,326 → 1,007 / 1,150 | 944 / 1,068 → 680 / 812 | 1,377 / 1,571 → 1,408 / 1,455 | 1,976 / 2,142 → 2,122 / 2,281 |
+| Year | 1,252 / 1,527 → **1,128 / 1,303** | 1,395 / 1,712 → 1,341 / 1,505 | 880 / 996 → 644 / 736 | 1,556 / 1,835 → 1,631 / 1,742 | 2,754 / 3,033 → 2,492 / 2,768 |
+
+The tap is where it was (day 57 / 77 → 65 / 91 ms): nothing in it touches MapLibre's loading. An earlier run of the first pass, with
+fewer instruments, gave the same picture within the spread (the day's rows 958 / 1,044 ms, the month's 1,022 / 1,152, the year's 1,254 / 1,413).
 
 How to read it:
 
-- **Where the cold time goes.** The API answer arrives at about 0.8-0.9 s: that is the boot, not the request. Parsing and running
-  1.9 MB of JavaScript at a quarter of the speed keeps the main thread blocked for 0.7-0.9 s before the first row, the first
-  contentful paint is at 0.8-1.0 s, and the answer, rendered by React, is on screen 130 ms (a day) to 380 ms (a year of 348 rows)
-  later. Only 14 % (day) to 30 % (year) of the rows time comes after the answer; the rest is the app starting. A real iPhone has the shell from the
-  service worker and a faster core than a quarter of this container's; the throttle is a pessimistic stand-in.
+- **Where the time goes.** Before the change the page ran 1.4 MB of JavaScript on its main thread, MapLibre's chunk among it, before
+  it could ask for anything (and MapLibre's worker, 0.5 MB, was fetched beside it); at a quarter of the speed the main thread was blocked for 0.7-0.9 s before the first row. Now the page starts with 317 kB
+  of it (98 kB gzip): the first contentful paint is at 0.64-0.68 s (it was 0.84-0.97), the API answer arrives at 0.64-0.68 s (it was
+  0.81-0.92), and the rows are in the DOM 110 ms (a day) to 450 ms (a year of 348 rows) after it: the day by 0.76 s, the month by 0.79 s,
+  the year by 1.13 s. MapLibre's chunk starts when the map mounts, once the app's first render is done.
+- **The rows are painted later than they are in the DOM**, by 0.1 to 0.2 s, where before the
+  change the two were 40 to 60 ms apart for a day or a month (140 ms for the year). That is MapLibre arriving in the same stretch: the mocked API answers at once, the chunk
+  is a local file that arrives at once too, and its parsing, a task of about 0.2 s at this speed, is queued before the frame that
+  paints the rows. The change therefore bought the DOM 180 ms (day), 360 ms (month) and 120 ms (year), and the paint 30 ms, 330 ms
+  and 55 ms (medians); the day's paint is 961 ms (worst 1,088) against a target of 1,000. On a phone with a real connection the
+  answer to the request takes 100 ms or more, and a first load of the chunk, the slower of the two, would be expected to arrive after
+  it, so that the rows paint first; with the chunk cached its task would come at the start, before the answer (neither is measured
+  here, where the network is loopback). The way to make it certain, not done because the ruling named the mechanism above and it
+  costs the map's start the data's latency: let the map's load wait for
+  the first data to be painted (with a short timer for a view that has none).
+- **The map comes later, a little.** The style is loaded at 1.25-1.63 s, about as before (±150 ms: it was 1.17-1.56 s); `idle` is
+  within the run-to-run spread of what it was (the day's worst run, 2,437 ms, is one slow run of seven). `idle` is the camera move
+  (600 ms by design, `FIT_DURATION_MS`) and the frames drawn during it, each of 1170 × 2532 pixels in software, on top of the
+  start; see the caveats before reading it as a verdict.
 - **The target for the day is the tap.** Spec §8 says "Day view data shown after navigating (‹ ›), past day ≤ 1 s (near-instant when
-  prefetched)": 57 ms at the median, 77 at the worst, with the neighbour prefetched. A day that is not prefetched costs the request
-  on top: the API's p95 of 8.7 ms plus the gap between "API answer received" and "rows" above (about 130 ms for a day, 230 ms for a
-  month, 380 ms for a year), still a small fraction of the targets. The cold navigation is the stricter reading, and the brief's:
-  the typical day passes it at the median (947 ms; one run of seven, 1,016 ms, is over it), and the heaviest day at the median too
-  (982 ms) but with three runs of seven over (1,010, 1,078 and 1,124 ms: up to 12 %). §8's own cold number is "open app (cold, installed) to map visible ≤ 2 s": the map's
-  style was loaded at 1.17 s (day), and the routes were on the map at 1.65 s (day), 1.93 s (month), 2.69 s (year).
-- **Map idle is dominated by what is not the data.** On a cold load `idle` comes 0.3 s (day) or less (month, year) after the routes
-  are drawn, and on a tap about 1 s after them. It includes (a) the camera move, `fitBounds` over 600 ms by design
-  (`FIT_DURATION_MS`), so it is at least 0.6 s after the data however fast the rest, and (b) the frames MapLibre draws during it,
-  each of 1170 × 2532 pixels in software on the CPU (8 to 10 frames in a cold load, at the median). The tap's idle (1.0-1.9 s) against its routes-drawn time (0.1-0.7 s) shows it. The day's cold idle of
-  1.9 s against a number of 1 s is that boot plus the camera, not a slow map; see the caveats before reading `idle` as a verdict.
+  prefetched)": 65 ms at the median, 91 at the worst, with the neighbour prefetched. A day that is not prefetched costs the request
+  on top: the API's p95 of 8.5 ms plus the gap between "API answer received" and "rows" above (about 110 ms for a day, 140 ms for a
+  month, 450 ms for a year). §8's own cold number is "open app (cold, installed) to map visible ≤ 2 s": the map's style was loaded at
+  1.27 s (day), and the routes were on the map at 1.69 s (day), 1.76 s (month), 2.49 s (year).
 
-### Lever measured and left out: lazy-load MapLibre
+### The fix: MapLibre loads after the panel (ruling P2-R64, commit `86a3703`)
 
-The cold time is the boot, and MapLibre is two thirds of the JavaScript, so `MapView` was made a `React.lazy` import behind a
-`Suspense` with no fallback (an experiment on a scratch edit of `App.tsx`, 5 runs of each scenario, reverted: it is **not** in the
-commit). Medians, cold navigation, ms (the 7-run baseline of the table above in brackets):
+The panel's rows waited for MapLibre: it is two thirds of the app's JavaScript, the page's bundle imported it, and parsing it is the
+longest task of a start. Now the map fetches MapLibre itself, when it mounts, as a chunk of its own:
 
-| | Panel rows | First contentful paint | Map style loaded | Map idle |
-| --- | --- | --- | --- | --- |
-| Day | 745 (947) | 644 (840) | 1,317 (1,167) | 1,970 (1,947) |
-| Month | 852 (1,154) | 708 (968) | 1,378 (1,427) | 2,131 (1,943) |
-| Year | 916 (1,252) | 616 (880) | 1,620 (1,556) | 2,407 (2,754) |
-
-The rows come 200-340 ms sooner (the day's worst run went from 1,016 to 860 ms); the map's style loads about as late or 150 ms later,
-and `idle` is within the run-to-run spread (±200 ms). It would turn the day's worst-run overshoot into a margin of 14 % and takes
-a few lines in `App.tsx`; the cost is that the map element appears a frame or two after the panel on a cold open, and the
-unit tests that render `App` would have to wait for it. Not done: the day target is met at the median, the spec asks for first paint
-to carry "the shell and map", and the owner's phone is the judge of whether opening feels slow.
+- `src/map/maplibre-entry.ts` is what the map imports dynamically: MapLibre's two exports it uses (a dynamic `import("maplibre-gl")`
+  would keep all of them, 50 kB more), MapLibre's stylesheet and the address of its worker. They have to be here and not in the map's
+  own file: the first build with the stylesheet in `MapView.tsx` made the page's bundle import MapLibre's chunk (to carry the
+  stylesheet), and the page ran it at the start again, which only a look at the built `index.html` showed. An e2e test now reads the
+  production build and fails when the page preloads MapLibre or imports its chunk statically (it was shown to fail on that build).
+- `src/map/maplibre.ts` is the loader: one fetch for everyone, the worker told to the module before anyone has it, a failed fetch
+  not kept (the next mount tries again). Vite keeps the chunk named `maplibre` as before.
+- `MapView` shows the plain background (`data-map-state="loading"`) until the module arrives, then makes the map. What was given
+  meanwhile (`data`, `fitTo`, `home`, `padding`) is used as the latest of each at that moment, and the map is brought to `fitTo`
+  once. A chunk that cannot be fetched goes through `onStyleError`, so the page says "Map unavailable" and goes on, with no
+  unhandled rejection. Under StrictMode one arrival makes one map.
+- MapLibre's stylesheet now comes after the app's, where it came before. It gives the map's element `position: relative`, as the
+  app's `position: absolute` does at the same weight, and the map had the height of a default canvas: found by the e2e suite on
+  the first run, fixed by giving the app's rule two classes.
+- Tests: the loader (once, worker first, a failure not kept), `MapView` (the plain background and no map before the module, what was given
+  meanwhile applied and one fit, unmounted before the arrival, StrictMode, a failed load with no unhandled rejection; deleting the
+  map's `fitTo` effect on arrival fails eight of them), and the e2e check of the build above. The 13 tests that assumed the map was
+  there at the first render now wait for it.
 
 ### Does the throttle slow the map's worker?
 
 MapLibre builds its GeoJSON tiles in a worker. A probe in the spec (`probe: does the CPU throttle reach a worker`) runs a fixed loop on
-the page's thread and in a worker, unthrottled and at 4×: the page's thread slowed **4.5 times** (587 → 2,624 ms), the worker **1.4
-times** (846 → 1,162 ms; 1.2 to 1.5 times over four runs of the probe). The CDP throttle reaches the worker only a little. So the parts of the map's time
+the page's thread and in a worker, unthrottled and at 4×: the page's thread slowed **4.5 times** (587 → 2,624 ms) and the worker **1.4
+times** (846 → 1,162 ms) in one run; in the last run 4.8 times and 0.9 times (1,102 → 1,031 ms); over five runs the worker's
+slowdown was 0.9 to 1.5 times. The CDP throttle does not reach the worker, or hardly. So the parts of the map's time
 that run in the worker (parsing the year's 15,000 vertices into tiles) are measured **at close to full speed**, where the page's
 own code runs at a quarter of it; on a slower phone the worker's share of `idle` and of *routes drawn* would be larger than here.
 
@@ -314,7 +398,10 @@ own code runs at a quarter of it; on a slower phone the worker's share of `idle`
 - **The map's style and tiles.** The e2e style is a single background layer, with no vector tiles: the cost of fetching, decoding
   and drawing OpenFreeMap's tiles and their labels, and of the English-label rewrite of the real style, is not in any number. Nor is
   any network: the API is mocked from Node (`page.route`), and the app comes from `vite preview` over loopback. "Excluding network",
-  as the targets say, but the real phone's first start also fetches 0.5-0.7 MB of JavaScript over the VPN (cached after).
+  as the targets say, but the real phone's first start also fetches 0.5 MB of JavaScript over the VPN (524.6 kB as the API sends it
+  with Brotli, 426 kB of it MapLibre's, which the map fetches after the panel; cached after).
+- **The mock and the loopback answer at once.** That puts MapLibre's parsing in the same stretch as the rows (see "Where the time
+  goes"): their paint waits behind it by 0.1 to 0.2 s. A real network would separate them; that is expected, not measured.
 - **The throttle.** 4× is the brief's figure, applied to the page's main thread; it is not a model of an iPhone, whose single-core
   speed is likely nearer this container's than a quarter of it. Run-to-run spread on this shared 4-core container is about ±10 %
   (the month's cold rows were 1,022 ms in one run of 7 and 1,154 ms in the next), and the worst of 7 is a sample of the tail, not
@@ -351,6 +438,13 @@ tools/perf/api-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22           
 docker exec -i sporer-perf-db psql -U postgres -d perf -X \
   -v day=2025-09-10 -v from=2025-01-01 -v to=2025-12-31 -v place=1 < tools/perf/explain.sql
 docker exec -i sporer-perf-db psql -U postgres -d perf -X -v copies=12 -v place=1 < tools/perf/place-index-whatif.sql
+
+# --- The compression: the sizes the API sends, and what they cost (it serves the web build from its content root) ---
+kill $pid; ASPNETCORE_CONTENTROOT=$PWD/src/Sporer.Api dotnet $api & pid=$!   # now it serves the web build (`npm run build` in web/ first)
+sleep 8
+for enc in gzip br; do curl -s -o /dev/null -H "Accept-Encoding: $enc" -w "$enc %{size_download} B %{time_total} s\n" \
+  http://127.0.0.1:5100/assets/$(ls src/Sporer.Api/wwwroot/assets | grep '^maplibre-[A-Za-z0-9_-]*\.js$' | grep -v entry); done
+# (the levels were compared by setting Brotli's and gzip's `Level` in Program.cs for each run: Fastest, Optimal, SmallestSize)
 
 # --- The web: record the API's answers once, then measure (the API may be stopped for the second) ---
 cd web

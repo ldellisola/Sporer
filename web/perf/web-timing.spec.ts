@@ -85,23 +85,27 @@ function installProbe(): void {
   let seen = 0;
   const countRows = (): number => document.querySelector('[aria-label="Details"]')?.querySelectorAll("li").length ?? 0;
 
-  // The map has no handle on the page. Its component keeps it in a ref, which React keeps in the fiber of the component that renders
-  // the map's element, so the probe finds it there once the component has made it (it sets `data-map-state` right after) and listens.
+  // The map has no handle on the page. Its component keeps it in its state (it is made when MapLibre has arrived, see map/MapView.tsx),
+  // which React keeps in the fiber of the component that renders the map's element, so the probe finds it there, once the component
+  // has taken it over (it sets `data-map-state` right after), and listens. The element knows one of the component's two fibers (the
+  // current one and the one it is being rendered into); the map is in whichever is the later.
   const hookMap = (): void => {
     if (probe.mapHooked) return;
     const element = document.querySelector('[aria-label="Map view"]');
     if (element === null) return;
     const key = Object.keys(element).find((k) => k.startsWith("__reactFiber$"));
     if (key === undefined) return;
-    type Fiber = { return: Fiber | null; memoizedState: { memoizedState: unknown; next: unknown } | null };
-    let hook = ((element as unknown as Record<string, Fiber>)[key] as Fiber).return?.memoizedState ?? null;
-    while (hook !== null) {
-      const value = (hook.memoizedState as { current?: unknown } | null)?.current as
-        | { on?: unknown; getCanvas?: unknown; off?: unknown }
-        | null
-        | undefined;
-      if (value && typeof value.on === "function" && typeof value.getCanvas === "function") {
-        const map = value as unknown as { on: (type: string, listener: (event: { sourceId?: string; isSourceLoaded?: boolean }) => void) => void };
+    type Hook = { memoizedState: unknown; next: Hook | null };
+    type Fiber = { return: Fiber | null; alternate: Fiber | null; memoizedState: Hook | null };
+    const owner = ((element as unknown as Record<string, Fiber>)[key] as Fiber).return;
+    type MapLike = { on: (type: string, listener: (event: { sourceId?: string; isSourceLoaded?: boolean }) => void) => void; getCanvas: unknown };
+    const isMap = (value: unknown): value is MapLike =>
+      typeof value === "object" && value !== null && typeof (value as MapLike).on === "function" && typeof (value as MapLike).getCanvas === "function";
+    for (const fiber of [owner, owner?.alternate ?? null]) {
+      for (let hook = fiber?.memoizedState ?? null; hook !== null; hook = hook.next) {
+        const state = hook.memoizedState;
+        const map = [state, (state as { current?: unknown } | null)?.current].find(isMap);
+        if (map === undefined) continue;
         map.on("idle", () => probe.idles.push(now()));
         map.on("load", () => probe.loads.push(now()));
         map.on("render", () => probe.renderAt.push(now()));
@@ -111,7 +115,6 @@ function installProbe(): void {
         probe.mapHooked = true;
         return;
       }
-      hook = hook.next as typeof hook;
     }
   };
 
