@@ -15,7 +15,7 @@ import {
   type RouteView,
   type StopCollection,
 } from "./layers";
-import { loadMapLibre, type MapLibreLoader } from "./maplibre";
+import { loadMapLibre, type MapLibreLoader, type MapLibreModule } from "./maplibre";
 import styles from "./MapView.module.css";
 import { loadStyle, type StyleSpecification } from "./style";
 
@@ -263,7 +263,8 @@ function MapSurface({
       showState(rootRef.current, "unavailable");
       latest.current.onStyleError?.(toError(error));
     };
-    latest.current.load().then(
+    // A loader that throws, as one that rejects, is a MapLibre that cannot be had.
+    new Promise<MapLibreModule>((resolve) => resolve(latest.current.load())).then(
       (maplibre) => {
         if (cancelled) return;
         try {
@@ -276,19 +277,26 @@ function MapSurface({
             dragRotate: false,
             maxPitch: 0,
           });
-        } catch (error) {
-          unavailable(error);
-          return;
-        }
-        made.touchZoomRotate.disableRotation();
-        // MapLibre drops its style when the context is lost, and sets it again when the context is back; until then it is not to be touched.
-        made.on("webglcontextlost", () => {
+          made.touchZoomRotate.disableRotation();
+          // MapLibre drops its style when the context is lost, and sets it again when the context is back; until then it is not to be touched.
+          made.on("webglcontextlost", () => {
+            readyRef.current = false;
+          });
           readyRef.current = false;
-        });
-        readyRef.current = false;
-        pushedRef.current = newPushed();
-        showState(rootRef.current, "loading");
-        setMap(made); // the effects below take it from here: the style, the data, and the camera, each with the latest of what was given
+          pushedRef.current = newPushed();
+          showState(rootRef.current, "loading");
+          setMap(made); // the effects below take it from here: the style, the data, and the camera, each with the latest of what was given
+        } catch (error) {
+          // Whatever fails in making the map, or in setting it up, is reported and not thrown: nobody is waiting on this promise to catch
+          // it. A map that was made and could not be set up is given back (it holds a WebGL context) and not kept.
+          try {
+            made?.remove();
+          } catch {
+            // it was not set up far enough to be removed; the page goes on without it
+          }
+          made = null;
+          unavailable(error);
+        }
       },
       (error: unknown) => {
         if (!cancelled) unavailable(error);

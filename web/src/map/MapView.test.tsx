@@ -27,6 +27,7 @@ const maplibre = vi.hoisted(() => {
   class FakeMap {
     static instances: FakeMap[] = [];
     static failWith: Error | null = null;
+    static failRotation: Error | null = null;
 
     readonly options: Record<string, unknown>;
     removed = false;
@@ -39,7 +40,12 @@ const maplibre = vi.hoisted(() => {
     readonly sources = new Map<string, FakeSource>();
     readonly layers = new Map<string, Record<string, any>>();
     private readonly listeners = new Map<string, Set<Listener>>();
-    readonly touchZoomRotate = { disableRotation: () => { this.rotationDisabled = true; } };
+    readonly touchZoomRotate = {
+      disableRotation: () => {
+        if (FakeMap.failRotation) throw FakeMap.failRotation;
+        this.rotationDisabled = true;
+      },
+    };
 
     constructor(options: Record<string, unknown>) {
       if (FakeMap.failWith) throw FakeMap.failWith;
@@ -196,13 +202,28 @@ async function styleApplied(count = 1): Promise<void> {
 
 const region = () => screen.getByRole("region", { name: "Map view" });
 
+/** A loader whose module arrives when the test says so (`arrive`), or never does (`fail`). */
+function slowLoader() {
+  let arrive: () => void = () => undefined;
+  let fail: (error: Error) => void = () => undefined;
+  const load = vi.fn<MapLibreLoader>(
+    () => new Promise((resolve, reject) => {
+      arrive = () => resolve({ MapLibreMap: FakeMap, setWorkerUrl: () => undefined, workerUrl: "/w.mjs" } as unknown as MapLibreModule);
+      fail = reject;
+    }),
+  );
+  return { load, arrive: () => act(async () => arrive()), fail: (error: Error) => act(async () => fail(error)) };
+}
+
 beforeEach(() => {
   FakeMap.instances.length = 0;
   FakeMap.failWith = null;
+  FakeMap.failRotation = null;
 });
 
 afterEach(() => {
   FakeMap.failWith = null;
+  FakeMap.failRotation = null;
 });
 
 describe("MapView", () => {
@@ -525,19 +546,6 @@ describe("MapView", () => {
   });
 
   describe("MapLibre arriving later", () => {
-    /** A loader whose module arrives when the test says so (`arrive`), or never does (`fail`). */
-    function slowLoader() {
-      let arrive: () => void = () => undefined;
-      let fail: (error: Error) => void = () => undefined;
-      const load = vi.fn<MapLibreLoader>(
-        () => new Promise((resolve, reject) => {
-          arrive = () => resolve({ MapLibreMap: FakeMap, setWorkerUrl: () => undefined, workerUrl: "/w.mjs" } as unknown as MapLibreModule);
-          fail = reject;
-        }),
-      );
-      return { load, arrive: () => act(async () => arrive()), fail: (error: Error) => act(async () => fail(error)) };
-    }
-
     const FLIGHT: Feature<LineString, object> = {
       type: "Feature",
       properties: {},
@@ -653,6 +661,78 @@ describe("MapView", () => {
       expect(onStyleError).toHaveBeenCalledTimes(1);
       expect(rejections).toEqual([]);
       expect(fetch).not.toHaveBeenCalled();
+    });
+
+    test("MapView_reports_a_map_that_fails_while_it_is_set_up_and_gives_it_back", async () => {
+      // Making the map is not the only thing that can throw: so can what follows it, and nobody is waiting on the promise to catch that.
+      goodStyle();
+      FakeMap.failRotation = new Error("Cannot set up the touch handlers");
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const slow = slowLoader();
+      render(view({ loadMapLibre: slow.load, onStyleError, fitTo: [FLIGHT] }));
+
+      await slow.arrive();
+
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(onStyleError.mock.calls[0]?.[0].message).toBe("Cannot set up the touch handlers");
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+      expect(FakeMap.instances).toHaveLength(1);
+      expect(FakeMap.instances[0]?.removed).toBe(true); // the one that was made is not kept
+      expect(screen.getByRole("button", { name: "Recenter map" })).toBeEnabled();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    test("MapView_reports_a_loader_that_throws_instead_of_rejecting", async () => {
+      goodStyle();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const throwing: MapLibreLoader = () => {
+        throw new Error("No loader");
+      };
+
+      expect(() => render(view({ loadMapLibre: throwing, onStyleError }))).not.toThrow();
+
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      expect(onStyleError.mock.calls[0]?.[0].message).toBe("No loader");
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
+    });
+
+    test("MapView_asks_for_the_style_that_is_the_latest_when_MapLibre_arrives", async () => {
+      // The style was changed while MapLibre was on its way (another address): the first was never asked for, the second is.
+      const urls = goodStyle();
+      const slow = slowLoader();
+      const { rerender } = render(view({ loadMapLibre: slow.load, styleUrl: "/styles/first" }));
+      rerender(view({ loadMapLibre: slow.load, styleUrl: "/styles/second" }));
+      expect(urls).toEqual([]);
+
+      await slow.arrive();
+      await styleApplied();
+
+      expect(urls).toEqual(["/styles/second"]);
+      expect(theMap().styleCalls).toHaveLength(1);
+    });
+
+    test("MapView_keeps_quiet_when_the_style_changes_after_MapLibre_failed", async () => {
+      // No map to give a style to: a new style address is no reason to try again, to throw, or to report a second time.
+      const urls = goodStyle();
+      const slow = slowLoader();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const onStyleLoad = vi.fn<() => void>();
+      const { rerender } = render(view({ loadMapLibre: slow.load, onStyleError, onStyleLoad, styleUrl: "/styles/first" }));
+      await slow.fail(new TypeError("Failed to fetch dynamically imported module"));
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+
+      expect(() => rerender(view({ loadMapLibre: slow.load, onStyleError, onStyleLoad, styleUrl: "/styles/second" }))).not.toThrow();
+      expect(() => rerender(view({ loadMapLibre: slow.load, onStyleError, onStyleLoad, styleUrl: "/styles/first", data: { routes: routes(2) } }))).not.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(onStyleLoad).not.toHaveBeenCalled();
+      expect(slow.load).toHaveBeenCalledTimes(1); // not asked again, so no loop
+      expect(urls).toEqual([]);
+      expect(FakeMap.instances).toHaveLength(0);
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
     });
   });
 
@@ -1000,6 +1080,40 @@ describe("MapView", () => {
       await styleApplied();
 
       expect(urls).toEqual(["/styles/dark"]);
+    });
+
+    test("MapView_asks_for_the_style_of_the_scheme_it_is_in_when_MapLibre_arrives", async () => {
+      // The system went dark while MapLibre was on its way: the light style is never asked for.
+      const urls = stubFetch(() => Response.json(STYLE));
+      const setScheme = stubColourScheme("light");
+      const slow = slowLoader();
+      render(withConfig(clientWithConfig(), { loadMapLibre: slow.load }));
+
+      setScheme("dark");
+      await slow.arrive();
+      await styleApplied();
+
+      expect(urls).toEqual(["/styles/dark"]);
+      expect(theMap().styleCalls).toHaveLength(1);
+    });
+
+    test("MapView_keeps_quiet_when_the_colour_scheme_changes_after_MapLibre_failed", async () => {
+      const urls = stubFetch(() => Response.json(STYLE));
+      const setScheme = stubColourScheme("light");
+      const slow = slowLoader();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      render(withConfig(clientWithConfig(), { loadMapLibre: slow.load, onStyleError }));
+      await slow.fail(new TypeError("Failed to fetch dynamically imported module"));
+
+      setScheme("dark");
+      setScheme("light");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(onStyleError).toHaveBeenCalledTimes(1);
+      expect(slow.load).toHaveBeenCalledTimes(1);
+      expect(urls).toEqual([]);
+      expect(FakeMap.instances).toHaveLength(0);
+      expect(region()).toHaveAttribute("data-map-state", "unavailable");
     });
 
     test("MapView_reads_the_light_style_when_the_browser_cannot_tell_the_scheme", async () => {

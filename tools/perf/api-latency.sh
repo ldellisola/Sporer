@@ -8,7 +8,8 @@
 #   GET /api/range?from&to, and /api/heat    `months` random windows of 31 days, `years` random windows of 365 days
 #   GET /api/places/{id}                     `places` requests for the places the busiest year has
 # The windows start on a random date, so they are not the calendar months and years the web app asks for; a window of 31 or
-# 365 days is the longest of them. Everything is picked with awk's seeded generator, so a run can be repeated.
+# 365 days is the longest of them. Everything is picked with a generator of the script's own (see RNG below), so that a seed gives the
+# same dates and windows every time and on every awk, and two runs can be compared on the same requests.
 #
 # Requests carry `Accept-Encoding: br`, as a browser's do, so the time is that of the compressed answer: curl's time_total,
 # in ms, which includes connecting to the server (a local one, so a fraction of a millisecond). A second pass asks for the same
@@ -25,6 +26,12 @@ year_count=${7:-20}
 place_count=${8:-200}
 seed=${9:-1}
 
+# Fail with a reason, up front, rather than half way through a run: the vertex counts and the places need jq, and nothing is measured
+# without an API that answers (a refused connection would count as a request of 0 ms).
+command -v jq > /dev/null || { echo "api-latency.sh needs jq (for the vertex counts and for the places): install it" >&2; exit 2; }
+curl -fsS -o /dev/null --max-time 10 "$base/api/status" ||
+  { echo "api-latency.sh: no answer from $base/api/status: start the API over the history first" >&2; exit 2; }
+
 here=$(cd "$(dirname "$0")" && pwd)
 days=$(( ( $(date -u -d "$last" +%s) - $(date -u -d "$first" +%s) ) / 86400 + 1 ))
 workdir=$(mktemp -d)
@@ -32,15 +39,22 @@ trap 'rm -rf "$workdir"' EXIT
 
 date_at() { date -u -d "$first + $1 days" +%F; } # offset
 
+# A random number generator of our own for awk: the Park-Miller "minimal standard", in doubles (16807 * 2^31 is far below 2^53, so it
+# is exact), so that a seed gives the same numbers on every awk. awk's own srand(seed) does not: mawk, which is what Debian and
+# Ubuntu have, takes its numbers from arc4random and ignores the seed, so every run of the first pass drew other dates and windows.
+RNG='function seed_rnd(s) { x = ((s + 1234567) * 48271) % 2147483647; if (x == 0) x = 1; for (k = 0; k < 8; k++) rnd() }
+     function rnd() { x = (x * 16807) % 2147483647; return x / 2147483647 }'
+
+
 # count length seed: "from to" per line, the window `length` days long and inside the history
 random_windows() {
   awk -v n="$1" -v len="$2" -v days="$days" -v seed="$3" \
-    'BEGIN { srand(seed); for (i = 0; i < n; i++) { s = int(rand() * (days - len + 1)); print s, s + len - 1 } }' |
+    "$RNG"' BEGIN { seed_rnd(seed); for (i = 0; i < n; i++) { s = int(rnd() * (days - len + 1)); print s, s + len - 1 } }' |
     while read -r from to; do echo "$(date_at "$from") $(date_at "$to")"; done
 }
 
 random_dates() { # count seed
-  awk -v n="$1" -v days="$days" -v seed="$2" 'BEGIN { srand(seed); for (i = 0; i < n; i++) print int(rand() * days) }' |
+  awk -v n="$1" -v days="$days" -v seed="$2" "$RNG"' BEGIN { seed_rnd(seed); for (i = 0; i < n; i++) print int(rnd() * days) }' |
     while read -r offset; do date_at "$offset"; done
 }
 
@@ -116,7 +130,7 @@ read -r _ pfrom pto <<< "$best"
 ids=$(curl -s "$base/api/range?from=$pfrom&to=$pto" | jq -r '.places[].id')
 count=$(echo "$ids" | wc -l)
 echo "$ids" | awk -v n=$((warmup + place_count)) -v seed="$seed" \
-  '{ id[NR] = $1 } END { srand(seed); for (i = 0; i < n; i++) print "/api/places/" id[int(rand() * NR) + 1] }' > "$workdir/paths"
+  "$RNG"' { id[NR] = $1 } END { seed_rnd(seed); for (i = 0; i < n; i++) print "/api/places/" id[int(rnd() * NR) + 1] }' > "$workdir/paths"
 get br < "$workdir/paths" > "$workdir/times"
 report "GET /api/places/{id} ($place_count, $count ids)" "$workdir/times"
 tail -n +$((warmup + 1)) "$workdir/paths" > "$workdir/measured"

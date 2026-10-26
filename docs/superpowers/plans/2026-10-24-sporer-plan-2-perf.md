@@ -11,29 +11,31 @@ up to 1.1 s at 4× CPU to show its rows, over the 1 s target on the worst runs, 
 bundle is over 450 kB only if MapLibre's worker is counted; and that the API's compression, left at ASP.NET's default, made Brotli
 larger than gzip for JavaScript. Fix round 1 (rulings P2-R63 and P2-R64) judged the bundle on main-thread JavaScript, made the map
 load MapLibre after the panel (commit `86a3703`), and compressed at the Optimal level (commit `4f96769`), and everything was measured
-again. This document gives the numbers of both passes; the tables say which is which.
+again. Fix round 2 corrected the tooling (the sampling seed did nothing, which made two runs not comparable), measured the server and
+the compression levels again on one set of requests, hardened the map's loader and put the heaviest day's paint right. This document
+gives the numbers of both passes; the tables say which is which.
 
 ## Result
 
-After fix round 1 (the first pass in brackets where it differs):
+After fix rounds 1 and 2 (the first pass in brackets for the web and compression rows):
 
 | What (spec §8, Plan 2 brief) | Target | Measured | Verdict |
 | --- | --- | --- | --- |
-| **Server** `/api/day/{date}`, 200 random dates | ≤ 200 ms | p50 5.5 ms, p95 8.5 ms, max 17.4 ms (first pass: p95 8.7, max 10.8; its repeat: p95 12.8, max 27.5) | Met, 23 times under at p95 |
-| `/api/range`, 100 random 31-day windows | ≤ 400 ms | p50 17.8 ms, p95 25.0 ms, max 31.5 ms (first pass: p95 23.9; repeat 29.8) | Met, 16 times under |
-| `/api/range`, 20 random 365-day windows | ≤ 800 ms | p50 63.1 ms, p95 76.7 ms, max 78.4 ms (first pass: p95 64.4; repeat 73.0, max 78.0); the 400-day maximum 55-71 ms | Met, 10 times under |
-| `/api/heat`, month and year windows | (none of its own; the range's) | month p95 7.4 ms, year p95 14.7 ms | Met |
-| `/api/places/{id}`, 200 requests over 79 places | (none of its own; the day's, 200 ms) | p50 11.2 ms, p95 16.5 ms, max 21.7 ms (first pass: p95 20.1) | Met |
-| Year payload size | ≤ 1.5 MB raw JSON | median 536 kB, largest 552 kB raw (the calendar year 2025: 553 kB; 400 days: 600 kB); Brotli 152.5 kB median, 158.0 kB largest (first pass: 161 / 166 kB) | Met, 2.7 times under |
-| Year vertex count | ≤ 60,000 | median 14,941, largest 15,491 (400 days: 16,810) | Met, 3.9 times under (the cap itself is not reached, see the caveats) |
+| **Server** `/api/day/{date}`, 200 random dates | ≤ 200 ms | p50 5.7 ms, p95 8.5 ms, max 15.3 ms (the same requests right after the API started: p95 12.9; another 200 dates: p95 9.5) | Met, 15 to 23 times under at p95 |
+| `/api/range`, 100 random 31-day windows | ≤ 400 ms | p50 18.3 ms, p95 25.3 ms, max 30.5 ms (right after the start: p95 27.4; another 100 windows: 28.2) | Met, 14 to 16 times under |
+| `/api/range`, 20 random 365-day windows | ≤ 800 ms | p50 63.1 ms, p95 77.2 ms, max 80.7 ms (right after the start: p95 82.5; another 20 windows: 74.3); the 400-day maximum 67-87 ms | Met, 10 to 11 times under |
+| `/api/heat`, month and year windows | (none of its own; the range's) | month p95 8.1 ms, year p95 17.9 ms | Met |
+| `/api/places/{id}`, 200 requests over the 79 places of the busiest year window | (none of its own; the day's, 200 ms) | p50 11.7 ms, p95 16.8 ms, max 23.1 ms (right after the start: p95 17.6, max 97.2) | Met |
+| Year payload size | ≤ 1.5 MB raw JSON | median 532 kB, largest 559 kB raw (the calendar year 2025: 553 kB; 400 days: 600 kB); Brotli 148.9 kB median, 157.8 kB largest | Met, 2.7 times under |
+| Year vertex count | ≤ 60,000 | median 14,888, largest 15,746 (400 days: 16,810) | Met, 3.8 times under (the cap itself is not reached, see the caveats) |
 | **Bundle** main-thread JavaScript, gzip (P2-R63) | ≤ 450 kB | **379.0 kB**: the page starts with 97.6 kB and the map fetches MapLibre's chunk, 281.4 kB, when it mounts. MapLibre's worker, apart: 147.9 kB | **Met**, 71 kB under. Stated plainly: counting every JavaScript file, worker included, it is 526.9 kB, 77 kB (17 %) over 450 kB |
 | **Web, cold navigation to the panel's rows**, day (4× CPU, 7 runs) | ≤ 1 s | median 764 ms, worst 846 ms; heaviest day 757 / 1,020 ms (first pass: 947 / 1,016; heaviest 982 / 1,124) | Met; one run of seven of the heaviest day is 2 % over |
 | same, month | ≤ 2 s | median 793 ms, worst 853 ms; heaviest month 874 / 1,007 ms (first pass: 1,154 / 1,197; heaviest 1,097 / 1,264) | Met, 2.5 times under |
 | same, year | ≤ 3 s | median 1,128 ms, worst 1,303 ms (first pass: 1,252 / 1,527) | Met, 2.7 times under |
 | **Web, tap › with the page open** (the §8 reading: "after navigating (‹ ›)"), day / month / year | ≤ 1 s / 2 s / 3 s | panel rows median 65 / 84 / 207 ms, worst 91 / 131 / 269 ms; routes on the map 138 / 214 / 706 ms median | Met, 11 to 24 times under on the rows |
-| *Information:* panel rows **painted** (two frames after they are in the DOM), cold, day / month / year | read against the same | median 961 / 884 / 1,341 ms, worst 1,088 / 990 / 1,505 ms (first pass: 992 / 1,213 / 1,395; worst 1,067 / 1,260 / 1,712) | Painted later than they are in the DOM here, see "Where the time goes": the day's worst run is 9 % over 1 s |
+| *Information:* panel rows **painted** (two frames after they are in the DOM), cold; day / heaviest day / month / heaviest month / year | read against the same | median 961 / **871** / 884 / 1,007 / 1,341 ms, worst 1,088 / **1,332** / 990 / 1,150 / 1,505 ms (first pass: median 992 / 1,019 / 1,213 / 1,137 / 1,395, worst 1,067 / **1,181** / 1,260 / 1,326 / 1,712) | The medians fell everywhere (day −31 ms, heaviest day −148, month −329, heaviest month −130, year −54). **The worst of seven rose for the two days:** the day 1,067 → 1,088 ms and the heaviest day 1,181 → **1,332** ms (one slow run of seven, whose rows in the DOM were also the slowest), both over 1 s; for the month and year it fell. See "Decisions" (P2-R66) |
 | *Information:* **map `idle`** from cold navigation, day / month / year | read against the same, with the caveats below | median 1,894 / 1,792 / 2,492 ms, worst 2,437 / 2,058 / 2,768 ms (first pass: 1,947 / 1,943 / 2,754; worst 2,073 / 2,204 / 3,033) | Day over 1 s (the start is 1.3 s, then a 600 ms camera move); month and year inside. **Not a verdict:** software WebGL, see the caveats |
-| API compression | Brotli smaller than gzip, at acceptable cost | the three scripts over the wire: Brotli 679.8 → **524.6 kB**, gzip 626.1 → 525.9 kB; the year's answer, Brotli 166 → 155 kB; year p95 64.7 → 76.7 ms | Changed to Optimal, see "Compression" |
+| API compression | Brotli smaller than gzip, at acceptable cost | the three scripts over the wire: Brotli 679.9 → **524.6 kB**, gzip 626.1 → 525.9 kB; the year's answer, Brotli median 160.1 → 148.9 kB (the calendar year 2025: 166.3 → 155.5 kB); year p95 70.8 → 79.6 ms (the same 20 windows) | Changed to Optimal, see "Compression" |
 
 The panel's rows (in the DOM) are the primary signal for the web; `idle` and the paint are recorded and caveated. Everything in the
 table is a number from the runs below.
@@ -41,6 +43,24 @@ table is a number from the runs below.
 What fix round 1 changed, and what was left: the server's queries needed nothing (no query scans a large table, so no migration
 0005; the one index that was weighed, on `segment.place_id`, is measured below and left out), the app's start no longer waits for
 MapLibre, and the API sends 23 % fewer bytes of JavaScript to a browser that takes Brotli.
+
+## Decisions
+
+Rulings that shaped what was changed and what was left, so that the numbers are read with them:
+
+- **P2-R61 (queries).** `EXPLAIN (ANALYZE, BUFFERS)` of every query of the read endpoints; an index only for a query that scans a large table or an
+  endpoint that misses its target. Neither happened, so no migration 0005; the index on `segment.place_id` that was weighed is measured
+  below and left out.
+- **P2-R63 (bundle).** The 450 kB target is judged on main-thread JavaScript (379.0 kB: pass); MapLibre's worker (147.9 kB) is reported apart; the
+  literal total (526.9 kB, 77 kB over) is stated.
+- **P2-R64 (cold day over 1 s).** A real miss on the primary signal, fixed by loading MapLibre after the panel (commit `86a3703`).
+- **P2-R66 (rows painted).** The map's load is **not** deferred any further (for example until the first data has been painted). The medians
+  of the paint improved everywhere; the worst-of-seven swing (the typical day's 1,067 → 1,088 ms, the heaviest day's 1,181 → 1,332 ms) is within
+  the run-to-run noise of this four-CPU machine with software WebGL, where a mocked API on loopback makes MapLibre's parsing coincide with the
+  paint; and deferring the map would cost the owner's priority view, the map.
+- **P2-R67 (loader and tooling).** A failure anywhere in making or setting up the map is reported through `onStyleError`, never thrown; the
+  tooling is checked up front, scoped and labelled correctly (commit of fix round 2).
+- **Compression.** Optimal for Brotli and gzip (commit `4f96769`), after comparing the levels on one set of requests.
 
 ## Machine and setup
 
@@ -71,7 +91,7 @@ dotnet run --project tools/Sporer.SyntheticData -c Release -- \
 | --- | --- |
 | Rows written | 10,726,341 (checksum `0690878d1283b1fd`, the same as Plan 1's), in 80 s here |
 | `locationlog` | 126 chunks |
-| Backfill | 167 s from the start of the API to 100 % (Plan 1: 140-145 s; this run polled every 3 s and started 6 s after the API), `failedRanges` empty, `pendingRanges` 0 |
+| Backfill | 167 s from the start of the API to 100 % (Plan 1: 140-145 s; this run polled every 3 s and started 6 s after the API), `failedRanges` empty, `pendingRanges` 0; 170 s on the generation made again for fix rounds 1 and 2 |
 | Timeline | 7,607 segments (3,797 stays, 3,801 moves, 9 gaps) on 816 days, 87 places: the same as Plan 1's |
 
 What a real history will look like is not known; see the caveats.
@@ -81,20 +101,48 @@ What a real history will look like is not known; see the caveats.
 ### Method
 
 `tools/perf/api-latency.sh <url> <first-date> <last-date>` (new): for each endpoint 20 requests warm it up, then the measured ones
-follow, once each, on dates and windows drawn with awk's seeded generator, so a run repeats exactly:
+follow, once each, on dates and windows drawn by a generator of the script's own, so that a seed gives the same requests every time:
 
 - `/api/day/{date}`: 200 random dates;
 - `/api/range` and `/api/heat`: 100 random windows of 31 days (a month: the longest one) and 20 random windows of 365 days (a year),
   starting on a random date, so they are not calendar months and years but as long as the longest of them;
-- `/api/places/{id}`: 200 requests over the 79 places that the busiest of the 20 year windows has.
+- `/api/places/{id}`: 200 requests over the places (78 or 79, as the draw falls) that the busiest of the 20 year windows has.
 
 A second pass asks for the same windows with no compression to measure the raw JSON and, for a range, to count the vertices of its
-lines; it is not timed. Seeds 1 and 2 (the repeat) were run, one after the other, the second after a restart of the API (each has its own 20 warm-up requests).
+lines; it is not timed. The script checks that `jq` is there and that the API answers before it starts.
+
+**The seed.** The first pass used awk's `srand(seed)`, which is what Plan 1's scripts do too. On this machine's `mawk` (what Debian and
+Ubuntu have) it does nothing: the numbers come from `arc4random`, so each run drew other dates and windows, and the first pass's "seed 1"
+and "seed 2" were two random draws. That is why two runs at the same compression level gave slightly different sizes (the day's Brotli
+median 2,257 B in one and 2,370 B in the next) and a different number of places (79, then 78). The script has its own generator now
+(Park-Miller in awk's doubles, exact on any awk), two runs of a seed give byte-identical sizes (checked), and the compression levels
+below were compared on one set of requests. Plan 1's `tools/perf/day-latency.sh` still uses `srand` (its dates are random too, and its comment says otherwise), and
+`ingest-latency.sh` draws its coordinates from bash's `$RANDOM`.
+The history was generated again for fix round 1 (the same rows and checksum, 7,607 segments and 87 places again); the tables say which
+generation they are from, and the compression levels were compared on one.
 
 ### Results
 
-**First pass**, ASP.NET's default compression (`Fastest`): first run (seed 1), the second in brackets. Times in ms; sizes in bytes as
-curl counts the body.
+**Final configuration** (compression at `Optimal`), seed 1, the API warm: this is the table of the Result section. Times in ms; sizes in
+bytes as curl counts the body.
+
+| Endpoint | n | p50 | p95 | p99 | max | Brotli body, median / largest | Raw body, median / largest |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `/api/day/{date}` | 200 | 5.7 | 8.5 | 12.8 | 15.3 | 2,127 / 5,086 | 7,729 / 18,166 |
+| `/api/range`, 31 days | 100 | 18.3 | 25.3 | 28.6 | 30.5 | 12,924 / 15,853 | 45,983 / 55,688 |
+| `/api/range`, 365 days | 20 | 63.1 | 77.2 | 80.7 | 80.7 | 148,905 / 157,758 | 531,723 / 559,072 |
+| `/api/heat`, 31 days | 100 | 4.9 | 8.1 | 9.9 | 14.6 | 277 / 411 | 690 / 1,081 |
+| `/api/heat`, 365 days | 20 | 12.0 | 17.9 | 19.2 | 19.2 | 853 / 916 | 2,366 / 2,524 |
+| `/api/places/{id}` | 200 | 11.7 | 16.8 | 21.2 | 23.1 | 368 / 1,327 | 1,055 / 6,059 |
+
+The same requests in the first run, right after the API was started (the 20 warm-up requests are not a full warm-up: the first requests
+of a fresh process are slower, see below): day p50 7.8 / p95 12.9 / max 28.3, month 18.6 / 27.4 / 33.3, year 67.6 / 82.5 / 87.1, heat 4.6 /
+8.8 and 13.4 / 16.0, places 12.6 / 17.6 / 97.2. Seed 2 (other requests, warm): day 5.7 / 9.5 / 37.2, month 18.7 / 28.2 / 33.8, year 64.9 /
+74.3 / 82.4, heat 4.8 / 7.8 and 12.3 / 18.9, places (78 ids) 12.6 / 19.3 / 48.7; its Brotli medians 1,953, 13,350 and 152,641 B for the
+day, month and year, its raw medians 7,095, 46,997 and 540,990 B.
+
+**First pass**, ASP.NET's default compression (`Fastest`), two random draws (see "The seed"), the second in brackets, on the first
+generation of the history:
 
 | Endpoint | n | p50 | p95 | p99 | max | Brotli body, median / largest | Raw body, median / largest |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -105,26 +153,19 @@ curl counts the body.
 | `/api/heat`, 365 days | 20 | 13.1 (13.2) | 17.2 (18.0) | 18.6 (20.5) | 18.6 (20.5) | 984 / 1,210 | 2,339 / 2,846 |
 | `/api/places/{id}` | 200 | 13.6 (13.4) | 20.1 (18.1) | 28.4 (23.6) | 31.4 (27.9) | 399 / 1,544 | 1,048 / 6,059 |
 
-**Final configuration**, compression at `Optimal` (fix round 1, see "Compression"; seed 1, a fresh API process; the raw sizes and
-the vertices are the same, the places had 78 ids in this run):
-
-| Endpoint | n | p50 | p95 | p99 | max | Brotli body, median / largest |
-| --- | --- | --- | --- | --- | --- | --- |
-| `/api/day/{date}` | 200 | 5.5 | 8.5 | 11.5 | 17.4 | 1,890 / 5,140 |
-| `/api/range`, 31 days | 100 | 17.8 | 25.0 | 30.0 | 31.5 | 13,159 / 15,804 |
-| `/api/range`, 365 days | 20 | 63.1 | 76.7 | 78.4 | 78.4 | 152,513 / 158,009 |
-| `/api/heat`, 31 days | 100 | 4.6 | 7.4 | 12.5 | 15.3 | 285 / 441 |
-| `/api/heat`, 365 days | 20 | 12.2 | 14.7 | 23.8 | 23.8 | 837 / 1,027 |
-| `/api/places/{id}` | 200 | 11.2 | 16.5 | 19.5 | 21.7 | 368 / 1,327 |
-
-- **Vertices of a range's lines:** 31 days median 1,219, largest 1,616; 365 days median 14,941, largest 15,491 (repeat: 14,925 and
-  15,802). The largest range the API takes, 400 days (2025-01-01 to 2026-02-04): 1,789 moves, 16,810 vertices, 600,334 bytes raw,
-  180,559 Brotli, 55-71 ms over five requests.
-- Plan 1's own script, `tools/perf/day-latency.sh` (no compression), run again today: p50 5.2 ms, p95 8.6 ms, p99 10.7 ms, max 17.1 ms,
-  against 5.0 / 7.0 / 7.9 / 12.4 in Plan 1: the same. `/api/status`: 9.0 ms once warm (the first request, 67 ms, is the JIT).
+- **Vertices of a range's lines** (seed 1): 31 days median 1,215, largest 1,607; 365 days median 14,888, largest 15,746 (seed 2: 15,106 and
+  15,725; first pass: 14,941 and 15,491). The largest range the API takes, 400 days (2025-01-01 to 2026-02-04): 1,789 moves, 16,810
+  vertices, 600,334 bytes raw (first generation), 168,963 Brotli at Optimal (180,559 at Fastest), 67-87 ms over five requests.
+- **The first requests of a fresh process are about twice as slow.** The calendar year 2025 (553 kB raw), 15 requests after 3 warm-ups on a
+  freshly started API, took 115-122 ms at the median at `Fastest` and `Optimal`; the same 15 requests after the server had served a few
+  hundred, 58-64 ms, the same as the year windows above. It is .NET compiling the hot paths (tiered JIT), not the year. An API that has
+  just started (a release, a restart) answers its first year view in about 0.1 s and the rest in about 0.06 s; the day's first
+  requests are slower in proportion (p50 7.8 ms right after the start, 5.7 ms after).
+- Plan 1's own script, `tools/perf/day-latency.sh` (no compression), run again in the first pass: p50 5.2 ms, p95 8.6 ms, p99 10.7 ms,
+  max 17.1 ms, against 5.0 / 7.0 / 7.9 / 12.4 in Plan 1: the same. `/api/status`: 9.0 ms once warm (the first request, 67 ms, is the JIT).
 - The year answer is mostly its `moves` (1,643 moves, one line each); the 60,000-vertex cap of `VertexBudget` did not have to cut
   anything here (14.9 thousand vertices), so the synthetic history does not show what it does to a heavier year (the unit tests do).
-- The place endpoint is the slowest per row of work (p50 13.6 ms) because it is two recursive queries and a transaction at
+- The place endpoint is the slowest per row of work (p50 11.7 ms) because it is two recursive queries and a transaction at
   `RepeatableRead`; it has no target of its own and sits at a tenth of the day's.
 
 ### Query plans (P2-R61)
@@ -166,7 +207,7 @@ new; execution times from the plans in ms):
 | Query | Now (7,607 segments): without → with | 12 times as long: without → with |
 | --- | --- | --- |
 | Place: the totals | 2.8 → 1.1 | 44-67 → 26-32 |
-| Place: the latest visits | 1.9 → 4.0 (the planner prefers the stays index, and a sort, with it) | 25-30 → 24-42 (no gain) |
+| Place: the latest visits | 1.9 → 4.0 (the same plan both times, the new index is not used: noise) | 25-30 → 24-42 (the same, no gain) |
 | Status: the places in use | 2.4 → 0.36 | 43-60 → 0.8-2.9 |
 
 (The 12-times figures are from three runs, hence the ranges.) At the size of this history the index would save a few milliseconds of
@@ -179,44 +220,48 @@ nothing else; it is left until the history is long enough for it to matter, as P
 The API compresses what it reads with ASP.NET's response compression, Brotli first and gzip, and left at its defaults that is the
 `Fastest` level of both. The first pass found that this makes Brotli the larger of the two for the web app's JavaScript, which is what
 a browser that accepts both is given: measured from the API with the built web root (`curl -H 'Accept-Encoding: ...'`, which counts the
-body as it is sent), 679.8 kB with Brotli against 626.1 kB with gzip. Fix round 1 measured the levels of `CompressionLevel` for both
-providers (a temporary `Configure` of the two options, run as three API processes on the same history, the web build in its web
-root; Brotli quality 1, 4 and 11 for Fastest, Optimal and SmallestSize; gzip 1, 6 and 9). Static files: size and the time of 15
-requests after 2 warm-up ones. API: `tools/perf/api-latency.sh` (the 20 windows of 365 days, the 100 of 31 days, the 200 days), the
-sizes are Brotli.
+body as it is sent), 679.9 kB with Brotli against 626.1 kB with gzip. Fix round 1 compared the levels of `CompressionLevel` for both
+providers (a temporary `Configure` of the two options, run as three API processes on the same history, the final web build in its web
+root; Brotli quality 1, 4 and 11 for Fastest, Optimal and SmallestSize; gzip level 1, 6 and 9). Static files: size, and the time of 15
+requests after 2 warm-up ones. API: `tools/perf/api-latency.sh` with its seed 1, so **the three levels were asked the same 200 dates and
+the same 120 windows**; the sizes are Brotli. (The first comparison drew other requests for each level, see "The seed", which made the
+day look 20 % smaller at Optimal and the year 6 %; on the same requests it is 14 % and 7 %. Both are below.)
 
 **The scripts** (bytes sent; time per request, median / p95 of 15, ms):
 
 | File | Fastest: Brotli | Fastest: gzip | **Optimal: Brotli** | **Optimal: gzip** | SmallestSize: Brotli | SmallestSize: gzip |
 | --- | --- | --- | --- | --- | --- | --- |
-| `maplibre-*.js` (1,046 kB raw) | 368,926 B, 10.6 / 15.3 | 337,315 B, 20.0 / 29.0 | **280,595 B, 26.8 / 43.3** | 280,832 B, 41.5 / 51.4 | 230,070 B, **2,070 / 2,234** | 280,018 B, 50.0 / 63.0 |
-| `maplibre-gl-worker-*.mjs` (519 kB) | 186,706 B, 5.9 / 12.1 | 173,711 B, 11.6 / 18.4 | **145,738 B, 14.0 / 30.3** | 147,471 B, 19.4 / 27.6 | 121,564 B, 1,071 / 1,127 | 147,120 B, 25.7 / 32.8 |
-| `index-*.js` (317 kB) | 124,198 B, 5.3 / 15.6 | 115,114 B, 9.0 / 15.0 | **98,366 B, 10.2 / 18.2** | 97,589 B, 15.3 / 19.3 | 84,554 B, 650 / 683 | 97,415 B, 19.0 / 37.0 |
-| **The three** | **679,830 B** | 626,140 B | **524,699 B** | 525,892 B | 436,188 B | 524,553 B |
+| `maplibre-*.js` (1,046 kB raw) | 368,926 B, 10.9 / 22.7 | 337,315 B, 20.5 / 26.6 | **280,595 B, 26.3 / 32.5** | 280,832 B, 41.3 / 48.4 | 230,070 B, **2,140 / 2,349** | 280,018 B, 54.5 / 72.0 |
+| `maplibre-gl-worker-*.mjs` (519 kB) | 186,706 B, 6.3 / 7.5 | 173,711 B, 10.5 / 20.2 | **145,738 B, 14.0 / 19.0** | 147,471 B, 22.1 / 55.5 | 121,564 B, 1,017 / 1,128 | 147,120 B, 28.0 / 33.7 |
+| `index-*.js` (317 kB) | 124,232 B, 5.6 / 15.9 | 115,102 B, 8.3 / 13.3 | **98,283 B, 12.1 / 17.2** | 97,581 B, 15.5 / 24.4 | 84,507 B, 682 / 874 | 97,408 B, 20.5 / 28.6 |
+| **The three** | **679,864 B** | 626,128 B | **524,616 B** | 525,884 B | 436,141 B | 524,546 B |
 
-(The `index` file of these runs had another hash than the final build's, the same code; with the final build, 98,283 B Brotli and
-97,581 B gzip at Optimal, the three are 524,616 B and 525,884 B.)
-
-**The API's answers**:
+**The API's answers** (the same requests at each level; Brotli sizes, median; p50 / p95 in ms):
 
 | | Fastest | **Optimal** | SmallestSize |
 | --- | --- | --- | --- |
-| Year, 20 windows: p50 / p95 (ms), Brotli size median | 55.4 / 64.7, 162,024 B | **63.1 / 76.7, 152,513 B** | 1,115 / 1,208, 96,660 B |
-| Month, 100 windows: p50 / p95, Brotli size median | 18.9 / 25.4, 13,662 B | **17.8 / 25.0, 13,159 B** | 95.4 / 116.3, 9,248 B |
-| Day, 200 dates: p50 / p95, Brotli size median | 6.3 / 8.9, 2,370 B | **5.5 / 8.5, 1,890 B** | 17.8 / 26.6, 1,468 B |
-| Heat, year / places: p95 | 18.5 / 18.7 | **14.7 / 16.5** | 23.9 / 27.8 |
-| The calendar year 2025 (553 kB raw), 15 requests: Brotli / gzip size, median ms | 166,324 B / 186,023 B, 117.6 / 96.6 | **155,467 B / 157,565 B, 110.8 / 116.5** | 99,958 B / 153,206 B, 1,148 / 162 |
+| Year, 20 windows | 58.9 / 70.8, 160,145 B | **67.7 / 79.6, 148,905 B** | 1,103 / 1,205, 96,221 B |
+| Month, 100 windows | 18.3 / 24.1, 13,568 B | **16.8 / 22.2, 12,924 B** | 87.1 / 108.3, 9,092 B |
+| Day, 200 dates | 6.3 / 9.2, 2,475 B | **6.1 / 9.5, 2,127 B** | 17.1 / 26.3, 1,602 B |
+| Heat, year: p95; places: p95 | 20.9; 17.0 | **17.5; 19.7** | 22.5; 27.4 |
+| The calendar year 2025 (553 kB raw): Brotli and gzip sizes | 166,327 B and 186,015 B | **155,469 B and 157,560 B** | 99,913 B and 153,200 B |
+| the same: Brotli median / p95 of 15 requests, fresh server; after a few hundred requests | 121.7 / 155.9; 58.0 / 79.8 | **115.3 / 179.3; 63.6 / 93.0** | 1,039 / 1,094; 1,058 / 1,206 |
+
+(The `index` file in the first-pass comparison had another hash than the final build's, the same code, and the requests were
+other ones: the numbers of this table replace it. The calendar year takes 115-122 ms on a fresh server and 58-64 ms after a few hundred
+requests at every level; see the first requests of a fresh process in "Server / Results".)
 
 **Decision: Optimal for both** (`Program.cs`, commit `4f96769`; a hosting test pins the level). The ruling's condition was Brotli
-smaller than gzip at an acceptable cost, and at Optimal it is smaller for the scripts together (524.7 against 525.9 kB, in the
-noise of a tie: the library chunk 0.2 kB smaller, the worker 1.2 % smaller, `index` 0.8 % larger) and for the year's JSON (by
+smaller than gzip at an acceptable cost, and at Optimal it is smaller for the scripts together (524.6 against 525.9 kB, in the noise of
+a tie: the library chunk 0.2 kB smaller, the worker 1.2 % smaller, `index` 0.7 % larger) and for the year's JSON (155.5 against 157.6 kB,
 1.3 %), where at Fastest it was 9 % larger for the scripts. Brotli is what a browser that takes both is given, so the real gain is
-against the default: **the scripts from 679.8 to 524.6 kB (−23 %)**, the year's answer 6 to 7 % smaller, the day's 20 % smaller. The cost is small:
-the year at p95 goes from 64.7 to 76.7 ms against a target of 800 ms, the day and month do not change (the numbers are within the
-run-to-run spread), and a script takes 10 to 27 ms to compress per request instead of 5 to 11 (they are fetched once per release,
-and cached `immutable`). SmallestSize, the only level that beats gzip clearly (the scripts another 17 % smaller, 436 kB), is not
-acceptable: 2 s for one script and 0.65 s for the smallest, and 1.1 s for the year, which is over its 800 ms target on its own. A build-time precompression of the assets at Brotli quality 11 would give those 436 kB with no cost
-per request, but is a change to how the API serves files, not made here.
+against the default: **the scripts from 679.9 to 524.6 kB (−23 %)**, the year's answer 7 % smaller, the month's 5 %, the day's 14 %. The cost
+is small: the year at p95 goes from 70.8 to 79.6 ms against a target of 800 ms, the month and the day do not change (inside the
+run-to-run spread), and a script takes 12 to 26 ms to compress per request instead of 6 to 11 (they are fetched once per release, and
+cached `immutable`). SmallestSize, the only level that beats gzip clearly (the scripts another 17 % smaller, 436 kB), is not
+acceptable: 2.1 s for one script and 0.7 s for the smallest, and 1.1 s for the year, which is over its 800 ms target on its own. A
+build-time precompression of the assets at Brotli quality 11 would give those 436 kB with no cost per request, but is a change to how
+the API serves files, not made here.
 
 ## Web
 
@@ -334,16 +379,19 @@ How to read it:
   of it (98 kB gzip): the first contentful paint is at 0.64-0.68 s (it was 0.84-0.97), the API answer arrives at 0.64-0.68 s (it was
   0.81-0.92), and the rows are in the DOM 110 ms (a day) to 450 ms (a year of 348 rows) after it: the day by 0.76 s, the month by 0.79 s,
   the year by 1.13 s. MapLibre's chunk starts when the map mounts, once the app's first render is done.
-- **The rows are painted later than they are in the DOM**, by 0.1 to 0.2 s, where before the
-  change the two were 40 to 60 ms apart for a day or a month (140 ms for the year). That is MapLibre arriving in the same stretch: the mocked API answers at once, the chunk
-  is a local file that arrives at once too, and its parsing, a task of about 0.2 s at this speed, is queued before the frame that
-  paints the rows. The change therefore bought the DOM 180 ms (day), 360 ms (month) and 120 ms (year), and the paint 30 ms, 330 ms
-  and 55 ms (medians); the day's paint is 961 ms (worst 1,088) against a target of 1,000. On a phone with a real connection the
-  answer to the request takes 100 ms or more, and a first load of the chunk, the slower of the two, would be expected to arrive after
-  it, so that the rows paint first; with the chunk cached its task would come at the start, before the answer (neither is measured
-  here, where the network is loopback). The way to make it certain, not done because the ruling named the mechanism above and it
-  costs the map's start the data's latency: let the map's load wait for
-  the first data to be painted (with a short timer for a view that has none).
+- **The rows are painted later than they are in the DOM**, by 0.1 to 0.2 s, where before the change the two were 40 to 60 ms apart for
+  a day or a month (140 ms for the year). That is MapLibre arriving in the same stretch: the mocked API answers at once, the chunk is a
+  local file that arrives at once too, and its parsing, a task of about 0.2 s at this speed, is queued before the frame that paints the
+  rows. The change therefore bought the DOM 180 ms (day), 360 ms (month) and 120 ms (year) at the median, and the paint 30 ms, 330 ms
+  and 55 ms. For the two days the paint is **not** a plain gain: the day's median is 961 ms (992 before) and its worst of seven 1,088 ms
+  (1,067 before), and the heaviest day's median is 871 ms (1,019 before) but its worst of seven rose **from 1,181 to 1,332 ms**, with the
+  slowest run of seven also the one whose rows reached the DOM last (1,020 ms), so both days have a worst run over 1 s on the paint.
+  For the month, the heaviest month and the year the paint is better at the median and at the worst. On a phone with a real
+  connection the answer to the request takes 100 ms or more, and a first load of the chunk, the slower of the two, would be expected to
+  arrive after it, so that the rows paint first; with the chunk cached its task would come at the start, before the answer (neither
+  is measured here, where the network is loopback). Making that certain, by letting the map's load wait for the first data to be
+  painted, was considered and **not done** (ruling P2-R66, "Decisions"): the medians improved everywhere, the worst-of-seven swing of
+  the two days is within the run-to-run noise of this machine, and the map is the owner's priority view.
 - **The map comes later, a little.** The style is loaded at 1.25-1.63 s, about as before (±150 ms: it was 1.17-1.56 s); `idle` is
   within the run-to-run spread of what it was (the day's worst run, 2,437 ms, is one slow run of seven). `idle` is the camera move
   (600 ms by design, `FIT_DURATION_MS`) and the frames drawn during it, each of 1170 × 2532 pixels in software, on top of the
@@ -370,9 +418,9 @@ longest task of a start. Now the map fetches MapLibre itself, when it mounts, as
   meanwhile (`data`, `fitTo`, `home`, `padding`) is used as the latest of each at that moment, and the map is brought to `fitTo`
   once. A chunk that cannot be fetched goes through `onStyleError`, so the page says "Map unavailable" and goes on, with no
   unhandled rejection. Under StrictMode one arrival makes one map.
-- MapLibre's stylesheet now comes after the app's, where it came before. It gives the map's element `position: relative`, as the
-  app's `position: absolute` does at the same weight, and the map had the height of a default canvas: found by the e2e suite on
-  the first run, fixed by giving the app's rule two classes.
+- MapLibre's stylesheet now arrives after the app's (before, it came first). Its rule `.maplibregl-map { position: relative }` has the same
+  weight as the app's `.map { position: absolute }`, so the later one won: the map's element had no height and the canvas was a default
+  300 px high. The e2e suite found it on its first run; the app's rule is two classes now (`.root > .map`).
 - Tests: the loader (once, worker first, a failure not kept), `MapView` (the plain background and no map before the module, what was given
   meanwhile applied and one fit, unmounted before the arrival, StrictMode, a failed load with no unhandled rejection; deleting the
   map's `fitTo` effect on arrival fails eight of them), and the e2e check of the build above. The 13 tests that assumed the map was
@@ -457,7 +505,7 @@ kill $pid; docker rm -f sporer-perf-db
 
 `npm run perf` prints the table and writes `web/perf/results/web-timing.json` (every run's numbers) and a screenshot of each scenario;
 `PERF_RUNS` and `PERF_CPU` change the runs and the throttle. It needs the recorded answers and the Chromium Playwright already has
-(it never installs one), uses port 4174 (the e2e suite's is 4173) and no real network. It is a measurement, not a test of the app:
+(it never installs one), uses port 4174 (the e2e suite's is 4173; the two are not to run at once, as both build into the API's web root) and no real network. It is a measurement, not a test of the app:
 it asserts only that each run reached the rows and the map's idle and asked for nothing that was not recorded. `npm run e2e` and
 CI do not run it.
 

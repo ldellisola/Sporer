@@ -23,8 +23,6 @@ if (!base || !first || !last) {
 }
 
 const out = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "perf", "recorded");
-rmSync(out, { recursive: true, force: true });
-mkdirSync(out, { recursive: true });
 
 // --- Dates, all in UTC and as yyyy-mm-dd, which is how the app writes them ---
 const DAY = 86_400_000;
@@ -96,6 +94,9 @@ for (let year = Number(first.slice(0, 4)); year <= Number(last.slice(0, 4)); yea
 const year = yearArg ? Number(yearArg) : [...years].sort((a, b) => b.bytes - a.bytes)[0].year;
 
 // --- Recording them, and what the app asks for around each ---
+// The old recording goes only now: a server that was not there, or that failed while the days were looked at, leaves it as it was.
+rmSync(out, { recursive: true, force: true });
+mkdirSync(out, { recursive: true });
 const scenarios = [];
 const rangePath = ({ from, to }) => `/api/range?from=${from}&to=${to}`;
 

@@ -3,7 +3,8 @@ import e2e from "./playwright.config";
 
 // The web performance run (`npm run perf`), kept apart from the e2e suite (`npm run e2e`, CI): it throttles the processor, it
 // takes minutes, and what it produces is numbers to read, not a verdict. The browser and the phone are the e2e suite's own, so that
-// the device is the one that suite tests. A port of its own, so that the two can run at once.
+// the device is the one that suite tests. A port of its own, but not to run the two at once: each builds the app into the same web
+// root (see vite.config.ts), which it first empties.
 const PORT = 4174;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 

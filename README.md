@@ -236,7 +236,7 @@ access gets a plain background instead of a map; the rest of the page works.
 
 | Command | What it does |
 | --- | --- |
-| `npm run typecheck` | `tsc --noEmit`, with `strict` on. |
+| `npm run typecheck` | `tsc --noEmit`, with `strict` on, for the app and, as a project of its own (`web/perf/tsconfig.json`), for the performance run. |
 | `npm test` | The unit and component tests (Vitest, jsdom). |
 | `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. |
 | `npm run perf` | The web performance run (spec §8): times the panel's rows and the map's idle for a day, a month and a year on a phone-sized page with the processor held back 4 times, against API answers recorded by `npm run perf:record` from a server over the synthetic history. Not part of `npm run e2e` or CI; takes about four minutes. How to run it, and its results, are in `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md`. |

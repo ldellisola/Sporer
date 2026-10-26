@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p perf",
     "test": "vitest run",
     "e2e": "playwright test",
     "perf": "playwright test -c playwright.perf.config.ts",

@@ -19,5 +19,5 @@
     "noFallthroughCasesInSwitch": true,
     "noEmit": true
   },
-  "include": ["src", "e2e", "perf", "*.config.ts"]
+  "include": ["src", "e2e", "*.config.ts"]
 }

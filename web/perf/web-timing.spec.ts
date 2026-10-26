@@ -348,7 +348,7 @@ test.describe("web timing", () => {
       const list = samples.get(scenario.id) ?? [];
       if (list.length === 0) continue;
       const summary: Record<string, unknown> = { scenario: scenario.id, url: scenario.url, bytes: scenario.bytes, runs: list.length, rowCount: list[0]?.rowCount };
-      lines.push(`${scenario.id.padEnd(12)} ${scenario.url.padEnd(20)} ${(scenario.bytes / 1024).toFixed(0)} kB, ${list[0]?.rowCount} rows`);
+      lines.push(`${scenario.id.padEnd(12)} ${scenario.url.padEnd(20)} ${(scenario.bytes / 1000).toFixed(0)} kB, ${list[0]?.rowCount} rows`);
       for (const [key, label] of metrics) {
         const values = list.map((s) => s[key]).filter((v): v is number => typeof v === "number");
         if (values.length === 0) continue;
