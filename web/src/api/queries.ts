@@ -1,5 +1,5 @@
 import { keepPreviousData, QueryClient, queryOptions, skipToken, useQuery } from "@tanstack/react-query";
-import { MAX_RANGE_DAYS, step, periodDays, periodRange } from "../time/dates";
+import { MAX_RANGE_DAYS, step, periodDays, periodRange, today } from "../time/dates";
 import type { Route } from "../app/router";
 import { ApiError, getJson } from "./client";
 import type {
@@ -11,14 +11,25 @@ import type {
   StatusResponse,
 } from "./types";
 
-/** How long an answer counts as fresh, and how often a period that is still being processed is asked for again. */
+/** How long an answer counts as fresh, how often a period that is still being processed is asked for again, and how often today is. */
 const STALE_MS = 30_000;
 const POLL_MS = 30_000;
+const TODAY_POLL_MS = 60_000;
 
-// A day or a range that is "pending" may still change as its points are processed: ask again until it is "done". While
-// the next period loads, the previous one stays on screen (keepPreviousData), so stepping never blanks the view.
-const pollWhilePending = (query: { state: { data: { state: string } | undefined } }): number | false =>
-  query.state.data?.state === "pending" ? POLL_MS : false;
+/**
+ * How long until a day or a period (`from` to `to`, both dates included) is asked for again, or false for never. A period that is still
+ * being processed ("pending") may change as its points are processed, so it is asked for every 30 seconds until it is "done". Today may
+ * change whatever its state says, for points keep arriving while the app is open (spec 4.2: today refreshes as new data is processed),
+ * so a period that holds it (`now`, a date of the browser's own zone) is asked for every minute, and every 30 seconds when it is pending
+ * as well, as soon as it is processed. A period that is over is asked for no more once it is done. Nothing is asked for while there is no
+ * period. `state` is that of what has been answered so far, if anything: today that could not be loaded is tried again too, which is how
+ * an app opened before the VPN was up finds its day.
+ */
+export function refreshInterval(from: string | null, to: string | null, state: string | undefined, now: string = today()): number | false {
+  if (from === null || to === null) return false;
+  if (state === "pending") return POLL_MS;
+  return from <= now && now <= to ? TODAY_POLL_MS : false;
+}
 
 /**
  * A day. Nothing is asked for while `date` is null (the view on show is not a day): the query is skipped, so that however the days are
@@ -32,7 +43,7 @@ export function dayQueryOptions(date: string | null, keepPrevious = true) {
     queryFn: date === null ? skipToken : ({ signal }) => getJson<DayResponse>(`/api/day/${date}`, signal),
     staleTime: STALE_MS,
     placeholderData: keepPrevious ? keepPreviousData : undefined,
-    refetchInterval: pollWhilePending,
+    refetchInterval: (query) => refreshInterval(date, date, query.state.data?.state),
   });
 }
 
@@ -46,7 +57,7 @@ export function rangeQueryOptions(from: string | null, to: string | null, keepPr
     queryFn: from === null || to === null ? skipToken : ({ signal }) => getJson<RangeResponse>(`/api/range?from=${from}&to=${to}`, signal),
     staleTime: STALE_MS,
     placeholderData: keepPrevious ? keepPreviousData : undefined,
-    refetchInterval: pollWhilePending,
+    refetchInterval: (query) => refreshInterval(from, to, query.state.data?.state),
   });
 }
 

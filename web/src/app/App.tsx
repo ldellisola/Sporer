@@ -15,6 +15,7 @@ import { TopBar } from "../views/TopBar";
 import styles from "./App.module.css";
 import { navigate, useRoute, type Route } from "./router";
 import { useBottomEdge } from "./useBottomEdge";
+import { useDayRollover } from "./useDayRollover";
 import { useLastDay } from "./useLastDay";
 import { useMediaQuery } from "./useMediaQuery";
 import { useStoredFlag } from "./useStoredFlag";
@@ -45,10 +46,12 @@ function Panel({ route, onFocus }: { route: Route; onFocus: (features: FitFeatur
  * view is a bottom sheet on a phone and a sidebar from 900 px up. The map is padded by what covers it (see `padding`), so that
  * what it shows lies in the part that is free. What the map draws and where it is brought to come from the route (`useViewMap`),
  * and a panel asks the shell to move it (`onFocus`). Whether the heat is on is the owner's to set with the map's button, and is
- * remembered; it holds for every view that has a period to show it for.
+ * remembered; it holds for every view that has a period to show it for. A day that was today moves on to the new today when the page is
+ * brought back after midnight (`useDayRollover`).
  */
 export function App() {
   const route = useRoute();
+  useDayRollover(route);
   const queryClient = useQueryClient();
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const viewportHeight = useViewportHeight();

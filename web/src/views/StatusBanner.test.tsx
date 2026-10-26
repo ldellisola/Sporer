@@ -1,15 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { StatusResponse } from "../api/types";
+import type { FailedRange, StatusResponse } from "../api/types";
 import { StatusBanner } from "./StatusBanner";
 
-function status(percent: number, lastError: string | null = null): StatusResponse {
+function failed(count: number): FailedRange[] {
+  return Array.from({ length: count }, (_, i) => ({ from: `2026-09-0${i + 1}`, to: `2026-09-0${i + 1}`, attempts: 5, lastError: "a point that cannot be placed" }));
+}
+
+function status(percent: number, lastError: string | null = null, failedRanges: FailedRange[] = []): StatusResponse {
   return {
     algorithmVersion: "test",
     backfill: { from: null, to: null, cursor: null, percent, paused: false },
-    pendingRanges: 0,
-    failedRanges: [],
+    pendingRanges: failedRanges.length,
+    failedRanges,
     lastRunAt: null,
     lastError,
     places: { total: 0, unnamed: 0, failed: 0 },
@@ -77,6 +81,46 @@ describe("StatusBanner", () => {
     renderBanner();
 
     expect(await screen.findByRole("status")).toHaveTextContent("Processing problem: a range keeps failing");
+  });
+
+  // Ranges the worker has set aside after trying again and again are days that are missing from the history, which nothing else says.
+  test.each([
+    [1, "Couldn't process 1 period"],
+    [2, "Couldn't process 2 periods"],
+    [12, "Couldn't process 12 periods"],
+  ])("StatusBanner_says_how_many_periods_were_set_aside_when_it_has_nothing_else_to_say_%i", async (count, text) => {
+    stubStatus(() => status(100, null, failed(count)));
+
+    renderBanner();
+
+    const note = await screen.findByRole("status");
+    expect(note).toHaveTextContent(text);
+    expect(note).not.toHaveTextContent("Retry"); // a note, with nothing the owner could press
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument(); // and nothing that blocks
+  });
+
+  test("StatusBanner_gives_the_error_of_the_worker_and_the_progress_precedence_over_the_set_aside_periods", async () => {
+    stubStatus(() => status(100, "relation does not exist", failed(2)));
+    const withError = renderBanner();
+    expect(await screen.findByRole("status")).toHaveTextContent("Processing problem: relation does not exist");
+    expect(screen.getByRole("status")).not.toHaveTextContent("Couldn't process");
+    withError.unmount();
+
+    stubStatus(() => status(42, null, failed(2)));
+    renderBanner();
+    expect(await screen.findByRole("status")).toHaveTextContent("Processing your history… 42 %");
+    expect(screen.getByRole("status")).not.toHaveTextContent("Couldn't process");
+  });
+
+  test("StatusBanner_is_hidden_when_no_period_was_set_aside_and_all_is_processed", async () => {
+    stubStatus(() => status(100, null, []));
+
+    const { container } = renderBanner();
+    await act(async () => undefined);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+    await act(async () => undefined);
+
+    expect(container).toBeEmptyDOMElement();
   });
 
   test("StatusBanner_is_hidden_when_the_history_is_processed_and_nothing_is_wrong", async () => {

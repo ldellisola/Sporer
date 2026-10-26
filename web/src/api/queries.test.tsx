@@ -8,6 +8,7 @@ import {
   dayQueryOptions,
   prefetchNeighbours,
   rangeQueryOptions,
+  refreshInterval,
   useConfig,
   useDay,
   useHeat,
@@ -220,6 +221,7 @@ describe("query hooks", () => {
 
   test("useDay_refetches_every_30_seconds_only_while_pending", async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-12-01T12:00:00Z")); // a day that is not today, which is asked for as long as it is pending and no longer
     let state: LoadState = "pending";
     const urls = stubApi(() => json(day("2026-10-22", state)));
     const client = newClient();
@@ -245,6 +247,7 @@ describe("query hooks", () => {
 
   test("useRange_refetches_every_30_seconds_only_while_pending", async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-12-01T12:00:00Z")); // a period that does not hold today
     let state: LoadState = "pending";
     const urls = stubApi(() => json(range("2026-10-19", "2026-10-25", state)));
     const client = newClient();
@@ -261,6 +264,80 @@ describe("query hooks", () => {
     expect(result.current.data?.state).toBe("done");
     await tick(120_000);
     expect(urls).toHaveLength(3);
+  });
+
+  // Spec 4.2: today refreshes as new data is processed. Points keep arriving while the app is open, and a day that is "done" is done of
+  // the points there were; so a day or a period that holds today is asked for again every minute, whatever its state says.
+  test("useDay_of_today_refetches_every_60_seconds_even_when_done_and_stops_when_the_day_has_passed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-22T14:58:30Z")); // 23:58:30 on the 22nd in Tokyo, where the unit tests run: the day ends in 90 s
+    const urls = stubApi(() => json(day("2026-10-22", "done")));
+    const client = newClient();
+    renderHook(() => useDay("2026-10-22"), { wrapper: wrapperFor(client) });
+    await tick(1);
+    expect(urls).toHaveLength(1);
+
+    await tick(59_000);
+    expect(urls).toHaveLength(1);
+    await tick(2_000);
+    expect(urls).toHaveLength(2); // a minute after the first answer, 23:59:30
+    await tick(10 * 60_000);
+    expect(urls).toHaveLength(2); // midnight has come: it is yesterday's, and is no longer asked for (the rule is read again every 30 s)
+  });
+
+  test("useRange_of_a_period_that_holds_today_refetches_every_60_seconds_even_when_done", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-22T10:00:00Z"));
+    const week = stubApi(() => json(range("2026-10-19", "2026-10-25")));
+    const client = newClient();
+    renderHook(() => useRange("2026-10-19", "2026-10-25"), { wrapper: wrapperFor(client) });
+    await tick(1);
+
+    await tick(61_000);
+    expect(week).toHaveLength(2);
+    await tick(60_000);
+    expect(week).toHaveLength(3);
+  });
+
+  test("useDay_of_a_day_that_is_not_today_is_not_asked_for_again_once_it_is_done", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-22T10:00:00Z"));
+    const urls = stubApi(() => json(day("2026-10-21", "done")));
+    renderHook(() => useDay("2026-10-21"), { wrapper: wrapperFor(newClient()) });
+    await tick(1);
+
+    await tick(10 * 60_000);
+
+    expect(urls).toHaveLength(1);
+  });
+
+  test("useDay_of_today_that_could_not_be_loaded_is_asked_for_again_a_minute_later", async () => {
+    // The VPN is not up yet when the app is opened: the day says so, and finds its way back by itself.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-22T10:00:00Z"));
+    let up = false;
+    const urls = stubApi(() => (up ? json(day("2026-10-22")) : new Response("{}", { status: 503 })));
+    const { result } = renderHook(() => useDay("2026-10-22"), { wrapper: wrapperFor(newClient()) });
+    await tick(1);
+    expect(result.current.isError).toBe(true);
+
+    up = true;
+    await tick(61_000);
+
+    expect(urls).toHaveLength(2);
+    expect(result.current.data?.date).toBe("2026-10-22");
+  });
+
+  test("useDay_with_no_date_never_polls_even_on_the_day_it_would_have_been", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-22T10:00:00Z"));
+    const urls = stubApi(() => json(day("2026-10-22")));
+    renderHook(() => useDay(null), { wrapper: wrapperFor(newClient()) });
+    await tick(1);
+
+    await tick(5 * 60_000);
+
+    expect(urls).toEqual([]);
   });
 
   test("queries_are_fresh_for_30_seconds", async () => {
@@ -383,6 +460,60 @@ describe("query hooks", () => {
     await tick(31_000);
 
     expect(urls).toHaveLength(2);
+  });
+});
+
+describe("refreshInterval", () => {
+  const TODAY = "2026-10-22";
+
+  test.each([
+    // [from, to, state, interval, what it says]
+    ["2026-10-22", "2026-10-22", "done", 60_000, "today, done: points still arrive"],
+    ["2026-10-22", "2026-10-22", undefined, 60_000, "today, not loaded yet or failed: asked for again"],
+    ["2026-10-19", "2026-10-25", "done", 60_000, "a week that holds today"],
+    ["2026-10-01", "2026-10-31", "done", 60_000, "a month that holds today"],
+    ["2026-01-01", "2026-12-31", "done", 60_000, "a year that holds today"],
+    ["2026-10-22", "2026-11-05", "done", 60_000, "a range that begins today"],
+    ["2026-10-01", "2026-10-22", "done", 60_000, "a range that ends today"],
+    ["2026-10-22", "2026-10-22", "pending", 30_000, "today, pending: as soon as it is processed, as before"],
+    ["2026-10-21", "2026-10-21", "pending", 30_000, "another day, pending"],
+    ["2026-10-12", "2026-10-18", "pending", 30_000, "a week before this one, pending"],
+    ["2026-10-21", "2026-10-21", "done", false, "yesterday, done"],
+    ["2026-10-23", "2026-10-23", "done", false, "tomorrow, done"],
+    ["2026-10-12", "2026-10-18", "done", false, "a week that is over"],
+    ["2026-11-01", "2026-11-30", "done", false, "a month to come"],
+    ["2026-10-21", "2026-10-21", undefined, false, "another day, nothing loaded: nothing to poll for"],
+    [null, null, undefined, false, "no period: nothing is asked for"],
+    [null, null, "pending", false, "no period, whatever is left of an earlier answer"],
+  ] as const)("refreshInterval_%s_to_%s_%s_is_%s_(%s)", (from, to, state, interval, _what) => {
+    expect(refreshInterval(from, to, state, TODAY)).toBe(interval);
+  });
+
+  test("refreshInterval_reads_today_in_the_zone_of_the_browser_when_it_is_not_told", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-22T14:30:00Z")); // the 22nd in London, the 22nd, 23:30, in Tokyo, where the unit tests run
+    expect(refreshInterval("2026-10-22", "2026-10-22", "done")).toBe(60_000);
+    vi.setSystemTime(new Date("2026-10-22T15:30:00Z")); // the 23rd in Tokyo
+    expect(refreshInterval("2026-10-22", "2026-10-22", "done")).toBe(false);
+    expect(refreshInterval("2026-10-23", "2026-10-23", "done")).toBe(60_000);
+  });
+
+  test("the_query_options_of_a_day_and_of_a_period_follow_the_rule", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-22T10:00:00Z"));
+    const interval = (options: { refetchInterval?: unknown }, state: LoadState | undefined) => {
+      const read = options.refetchInterval as (query: { state: { data: { state: LoadState } | undefined } }) => number | false;
+      return read({ state: { data: state === undefined ? undefined : { state } } });
+    };
+
+    expect(interval(dayQueryOptions("2026-10-22"), "done")).toBe(60_000);
+    expect(interval(dayQueryOptions("2026-10-21"), "done")).toBe(false);
+    expect(interval(dayQueryOptions("2026-10-21"), "pending")).toBe(30_000);
+    expect(interval(dayQueryOptions(null), undefined)).toBe(false);
+    expect(interval(rangeQueryOptions("2026-10-01", "2026-10-31"), "done")).toBe(60_000);
+    expect(interval(rangeQueryOptions("2026-09-01", "2026-09-30"), "done")).toBe(false);
+    expect(interval(rangeQueryOptions("2026-09-01", "2026-09-30"), "pending")).toBe(30_000);
+    expect(interval(rangeQueryOptions(null, null), undefined)).toBe(false);
   });
 });
 

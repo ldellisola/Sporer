@@ -358,6 +358,43 @@ describe("App map taps", () => {
   });
 });
 
+describe("App day rollover", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("App_brings_a_day_that_was_today_to_the_new_today_when_the_page_comes_back_the_next_day", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 22, 20, 0, 0)); // the evening of the 22nd, on the clock the test runs in
+    window.history.replaceState(null, "", "/day/2026-10-22");
+    const paths = stubApi();
+    renderApp();
+    expect(screen.getByRole("heading")).toHaveTextContent("Thursday 22 October");
+
+    vi.setSystemTime(new Date(2026, 9, 23, 8, 0, 0)); // the app was put away, and is brought back in the morning
+    act(() => void document.dispatchEvent(new Event("visibilitychange")));
+
+    expect(window.location.pathname).toBe("/day/2026-10-23");
+    expect(screen.getByRole("heading")).toHaveTextContent("Friday 23 October");
+    await waitFor(() => expect(paths).toContain("/api/day/2026-10-23"));
+  });
+
+  test("App_leaves_a_day_the_owner_went_to_where_it_is_when_the_page_comes_back", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 22, 20, 0, 0));
+    window.history.replaceState(null, "", "/day/2026-10-20");
+    stubApi();
+    renderApp();
+
+    vi.setSystemTime(new Date(2026, 9, 23, 8, 0, 0));
+    act(() => void document.dispatchEvent(new Event("visibilitychange")));
+    act(() => void window.dispatchEvent(new Event("focus")));
+
+    expect(window.location.pathname).toBe("/day/2026-10-20");
+    expect(screen.getByRole("heading")).toHaveTextContent("Tuesday 20 October");
+  });
+});
+
 describe("App prefetch", () => {
   test("App_prefetches_the_neighbours_of_every_route_it_shows", async () => {
     const prefetch = vi.fn(async () => undefined);
