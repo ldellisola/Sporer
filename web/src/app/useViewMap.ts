@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
-import { useDay, useRange } from "../api/queries";
+import { useDay, useHeat, useRange } from "../api/queries";
 import type { DayResponse, RangeResponse } from "../api/types";
-import { dayGeoJson, rangeGeoJson, type FitFeatures } from "../map/layers";
+import { dayGeoJson, heatGeoJson, rangeGeoJson, type FitFeatures, type HeatCollection } from "../map/layers";
 import type { MapData } from "../map/MapView";
 import { periodRange } from "../time/dates";
 import { useKeptData } from "../views/useKeptData";
@@ -10,6 +10,16 @@ import { formatRoute, type Route } from "./router";
 /** What a view that draws nothing (yet) hands the map. */
 const NO_DATA: MapData = { routes: { type: "FeatureCollection", features: [] } };
 const NO_FEATURES: FitFeatures = [];
+
+/** The heat of the period on show, for the map's heat button and for the note that says it could not be had. */
+export interface HeatState {
+  /** Whether the view has a period to show the heat of (a place has none), so whether the map has a button for it. */
+  available: boolean;
+  /** Whether the heat of the period asked for could not be had, while it is asked for. The map is drawn without it, routes and all. */
+  failed: boolean;
+  /** Asks for the heat again. */
+  retry: () => void;
+}
 
 export interface ViewMap {
   /** What the map draws. A collection in it is a new object only when the data behind it is new, as `MapView` wants. */
@@ -20,6 +30,7 @@ export interface ViewMap {
   home: FitFeatures | null;
   /** The panel's way to ask for the map to be brought to something (a row tapped): each call moves the map, the same row or not. */
   onFocus: (features: FitFeatures) => void;
+  heat: HeatState;
 }
 
 /**
@@ -78,6 +89,26 @@ function usePeriodMap(route: Route): Drawn {
   return useDrawn(range.data, period !== null, drawPeriod, (response) => response.from === period?.from && response.to === period.to);
 }
 
+/**
+ * The heat of the period of the route: a day is a period of its one date, and a place has none. Asked for only while the heat is `on`.
+ * What is given to draw is the heat of the period that is asked for, and only while the routes drawn are that period's too (`ready`):
+ * the glow of one day or period is never under the routes of another. That is why the query keeps no previous period's heat for the
+ * one that loads (`keepPrevious` is false), and why the routes of the period before, which stay while the next loads, have none. While
+ * the heat of the period loads, or has failed, the routes are drawn without it.
+ */
+function useHeatMap(route: Route, on: boolean, ready: boolean): { heat: HeatCollection | undefined; state: HeatState } {
+  const period = route.view === "place" ? null : periodRange(route);
+  const asked = on && period !== null;
+  const query = useHeat(period?.from ?? null, period?.to ?? null, asked, false);
+  const collection = useMemo(() => (query.data === undefined ? undefined : heatGeoJson(query.data)), [query.data]);
+  const { refetch } = query;
+  const retry = useCallback(() => void refetch(), [refetch]);
+  return {
+    heat: asked && ready ? collection : undefined, // a query that was turned off still has what it had: not to be drawn
+    state: { available: period !== null, failed: asked && query.isError, retry },
+  };
+}
+
 /** Where the fit stands: for which route, whether it has been made, and what the map was last brought to. */
 interface Fit {
   key: string;
@@ -87,7 +118,7 @@ interface Fit {
 
 /**
  * What the map of the shell shows for the route: the data of the view (the day's, or the period's of a week, a month, a year or a
- * range; a place draws nothing yet), and where the map is brought to.
+ * range; a place draws nothing yet), the heat of its period when `heatOn` (see `useHeatMap`), and where the map is brought to.
  *
  * The map is brought to what is drawn once for each time a route is shown, at the first data of it that has anything to fit to: a
  * poll or a refetch of the same day or period never moves a map that the owner has panned, and a route that is shown again (stepped
@@ -96,10 +127,12 @@ interface Fit {
  * which moves it again. The route that is left takes what was asked for with it. What Recenter brings back is `home`, all of what is
  * drawn.
  */
-export function useViewMap(route: Route): ViewMap {
+export function useViewMap(route: Route, heatOn: boolean): ViewMap {
   const day = useDayMap(route);
   const period = usePeriodMap(route);
-  const { data, features, ready } = route.view === "day" ? day : period; // for a place, neither is asked for and the period is nothing
+  const { data: routes, features, ready } = route.view === "day" ? day : period; // for a place, neither is asked for and the period is nothing
+  const { heat, state } = useHeatMap(route, heatOn, ready);
+  const data = useMemo(() => (heat === undefined ? routes : { ...routes, heat }), [routes, heat]);
   const key = formatRoute(route);
   const [fit, setFit] = useState<Fit>({ key, fitted: false, to: null });
 
@@ -110,5 +143,5 @@ export function useViewMap(route: Route): ViewMap {
   if (current !== fit) setFit(current);
 
   const onFocus = useCallback((focused: FitFeatures) => setFit((last) => ({ ...last, to: [...focused] })), []);
-  return { data, fitTo: current.to, home: features.length > 0 ? features : null, onFocus };
+  return { data, fitTo: current.to, home: features.length > 0 ? features : null, onFocus, heat: state };
 }

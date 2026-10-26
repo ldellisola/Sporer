@@ -301,6 +301,36 @@ describe("query hooks", () => {
     expect(urls).toEqual(["/api/heat?from=2026-10-19&to=2026-10-25"]);
   });
 
+  test("useHeat_with_no_dates_asks_for_nothing_even_when_enabled", async () => {
+    const urls = stubApi(() => json({ maxSeconds: 0, cells: [] }));
+    const client = newClient();
+    const { result } = renderHook(() => useHeat(null, null, true), { wrapper: wrapperFor(client) });
+
+    await act(async () => undefined);
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["heat"] });
+    });
+
+    expect(urls).toEqual([]); // a view with no period is not asked for as `/api/heat?from=null&to=null`
+    expect(result.current.fetchStatus).toBe("idle");
+  });
+
+  test("useHeat_keeps_the_previous_period_while_the_next_loads_unless_told_not_to", async () => {
+    stubApi((url) => (url.includes("from=2026-10-19") ? json({ maxSeconds: 5, cells: [] }) : new Promise<Response>(() => undefined)));
+    for (const keepPrevious of [true, false]) {
+      const { result, rerender, unmount } = renderHook(({ from, to }) => useHeat(from, to, true, keepPrevious), {
+        initialProps: { from: "2026-10-19", to: "2026-10-25" },
+        wrapper: wrapperFor(newClient()),
+      });
+      await waitFor(() => expect(result.current.data?.maxSeconds).toBe(5));
+
+      rerender({ from: "2026-10-26", to: "2026-11-01" });
+
+      expect(result.current.data?.maxSeconds, `keepPrevious ${keepPrevious}`).toBe(keepPrevious ? 5 : undefined); // the glow of one period is not another's
+      unmount();
+    }
+  });
+
   test("usePlace_reports_a_missing_place_as_ApiError_404", async () => {
     stubApi(() => json({ title: "Not Found" }, 404));
     const client = newClient();

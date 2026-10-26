@@ -6,6 +6,8 @@ import { useConfig } from "../api/queries";
 import { boundsOf, type Bounds } from "./bounds";
 import {
   layerSpecs,
+  ROUTE_LAYERS,
+  routeOpacity,
   SOURCE_IDS,
   type Feature,
   type Geometry,
@@ -28,8 +30,14 @@ export interface MapData {
   routes: RouteCollection;
   stops?: StopCollection;
   places?: PlaceCollection;
-  /** Drawn as a heat layer while given. */
+  /** Drawn as a heat layer while given, under the routes, which fade (to a fifth) for as long as there is a glow to show through. */
   heat?: HeatCollection;
+}
+
+/** The map's heat button: whether the heat is on, and the way to ask for the other. The parent holds the state (and remembers it). */
+export interface HeatToggle {
+  on: boolean;
+  onChange: (on: boolean) => void;
 }
 
 /**
@@ -65,6 +73,8 @@ export interface MapViewProps {
    */
   home?: readonly Feature<Geometry, unknown>[] | null;
   padding?: MapPadding;
+  /** The heat button, a button of the map's own like Recenter. Given only where there is a period to show the heat of: without it there is no button. */
+  heatToggle?: HeatToggle;
   /**
    * Called once for each style that cannot be loaded (the request fails, it is not a style, MapLibre will not take it), and for
    * a map that cannot start (no WebGL). The map then draws on a plain background, and everything else on the page goes on.
@@ -134,19 +144,22 @@ const usePrefersDark = (): boolean => useSyncExternalStore(subscribeToScheme, pr
 const SOURCE_KEYS = ["heat", "routes", "places", "stops"] as const;
 type SourceKey = (typeof SOURCE_KEYS)[number];
 
-/** What has been given to the map since its style last loaded: a new style has none of it. */
+/** What has been given to the map since its style last loaded: a new style has none of it, and its routes are as the specs have them. */
 interface Pushed {
   collections: Partial<Record<SourceKey, object>>;
   view?: RouteView;
+  /** Whether the routes have been faded for a heat layer. */
+  underHeat: boolean;
 }
 
-const newPushed = (): Pushed => ({ collections: {} });
+const newPushed = (): Pushed => ({ collections: {}, underHeat: false });
 
 /**
  * Brings the sources and layers of `map` up to date with `data`, doing only what is needed: a source that is not there yet (a
  * style has just loaded) is added with its data, one that is gets `setData` if its data is not the one it has; layers are added
- * once, and only their visibility changes when the view changes between a day and a period. Call it once a style has loaded,
- * with a fresh `pushed` for it, and again whenever the data changes.
+ * once, only their visibility changes when the view changes between a day and a period, and only their opacity when a heat layer
+ * comes or goes (a heat with no cell in it has no glow, so it does not fade them). Call it once a style has loaded, with a fresh
+ * `pushed` for it, and again whenever the data changes.
  */
 function syncData(map: MapLibreMap, data: MapData, dark: boolean, pushed: Pushed): void {
   const view: RouteView = data.stops === undefined ? "range" : "day";
@@ -170,6 +183,11 @@ function syncData(map: MapLibreMap, data: MapData, dark: boolean, pushed: Pushed
       else map.setLayoutProperty(spec.id, "visibility", spec.layout?.visibility ?? "visible");
     }
     pushed.view = view;
+  }
+  const underHeat = collections.heat.features.length > 0;
+  if (pushed.underHeat !== underHeat) {
+    for (const id of ROUTE_LAYERS) map.setPaintProperty(id, "line-opacity", routeOpacity(id, underHeat));
+    pushed.underHeat = underHeat;
   }
 }
 
@@ -208,6 +226,7 @@ function MapSurface({
   fitTo = null,
   home,
   padding = NO_PADDING,
+  heatToggle,
   onStyleError,
   onStyleLoad,
 }: SurfaceProps): ReactElement {
@@ -373,6 +392,22 @@ function MapSurface({
             <path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
         </button>
+        {heatToggle !== undefined && (
+          <button
+            type="button"
+            className={styles.button}
+            aria-label="Heat map"
+            title="Heat map"
+            aria-pressed={heatToggle.on}
+            onClick={() => heatToggle.onChange(!heatToggle.on)}
+          >
+            {/* The ◐ of the mockup, drawn so that it is the same on every device: a ring with its left half filled. */}
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="2" />
+              <path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" />
+            </svg>
+          </button>
+        )}
       </div>
     </div>
   );
@@ -393,7 +428,8 @@ function ConfiguredMap(props: Omit<SurfaceProps, "source">): ReactElement {
 /**
  * The map: MapLibre, used directly, full size of its parent. One map is made and kept; it loads the light or the dark style of
  * `/api/config` by the colour scheme of the system, switching as that does, with English labels. Whatever the style, the routes,
- * pins, dots and heat of `data` are drawn on top, and the map moves to show `fitTo` within `padding`. OpenStreetMap is credited.
+ * pins, dots and heat of `data` are drawn on top (the heat under the routes, which it fades), and the map moves to show `fitTo` within
+ * `padding`. OpenStreetMap is credited.
  *
  * Without `styleUrl` it reads the config, so it needs a `QueryClientProvider`; with one it needs nothing.
  */

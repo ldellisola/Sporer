@@ -192,6 +192,29 @@ const RANGE_ROUTE_OPACITY = 0.35;
 /** Dashes and gaps, in multiples of the line's width. */
 const FLIGHT_DASH: [number, number] = [2, 2];
 
+/** What the route layers are drawn at while a heat layer is under them: a fifth, so that the glow shows through. */
+const ROUTE_OPACITY_UNDER_HEAT = 0.2;
+
+/**
+ * The route layers, with the opacity each has when nothing is under it: a day's are solid (the specs give them no opacity), a
+ * period's are faint already. The heat fades all of them by a change of this paint property, so the layers are not made again.
+ */
+const ROUTE_OPACITY: Record<string, number> = {
+  [LAYER_IDS.routeCasing]: 1,
+  [LAYER_IDS.dayRoute]: 1,
+  [LAYER_IDS.dayFlight]: 1,
+  [LAYER_IDS.rangeRoute]: RANGE_ROUTE_OPACITY,
+  [LAYER_IDS.rangeFlight]: RANGE_ROUTE_OPACITY,
+};
+
+/** The ids of the layers that draw the routes, the day's and the period's alike (whichever is hidden is faded too). */
+export const ROUTE_LAYERS: readonly string[] = Object.keys(ROUTE_OPACITY);
+
+/** The opacity the route layer `layerId` is drawn at: its own, or, with a heat layer under it, the fifth that lets the glow through. */
+export function routeOpacity(layerId: string, underHeat: boolean): number {
+  return underHeat ? ROUTE_OPACITY_UNDER_HEAT : (ROUTE_OPACITY[layerId] ?? 1);
+}
+
 const IS_FLIGHT: FilterSpecification = ["==", ["get", "mode"], "flight"];
 const IS_NOT_FLIGHT: FilterSpecification = ["!=", ["get", "mode"], "flight"];
 

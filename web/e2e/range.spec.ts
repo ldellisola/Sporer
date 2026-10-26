@@ -150,6 +150,18 @@ test("a_range_deep_linked_longer_than_400_days_is_cut_to_its_first_400", async (
 });
 
 const PIN: Rgb = [0xff, 0x37, 0x5f];
+const BACKGROUND: Rgb = [0xdf, 0xe6, 0xea]; // the flat style of the test (public/test-style.json)
+
+/** The middle of what the sheet and the bar leave free of the map (it is padded for them), where the map is brought to what it draws. */
+const middleOfWhatIsFree = (page: Page) =>
+  map(page).evaluate((element) => {
+    const read = (side: string) => parseFloat(element.style.getPropertyValue(`--map-padding-${side}`));
+    const box = element.getBoundingClientRect();
+    return {
+      x: box.left + (read("left") + (box.width - read("right"))) / 2,
+      y: box.top + (read("top") + (box.height - read("bottom"))) / 2,
+    };
+  });
 
 // The test reads pixels, which is cheaper to ask for at one to a CSS pixel than at the phone's three (see PIXEL_POLL).
 test.describe("the map of a month", () => {
@@ -164,16 +176,68 @@ test.describe("the map of a month", () => {
     await expect(map(page)).toHaveAttribute("data-map-state", "ready");
     await expect(details(page).getByText("6 places", { exact: true })).toBeVisible();
 
-    const free = await map(page).evaluate((element) => {
-      const read = (side: string) => parseFloat(element.style.getPropertyValue(`--map-padding-${side}`));
-      const box = element.getBoundingClientRect();
-      return {
-        x: box.left + (read("left") + (box.width - read("right"))) / 2,
-        y: box.top + (read("top") + (box.height - read("bottom"))) / 2,
-      };
-    });
+    const free = await middleOfWhatIsFree(page);
 
     // The dot is the pin's pink at 92 % over the flat background of the test style and the faint routes under it, hence the tolerance.
     await expect.poll(async () => sameColour(await pixelAt(page, Math.round(free.x), Math.round(free.y)), PIN, 30), PIXEL_POLL).toBe(true);
+  });
+});
+
+/**
+ * The heat of the month: 81 cells of equal time in a grid of about 100 m round Home, the middle of everything drawn. The glow of so many
+ * on one another is as strong as it gets wherever there are cells, which is what makes it the same to read on a phone and on a desktop,
+ * where the map is brought to the month at another zoom.
+ */
+const HEAT_ROUND_HOME = {
+  maxSeconds: 3600,
+  cells: Array.from({ length: 81 }, (_, i): [number, number, number] => [10.75 + (Math.floor(i / 9) - 4) * 0.002, 59.91 + ((i % 9) - 4) * 0.001, 3600]),
+};
+
+/** Whether a colour is the glow of the heat on the flat background: red up and blue down on the grey-blue that it is laid over. */
+const glows = ([red, , blue]: Rgb): boolean => red >= 240 && blue <= 215;
+
+// Ruling P2-R53: the ◐ button of the map. Off by default and remembered; when on it asks for the heat of the period once, draws it, and the
+// routes give way to it; when off nothing is asked for at all.
+test.describe("the heat of a month", () => {
+  test.use({ deviceScaleFactor: 1 });
+
+  test("heat_toggle_asks_for_the_heat_of_the_period_once_draws_it_and_is_remembered_over_a_reload", async ({ page }) => {
+    // Four reads of a pixel and a reload, in turn: more than the 30 s that Playwright gives a test (see PIXEL_POLL).
+    test.setTimeout(30_000 + 4 * PIXEL_POLL.timeout);
+    const api = await mockApi(page, { ...answers, heat: HEAT_ROUND_HOME });
+    const heatRequests = () => api.requests.filter((request) => request.startsWith("/api/heat"));
+    const button = page.getByRole("button", { name: "Heat map" });
+    await page.goto("/month/2026-10");
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect(details(page).getByText("6 places", { exact: true })).toBeVisible();
+    await expect(button).toHaveAttribute("aria-pressed", "false"); // off by default
+
+    // The map is where the month is (Home's dot is in the middle of what is free), and a pixel just below the dot is the plain map.
+    const free = await middleOfWhatIsFree(page);
+    const [x, y] = [Math.round(free.x), Math.round(free.y)];
+    await expect.poll(async () => sameColour(await pixelAt(page, x, y), PIN, 30), PIXEL_POLL).toBe(true);
+    const below = async () => pixelAt(page, x, y + 24);
+    await expect.poll(async () => sameColour(await below(), BACKGROUND), PIXEL_POLL).toBe(true);
+    // The months either side were asked for as soon as this one was shown; no heat was asked for, for any of them.
+    await expect.poll(() => api.requests).toContain("/api/range?from=2026-11-01&to=2026-11-30");
+    expect(heatRequests()).toEqual([]);
+
+    await button.click();
+
+    await expect(button).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(async () => glows(await below()), PIXEL_POLL).toBe(true); // the glow is where there was none
+    expect(heatRequests()).toEqual(["/api/heat?from=2026-10-01&to=2026-10-31"]); // once, for the month, and not for the ones either side
+
+    // A page loaded again has it on, and asks for the heat of the month again.
+    await page.reload();
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect(button).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(heatRequests).toEqual(["/api/heat?from=2026-10-01&to=2026-10-31", "/api/heat?from=2026-10-01&to=2026-10-31"]);
+
+    await button.click();
+
+    await expect(button).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(async () => sameColour(await below(), BACKGROUND), PIXEL_POLL).toBe(true); // the glow goes
+    expect(heatRequests()).toHaveLength(2);
   });
 });

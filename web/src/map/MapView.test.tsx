@@ -4,8 +4,8 @@ import { StrictMode, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConfigResponse } from "../api/types";
 import { boundsOf } from "./bounds";
-import { LAYER_IDS, SOURCE_IDS } from "./layers";
-import type { Feature, FeatureCollection, LineString, Point } from "./layers";
+import { LAYER_IDS, ROUTE_LAYERS, routeOpacity, SOURCE_IDS } from "./layers";
+import type { Feature, FeatureCollection, HeatCollection, LineString, Point } from "./layers";
 import { MapView, type MapViewProps } from "./MapView";
 
 // jsdom has no WebGL, so `maplibre-gl` is replaced by a map that records what it is asked to do and fires the events a
@@ -34,6 +34,7 @@ const maplibre = vi.hoisted(() => {
     readonly styleCalls: { style: unknown; options: unknown }[] = [];
     readonly fitCalls: { bounds: unknown; options: Record<string, unknown> }[] = [];
     readonly visibilityCalls: [string, unknown][] = [];
+    readonly paintCalls: [id: string, name: string, value: unknown][] = [];
     readonly sources = new Map<string, FakeSource>();
     readonly layers = new Map<string, Record<string, any>>();
     private readonly listeners = new Map<string, Set<Listener>>();
@@ -98,6 +99,12 @@ const maplibre = vi.hoisted(() => {
       const layer = this.layers.get(id);
       if (layer) layer.layout = { ...layer.layout, [name]: value };
     }
+    setPaintProperty(id: string, name: string, value: unknown): void {
+      this.requireStyle();
+      this.paintCalls.push([id, name, value]);
+      const layer = this.layers.get(id);
+      if (layer) layer.paint = { ...layer.paint, [name]: value };
+    }
     fitBounds(bounds: unknown, options: Record<string, unknown>): this {
       this.fitCalls.push({ bounds, options });
       return this;
@@ -140,6 +147,18 @@ function stops(): FeatureCollection<Point, { order: number; label: string; name:
   return {
     type: "FeatureCollection",
     features: [{ type: "Feature", properties: { order: 1, label: "1", name: "Home", id: 5 }, geometry: { type: "Point", coordinates: [10, 59] } }],
+  };
+}
+
+/** The heat of one cell, as the map is given it: a point with its weight. */
+function heatCells(...weights: number[]): HeatCollection {
+  return {
+    type: "FeatureCollection",
+    features: (weights.length > 0 ? weights : [1]).map((weight, i) => ({
+      type: "Feature",
+      properties: { weight },
+      geometry: { type: "Point", coordinates: [10 + i / 100, 59] },
+    })),
   };
 }
 
@@ -494,6 +513,117 @@ describe("MapView", () => {
     map.contextLost = false; // restored: MapLibre sets the style again, with the sources and layers it had
     map.emit("style.load");
     expect(map.sources.get(SOURCE_IDS.routes)).toBeDefined();
+  });
+
+  describe("heat", () => {
+    const toggle = (on: boolean, onChange: (on: boolean) => void = () => undefined) => ({ on, onChange });
+    const opacityOf = (map: InstanceType<typeof FakeMap>, id: string) => map.layers.get(id)?.paint?.["line-opacity"];
+
+    test("MapView_has_a_heat_button_only_when_the_parent_says_heat_is_available", () => {
+      goodStyle();
+      const { rerender } = render(view());
+      expect(screen.queryByRole("button", { name: "Heat map" })).not.toBeInTheDocument();
+
+      rerender(view({ heatToggle: toggle(false) }));
+      expect(screen.getByRole("button", { name: "Heat map" })).toBeInTheDocument();
+
+      rerender(view()); // a place has no period to show the heat of: the button goes
+      expect(screen.queryByRole("button", { name: "Heat map" })).not.toBeInTheDocument();
+    });
+
+    test("MapView_heat_button_says_whether_heat_is_on_and_asks_for_the_other_when_pressed", () => {
+      goodStyle();
+      const onChange = vi.fn<(on: boolean) => void>();
+      const { rerender } = render(view({ heatToggle: toggle(false, onChange) }));
+      const button = screen.getByRole("button", { name: "Heat map" });
+      expect(button).toHaveAttribute("type", "button");
+      expect(button).toHaveAttribute("aria-pressed", "false");
+
+      fireEvent.click(button);
+      expect(onChange).toHaveBeenLastCalledWith(true);
+      expect(button).toHaveAttribute("aria-pressed", "false"); // the parent holds the state: it is on when the parent says so
+
+      rerender(view({ heatToggle: toggle(true, onChange) }));
+      expect(button).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(button);
+      expect(onChange).toHaveBeenLastCalledWith(false);
+      expect(onChange).toHaveBeenCalledTimes(2);
+    });
+
+    test("MapView_heat_button_sits_with_the_recenter_button_inside_what_is_left_of_the_map", () => {
+      // The one group of buttons is what the style sheet insets by the padding: a button of the group is not under the sheet or the bar.
+      goodStyle();
+      render(view({ heatToggle: toggle(false), padding: { top: 120, right: 20, bottom: 300, left: 340 } }));
+
+      const group = screen.getByRole("button", { name: "Recenter map" }).parentElement;
+      expect(screen.getByRole("button", { name: "Heat map" }).parentElement).toBe(group);
+      expect(region().contains(group)).toBe(true);
+    });
+
+    test("MapView_gives_the_heat_to_its_source_and_fades_the_routes_to_a_fifth_without_making_the_layers_again", async () => {
+      goodStyle();
+      const data = { routes: routes(1) };
+      const { rerender } = render(view({ data }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      const layers = new Map(map.layers); // the layers as they are, to be told if one is made again
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([undefined, undefined, undefined, 0.35, 0.35]); // as the specs have them
+      expect(map.paintCalls).toEqual([]);
+
+      const heat = heatCells(1, 0.5);
+      rerender(view({ data: { ...data, heat } }));
+
+      expect(map.sources.get(SOURCE_IDS.heat)?.data).toBe(heat);
+      expect(map.paintCalls).toEqual(ROUTE_LAYERS.map((id) => [id, "line-opacity", 0.2]));
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]); // the routes of the other view too
+      expect(opacityOf(map, LAYER_IDS.places)).toBeUndefined(); // only routes fade: the dots and pins stay as they are
+      expect(map.layers.size).toBe(layers.size);
+      for (const [id, layer] of layers) expect(map.layers.get(id), id).toBe(layer);
+
+      // A new heat (another period) is new data for the source, and the routes are not touched again.
+      const other = heatCells(1);
+      rerender(view({ data: { ...data, heat: other } }));
+      expect(map.sources.get(SOURCE_IDS.heat)?.data).toBe(other);
+      expect(map.paintCalls).toHaveLength(ROUTE_LAYERS.length);
+
+      // Heat gone: the routes are as they were, and the heat source is emptied.
+      rerender(view({ data }));
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual(ROUTE_LAYERS.map((id) => routeOpacity(id, false)));
+      expect((map.sources.get(SOURCE_IDS.heat)?.data as HeatCollection).features).toEqual([]);
+      expect(map.layers.size).toBe(layers.size);
+    });
+
+    test("MapView_leaves_the_routes_alone_for_a_heat_with_no_cell_in_it", async () => {
+      // Nothing glows, so nothing is behind the routes to let through: they stay as they are.
+      goodStyle();
+      const data = { routes: routes(1) };
+      const { rerender } = render(view({ data }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+
+      rerender(view({ data: { ...data, heat: { type: "FeatureCollection", features: [] } } }));
+
+      expect(map.paintCalls).toEqual([]);
+    });
+
+    test("MapView_fades_the_routes_of_a_style_that_loads_while_heat_is_on", async () => {
+      // A theme switch loads another style, whose layers have the routes as the specs say; the heat is still on.
+      goodStyle();
+      const data = { routes: routes(1), heat: heatCells() };
+      render(view({ data }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]); // a style that loads with the heat given
+
+      map.setStyle({ version: 8, sources: {}, layers: [] }, { diff: false });
+      map.emit("style.load");
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
+      expect(map.layers.get(LAYER_IDS.heat)).toBeDefined();
+    });
   });
 
   describe("camera", () => {

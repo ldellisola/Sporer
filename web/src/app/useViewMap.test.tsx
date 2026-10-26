@@ -2,8 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { DayResponse, RangeResponse, StaySegment } from "../api/types";
-import { dayGeoJson, placePoint, rangeGeoJson } from "../map/layers";
+import type { DayResponse, HeatResponse, RangeResponse, StaySegment } from "../api/types";
+import { dayGeoJson, heatGeoJson, placePoint, rangeGeoJson } from "../map/layers";
 import newYorkDay from "../../e2e/fixtures/day-new-york.json";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
 import october from "../../e2e/fixtures/range-october.json";
@@ -40,14 +40,18 @@ const emptyDay = (date: string, state: DayResponse["state"] = "done"): DayRespon
   segments: [],
 });
 
-type Answer = DayResponse | RangeResponse | Response | (() => Response | Promise<Response>);
+type Answer = DayResponse | RangeResponse | HeatResponse | Response | (() => Response | Promise<Response>);
 
-/** What a request is answered by: the date of a day (`2026-10-22`), the dates of a range (`2026-10-19..2026-10-25`). */
+/** What a request is answered by: the date of a day (`2026-10-22`), the dates of a range (`2026-10-19..2026-10-25`), `heatKey` of a heat. */
 function keyOf(path: string): string {
-  if (!path.startsWith("/api/range")) return path.split("/").pop()!;
+  if (!path.startsWith("/api/range") && !path.startsWith("/api/heat")) return path.split("/").pop()!;
   const query = new URLSearchParams(path.split("?")[1]);
-  return `${query.get("from")}..${query.get("to")}`;
+  const dates = `${query.get("from")}..${query.get("to")}`;
+  return path.startsWith("/api/heat") ? `heat:${dates}` : dates;
 }
+
+/** The key that a heat of these dates is answered by. */
+const heatKey = (from: string, to = from): string => `heat:${from}..${to}`;
 
 /** What the API answers for each day and range; a test changes it to change what the next request finds. Returns it and the paths asked for. */
 function stubApi(answers: Record<string, Answer>): { answers: Record<string, Answer>; paths: string[] } {
@@ -65,10 +69,10 @@ function stubApi(answers: Record<string, Answer>): { answers: Record<string, Ans
   return { answers, paths };
 }
 
-function setup(route: Route) {
+function setup(route: Route, heatOn = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-  const hook = renderHook(({ at }: { at: Route }) => useViewMap(at), { initialProps: { at: route }, wrapper });
+  const hook = renderHook(({ at, on }: { at: Route; on?: boolean }) => useViewMap(at, on ?? false), { initialProps: { at: route, on: heatOn } as { at: Route; on?: boolean }, wrapper });
   const refetch = async (date: string) => {
     await act(async () => {
       await client.refetchQueries({ queryKey: ["day", date] });
@@ -79,7 +83,23 @@ function setup(route: Route) {
       await client.refetchQueries({ queryKey: ["range", from, to] });
     });
   };
-  return { ...hook, client, refetch, refetchRange, go: (at: Route) => hook.rerender({ at }) };
+  let at = route;
+  let on = heatOn;
+  return {
+    ...hook,
+    client,
+    refetch,
+    refetchRange,
+    go: (next: Route) => {
+      at = next;
+      hook.rerender({ at, on });
+    },
+    /** Turns the heat on or off, on the route that is shown. */
+    setHeat: (next: boolean) => {
+      on = next;
+      hook.rerender({ at, on });
+    },
+  };
 }
 
 const featuresOf = (day: DayResponse) => {
@@ -720,5 +740,246 @@ describe("useViewMap period fit", () => {
     await waitFor(() => expect(result.current.fitTo).not.toBeNull());
     expect(result.current.fitTo).toEqual(first);
     expect(result.current.fitTo).not.toBe(first);
+  });
+});
+
+// --- Heat ---
+
+/** The heat of a day or a period: cells at places of the fixtures, and a first cell that is told apart by its weight. */
+const heatOf = (seconds: number): HeatResponse => ({ maxSeconds: seconds, cells: [[10.7, 59.9, seconds], [10.71, 59.91, seconds / 2]] });
+const HEAT_22 = heatOf(7200);
+const HEAT_23 = heatOf(3600);
+const HEAT_WEEK_19 = heatOf(36_000);
+const HEAT_WEEK_26 = heatOf(18_000);
+
+const heatPaths = (paths: string[]): string[] => paths.filter((path) => path.startsWith("/api/heat"));
+
+describe("useViewMap heat", () => {
+  test("useViewMap_asks_for_no_heat_and_draws_none_while_heat_is_off", async () => {
+    for (const [route, answers] of [
+      [DAY_22, { "2026-10-22": OSLO_DAY, [heatKey("2026-10-22")]: HEAT_22 }],
+      [MONTH, { "2026-10-01..2026-10-31": OCTOBER, [heatKey("2026-10-01", "2026-10-31")]: HEAT_22 }],
+    ] as const) {
+      const { paths } = stubApi({ ...answers });
+
+      const { result, unmount } = setup(route);
+      await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+      await act(async () => undefined);
+
+      expect(heatPaths(paths)).toEqual([]);
+      expect(result.current.data.heat).toBeUndefined();
+      expect(result.current.heat).toMatchObject({ available: true, failed: false }); // the button is there to turn it on
+      unmount();
+    }
+  });
+
+  test("useViewMap_draws_the_heat_of_the_day_with_its_routes_once_heat_is_on", async () => {
+    const { paths } = stubApi({ "2026-10-22": OSLO_DAY, [heatKey("2026-10-22")]: HEAT_22 });
+
+    const { result } = setup(DAY_22, true);
+
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_22));
+    expect(result.current.data.routes).toEqual(dayGeoJson(OSLO_DAY).routes); // in addition to the routes and the pins, not instead
+    expect(result.current.data.stops).toEqual(dayGeoJson(OSLO_DAY).stops);
+    expect(heatPaths(paths)).toEqual(["/api/heat?from=2026-10-22&to=2026-10-22"]); // a day is a period of its one date
+  });
+
+  test("useViewMap_asks_for_the_heat_of_the_dates_of_each_period_of_a_view_that_has_one", async () => {
+    const asks: [Route, string, string, string][] = [
+      [WEEK_19, "2026-10-19", "2026-10-25", "/api/heat?from=2026-10-19&to=2026-10-25"],
+      [MONTH, "2026-10-01", "2026-10-31", "/api/heat?from=2026-10-01&to=2026-10-31"],
+      [{ view: "year", year: 2026 }, "2026-01-01", "2026-12-31", "/api/heat?from=2026-01-01&to=2026-12-31"],
+      [{ view: "range", from: "2026-09-12", to: "2026-09-19" }, "2026-09-12", "2026-09-19", "/api/heat?from=2026-09-12&to=2026-09-19"],
+    ];
+    for (const [route, from, to, path] of asks) {
+      const { paths } = stubApi({ [`${from}..${to}`]: { ...OCTOBER, from, to }, [heatKey(from, to)]: HEAT_WEEK_19 });
+
+      const { result, unmount } = setup(route, true);
+      await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_WEEK_19)));
+
+      expect(heatPaths(paths)).toEqual([path]);
+      expect(result.current.data.places).toBeDefined(); // with the dots of the period
+      unmount();
+    }
+  });
+
+  test("useViewMap_has_no_heat_for_a_place_whatever_the_setting_and_asks_for_none", async () => {
+    const { paths } = stubApi({ "2026-10-22": OSLO_DAY });
+
+    const { result } = setup({ view: "place", id: 3 }, true);
+    await act(async () => undefined);
+
+    expect(result.current.heat).toMatchObject({ available: false, failed: false }); // no button: there is no period to show the heat of
+    expect(result.current.data.heat).toBeUndefined();
+    expect(paths).toEqual([]);
+  });
+
+  test("useViewMap_has_heat_for_the_day_again_when_the_view_comes_back_from_a_place", async () => {
+    const { paths } = stubApi({ "2026-10-22": OSLO_DAY, [heatKey("2026-10-22")]: HEAT_22 });
+    const { result, go } = setup(DAY_22, true);
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+
+    go({ view: "place", id: 3 });
+    expect(result.current.heat.available).toBe(false);
+    expect(result.current.data.heat).toBeUndefined();
+
+    go(DAY_22);
+    expect(result.current.heat.available).toBe(true);
+    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_22)); // from the cache, at once
+    expect(heatPaths(paths)).toHaveLength(1);
+  });
+
+  test("useViewMap_asks_for_the_heat_when_it_is_turned_on_and_draws_none_when_it_is_turned_off", async () => {
+    const { paths } = stubApi({ "2026-10-22": OSLO_DAY, [heatKey("2026-10-22")]: HEAT_22 });
+    const { result, setHeat } = setup(DAY_22);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    expect(heatPaths(paths)).toEqual([]);
+
+    setHeat(true);
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+    expect(heatPaths(paths)).toHaveLength(1);
+
+    setHeat(false);
+    expect(result.current.data.heat).toBeUndefined();
+    expect(result.current.heat.available).toBe(true); // the button stays, to turn it on again
+
+    setHeat(true); // within the time an answer counts as fresh: from the cache, with no new request
+    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_22));
+    expect(heatPaths(paths)).toHaveLength(1);
+  });
+
+  test("useViewMap_keeps_the_collection_it_gave_for_the_heat_while_the_period_is_the_same", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY, [heatKey("2026-10-22")]: HEAT_22 });
+    const { result, rerender } = setup(DAY_22, true);
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+    const before = result.current.data;
+
+    rerender({ at: DAY_22, on: true }); // rendered again for another reason: the map is not sent the same data again
+
+    expect(result.current.data.heat).toBe(before.heat);
+    expect(result.current.data.routes).toBe(before.routes);
+  });
+});
+
+// The heat is of the period of the routes that are drawn with it: the glow of one day is never under the routes of another, as
+// the panel never has the rows of one period under the heading of another. While the period asked for loads, either of the two, the
+// map shows its routes with no heat, or no routes.
+describe("useViewMap heat and the routes shown", () => {
+  test("useViewMap_does_not_draw_the_heat_of_the_next_day_under_the_routes_of_the_day_before", async () => {
+    // The 23rd's heat is there before its routes are, and the 22nd's routes are what is still drawn.
+    let release: (response: Response) => void = () => undefined;
+    stubApi({
+      "2026-10-22": OSLO_DAY,
+      "2026-10-23": () => new Promise<Response>((resolve) => (release = resolve)),
+      [heatKey("2026-10-22")]: HEAT_22,
+      [heatKey("2026-10-23")]: HEAT_23,
+    });
+    const { result, go, client } = setup(DAY_22, true);
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_22)));
+    const drawn = result.current.data;
+
+    go(DAY_23);
+    await waitFor(() => expect(client.getQueryState(["heat", "2026-10-23", "2026-10-23"])?.status).toBe("success"));
+
+    expect(result.current.data.routes).toBe(drawn.routes); // the routes of the 22nd stay...
+    expect(result.current.data.heat).toBeUndefined(); // ...and neither the 22nd's heat nor the 23rd's is under them
+    release(Response.json(NEW_YORK_DAY));
+    await waitFor(() => expect(result.current.data.routes).toEqual(dayGeoJson(NEW_YORK_DAY).routes));
+    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_23)); // the 23rd's routes and the 23rd's heat
+  });
+
+  test("useViewMap_does_not_draw_the_heat_of_the_period_before_under_the_routes_of_the_next_while_its_heat_loads", async () => {
+    // The week of the 26th has its routes (they were prefetched) and not its heat: the week of the 19th's heat is not a stand-in for it.
+    let release: (response: Response) => void = () => undefined;
+    stubApi({
+      "2026-10-19..2026-10-25": WEEK_19_RANGE,
+      "2026-10-26..2026-11-01": WEEK_26_RANGE,
+      [heatKey("2026-10-19", "2026-10-25")]: HEAT_WEEK_19,
+      [heatKey("2026-10-26", "2026-11-01")]: () => new Promise<Response>((resolve) => (release = resolve)),
+    });
+    const { result, go, client } = setup(WEEK_19, true);
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_WEEK_19)));
+    await client.prefetchQuery({ queryKey: ["range", "2026-10-26", "2026-11-01"], queryFn: async () => WEEK_26_RANGE });
+
+    go(WEEK_26);
+
+    expect(result.current.data.routes).toEqual(rangeGeoJson(WEEK_26_RANGE).routes); // the routes of the week asked for
+    expect(result.current.data.heat).toBeUndefined(); // and no heat yet, not the other week's
+    release(Response.json(HEAT_WEEK_26));
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_WEEK_26)));
+    expect(result.current.data.routes).toEqual(rangeGeoJson(WEEK_26_RANGE).routes);
+  });
+
+  test("useViewMap_does_not_draw_the_heat_of_a_day_that_was_left_under_the_routes_of_a_period", async () => {
+    let release: (response: Response) => void = () => undefined;
+    stubApi({
+      "2026-10-22": OSLO_DAY,
+      "2026-10-26..2026-11-01": () => new Promise<Response>((resolve) => (release = resolve)),
+      [heatKey("2026-10-22")]: HEAT_22,
+      [heatKey("2026-10-26", "2026-11-01")]: HEAT_WEEK_26,
+    });
+    const { result, go } = setup(DAY_22, true);
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+
+    go(WEEK_26);
+
+    expect(result.current.data.routes.features).toEqual([]); // nothing drawn of the day that was left, heat included
+    expect(result.current.data.heat).toBeUndefined();
+    release(Response.json(WEEK_26_RANGE));
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_WEEK_26)));
+  });
+});
+
+describe("useViewMap heat that cannot be had", () => {
+  test("useViewMap_reports_a_heat_that_could_not_be_had_and_asks_again_on_retry", async () => {
+    let failing = true;
+    const { paths } = stubApi({
+      "2026-10-22": OSLO_DAY,
+      [heatKey("2026-10-22")]: () => (failing ? new Response("{}", { status: 500 }) : Response.json(HEAT_22)),
+    });
+
+    const { result } = setup(DAY_22, true);
+
+    await waitFor(() => expect(result.current.heat.failed).toBe(true));
+    expect(result.current.data.heat).toBeUndefined(); // no heat, so nothing is drawn that fades the routes
+    expect(result.current.data.routes).toEqual(dayGeoJson(OSLO_DAY).routes); // and the routes are drawn all the same
+    expect(heatPaths(paths)).toHaveLength(1);
+
+    failing = false;
+    act(() => result.current.heat.retry());
+
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_22)));
+    expect(result.current.heat.failed).toBe(false);
+    expect(heatPaths(paths)).toHaveLength(2);
+  });
+
+  test("useViewMap_reports_no_failure_of_a_heat_that_is_not_asked_for", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY, [heatKey("2026-10-22")]: new Response("{}", { status: 500 }) });
+    const { result, setHeat, go } = setup(DAY_22, true);
+    await waitFor(() => expect(result.current.heat.failed).toBe(true));
+
+    setHeat(false); // the error of a heat that is turned off is nobody's to see
+    expect(result.current.heat.failed).toBe(false);
+
+    setHeat(true);
+    go({ view: "place", id: 3 }); // and a place has none
+    expect(result.current.heat.failed).toBe(false);
+  });
+
+  test("useViewMap_reports_the_failure_of_the_heat_asked_for_and_not_of_the_one_before_it", async () => {
+    stubApi({
+      "2026-10-22": OSLO_DAY,
+      "2026-10-23": NEW_YORK_DAY,
+      [heatKey("2026-10-22")]: new Response("{}", { status: 500 }),
+      [heatKey("2026-10-23")]: HEAT_23,
+    });
+    const { result, go } = setup(DAY_22, true);
+    await waitFor(() => expect(result.current.heat.failed).toBe(true));
+
+    go(DAY_23);
+
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_23)));
+    expect(result.current.heat.failed).toBe(false);
   });
 });

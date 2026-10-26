@@ -18,6 +18,8 @@ import {
   MODE_COLORS,
   PIN_COLOR,
   rangeGeoJson,
+  ROUTE_LAYERS,
+  routeOpacity,
   SOURCE_IDS,
   stopOrders,
 } from "./layers";
@@ -461,6 +463,16 @@ describe("layerSpecs", () => {
     expect((heat as { source: string }).source).toBe(SOURCE_IDS.heat);
   });
 
+  test("layerSpecs_grow_the_heat_radius_with_the_zoom", () => {
+    const radius = paint(find("day", LAYER_IDS.heat))["heatmap-radius"] as unknown[];
+
+    expect(radius.slice(0, 3)).toEqual(["interpolate", ["linear"], ["zoom"]]);
+    const pixels = radius.slice(3).filter((_, i) => i % 2 === 1) as number[]; // the stops are zoom, radius, zoom, radius, ...
+    expect(pixels.length).toBeGreaterThan(1);
+    expect(pixels).toEqual([...pixels].sort((a, b) => a - b)); // never smaller at a higher zoom
+    expect(pixels.at(-1)).toBeGreaterThan(pixels[0]!);
+  });
+
   test("layerSpecs_follow_the_colour_scheme_for_label_text_only", () => {
     const light = find("day", LAYER_IDS.stopNames, false);
     const dark = find("day", LAYER_IDS.stopNames, true);
@@ -468,5 +480,28 @@ describe("layerSpecs", () => {
     expect(paint(light)["text-color"]).not.toBe(paint(dark)["text-color"]);
     expect(paint(light)["text-halo-color"]).not.toBe(paint(dark)["text-halo-color"]);
     expect(paint(find("day", LAYER_IDS.stops, false))).toEqual(paint(find("day", LAYER_IDS.stops, true)));
+  });
+});
+
+describe("routeOpacity", () => {
+  test("routeOpacity_is_a_fifth_for_every_route_layer_under_a_heat_layer", () => {
+    for (const id of ROUTE_LAYERS) expect(routeOpacity(id, true), id).toBe(0.2);
+  });
+
+  test("routeOpacity_is_what_the_layers_are_drawn_at_when_nothing_is_under_them", () => {
+    for (const view of ["day", "range"] as const) {
+      for (const spec of layerSpecs(view, false)) {
+        if (!ROUTE_LAYERS.includes(spec.id)) continue;
+        const own = (spec.paint as { "line-opacity"?: number } | undefined)?.["line-opacity"] ?? 1; // none given is full
+        expect(routeOpacity(spec.id, false), `${view} ${spec.id}`).toBe(own);
+      }
+    }
+  });
+
+  test("routeOpacity_is_for_the_five_route_layers_and_no_other", () => {
+    const lines = layerSpecs("day", false).filter((spec) => spec.type === "line" && (spec as { source: string }).source === SOURCE_IDS.routes);
+
+    expect([...ROUTE_LAYERS].sort()).toEqual(lines.map((spec) => spec.id).sort());
+    expect(ROUTE_LAYERS).toHaveLength(5);
   });
 });

@@ -50,12 +50,17 @@ export function rangeQueryOptions(from: string | null, to: string | null, keepPr
   });
 }
 
-export function heatQueryOptions(from: string, to: string) {
+/**
+ * The heat of a period. Nothing is asked for while `from` or `to` is null (the view on show has no period, as a place has none), and
+ * `keepPrevious` is what it is for a day or a period: false for a caller that must not be given the heat of another period as its own,
+ * as the map is not, because the glow of one period under the routes of another would be wrong, not just old.
+ */
+export function heatQueryOptions(from: string | null, to: string | null, keepPrevious = true) {
   return queryOptions({
     queryKey: ["heat", from, to] as const,
-    queryFn: ({ signal }) => getJson<HeatResponse>(`/api/heat?from=${from}&to=${to}`, signal),
+    queryFn: from === null || to === null ? skipToken : ({ signal }) => getJson<HeatResponse>(`/api/heat?from=${from}&to=${to}`, signal),
     staleTime: STALE_MS,
-    placeholderData: keepPreviousData,
+    placeholderData: keepPrevious ? keepPreviousData : undefined,
   });
 }
 
@@ -89,9 +94,9 @@ export const useDay = (date: string | null, keepPrevious = true) => useQuery(day
 
 export const useRange = (from: string | null, to: string | null, keepPrevious = true) => useQuery(rangeQueryOptions(from, to, keepPrevious));
 
-/** The heat of a period; nothing is asked for while `enabled` is false. */
-export const useHeat = (from: string, to: string, enabled: boolean) =>
-  useQuery({ ...heatQueryOptions(from, to), enabled });
+/** The heat of a period; nothing is asked for while `enabled` is false, or while there are no dates. */
+export const useHeat = (from: string | null, to: string | null, enabled: boolean, keepPrevious = true) =>
+  useQuery({ ...heatQueryOptions(from, to, keepPrevious), enabled });
 
 export const usePlace = (id: number) => useQuery(placeQueryOptions(id));
 

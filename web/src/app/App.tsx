@@ -16,6 +16,7 @@ import { useRoute, type Route } from "./router";
 import { useBottomEdge } from "./useBottomEdge";
 import { useLastDay } from "./useLastDay";
 import { useMediaQuery } from "./useMediaQuery";
+import { useStoredFlag } from "./useStoredFlag";
 import { useViewMap } from "./useViewMap";
 import { useViewportHeight } from "./useViewportHeight";
 
@@ -41,7 +42,8 @@ function Panel({ route, onFocus }: { route: Route; onFocus: (features: FitFeatur
  * The shell every view lives in: the map fills the screen, the top bar floats over it with the notes under it, and the panel of the
  * view is a bottom sheet on a phone and a sidebar from 900 px up. The map is padded by what covers it (see `padding`), so that
  * what it shows lies in the part that is free. What the map draws and where it is brought to come from the route (`useViewMap`),
- * and a panel asks the shell to move it (`onFocus`).
+ * and a panel asks the shell to move it (`onFocus`). Whether the heat is on is the owner's to set with the map's button, and is
+ * remembered; it holds for every view that has a period to show it for.
  */
 export function App() {
   const route = useRoute();
@@ -49,7 +51,8 @@ export function App() {
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const viewportHeight = useViewportHeight();
   const lastDay = useLastDay(route);
-  const map = useViewMap(route);
+  const [heatOn, setHeatOn] = useStoredFlag("heat", false);
+  const map = useViewMap(route, heatOn);
   const sheetRef = useRef<BottomSheetHandle>(null);
   const [mapUnavailable, setMapUnavailable] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(SHEET_PEEK);
@@ -98,6 +101,7 @@ export function App() {
           fitTo={map.fitTo}
           home={map.home}
           padding={padding}
+          heatToggle={map.heat.available ? { on: heatOn, onChange: setHeatOn } : undefined}
           onStyleError={() => setMapUnavailable(true)}
           onStyleLoad={() => setMapUnavailable(false)}
         />
@@ -109,6 +113,11 @@ export function App() {
         <div className={styles.notices}>
           <StatusBanner />
           {mapUnavailable && <Notice>Map unavailable</Notice>}
+          {map.heat.failed && (
+            <Notice tone="error" onRetry={map.heat.retry}>
+              Couldn't load the heat map
+            </Notice>
+          )}
         </div>
       </div>
       {desktop ? (
