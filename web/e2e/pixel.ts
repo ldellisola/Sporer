@@ -22,10 +22,12 @@ export async function pixelAt(page: Page, x: number, y: number): Promise<Rgb> {
 
 /**
  * How long a poll of `pixelAt` may run (`expect.poll(..., PIXEL_POLL)`). One read is a screenshot, which waits for the page to be
- * painted, and a WebGL canvas is painted in software here: with the processors busy a read took up to 6 s at the 1170 × 2532 pixels
- * of the phone project, and about a third of that at one pixel per CSS pixel (`test.use({ deviceScaleFactor: 1 })`, for a test that
- * has nothing to do with density). A poll's default of 5 s is no more than one such read, and that was the one timeout seen in a full
- * run. It was never a late canvas: with the timeout lifted, every poll found the colour that it waited for in its first read.
+ * painted, and a WebGL canvas is painted in software here. A read takes about 0.1 s, but it queues behind every frame that the GPU
+ * process has still to draw: the first one after the map has come up waits for the map's first frames, which at the phone project's
+ * 1170 × 2532 pixels take up to 2 s (about a third of that at one pixel per CSS pixel, `test.use({ deviceScaleFactor: 1 })`, for a test
+ * that has nothing to do with density), and a runner that is busy with other work takes longer. A poll's default of 5 s is no more than
+ * a slow read. It was never a late canvas: every poll that timed out would have found the colour that it waited for in its first read.
+ * (A page whose clock is faked draws a hundred frames a second and keeps the GPU process busy for ten seconds or more: see today.ts.)
  */
 export const PIXEL_POLL = { timeout: 20_000 };
 

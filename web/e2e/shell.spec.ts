@@ -2,6 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./base";
 import status from "./fixtures/status.json" with { type: "json" };
 import { mockApi, type Reply } from "./mockApi";
+import { fixTime } from "./today";
 
 // 22:30 UTC on the 22nd is 00:30 on the 23rd in Oslo: "today" must be the date of the browser's own zone.
 test.use({ timezoneId: "Europe/Oslo" });
@@ -36,7 +37,7 @@ function dayWith(date: string, segments: number): Reply {
 
 test("app_loads_and_redirects_to_today", async ({ page }) => {
   const api = await mockApi(page);
-  await page.clock.setFixedTime(new Date("2026-10-22T22:30:00Z"));
+  await fixTime(page, "2026-10-22T22:30:00Z");
 
   await page.goto("/");
 

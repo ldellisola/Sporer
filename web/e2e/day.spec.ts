@@ -5,15 +5,13 @@ import osloDay from "./fixtures/day-oslo-new-york.json" with { type: "json" };
 import placeCafe from "./fixtures/place-cafe.json" with { type: "json" };
 import { mockApi } from "./mockApi";
 import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
+import { fixTime } from "./today";
 
 // The browser is in Tokyo, which neither of the days is in: every time on screen must be the clock of the zone it happened in.
 test.use({ timezoneId: "Asia/Tokyo" });
 
-/**
- * Fixes the date of "today", so that no day of the fixtures is ever the day that is still going on. Not for the test that looks at the
- * camera of the map: a fixed clock is the page's clock, and the map's camera moves on it, which would then stand still.
- */
-const fixToday = (page: Page): Promise<void> => page.clock.setFixedTime(new Date("2026-12-01T12:00:00Z"));
+/** Fixes the date of "today", so that no day of the fixtures is ever the day that is still going on. */
+const fixToday = (page: Page): Promise<void> => fixTime(page, "2026-12-01T12:00:00Z");
 
 const isWide = (page: Page): boolean => page.viewportSize()!.width >= 900;
 const details = (page: Page): Locator => page.getByRole(isWide(page) ? "complementary" : "region", { name: "Details" });

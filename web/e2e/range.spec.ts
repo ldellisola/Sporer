@@ -3,16 +3,16 @@ import { expect, test } from "./base";
 import october from "./fixtures/range-october.json" with { type: "json" };
 import { mockApi, type Reply } from "./mockApi";
 import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
+import { fixTime } from "./today";
 
 // The browser is in Oslo, so that "today" is a date that is the same wherever the test is run (see `fixToday`).
 test.use({ timezoneId: "Europe/Oslo" });
 
 /**
  * Fixes today at Saturday 24 October, in the middle of the month of the fixture: the days of a period that are after today are not
- * listed, and no date of the fixture is to depend on the clock that the test is run on. Not for the test that looks at the camera of
- * the map: a fixed clock is the page's clock, and the map's camera moves on it, which would then stand still.
+ * listed, and no date of the fixture is to depend on the clock that the test is run on.
  */
-const fixToday = (page: Page): Promise<void> => page.clock.setFixedTime(new Date("2026-10-24T08:00:00Z"));
+const fixToday = (page: Page): Promise<void> => fixTime(page, "2026-10-24T08:00:00Z");
 
 const isWide = (page: Page): boolean => page.viewportSize()!.width >= 900;
 const details = (page: Page): Locator => page.getByRole(isWide(page) ? "complementary" : "region", { name: "Details" });
@@ -80,9 +80,6 @@ const answers = {
 };
 
 test("month_view_and_range_picker", async ({ page }) => {
-  // A walk through the month, a day, a place and the range picker, on the phone's canvas of three pixels to a CSS pixel drawn in software:
-  // 15 s on a quiet machine and the 30 s that Playwright gives a test on a busy one (the two workers share four processors).
-  test.setTimeout(60_000);
   await fixToday(page);
   const api = await mockApi(page, answers);
   await page.goto("/day/2026-10-22");

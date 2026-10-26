@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./base";
 import { mockApi } from "./mockApi";
+import { fixTime } from "./today";
 
 // These tests are of the harness itself (base.ts and mockApi.ts): what it lets through, and what it still reports. A test
 // that provokes a violation on purpose hands it over with `guard.take()` and checks it; anything it leaves fails the test.
@@ -105,4 +106,40 @@ test("console_error_exception_and_external_request_are_still_reported", async ({
   expect(found.consoleErrors).toContain("uncaught: kaput");
   expect(found.consoleErrors.some((line) => line.includes("Failed to load resource"))).toBe(true);
   expect(found.unmockedApiRequests).toEqual([]);
+});
+
+// Of fixTime (today.ts): the page's date and nothing else. A page whose animation frames or timers were faked (page.clock) makes the map
+// draw a hundred frames a second, and software WebGL cannot keep up with that.
+test("fixTime_fixes_the_date_of_the_page_and_leaves_its_timers_and_frames_alone", async ({ page }) => {
+  await fixTime(page, "2026-10-22T22:30:00Z");
+  await page.goto(BLANK);
+
+  const seen = await page.evaluate(async () => {
+    const before = performance.now();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    return {
+      now: new Date().toISOString(),
+      timestamp: Date.now(),
+      called: typeof Date() === "string" && Date().includes("2026"),
+      given: new Date("2020-02-29T12:00:00Z").toISOString(),
+      zero: new Date(0).getTime(),
+      parsed: Date.parse("2001-01-01T00:00:00Z"),
+      utc: Date.UTC(2000, 0, 1),
+      isDate: new Date() instanceof Date,
+      elapsed: performance.now() - before,
+      native: [performance.now, setTimeout, requestAnimationFrame].every((fn) => /\[native code\]/.test(fn.toString())),
+    };
+  });
+
+  expect(seen.now).toBe("2026-10-22T22:30:00.000Z");
+  expect(seen.timestamp).toBe(Date.parse("2026-10-22T22:30:00Z"));
+  expect(seen.called).toBe(true);
+  expect(seen.given).toBe("2020-02-29T12:00:00.000Z"); // a date that is asked for is as it was
+  expect(seen.zero).toBe(0);
+  expect(seen.parsed).toBe(978_307_200_000);
+  expect(seen.utc).toBe(946_684_800_000);
+  expect(seen.isDate).toBe(true);
+  expect(seen.elapsed).toBeGreaterThanOrEqual(45); // the timers run on the browser's own time, and the date stood still all the while
+  expect(seen.native).toBe(true);
 });

@@ -5,14 +5,15 @@ import osloDay from "./fixtures/day-oslo-new-york.json" with { type: "json" };
 import cafe from "./fixtures/place-cafe.json" with { type: "json" };
 import { mockApi } from "./mockApi";
 import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
+import { fixTime } from "./today";
 
 // The browser is in Tokyo, which the place is not in: every date and time on screen must be the clock of the zone it happened in. And one
-// pixel to a CSS pixel, also on the phone: nothing here is about density, and a canvas of the phone's three costs software WebGL nine
-// times as much (see PIXEL_POLL), which with two workers on four processors is what the tests that load the page twice run out of time on.
+// pixel to a CSS pixel, also on the phone: nothing here is about density, and a canvas of the phone's three costs software WebGL up to
+// nine times as much a frame (see PIXEL_POLL).
 test.use({ timezoneId: "Asia/Tokyo", deviceScaleFactor: 1 });
 
 /** Fixes the date of "today" (the 1st of December in Tokyo, where the browser is), which no date of the fixtures is. */
-const fixToday = (page: Page): Promise<void> => page.clock.setFixedTime(new Date("2026-12-01T12:00:00Z"));
+const fixToday = (page: Page): Promise<void> => fixTime(page, "2026-12-01T12:00:00Z");
 
 const isWide = (page: Page): boolean => page.viewportSize()!.width >= 900;
 const details = (page: Page): Locator => page.getByRole(isWide(page) ? "complementary" : "region", { name: "Details" });
