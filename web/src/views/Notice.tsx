@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import styles from "./Notice.module.css";
+import { RetryButton } from "./RetryButton";
 
 /**
  * A small note that floats over the map without getting in its way: something the owner should know. With `onRetry` it also has the
@@ -12,9 +13,7 @@ export function Notice({ tone = "info", onRetry, children }: { tone?: "info" | "
       {onRetry !== undefined && (
         <>
           {" — "}
-          <button type="button" className={styles.retry} onClick={onRetry}>
-            Retry
-          </button>
+          <RetryButton onClick={onRetry} />
         </>
       )}
     </p>

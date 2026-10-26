@@ -15,7 +15,11 @@ const NO_FEATURES: FitFeatures = [];
 export interface HeatState {
   /** Whether the view has a period to show the heat of (a place has none), so whether the map has a button for it. */
   available: boolean;
-  /** Whether the heat of the period asked for could not be had, while it is asked for. The map is drawn without it, routes and all. */
+  /**
+   * Whether the heat of the period asked for could not be had, while it is asked for and the period has none to draw. The map is drawn
+   * without it, routes and all. A refetch that fails over the heat the period already has is not this: the glow stays, and nothing says it
+   * could not be had.
+   */
   failed: boolean;
   /** Asks for the heat again. */
   retry: () => void;
@@ -94,7 +98,8 @@ function usePeriodMap(route: Route): Drawn {
  * What is given to draw is the heat of the period that is asked for, and only while the routes drawn are that period's too (`ready`):
  * the glow of one day or period is never under the routes of another. That is why the query keeps no previous period's heat for the
  * one that loads (`keepPrevious` is false), and why the routes of the period before, which stay while the next loads, have none. While
- * the heat of the period loads, or has failed, the routes are drawn without it.
+ * the heat of the period loads, or has failed, the routes are drawn without it. A failure is told only when there is no heat of the
+ * period to show (`failed`): a poll or a refetch that fails over the heat the query has leaves what it has.
  */
 function useHeatMap(route: Route, on: boolean, ready: boolean): { heat: HeatCollection | undefined; state: HeatState } {
   const period = route.view === "place" ? null : periodRange(route);
@@ -105,7 +110,7 @@ function useHeatMap(route: Route, on: boolean, ready: boolean): { heat: HeatColl
   const retry = useCallback(() => void refetch(), [refetch]);
   return {
     heat: asked && ready ? collection : undefined, // a query that was turned off still has what it had: not to be drawn
-    state: { available: period !== null, failed: asked && query.isError, retry },
+    state: { available: period !== null, failed: asked && query.isError && query.data === undefined, retry },
   };
 }
 

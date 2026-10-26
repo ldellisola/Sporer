@@ -1,3 +1,4 @@
+import { RetryButton } from "./RetryButton";
 import styles from "./States.module.css";
 
 // What every view shows while it has nothing to show: it is loading, there is nothing in it, or the load failed. They know
@@ -26,7 +27,9 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => 
   const detail = describe(error);
   return (
     <div className={styles.error} role="alert">
-      <p className={styles.headline}>Couldn't load — <button type="button" className={styles.retry} onClick={onRetry}>Retry</button></p>
+      <p className={styles.headline}>
+        Couldn't load — <RetryButton onClick={onRetry} />
+      </p>
       {detail !== null && <p className={styles.detail}>{detail}</p>}
     </div>
   );

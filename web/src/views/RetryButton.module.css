@@ -1,0 +1,17 @@
+/* A word in a line of text, as small as the text is, that is made taller than it to be a target for a finger. */
+.retry {
+  margin: -6px 0;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent-ink);
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.retry:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}

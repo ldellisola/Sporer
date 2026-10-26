@@ -72,7 +72,11 @@ function stubApi(answers: Record<string, Answer>): { answers: Record<string, Ans
 function setup(route: Route, heatOn = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-  const hook = renderHook(({ at, on }: { at: Route; on?: boolean }) => useViewMap(at, on ?? false), { initialProps: { at: route, on: heatOn } as { at: Route; on?: boolean }, wrapper });
+  // Both props are always given: a render that left `on` out would quietly turn the heat off.
+  const { rerender, ...hook } = renderHook(({ at, on }: { at: Route; on: boolean }) => useViewMap(at, on), {
+    initialProps: { at: route, on: heatOn },
+    wrapper,
+  });
   const refetch = async (date: string) => {
     await act(async () => {
       await client.refetchQueries({ queryKey: ["day", date] });
@@ -83,6 +87,13 @@ function setup(route: Route, heatOn = false) {
       await client.refetchQueries({ queryKey: ["range", from, to] });
     });
   };
+  /** Refetches a heat, and lets the observers hear how it went (they are told on the next tick, which a refetch does not wait for). */
+  const refetchHeat = async (from: string, to = from) => {
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["heat", from, to] });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  };
   let at = route;
   let on = heatOn;
   return {
@@ -90,14 +101,17 @@ function setup(route: Route, heatOn = false) {
     client,
     refetch,
     refetchRange,
+    refetchHeat,
+    /** Renders again on the same route with the heat as it was, for a render that is made for another reason. */
+    again: () => rerender({ at, on }),
     go: (next: Route) => {
       at = next;
-      hook.rerender({ at, on });
+      rerender({ at, on });
     },
     /** Turns the heat on or off, on the route that is shown. */
     setHeat: (next: boolean) => {
       on = next;
-      hook.rerender({ at, on });
+      rerender({ at, on });
     },
   };
 }
@@ -132,11 +146,11 @@ describe("useViewMap data", () => {
 
   test("useViewMap_keeps_the_collections_it_gave_while_the_day_is_the_same", async () => {
     stubApi({ "2026-10-22": OSLO_DAY });
-    const { result, rerender } = setup(DAY_22);
+    const { result, again } = setup(DAY_22);
     await waitFor(() => expect(result.current.data.stops).toBeDefined());
     const before = result.current.data;
 
-    rerender({ at: DAY_22 }); // rendered again for another reason: the map is not sent the same data again
+    again(); // rendered again for another reason: the map is not sent the same data again
 
     expect(result.current.data.routes).toBe(before.routes);
     expect(result.current.data.stops).toBe(before.stops);
@@ -478,11 +492,11 @@ describe("useViewMap periods", () => {
 
   test("useViewMap_keeps_the_collections_it_gave_while_the_period_is_the_same", async () => {
     stubApi({ "2026-10-01..2026-10-31": OCTOBER });
-    const { result, rerender } = setup(MONTH);
+    const { result, again } = setup(MONTH);
     await waitFor(() => expect(result.current.data.places).toBeDefined());
     const before = result.current.data;
 
-    rerender({ at: MONTH }); // rendered again for another reason: the map is not sent the same data again
+    again(); // rendered again for another reason: the map is not sent the same data again
 
     expect(result.current.data.routes).toBe(before.routes);
     expect(result.current.data.places).toBe(before.places);
@@ -851,11 +865,11 @@ describe("useViewMap heat", () => {
 
   test("useViewMap_keeps_the_collection_it_gave_for_the_heat_while_the_period_is_the_same", async () => {
     stubApi({ "2026-10-22": OSLO_DAY, [heatKey("2026-10-22")]: HEAT_22 });
-    const { result, rerender } = setup(DAY_22, true);
+    const { result, again } = setup(DAY_22, true);
     await waitFor(() => expect(result.current.data.heat).toBeDefined());
     const before = result.current.data;
 
-    rerender({ at: DAY_22, on: true }); // rendered again for another reason: the map is not sent the same data again
+    again(); // rendered again for another reason: the map is not sent the same data again
 
     expect(result.current.data.heat).toBe(before.heat);
     expect(result.current.data.routes).toBe(before.routes);
@@ -952,6 +966,40 @@ describe("useViewMap heat that cannot be had", () => {
     await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_22)));
     expect(result.current.heat.failed).toBe(false);
     expect(heatPaths(paths)).toHaveLength(2);
+  });
+
+  test("useViewMap_stays_quiet_and_keeps_the_glow_when_a_refetch_of_a_heat_it_has_fails", async () => {
+    // A note that says the heat could not be had, over a glow that is on the map, would be wrong: the heat of the period is there.
+    const { answers } = stubApi({ "2026-10-22": OSLO_DAY, [heatKey("2026-10-22")]: HEAT_22 });
+    const { result, refetchHeat } = setup(DAY_22, true);
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_22)));
+    const drawn = result.current.data.heat;
+
+    answers[heatKey("2026-10-22")] = new Response("{}", { status: 500 }); // the next time it is asked for, the server fails
+    await refetchHeat("2026-10-22");
+
+    expect(result.current.heat.failed).toBe(false); // no note...
+    expect(result.current.data.heat).toBe(drawn); // ...and the glow stays, the very collection that was drawn
+  });
+
+  test("useViewMap_reports_a_heat_that_fails_again_once_there_is_none_to_draw_for_the_period", async () => {
+    // The glow of the 22nd is not the 23rd's: for a period with no heat of its own the failure is still the note's to tell.
+    const { answers } = stubApi({
+      "2026-10-22": OSLO_DAY,
+      "2026-10-23": NEW_YORK_DAY,
+      [heatKey("2026-10-22")]: HEAT_22,
+      [heatKey("2026-10-23")]: new Response("{}", { status: 500 }),
+    });
+    const { result, go, refetchHeat } = setup(DAY_22, true);
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+    answers[heatKey("2026-10-22")] = new Response("{}", { status: 500 });
+    await refetchHeat("2026-10-22");
+    expect(result.current.heat.failed).toBe(false); // the 22nd keeps what it had
+
+    go(DAY_23);
+
+    await waitFor(() => expect(result.current.heat.failed).toBe(true));
+    expect(result.current.data.heat).toBeUndefined();
   });
 
   test("useViewMap_reports_no_failure_of_a_heat_that_is_not_asked_for", async () => {
