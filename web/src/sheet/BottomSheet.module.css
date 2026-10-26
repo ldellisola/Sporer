@@ -27,7 +27,7 @@
 }
 
 .sheet[data-snap="full"] {
-  touch-action: auto; /* the content scrolls; the handle below keeps its own */
+  touch-action: manipulation; /* the content scrolls; the handle below keeps its own. A second tap is a tap, not the browser's zoom */
 }
 
 @media (prefers-reduced-motion: reduce) {

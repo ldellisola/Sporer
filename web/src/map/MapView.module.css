@@ -41,7 +41,9 @@
 /*
  * What covers the map (the component sets its size from the padding in the variables below) does not cover the controls: they
  * sit inside what is left, with a margin of 12px: the buttons at its top right, MapLibre's own (the attribution, bottom right,
- * stays in view above a bottom sheet) at the corners of it.
+ * stays in view above a bottom sheet) at the corners of it. What the device keeps at the sides of the screen (the Dynamic Island
+ * of a phone on its side) covers the map as well, and is in the padding that the shell gives (see App.tsx), so the buttons and the
+ * credit are clear of it too.
  */
 .controls {
   position: absolute;

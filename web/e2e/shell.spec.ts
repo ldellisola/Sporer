@@ -2,6 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./base";
 import status from "./fixtures/status.json" with { type: "json" };
 import { mockApi, type Reply } from "./mockApi";
+import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
 import { fixTime } from "./today";
 
 // 22:30 UTC on the 22nd is 00:30 on the 23rd in Oslo: "today" must be the date of the browser's own zone.
@@ -320,4 +321,94 @@ test("sheet_at_full_leaves_the_map_a_padding_that_fits_and_the_credit_clear_of_t
   const recenter = (await page.getByRole("button", { name: "Recenter map" }).boundingBox())!;
   expect(credit.y).toBeGreaterThanOrEqual(bar.y + bar.height); // the credit is not under the bar...
   expect(recenter.y).toBeGreaterThanOrEqual(bar.y + bar.height); // ...nor are the map's buttons
+});
+
+// iPhone: a field whose text is smaller than 16 px zooms the page when it is focused, and an app on a home screen has no way to zoom
+// it out. The range fields are read from the browser's own style.
+test("range_fields_are_at_least_16px_so_iOS_does_not_zoom_on_focus", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/range/2026-10-19..2026-10-25");
+
+  for (const name of ["From", "To"]) {
+    const size = await page.getByLabel(name, { exact: true }).evaluate((field) => parseFloat(getComputedStyle(field).fontSize));
+    expect(size, name).toBeGreaterThanOrEqual(16);
+  }
+});
+
+// iPhone: a second tap on a surface of the app is a tap and not the browser's zoom of the page. The date row keeps its pan-y (its swipe is
+// the app's), and the sheet below full keeps `none` (a drag anywhere on it is its own), which no double tap gets through either.
+test("bar_and_sheet_take_a_double_tap_as_taps_and_the_date_row_keeps_its_swipe", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/day/2026-10-22");
+  const touchAction = (locator: Locator) => locator.evaluate((element) => getComputedStyle(element).touchAction);
+
+  expect(await touchAction(page.locator("header"))).toBe("manipulation");
+  expect(await touchAction(page.getByRole("heading", { level: 1 }).locator(".."))).toBe("pan-y"); // the date row
+  if (isWide(page)) return; // a sidebar is no sheet
+
+  expect(await touchAction(details(page))).toBe("none"); // at its peek
+  await grip(page).click();
+  await grip(page).click();
+  await expect(details(page)).toHaveAttribute("data-snap", "full");
+  expect(await touchAction(details(page))).toBe("manipulation");
+});
+
+// iPhone with the status bar black-translucent: white text over what is under it, and in the light scheme that is a light map. A shade as
+// high as the part of the screen at the top that the device keeps (injected here, as `--safe-top` is `env()` and a desktop browser has none)
+// darkens it, over the map and under the bar, and touches go through it. In the dark scheme there is none, and with no inset there is none.
+test.describe("the shade under the status bar", () => {
+  test.use({ deviceScaleFactor: 1 });
+  const BACKGROUND: Rgb = [0xdf, 0xe6, 0xea]; // the flat style of the test (public/test-style.json)
+  const INSET = 47;
+
+  async function openWithInset(page: Page, inset: number): Promise<void> {
+    await mockApi(page);
+    await page.goto("/day/2026-10-22");
+    await expect(page.getByRole("region", { name: "Map view" })).toHaveAttribute("data-map-state", "ready");
+    await page.addStyleTag({ content: `:root { --safe-top: ${inset}px; }` });
+  }
+
+  const scrim = (page: Page): Locator => page.locator('[class*="scrim"]');
+
+  test("shade_is_as_high_as_the_safe_area_over_the_map_under_the_bar_and_lets_touches_through", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "light" });
+    await openWithInset(page, INSET);
+
+    const box = (await scrim(page).boundingBox())!;
+    expect(box.x).toBe(0);
+    expect(box.y).toBe(0);
+    expect(box.height).toBe(INSET);
+    expect(box.width).toBe(page.viewportSize()!.width);
+    expect(await scrim(page).evaluate((element) => getComputedStyle(element).pointerEvents)).toBe("none");
+    // The bar starts below it, and a touch in the shade reaches the map: the shade is not what is hit.
+    const bar = (await page.getByRole("group", { name: "View" }).boundingBox())!;
+    expect(bar.y).toBeGreaterThanOrEqual(INSET);
+    const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x!, y!)?.getAttribute("class") ?? "", [Math.round(box.width / 2), 10]);
+    expect(hit).not.toContain("scrim");
+    // And it is drawn: darker than the map at the top, fading to the map by the bottom of the inset, over the map and not under it.
+    const x = Math.round(box.width) - 4; // at the right edge, where neither the bar nor the sidebar is
+    await expect.poll(async () => (await pixelAt(page, x, 2))[0], PIXEL_POLL).toBeLessThan(BACKGROUND[0] - 40);
+    await expect.poll(async () => sameColour(await pixelAt(page, x, INSET + 20), BACKGROUND), PIXEL_POLL).toBe(true);
+    const gradient = await scrim(page).evaluate((element) => getComputedStyle(element).backgroundImage);
+    expect(gradient).toContain("linear-gradient");
+  });
+
+  test("shade_is_not_there_in_the_dark_scheme", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "dark" });
+    await openWithInset(page, INSET);
+
+    expect(await scrim(page).evaluate((element) => getComputedStyle(element).display)).toBe("none");
+    expect(sameColour(await pixelAt(page, page.viewportSize()!.width - 4, 2), BACKGROUND)).toBe(true); // the map as it is
+  });
+
+  test("shade_has_no_height_where_the_device_keeps_nothing_and_changes_no_layout", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "light" });
+    await mockApi(page);
+    await page.goto("/day/2026-10-22");
+    await expect(page.getByRole("region", { name: "Map view" })).toHaveAttribute("data-map-state", "ready");
+
+    expect((await scrim(page).boundingBox())?.height ?? 0).toBe(0); // no inset, no shade
+    const bar = (await page.getByRole("group", { name: "View" }).boundingBox())!;
+    expect(bar.y).toBeLessThan(30); // the bar is where it was: 12 px from the top and the 8 px of its own padding
+  });
 });

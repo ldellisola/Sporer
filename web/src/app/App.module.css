@@ -12,6 +12,47 @@
   inset: 0;
 }
 
+/* Take no room and show nothing: the width of each is what the device keeps at that side of the screen, which the shell reads to pad the map. */
+.probe {
+  position: absolute;
+  top: 0;
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.probeLeft {
+  left: 0;
+  width: var(--safe-left);
+}
+
+.probeRight {
+  right: 0;
+  width: var(--safe-right);
+}
+
+/*
+ * The status bar of an app on the home screen is translucent (black-translucent): its text is white, over whatever is under it, and in the
+ * light scheme that is a light map. A shade as high as the part of the screen that the device keeps at the top, from dark to nothing, keeps
+ * the clock readable. It is over the map and under the bar, lets every touch through, and is as high as the safe area is (nothing where there
+ * is none, as on a desktop). The dark scheme has a dark map under the status bar already.
+ */
+.scrim {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: var(--safe-top);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.32), rgba(0, 0, 0, 0));
+  pointer-events: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .scrim {
+    display: none;
+  }
+}
+
 /*
  * The top bar and the notes under it float over the map. The column itself lets touches through to the map, and only what is in
  * it takes them. On a wide window it sits to the right of the sidebar. The column has no stacking order of its own, so that its

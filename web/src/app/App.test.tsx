@@ -270,6 +270,39 @@ describe("App layout", () => {
     expect(padding().bottom).toBe(416);
   });
 
+  test("App_pads_the_map_by_what_the_device_keeps_at_the_sides_when_a_phone_is_on_its_side", () => {
+    stubApi();
+    stubLayout(100);
+    let left = 0;
+    let right = 0;
+    // jsdom cannot evaluate env(): the probes that the shell measures the sides with are given their widths.
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.className.includes("probeLeft") ? left : this.className.includes("probeRight") ? right : 0;
+    });
+    left = 59; // the Dynamic Island at the left
+    renderApp();
+
+    expect(padding()).toEqual({ top: 116, right: 16, bottom: 112, left: 59 + 16 });
+
+    left = 0;
+    right = 59; // turned the other way
+    act(() => void window.dispatchEvent(new Event("resize")));
+    expect(padding()).toEqual({ top: 116, right: 59 + 16, bottom: 112, left: 16 });
+  });
+
+  test("App_does_not_pad_the_sidebar_side_by_the_inset_which_the_sidebar_has_inside_its_width", () => {
+    stubDesktop(true);
+    stubApi();
+    stubLayout(110);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.className.includes("probe") ? 59 : 0;
+    });
+
+    renderApp();
+
+    expect(padding()).toEqual({ top: 126, right: 59 + 16, bottom: 16, left: 336 });
+  });
+
   test("App_on_a_desktop_has_a_sidebar_of_320px_and_pads_the_map_by_it", () => {
     stubDesktop(true);
     stubApi();

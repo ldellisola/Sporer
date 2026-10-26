@@ -8,6 +8,8 @@ import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
 
 const map = (page: Page) => page.getByRole("region", { name: "Map view" });
 
+const isWide = (page: Page): boolean => page.viewportSize()!.width >= 900;
+
 /** A style of one colour, to tell by the pixels of the canvas which one the map has put on. */
 const flatStyle = (colour: string) => ({
   version: 8,
@@ -210,4 +212,34 @@ test("map_takes_a_style_whose_labels_were_legacy_functions", async ({ page }) =>
 
   await expect(map(page)).toHaveAttribute("data-map-state", "ready");
   await expect(page.getByRole("status").filter({ hasText: "Map unavailable" })).toHaveCount(0);
+});
+
+// A phone on its side has the Dynamic Island at one of its sides, and the page is drawn under it (viewport-fit=cover). The shell pads the
+// map by it, so the map's buttons, its credit and what it is brought to are clear of it. `--safe-left` and `--safe-right` are `env()`,
+// which a desktop browser has none of: they are injected, and the page told that its window changed, as a turned phone does.
+test("map_keeps_its_buttons_and_credit_clear_of_the_side_the_device_keeps", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/day/2026-10-22");
+  await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+  const area = (await map(page).boundingBox())!;
+  const recenter = map(page).getByRole("button", { name: "Recenter map" });
+  const credit = map(page).locator(".maplibregl-ctrl-attrib");
+  const rightEdges = async () => ({
+    button: area.x + area.width - ((await recenter.boundingBox())!.x + (await recenter.boundingBox())!.width),
+    credit: area.x + area.width - ((await credit.boundingBox())!.x + (await credit.boundingBox())!.width),
+  });
+  const padding = (side: string) => map(page).evaluate((element, name) => parseFloat(element.style.getPropertyValue(`--map-padding-${name}`)), side);
+  const before = await rightEdges();
+  const [leftBefore, rightBefore] = [await padding("left"), await padding("right")];
+
+  await page.addStyleTag({ content: ":root { --safe-left: 44px; --safe-right: 59px; }" });
+  await page.evaluate(() => window.dispatchEvent(new Event("resize")));
+
+  await expect.poll(() => padding("right")).toBe(rightBefore + 59);
+  const after = await rightEdges();
+  expect(after.button - before.button).toBeCloseTo(59, 0);
+  expect(after.credit - before.credit).toBeCloseTo(59, 0);
+  await expect(map(page).getByRole("link", { name: "OpenStreetMap" })).toBeVisible();
+  // The side that is the sidebar's on a wide window has the inset inside the sidebar's own width, and is not padded again.
+  expect(await padding("left")).toBe(isWide(page) ? leftBefore : leftBefore + 44);
 });

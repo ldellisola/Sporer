@@ -1,6 +1,8 @@
 .bar {
   box-sizing: border-box;
   padding: 8px;
+  /* A second tap on the bar is a tap, not the browser's zoom of the page (which an app on a home screen cannot undo). */
+  touch-action: manipulation;
   border-radius: var(--radius-card);
   background: var(--glass);
   -webkit-backdrop-filter: blur(20px);
@@ -68,7 +70,8 @@
   border-radius: var(--radius-segment-item);
   background: var(--surface);
   color: var(--ink);
-  font-size: 13px;
+  /* iOS zooms the page when a field with text smaller than 16px is focused, and does not zoom back out. */
+  font-size: 16px;
 }
 
 .dateRow {

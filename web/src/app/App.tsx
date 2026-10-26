@@ -18,6 +18,7 @@ import { useBottomEdge } from "./useBottomEdge";
 import { useDayRollover } from "./useDayRollover";
 import { useLastDay } from "./useLastDay";
 import { useMediaQuery } from "./useMediaQuery";
+import { useSideInsets } from "./useSideInsets";
 import { useStoredFlag } from "./useStoredFlag";
 import { useViewMap } from "./useViewMap";
 import { useViewportHeight } from "./useViewportHeight";
@@ -64,6 +65,9 @@ export function App() {
   const [sheetHeight, setSheetHeight] = useState(SHEET_PEEK);
   const barRef = useRef<HTMLDivElement>(null);
   const barBottom = useBottomEdge(barRef);
+  const leftProbe = useRef<HTMLSpanElement>(null);
+  const rightProbe = useRef<HTMLSpanElement>(null);
+  const sides = useSideInsets(leftProbe, rightProbe);
 
   // The periods either side are fetched ahead of time, so that ‹ and › find them at hand. Best effort: it is not waited for, and a
   // failure of it (a date there is no neighbour of) is nobody's concern; the period is asked for again when it is shown.
@@ -72,19 +76,20 @@ export function App() {
   }, [queryClient, route]);
 
   // What covers the map, and some air round it: the bar at the top (as measured), on a phone the sheet at the bottom, on a desktop
-  // the sidebar at the left. The sheet counts up to half the screen and no further: above that it is a page to read, which covers the
-  // map and the credit under it (the credit is part of the map it credits), and padding for all of it would leave the map no room to
-  // fit anything into, and put its buttons and credit under the bar. A new object only when a number changes, for the map hands it
-  // to its controls.
+  // the sidebar at the left, and at the sides what the device keeps for itself (a phone on its side has the Dynamic Island at one of
+  // them, and the map's buttons and credit, and what it is brought to, must not sit under it). The sheet counts up to half the screen
+  // and no further: above that it is a page to read, which covers the map and the credit under it (the credit is part of the map it
+  // credits), and padding for all of it would leave the map no room to fit anything into, and put its buttons and credit under the
+  // bar. A new object only when a number changes, for the map hands it to its controls.
   const sheetCovers = Math.min(sheetHeight, sheetHalfHeight(viewportHeight));
   const padding = useMemo<MapPadding>(
     () => ({
       top: barBottom + AIR,
-      right: AIR,
+      right: sides.right + AIR,
       bottom: desktop ? AIR : sheetCovers + AIR,
-      left: desktop ? SIDEBAR_WIDTH + AIR : AIR,
+      left: desktop ? SIDEBAR_WIDTH + AIR : sides.left + AIR, // the sidebar has the left inset inside its own width
     }),
-    [barBottom, desktop, sheetCovers],
+    [barBottom, desktop, sheetCovers, sides],
   );
 
   // A panel asks for the map to be moved to something (a row tapped). On a phone the sheet may be over the map by then, up to the whole
@@ -109,6 +114,9 @@ export function App() {
   const panel = <Panel route={route} onFocus={onFocus} />;
   return (
     <main className={styles.shell} data-layout={desktop ? "desktop" : "phone"}>
+      {/* Take no room and show nothing: their widths are the left and right safe areas, which only the style sheet can say. */}
+      <span ref={leftProbe} className={`${styles.probe} ${styles.probeLeft}`} aria-hidden="true" />
+      <span ref={rightProbe} className={`${styles.probe} ${styles.probeRight}`} aria-hidden="true" />
       <div className={styles.map}>
         <MapView
           ref={mapRef}
@@ -122,6 +130,7 @@ export function App() {
           onStyleLoad={() => setMapUnavailable(false)}
         />
       </div>
+      <div className={styles.scrim} aria-hidden="true" />
       <div className={styles.top}>
         <div ref={barRef} className={styles.bar}>
           <TopBar route={route} lastDay={lastDay} />
