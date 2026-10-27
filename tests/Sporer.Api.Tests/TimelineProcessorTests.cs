@@ -63,7 +63,7 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
         var processor = Processor(api); // starting the host runs the migrations
         await PointSeeder.InsertAsync(cs, CommuteDay(), Ct);
 
-        var written = await processor.ReprocessAsync(T(0, 0), T(0, 0, 1), Ct);
+        var written = (await processor.ReprocessAsync(T(0, 0), T(0, 0, 1), Ct)).Written;
 
         var segments = await SegmentsAsync(cs);
         var kinds = segments.Select(s => s.Kind).ToArray();
@@ -288,7 +288,7 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
         await OnlyDirtyRangeAsync(cs, T(7, 0, 7), T(7, 0, 14), attempts: 3); // week 2 failed and was set aside
 
         // Week 3 with week 2 set aside: nothing of week 2 is loaded, so nothing of week 2 is stored...
-        var written = await processor.ReprocessAsync(T(7, 0, 14), T(7, 0, 21), Ct);
+        var written = (await processor.ReprocessAsync(T(7, 0, 14), T(7, 0, 21), Ct)).Written;
         Assert.True(written > 0);
         Assert.Equal(0, await segmentsInWeek2());
         Assert.Equal(T(7, 0, 14), await Sql.ScalarAsync<DateTime>(cs, "select min(start_utc) from segment where start_utc >= @from",
@@ -300,6 +300,40 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
         await Sql.ExecAsync(cs, "delete from dirty_range", ct: Ct);
         await processor.ReprocessAsync(T(7, 0, 14), T(7, 0, 21), Ct);
         Assert.True(await segmentsInWeek2() > 0);
+    }
+
+    [Fact]
+    public async Task Reports_the_range_it_was_asked_for_as_the_window_when_nothing_is_stored()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var processor = Processor(api); // starting the host runs the migrations
+        await PointSeeder.InsertAsync(cs, CommuteDay(), Ct);
+
+        var result = await processor.ReprocessAsync(T(0, 0), T(0, 0, 1), Ct);
+
+        Assert.Equal(new ReprocessResult(5, T(0, 0), T(0, 0, 1)), result);
+    }
+
+    [Fact]
+    public async Task Reports_the_window_it_rebuilt_from_the_stay_before_the_range_to_the_end_of_the_stay_after_it()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var processor = Processor(api);
+        await PointSeeder.InsertAsync(cs, Enumerable.Range(0, 3).SelectMany(day => CommuteDay(day)), Ct);
+        await processor.ReprocessAsync(T(0, 0), T(0, 0, 3), Ct);
+        var stays = (await SegmentsAsync(cs)).Where(s => s.Kind == "stay").ToList();
+        var (from, to) = (T(12, 0, 1), T(13, 0, 1)); // inside the office stay of the second day
+
+        var result = await processor.ReprocessAsync(from, to, Ct);
+
+        // The rebuild starts where the last stay before the range starts and stops where the first stay after it ends: what
+        // was recomputed is that, not the hour that was asked for.
+        var (expectedFrom, expectedTo) = (stays.Last(s => s.StartUtc < from).StartUtc, stays.First(s => s.StartUtc > to).EndUtc);
+        Assert.True(expectedFrom < from && expectedTo > to);
+        Assert.Equal((expectedFrom, expectedTo), (result.RebuiltFromUtc, result.RebuiltToUtc));
+        Assert.True(result.Written > 0);
     }
 
     /// <summary>
@@ -520,7 +554,7 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
             .Concat(new TrackBuilder(T(9, 0), Spots.Cafe, "watch").Stay(TimeSpan.FromHours(1), Every2min).Build());
         await PointSeeder.InsertAsync(cs, track, Ct);
 
-        var written = await processor.ReprocessAsync(T(0, 0), T(0, 0, 1), Ct);
+        var written = (await processor.ReprocessAsync(T(0, 0), T(0, 0, 1), Ct)).Written;
 
         var segments = await SegmentsAsync(cs);
         Assert.Equal(new[] { "stay", "stay" }, segments.Select(s => s.Kind));
@@ -538,7 +572,7 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
         // Ingest stores whatever a client sends; the place matcher rejects a latitude of 95, which must not fail the range.
         await PointSeeder.InsertAsync(cs, new TrackBuilder(T(8, 0), new GeoPoint(95, 10)).Stay(TimeSpan.FromMinutes(30), Every2min).Build(), Ct);
 
-        var written = await processor.ReprocessAsync(T(0, 0), T(0, 0, 1), Ct);
+        var written = (await processor.ReprocessAsync(T(0, 0), T(0, 0, 1), Ct)).Written;
 
         var stay = Assert.Single(await SegmentsAsync(cs));
         Assert.Equal(1, written);
@@ -572,7 +606,7 @@ public partial class TimelineProcessorTests(DatabaseFixture db)
         await using var api = new ApiFactory(cs);
         var processor = Processor(api); // starting the host runs the migrations
 
-        var written = await processor.ReprocessAsync(T(0, 0), T(0, 0, 1), Ct);
+        var written = (await processor.ReprocessAsync(T(0, 0), T(0, 0, 1), Ct)).Written;
 
         Assert.Equal(0, written);
         Assert.Equal(0, await CountAsync(cs, "segment"));

@@ -162,6 +162,75 @@ public class SimulatorTests
         Assert.NotEmpty(segments.OfType<GapSegment>()); // the phone is off while the person is on the move
     }
 
+    // The centre of the simulated city, and the hotels of the three trips: where the simulator puts them, copied here so that the
+    // test does not look at the simulator's own state.
+    private static readonly GeoPoint City = new(59.9100, 10.7500);
+
+    private static readonly Dictionary<string, (GeoPoint Hotel, string Zone)> Destinations = new()
+    {
+        ["north"] = (new GeoPoint(69.6496, 18.9560), "Europe/Oslo"),
+        ["lisbon"] = (new GeoPoint(38.7139, -9.1394), "Europe/Lisbon"),
+        ["tokyo"] = (new GeoPoint(35.6586, 139.7454), "Asia/Tokyo"),
+    };
+
+    private static DateOnly LocalDate(DateTime utc, string zone)
+        => DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(utc, TimeZoneInfo.FindSystemTimeZoneById(zone)));
+
+    /// <summary>How many times the track goes from within 300 km of the city to further away than that: once for each trip.</summary>
+    private static int Departures(IReadOnlyList<Fix> fixes)
+        => Enumerable.Range(1, fixes.Count - 1).Count(i =>
+            Geo.DistanceMeters(Position(fixes[i - 1]), City) <= 300_000 && Geo.DistanceMeters(Position(fixes[i]), City) > 300_000);
+
+    [Fact]
+    public void Simulator_describe_matches_what_run_emits()
+    {
+        var plan = Simulator.Describe(Options);
+        var fixes = History.Value;
+
+        Assert.Equal(["north", "lisbon", "tokyo"], plan.Trips.Select(t => t.Name));
+        Assert.Equal([2, 6, 24], plan.Trips.Select(t => t.Nights));
+        Assert.Equal(plan.Trips.Count, Departures(fixes));
+
+        foreach (var (name, start, nights) in plan.Trips)
+        {
+            var (hotel, zone) = Destinations[name];
+
+            // The person is at the destination from the first fix near the hotel to the last, for the nights the plan says...
+            var there = fixes.Where(f => Geo.DistanceMeters(Position(f), hotel) < 60_000).ToList();
+            Assert.Equal(nights, LocalDate(there[^1].TimeUtc, zone).DayNumber - LocalDate(there[0].TimeUtc, zone).DayNumber);
+
+            // ...and set out from home on the day it says: the last fix in the city before the first one there is on that local date.
+            var left = fixes.TakeWhile(f => f.TimeUtc < there[0].TimeUtc).Last(f => Geo.DistanceMeters(Position(f), City) < 100_000);
+            Assert.Equal(start, LocalDate(left.TimeUtc, "Europe/Oslo"));
+        }
+    }
+
+    [Fact]
+    public void Simulator_describe_puts_the_house_move_on_the_day_the_track_changes_homes()
+    {
+        var moveDay = Simulator.Describe(Options).MoveDay;
+
+        // The last fix of a local day is where the person went to bed.
+        GeoPoint Bed(DateOnly day) => Position(History.Value.Last(f => LocalDate(f.TimeUtc, "Europe/Oslo") == day));
+
+        Assert.Equal(DayOfWeek.Saturday, moveDay.DayOfWeek);
+        Assert.True(Geo.DistanceMeters(Bed(moveDay.AddDays(-2)), Bed(moveDay.AddDays(-1))) < 500, "home changed before the move day");
+        Assert.True(Geo.DistanceMeters(Bed(moveDay.AddDays(-1)), Bed(moveDay)) > 5_000, "home did not change on the move day");
+        Assert.True(Geo.DistanceMeters(Bed(moveDay), Bed(moveDay.AddDays(1))) < 500, "home changed after the move day");
+    }
+
+    [Fact]
+    public void Simulator_describe_leaves_out_a_trip_that_does_not_fit_in_the_history()
+    {
+        var short20Days = Options with { To = new DateOnly(2024, 6, 20) }; // only the trip to the north fits (two nights and a day to spare)
+
+        var plan = Simulator.Describe(short20Days);
+
+        var north = Assert.Single(plan.Trips);
+        Assert.Equal(("north", new DateOnly(2024, 6, 6), 2), north);
+        Assert.Equal(1, Departures(Generate(short20Days)));
+    }
+
     /// <summary>Compares fixes field by field (a fix holds an array, which a record compares by reference).</summary>
     private sealed class FixComparer : IEqualityComparer<Fix>
     {

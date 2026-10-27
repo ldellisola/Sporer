@@ -29,6 +29,9 @@ builder.Services.AddSingleton<SegmentStore>();
 builder.Services.AddSingleton<RangeStore>();
 builder.Services.AddSingleton<NightStore>();
 builder.Services.AddSingleton<NightBuilder>();
+builder.Services.AddSingleton<TripStore>();
+builder.Services.AddSingleton<TripRefresher>();
+builder.Services.AddSingleton<ITripRefresher>(sp => sp.GetRequiredService<TripRefresher>());
 builder.Services.AddSingleton<ITimelineProcessor, TimelineProcessor>();
 builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConfiguration>().GetSection("Processing").Get<ProcessingOptions>() ?? new ProcessingOptions());

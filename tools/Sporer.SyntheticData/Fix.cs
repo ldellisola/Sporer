@@ -27,3 +27,9 @@ public sealed record SimulatorOptions(DateOnly From, DateOnly To, TimeSpan Movin
             throw new ArgumentException("--moving-interval must be between 100ms and 1m.");
     }
 }
+
+/// <summary>
+/// What a simulated life holds that a test can look for: each trip's name, the local date it starts on (the morning the
+/// person leaves for the airport) and how many nights it lasts at the destination, and the local date of the house move.
+/// </summary>
+public sealed record SimulatorPlan(IReadOnlyList<(string Name, DateOnly Start, int Nights)> Trips, DateOnly MoveDay);

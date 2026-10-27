@@ -57,7 +57,7 @@ public class FailureIsolationTests(DatabaseFixture db)
         public List<(DateTime From, DateTime To)> Calls { get; } = [];
         public int Failures { get; private set; }
 
-        public async Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
+        public async Task<ReprocessResult> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
         {
             Calls.Add((fromUtc, toUtc));
             if (OnCall is { } hook)

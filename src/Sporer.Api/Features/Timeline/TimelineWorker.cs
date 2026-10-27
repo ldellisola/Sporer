@@ -1,4 +1,5 @@
 using Sporer.Api.Configuration;
+using Sporer.Api.Features.Trips;
 using Sporer.Timeline;
 
 namespace Sporer.Api.Features.Timeline;
@@ -7,11 +8,14 @@ namespace Sporer.Api.Features.Timeline;
 /// Keeps the stored timeline up to date in the background, through <see cref="ITimelineProcessor.ReprocessAsync"/>:
 /// it drains the dirty ranges that ingest records, backfills the whole history (oldest first, in chunks) the first time
 /// and whenever the detection thresholds or code change, and never lets a failure stop it or hold up ingest (ingest only
-/// writes rows; it never waits for this).
+/// writes rows; it never waits for this). What is derived from the timeline (the nights, homes and trips) is refreshed once
+/// at the end of each pass, over what the pass rebuilt, through <see cref="ITripRefresher"/>.
 /// </summary>
 public sealed class TimelineWorker(
     ProcessingQueue queue,
     ITimelineProcessor processor,
+    TripStore trips,
+    ITripRefresher refresher,
     PointStore points,
     DetectionOptions detection,
     ProcessingOptions options,
@@ -27,9 +31,17 @@ public sealed class TimelineWorker(
     private DateTime _backfillRetryAt = DateTime.MinValue;
     private string? _backfillError;
 
+    // A refresh that fails never fails the range or the chunk that was rebuilt: the window it was for stays in the database
+    // (see TripStore.ExtendPendingAsync) and every pass tries it again. The error is kept here and is part of what each pass
+    // saves as the last error, as _backfillError is, until a refresh succeeds: recording it once would be overwritten by the
+    // next pass's save.
+    private string? _refreshError;
+
     /// <summary>
-    /// One pass: starts a backfill if the algorithm version changed, processes the dirty ranges that are due, and does
-    /// one backfill step unless it is paused. Returns whether it did any work. Times (debounce, backoff) are read from
+    /// One pass: starts a backfill if the algorithm version changed, processes the dirty ranges that are due, does
+    /// one backfill step unless it is paused, and refreshes the nights, homes and trips over everything that was rebuilt
+    /// since the last refresh. Returns whether it did any work: a refresh counts only if it succeeded, so that one that keeps
+    /// failing does not keep the loop from waiting for the next poll. Times (debounce, backoff) are read from
     /// the injected <see cref="TimeProvider"/>; the pause after a backfill step is real time, as it is there to
     /// leave the database to other work. Throws <see cref="OperationCanceledException"/> when <paramref name="ct"/> is
     /// cancelled, including during that pause.
@@ -58,9 +70,13 @@ public sealed class TimelineWorker(
             {
                 // A range can be as long as the history (a client sending a year of points at once), and a rebuild loads
                 // what it covers: in pieces no longer than a backfill step, oldest first, so memory stays bounded. The rows
-                // are done, or failed, together.
+                // are done, or failed, together. What each piece rebuilt is noted as soon as it is done, so that a stop before
+                // the refresh does not lose it.
                 foreach (var (from, to) in Pieces(range.FromUtc, range.ToUtc, ChunkLength))
-                    await processor.ReprocessAsync(from, to, ct);
+                {
+                    var rebuilt = await processor.ReprocessAsync(from, to, ct);
+                    await trips.ExtendPendingAsync(rebuilt.RebuiltFromUtc, rebuilt.RebuiltToUtc, ct);
+                }
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
@@ -85,8 +101,12 @@ public sealed class TimelineWorker(
             (state, pause) = await BackfillStepAsync(state, cursor, chunkEnd, backfillTo, ct);
         }
 
-        // 4. Saved before the pause, so a stop during it keeps the cursor.
-        await queue.SaveStateAsync(state with { LastRunAt = Now(), LastError = _backfillError }, ct);
+        // 4. Once per pass, whatever the ranges and the step rebuilt. The state is saved after it, to carry its error.
+        if (await RefreshTripsAsync(ct))
+            didWork = true;
+
+        // 5. Saved before the pause, so a stop during it keeps the cursor.
+        await queue.SaveStateAsync(state with { LastRunAt = Now(), LastError = CurrentError() }, ct);
 
         if (pause && options.BackfillPause > TimeSpan.Zero)
             await Task.Delay(options.BackfillPause, ct);
@@ -118,7 +138,8 @@ public sealed class TimelineWorker(
         var attempts = await queue.CountBackfillAttemptAsync(ct);
         try
         {
-            await processor.ReprocessAsync(cursor, chunkEnd, ct);
+            var rebuilt = await processor.ReprocessAsync(cursor, chunkEnd, ct);
+            await trips.ExtendPendingAsync(rebuilt.RebuiltFromUtc, rebuilt.RebuiltToUtc, ct);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
@@ -141,6 +162,40 @@ public sealed class TimelineWorker(
         (_backfillRetryAt, _backfillError) = (DateTime.MinValue, null);
         return (state with { BackfillCursor = chunkEnd, BackfillChunkAttempts = 0 }, true);
     }
+
+    /// <summary>
+    /// Refreshes the nights, homes and trips over the window that is waiting (the union of what was rebuilt since the last
+    /// refresh), then empties it. Returns whether it refreshed. A failure is not an error of the pass: it is logged and
+    /// kept (<see cref="_refreshError"/>), and the window stays to be tried again on the next pass, which is also where it
+    /// is found after a restart.
+    /// </summary>
+    private async Task<bool> RefreshTripsAsync(CancellationToken ct)
+    {
+        try
+        {
+            if (await trips.TakePendingAsync(ct) is not { } window)
+            {
+                _refreshError = null; // nothing is waiting, so nothing is failing
+                return false;
+            }
+
+            await refresher.RefreshAsync(window.From, window.To, ct);
+            await trips.ClearPendingAsync(window.From, window.To, ct);
+
+            _refreshError = null;
+            return true;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            logger.LogError(ex, "Refreshing the homes and trips failed; it stays pending and will be tried again on the next pass");
+            _refreshError = $"Refreshing homes and trips failed: {Describe(ex)}";
+            return false;
+        }
+    }
+
+    /// <summary>What a pass saves as the last error: the backfill's and the refresh's, whichever are failing, or null.</summary>
+    private string? CurrentError()
+        => _backfillError is not null && _refreshError is not null ? $"{_backfillError}; {_refreshError}" : _backfillError ?? _refreshError;
 
     /// <summary>
     /// Records the chunk as a set-aside dirty range and moves the cursor past it. The range covers the chunk after it too
@@ -196,7 +251,7 @@ public sealed class TimelineWorker(
         DateTime? to = from is null ? null : Now(); // no points, no backfill
         await queue.RestartBackfillAsync(version, from, to, ct);
 
-        (_backfillRetryAt, _backfillError) = (DateTime.MinValue, null);
+        (_backfillRetryAt, _backfillError, _refreshError) = (DateTime.MinValue, null, null); // the window it was for is cleared with the rest
         logger.LogInformation(
             "Algorithm version is {Version} (was {Previous}); rebuilding the timeline from {FromUtc:o}",
             version, state.AlgorithmVersion ?? "none", from);
