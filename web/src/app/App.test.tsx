@@ -631,12 +631,12 @@ describe("App day on the map", () => {
     const auto = mapProps().fitTo;
     const home = placePoint((OSLO_DAY.segments[0] as StaySegment).place!);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Home, on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show home, Home, on the map" }));
     const first = mapProps().fitTo;
     expect(first).toEqual([home]);
     expect(first).not.toBe(auto);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Home, on the map" })); // the same row again: another array, so the map moves again
+    fireEvent.click(screen.getByRole("button", { name: "Show home, Home, on the map" })); // the same row again: another array, so the map moves again
     expect(mapProps().fitTo).toEqual([home]);
     expect(mapProps().fitTo).not.toBe(first);
   });
@@ -649,7 +649,7 @@ describe("App day on the map", () => {
     expect(mapProps().home).toEqual([...routes.features, ...stops.features]);
     const home = mapProps().home;
 
-    fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Café, on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Café, on the map" }));
 
     expect(mapProps().fitTo).toHaveLength(1); // the map is taken to the row...
     expect(mapProps().home).toBe(home); // ...and Recenter is still the whole day
@@ -682,7 +682,7 @@ describe("App day on the map", () => {
     stubApi((path) => Response.json(path.endsWith("2026-10-22") ? { ...OSLO_DAY, state } : day(path.split("/").pop()!)));
     const { client } = renderApp();
     await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Café, on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Café, on the map" }));
     const tapped = mapProps().fitTo;
 
     state = "done"; // the poll of a day that was still being processed finds it done
@@ -718,7 +718,7 @@ describe("App row taps on the sheet", () => {
   const OSLO_DAY = flightDay as DayResponse;
   const sheet = () => screen.getByRole("region", { name: "Details" });
   const resize = () => fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
-  const tapRow = () => fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Café, on the map" }));
+  const tapRow = () => fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Café, on the map" }));
 
   test("App_a_row_tap_lowers_a_full_sheet_to_half_so_that_the_map_can_be_seen", async () => {
     stubApi((path) => Response.json(path.endsWith("2026-10-22") ? OSLO_DAY : day(path.split("/").pop()!)));

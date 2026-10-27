@@ -39,6 +39,11 @@ const maplibre = vi.hoisted(() => {
     readonly paintCalls: [id: string, name: string, value: unknown][] = [];
     readonly sources = new Map<string, FakeSource>();
     readonly layers = new Map<string, Record<string, any>>();
+    /** The images of the style, by id (a style has its own, and a new one has none), and every `addImage` there was, in order. */
+    readonly images = new Map<string, unknown>();
+    readonly imageCalls: { id: string; image: { width: number; height: number; data: ArrayLike<number> }; options: unknown }[] = [];
+    /** What was added to the style, in order, for a test that says one is before the other: `image:{id}` and `layer:{id}`. */
+    readonly additions: string[] = [];
     private readonly listeners = new Map<string, Set<Listener>>();
     /** The canvas the real map draws on, for the cursor over it. */
     readonly canvas = document.createElement("canvas");
@@ -110,6 +115,19 @@ const maplibre = vi.hoisted(() => {
       this.styleCalls.push({ style, options });
       this.sources.clear();
       this.layers.clear();
+      this.images.clear(); // the images of a style go with it
+      return this;
+    }
+    hasImage(id: string): boolean {
+      this.requireStyle();
+      return this.images.has(id);
+    }
+    addImage(id: string, image: { width: number; height: number; data: ArrayLike<number> }, options: unknown): this {
+      this.requireStyle();
+      if (this.images.has(id)) throw new Error(`An image named "${id}" already exists.`); // MapLibre reports it and adds nothing
+      this.images.set(id, image);
+      this.imageCalls.push({ id, image, options });
+      this.additions.push(`image:${id}`);
       return this;
     }
     getSource(id: string): FakeSource | undefined {
@@ -131,6 +149,7 @@ const maplibre = vi.hoisted(() => {
       if (this.layers.has(spec.id)) throw new Error(`Layer "${spec.id}" already exists.`);
       if (!this.sources.has(spec.source)) throw new Error(`Layer "${spec.id}" needs the missing source "${spec.source}".`);
       this.layers.set(spec.id, structuredClone(spec));
+      this.additions.push(`layer:${spec.id}`);
       return this;
     }
     setLayoutProperty(id: string, name: string, value: unknown): void {
@@ -574,6 +593,64 @@ describe("MapView", () => {
     map.emit("style.load");
 
     expect(map.sources.get(SOURCE_IDS.routes)?.data).toBe(latest);
+  });
+
+  // Home is a house on its pin: an image that the map draws itself (an SDF, so that the layer colours it) and adds to every style, since a style has
+  // no image of ours and a theme switch loads another.
+  describe("the house image", () => {
+    test("MapView_adds_the_house_image_on_every_style_load", async () => {
+      const urls = goodStyle();
+      render(view());
+      await styleApplied();
+      const map = theMap();
+      expect(map.imageCalls).toEqual([]); // nothing can be added before the style is there
+
+      map.emit("style.load");
+
+      expect(map.imageCalls).toHaveLength(1);
+      const [call] = map.imageCalls;
+      expect(call?.id).toBe("sporer-home");
+      expect([call?.image.width, call?.image.height]).toEqual([32, 32]);
+      expect(call?.image.data).toHaveLength(32 * 32 * 4);
+      expect(call?.options).toEqual({ sdf: true, pixelRatio: 2 });
+      // It is there before a layer that draws it is added, so that the first frame has it.
+      expect(map.additions.indexOf("image:sporer-home")).toBeLessThan(map.additions.indexOf(`layer:${LAYER_IDS.stopHome}`));
+
+      // The style of the other colour scheme has none of it: it is added again, with the layers.
+      map.setStyle({ version: 8, sources: {}, layers: [] }, { diff: false });
+      expect(map.images.size).toBe(0);
+      map.emit("style.load");
+      expect(map.imageCalls).toHaveLength(2);
+      expect(map.images.has("sporer-home")).toBe(true);
+      expect(map.layers.has(LAYER_IDS.stopHome)).toBe(true);
+
+      // And once more, to a style that has it already (a style that loads again, as it does when the context comes back): not a second time.
+      map.emit("style.load");
+      expect(map.imageCalls).toHaveLength(2);
+      expect(urls).toEqual(["/style.json"]); // the icon is drawn here: no request is made for it
+    });
+
+    test("MapView_adds_the_house_image_to_the_plain_style_it_falls_back_to_and_to_the_one_it_puts_back", async () => {
+      stubFetch(() => Promise.reject(new TypeError("Failed to fetch")));
+      render(view());
+      await styleApplied(); // the plain style, which draws the routes and the pins on the background
+      const map = theMap();
+
+      map.emit("style.load");
+
+      expect(map.images.has("sporer-home")).toBe(true);
+    });
+
+    test("MapView_adds_the_layer_of_the_house_with_the_others", async () => {
+      goodStyle();
+      render(view({ data: { routes: EMPTY_ROUTES, stops: stops() } }));
+      await styleApplied();
+      const map = theMap();
+
+      map.emit("style.load");
+
+      expect(map.layers.get(LAYER_IDS.stopHome)).toMatchObject({ type: "symbol", source: SOURCE_IDS.stops, layout: { "icon-image": "sporer-home" } });
+    });
   });
 
   test("MapView_shows_the_day_routes_when_there_are_stops_and_the_range_routes_when_there_are_not", async () => {
@@ -1296,6 +1373,7 @@ describe("MapView", () => {
     const DOT: Thing = { layer: LAYER_IDS.places, properties: { id: 7, radius: 9 }, place: 7 };
     const PIN: Thing = { layer: LAYER_IDS.stops, properties: { order: 2, label: "2 · 4", name: "Home", id: 301, placeId: 11 }, place: 11 };
     const NUMBER: Thing = { layer: LAYER_IDS.stopNumbers, properties: { order: 2, label: "2 · 4", name: "Home", id: 301, placeId: 11 }, place: 11 };
+    const HOUSE: Thing = { layer: LAYER_IDS.stopHome, properties: { order: 0, label: "", name: "Home", id: 301, placeId: 11, home: true }, place: 11 };
 
     /** A map with its style loaded (its layers are there to be looked in), and `things` drawn where `at` says. */
     async function drawn(things: [Thing, [number, number]][], props: Partial<MapViewProps> = {}) {
@@ -1312,6 +1390,7 @@ describe("MapView", () => {
       ["a_dot_of_a_period", DOT],
       ["a_pin_of_a_day", PIN],
       ["the_number_on_a_pin", NUMBER],
+      ["the_house_on_a_pin", HOUSE],
     ])("MapView_calls_onPlaceTap_with_the_place_when_%s_is_clicked", async (_name, thing) => {
       const onPlaceTap = vi.fn<(id: number) => void>();
       const { map } = await drawn([[thing, [200, 300]]], { onPlaceTap });
@@ -1328,7 +1407,7 @@ describe("MapView", () => {
       map.pointer("click", 200, 300);
 
       expect(map.queries).toEqual([
-        { box: [[188, 288], [212, 312]], layers: [LAYER_IDS.places, LAYER_IDS.stops, LAYER_IDS.stopNumbers] },
+        { box: [[188, 288], [212, 312]], layers: [LAYER_IDS.places, LAYER_IDS.stops, LAYER_IDS.stopHome, LAYER_IDS.stopNumbers] },
       ]);
     });
 
@@ -1469,7 +1548,7 @@ describe("MapView", () => {
     });
 
     test("MapView_shows_a_pointer_where_a_click_would_open_a_place_and_the_ordinary_cursor_elsewhere", async () => {
-      const { map } = await drawn([[DOT, [200, 300]], [PIN, [400, 300]]]);
+      const { map } = await drawn([[DOT, [200, 300]], [PIN, [400, 300]], [HOUSE, [600, 300]]]);
       expect(map.canvas.style.cursor).toBe("");
 
       map.pointer("mousemove", 205, 300);
@@ -1479,6 +1558,10 @@ describe("MapView", () => {
       map.pointer("mousemove", 300, 300);
       expect(map.canvas.style.cursor).toBe("");
       map.pointer("mousemove", 400, 305);
+      expect(map.canvas.style.cursor).toBe("pointer");
+      map.pointer("mousemove", 500, 300);
+      expect(map.canvas.style.cursor).toBe("");
+      map.pointer("mousemove", 603, 300); // the house on the pin of home, which is a place like the others
       expect(map.canvas.style.cursor).toBe("pointer");
       map.emit("mouseout"); // the pointer leaves the map
       expect(map.canvas.style.cursor).toBe("");

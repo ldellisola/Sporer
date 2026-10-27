@@ -14,6 +14,7 @@ import {
 } from "react";
 import { useConfig } from "../api/queries";
 import { boundsOf, type Bounds } from "./bounds";
+import { addHomeImage } from "./house";
 import {
   LAYER_IDS,
   layerSpecs,
@@ -135,8 +136,8 @@ export interface MapViewProps {
   onStyleLoad?: () => void;
 }
 
-/** The layers of the dots of a period, and of the pins of a day with the numbers on them: what a tap opens the place of. */
-const TAPPABLE_LAYERS = [LAYER_IDS.places, LAYER_IDS.stops, LAYER_IDS.stopNumbers];
+/** The layers of the dots of a period, and of the pins of a day with the house or the numbers on them: what a tap opens the place of. */
+const TAPPABLE_LAYERS = [LAYER_IDS.places, LAYER_IDS.stops, LAYER_IDS.stopHome, LAYER_IDS.stopNumbers];
 
 /**
  * How far from a dot or a pin a tap still opens it, in pixels. A finger is some 40 px wide and the smallest dot is 8 px across, so a tap
@@ -483,6 +484,7 @@ function MapSurface({
       readyRef.current = true;
       showState(rootRef.current, phase === "failed" ? "unavailable" : "ready");
       pushedRef.current = newPushed();
+      addHomeImage(map); // each style has its own images: the house comes before the layer that draws it
       syncData(map, latest.current.data, latest.current.dark, pushedRef.current);
       if (phase !== "failed") latest.current.onStyleLoad?.();
     };

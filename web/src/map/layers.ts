@@ -10,6 +10,7 @@ import type {
 } from "../api/types";
 import { formatCount } from "../time/format";
 import { boundsOf } from "./bounds";
+import { HOME_IMAGE } from "./house";
 import type { StyleSpecification } from "./style";
 
 // --- GeoJSON ---
@@ -29,11 +30,14 @@ export type RouteMode = Mode | "unknown";
 export type RouteProperties = { id: number; mode: RouteMode };
 /**
  * A pin is one place of the day, however many of its stays there are. `order` is the number of the first of them (counted from 1,
- * see `stopOrders`) and `id` its id; `label` lists the numbers of all of them ("1 · 4" for a day that starts and ends at home), and
- * is what the pin shows; `name` is null for a place that has none (yet). `placeId` is the place the pin is, which a tap on it opens:
+ * see `stopOrders`) and `id` its id; `label` lists the numbers of all of them ("1 · 4" for a day that starts at the café and ends there),
+ * and is what the pin shows; `name` is null for a place that has none (yet). `placeId` is the place the pin is, which a tap on it opens:
  * it is not `id`, which is a stay's, and one place for a pin that merges several stays.
+ *
+ * The pin of home, the place that is home on the day, has `home: true` and shows a house in place of its number: it has no number (its `order`
+ * is 0, which puts its name first) and its `label` is empty, however many of its stays there are. A pin that is not home says nothing of it.
  */
-export type StopProperties = { order: number; label: string; name: string | null; id: number; placeId: number };
+export type StopProperties = { order: number; label: string; name: string | null; id: number; placeId: number; home?: true };
 /** Which side of the middle of the drawing a dot is on, by longitude: its label is put on the other one, toward the inside of the drawing. */
 export type LabelSide = "west" | "east";
 
@@ -77,14 +81,15 @@ function route(id: number, mode: Mode | null | undefined, geometry: LonLat[]): F
 }
 
 /**
- * The number of each stay of a day that has a pin, by the id of the stay: counted from 1 in the order of the day. A stay at a
- * position that matched no place has no position to draw, so it has no pin and no number. The pins of the map are labelled from
- * this and the rows of the timeline are numbered from it, so that the two always agree.
+ * The number of each stay of a day that has a pin and is not home, by the id of the stay: counted from 1 in the order of the day. A stay at a
+ * position that matched no place has no position to draw, so it has no pin and no number; a stay at home has a pin that shows a house, and no
+ * number: the numbers are those of the other stops. The pins of the map are labelled from this and the rows of the timeline are numbered from
+ * it, so that the two always agree.
  */
 export function stopOrders(day: DayResponse): Map<number, number> {
   const orders = new Map<number, number>();
   for (const segment of day.segments) {
-    if (segment.kind === "stay" && segment.place !== null) orders.set(segment.id, orders.size + 1);
+    if (segment.kind === "stay" && segment.place !== null && !segment.home) orders.set(segment.id, orders.size + 1);
   }
   return orders;
 }
@@ -114,9 +119,10 @@ export const placePoint = (place: PlaceRef): Feature<Point, Record<string, never
 
 /**
  * The routes of a day (every move, with its mode) and its stops: a pin for each place the day was spent at, labelled with the
- * numbers of its stays (`stopOrders`), so that a day that starts and ends at home has one pin that says "1 · 4" and not two that
- * print their numbers over each other. Pins come in the order of their first stay. Gaps are not drawn: the day is never bridged
- * with a line that was not travelled.
+ * numbers of its stays (`stopOrders`), so that a day that starts and ends at the same place has one pin that says "1 · 4" and not two
+ * that print their numbers over each other. Pins come in the order of their first stay. The pin of home is one for the place however many
+ * of its stays there are, and says no number: it has `home: true`, and the layers draw a house on it. Home is the place that is home on the day
+ * and its stays are all home, so that a pin is never both. Gaps are not drawn: the day is never bridged with a line that was not travelled.
  */
 export function dayGeoJson(day: DayResponse): { routes: RouteCollection; stops: StopCollection } {
   const orders = stopOrders(day);
@@ -128,13 +134,16 @@ export function dayGeoJson(day: DayResponse): { routes: RouteCollection; stops: 
       routes.features.push(...route(segment.id, segment.mode, segment.geometry));
     } else if (segment.kind === "stay" && segment.place !== null) {
       const { place } = segment;
-      const order = orders.get(segment.id) ?? 0;
+      const order = orders.get(segment.id); // none for a stay at home, which is drawn as a house
       const pin = pinOf.get(place.id);
       if (pin === undefined) {
-        const created = point(place.lon, place.lat, { order, label: String(order), name: place.name, id: segment.id, placeId: place.id });
+        const created =
+          order === undefined
+            ? point(place.lon, place.lat, { order: 0, label: "", name: place.name, id: segment.id, placeId: place.id, home: true })
+            : point(place.lon, place.lat, { order, label: String(order), name: place.name, id: segment.id, placeId: place.id });
         pinOf.set(place.id, created);
         stops.features.push(created);
-      } else {
+      } else if (order !== undefined && pin.properties.home === undefined) {
         pin.properties.label += ` · ${order}`;
       }
     }
@@ -290,6 +299,7 @@ export const LAYER_IDS = {
   placeLabelsEast: "sporer-place-labels-east",
   stops: "sporer-stops",
   stopNames: "sporer-stop-names",
+  stopHome: "sporer-stop-home",
   stopNumbers: "sporer-stop-numbers",
 } as const;
 
@@ -365,6 +375,10 @@ const PIN_RADIUS: CircleRadius = ["max", 12, ["+", 6, ["*", 2.2, ["length", ["to
 type SymbolLayer = Extract<LayerSpecification, { type: "symbol" }>;
 type Anchors = NonNullable<NonNullable<SymbolLayer["layout"]>["text-variable-anchor"]>;
 
+/** The pins of home, which show a house, and the others, which show their numbers. A pin that says nothing of home is not home. */
+const IS_HOME: FilterSpecification = ["==", ["get", "home"], true];
+const IS_NOT_HOME: FilterSpecification = ["!=", ["get", "home"], true];
+
 /** The dots that carry a label, those at the east of the drawing and the others (one that says no side is one of those). */
 const LABELLED_EAST: FilterSpecification = ["all", ["has", "label"], ["==", ["get", "side"], "east"]];
 const LABELLED_WEST: FilterSpecification = ["all", ["has", "label"], ["!=", ["get", "side"], "east"]];
@@ -399,10 +413,11 @@ function placeLabels(id: string, filter: FilterSpecification, anchors: Anchors, 
 
 /**
  * Every layer the map draws, from the bottom up: the heat, the routes, the place dots with their labels, the stop pins with their
- * numbers and names. Layers of the routes of the other views are there but hidden, so that going from a day to a month, or back,
- * only changes their visibility: a day's routes (bold, over a casing) are shown for a day and for a trip, a period's (faint) for a period,
- * and the list of trips shows no routes at all. The dots, their labels and the pins are not hidden by any view; the source of the ones that
- * a view does not draw is empty. `dark` is for the text on the map, which is dark on a light map and light on a dark one.
+ * names and their numbers (or the house, on the pin of home). Layers of the routes of the other views are there but hidden, so that going
+ * from a day to a month, or back, only changes their visibility: a day's routes (bold, over a casing) are shown for a day and for a trip, a
+ * period's (faint) for a period, and the list of trips shows no routes at all. The dots, their labels and the pins are not hidden by any
+ * view; the source of the ones that a view does not draw is empty. `dark` is for the text on the map, which is dark on a light map and
+ * light on a dark one.
  */
 export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[] {
   const shown = (...shownIn: RouteView[]): "visible" | "none" => (shownIn.includes(view) ? "visible" : "none");
@@ -518,11 +533,22 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       paint: labelPaint,
     },
     {
+      // The house on the pin of home, where its number would be: white, as the numbers are (an SDF image, `house`, takes the colour of the layer).
+      // Placed before the names, like the numbers, and for the same reason it is never left out: the timeline marks home, so the map does.
+      id: LAYER_IDS.stopHome,
+      type: "symbol",
+      source: SOURCE_IDS.stops,
+      filter: IS_HOME,
+      layout: { "icon-image": HOME_IMAGE, "icon-allow-overlap": true },
+      paint: { "icon-color": WHITE },
+    },
+    {
       // The last layer, which MapLibre places first: no name or label hides a number. And no number is left out for another one
-      // being near: the timeline shows every number, so the map does.
+      // being near: the timeline shows every number, so the map does. Home has none: it has a house, in the layer under this.
       id: LAYER_IDS.stopNumbers,
       type: "symbol",
       source: SOURCE_IDS.stops,
+      filter: IS_NOT_HOME,
       layout: {
         "text-field": ["get", "label"],
         "text-font": BOLD_FONT,

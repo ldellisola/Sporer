@@ -50,6 +50,11 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The house of home is drawn in the pin, in its white, and centred in it. */
+.pin svg {
+  display: block;
+}
+
 /* A stay with no number (it is at no place) and a gap: a ring where a pin would be. */
 .dot {
   box-sizing: border-box;

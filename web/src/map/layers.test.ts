@@ -40,8 +40,8 @@ function place(id: number, name: string | null, lon: number, lat: number, city: 
   return { id, name, city, country: null, lat, lon };
 }
 
-function stay(id: number, at: PlaceRef | null): StaySegment {
-  return { id, kind: "stay", ...WHEN, place: at, home: false };
+function stay(id: number, at: PlaceRef | null, home = false): StaySegment {
+  return { id, kind: "stay", ...WHEN, place: at, home };
 }
 
 function move(id: number, mode: MoveSegment["mode"], geometry: LonLat[]): MoveSegment {
@@ -116,6 +116,42 @@ describe("dayGeoJson", () => {
     expect(stops.features.map((feature) => [feature.properties.label, feature.properties.order, feature.properties.id])).toEqual([
       ["1 · 3 · 4", 1, 1], // in the order of the day, at the first of its stays: the stay at no place (4) took no number
       ["2 · 5", 2, 2],
+    ]);
+  });
+
+  // Plan 3: home is drawn with a house in place of its number, and the numbers are those of the other stops (refines P2-R16 and P2-R20).
+  test("dayGeoJson_marks_home_stops_and_never_merges_them_into_numbers", () => {
+    const { stops } = dayGeoJson(
+      day(
+        stay(10, HOME, true), // the day starts at home...
+        move(11, "walk", [[10.0, 59.0], [10.05, 59.05]]),
+        stay(12, CAFE),
+        move(13, "drive", [[10.1, 59.1], [10.2, 59.2]]),
+        stay(14, OFFICE),
+        move(15, "drive", [[10.2, 59.2], [10.0, 59.0]]),
+        stay(16, HOME, true), // ...and ends there
+      ),
+    );
+
+    expect(stops.features).toEqual([
+      // One pin for home, in the order of the day: a house (the layers draw it where `home` is true) and no number, so that its label is empty.
+      { type: "Feature", properties: { order: 0, label: "", name: "Home", id: 10, placeId: 1, home: true }, geometry: { type: "Point", coordinates: [10.0, 59.0] } },
+      // The others are as they are: the numbers count them alone, from 1.
+      { type: "Feature", properties: { order: 1, label: "1", name: "Café", id: 12, placeId: 2 }, geometry: { type: "Point", coordinates: [10.1, 59.1] } },
+      { type: "Feature", properties: { order: 2, label: "2", name: null, id: 14, placeId: 3 }, geometry: { type: "Point", coordinates: [10.2, 59.2] } },
+    ]);
+    expect(stops.features[1]?.properties).not.toHaveProperty("home"); // a stop that is not home says nothing of it
+  });
+
+  test("dayGeoJson_draws_a_day_spent_at_home_as_one_house_and_a_home_in_the_middle_of_the_day_where_it_is", () => {
+    const { stops } = dayGeoJson(day(stay(1, HOME, true), stay(2, HOME, true), stay(3, HOME, true)));
+    expect(stops.features.map((feature) => [feature.properties.home, feature.properties.label, feature.properties.id])).toEqual([[true, "", 1]]);
+
+    const mid = dayGeoJson(day(stay(1, CAFE), stay(2, HOME, true), stay(3, OFFICE), stay(4, CAFE)));
+    expect(mid.stops.features.map((feature) => [feature.properties.home ?? false, feature.properties.label])).toEqual([
+      [false, "1 · 3"], // the second stay at the café is the third that has a number
+      [true, ""],
+      [false, "2"],
     ]);
   });
 
@@ -201,6 +237,23 @@ describe("stopOrders", () => {
     expect([...orders]).toEqual([[10, 1], [14, 2], [15, 3]]);
   });
 
+  test("stopOrders_skips_home_stays", () => {
+    const orders = stopOrders(
+      day(
+        stay(10, HOME, true),
+        move(11, "walk", [[10, 59], [10.1, 59.1]]),
+        stay(12, CAFE),
+        stay(13, null),
+        stay(14, OFFICE),
+        stay(15, HOME, true), // home again: no number either
+      ),
+    );
+
+    expect([...orders]).toEqual([[12, 1], [14, 2]]); // home has no number, and the others are counted from 1
+    expect(orders.has(10)).toBe(false);
+    expect(orders.has(15)).toBe(false);
+  });
+
   test("stopOrders_are_the_numbers_on_the_pins", () => {
     // The timeline reads its numbers from here and the pins are labelled from here: they cannot disagree (ruling P2-R16).
     const stays = [stay(1, HOME), stay(2, null), stay(3, CAFE), stay(4, HOME), stay(5, OFFICE), stay(6, CAFE)];
@@ -214,6 +267,15 @@ describe("stopOrders", () => {
     }
     expect(stops.features.map((feature) => feature.properties.label)).toEqual([...byPlace.values()].map((numbers) => numbers.join(" · ")));
     expect(orders.has(2)).toBe(false);
+  });
+
+  test("stopOrders_are_the_numbers_on_the_pins_with_a_home_among_the_stays", () => {
+    const stays = [stay(1, HOME, true), stay(2, CAFE), stay(3, OFFICE), stay(4, CAFE), stay(5, HOME, true)];
+    const orders = stopOrders(day(...stays));
+    const { stops } = dayGeoJson(day(...stays));
+
+    expect(stops.features.map((feature) => feature.properties.label)).toEqual(["", "1 · 3", "2"]); // the house has none, the café's are 1 and 3
+    expect([...orders.values()]).toEqual([1, 2, 3]);
   });
 
   test("stopOrders_of_an_empty_day_are_none", () => {
@@ -792,6 +854,41 @@ describe("layerSpecs", () => {
     // No number is left out for another one being near: the timeline shows them all, so does the map.
     expect(layout(numbers)["text-allow-overlap"]).toBe(true);
     expect((numbers as { source: string }).source).toBe(SOURCE_IDS.stops);
+  });
+
+  test("layerSpecs_home_icon_layer_and_numbers_filter", () => {
+    const house = find("day", LAYER_IDS.stopHome);
+    const numbers = find("day", LAYER_IDS.stopNumbers);
+    const drawn = (spec: object, properties: Record<string, unknown>) => evaluate((spec as { filter?: unknown }).filter, properties);
+
+    // The house is a white icon on the pin, drawn from the image that the map adds (`sporer-home`), for the pins of home and no other.
+    expect(LAYER_IDS.stopHome).toBe("sporer-stop-home");
+    expect(house.type).toBe("symbol");
+    expect((house as { source: string }).source).toBe(SOURCE_IDS.stops);
+    expect(layout(house)["icon-image"]).toBe("sporer-home");
+    expect(paint(house)["icon-color"]).toBe("#FFFFFF"); // an SDF image takes the colour of the layer
+    expect(layout(house)["icon-allow-overlap"]).toBe(true); // as the numbers: no name is the reason for a pin to lose what it shows
+    expect((house as { filter?: unknown }).filter).toEqual(["==", ["get", "home"], true]);
+    expect(drawn(house, { home: true, label: "" })).toBe(true);
+    expect(drawn(house, { label: "1" })).toBe(false); // a pin that says nothing of home is not home
+    expect(drawn(house, { home: false, label: "1" })).toBe(false);
+
+    // The numbers are the other pins': a house has no number over it.
+    expect((numbers as { filter?: unknown }).filter).toEqual(["!=", ["get", "home"], true]);
+    expect(drawn(numbers, { home: true, label: "" })).toBe(false);
+    expect(drawn(numbers, { label: "1" })).toBe(true);
+    expect(drawn(numbers, { home: false, label: "1 · 4" })).toBe(true);
+  });
+
+  test("layerSpecs_draw_the_house_over_the_pins_and_their_names_and_keep_the_numbers_last", () => {
+    const ids = layerSpecs("day", false).map((spec) => spec.id);
+
+    expect(ids.indexOf(LAYER_IDS.stops)).toBeLessThan(ids.indexOf(LAYER_IDS.stopHome)); // on the pin
+    expect(ids.indexOf(LAYER_IDS.stopNames)).toBeLessThan(ids.indexOf(LAYER_IDS.stopHome)); // placed before the names, which are never the reason for it to go
+    expect(ids.at(-1)).toBe(LAYER_IDS.stopNumbers);
+    for (const view of ["day", "range", "trips", "trip"] as const) {
+      expect(layout(find(view, LAYER_IDS.stopHome))["visibility"] ?? "visible", view).toBe("visible"); // like the pins: the source of a view with none is empty
+    }
   });
 
   test("layerSpecs_grow_a_stop_pin_with_its_label_so_that_the_white_numbers_stay_inside_it", () => {
