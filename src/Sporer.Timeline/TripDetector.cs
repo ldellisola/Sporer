@@ -32,6 +32,9 @@ public static class TripDetector
     /// night after it is the one it returned to. The stay searches look only between those nights, so their windows
     /// never overlap from one trip to the next and the whole run reads each stay a bounded number of times. With no home
     /// night on a side there is nothing to search between: the trip starts at its first away night, or is ongoing.
+    /// The leaving is measured from the home in effect on the first away night, and the return from the home in effect on
+    /// the night after the trip, which is another home when the person moved while away (a new home is backdated to the
+    /// night after it, so the last away night is still away from the old one).
     /// </remarks>
     public static IReadOnlyList<DetectedTrip> Detect(
         IReadOnlyList<Night> nights,
@@ -49,7 +52,8 @@ public static class TripDetector
             // An unknown night is bridged inside a run and ignored outside one.
             if (night.Position is not { } position) continue;
 
-            if (HomePositionOn(night.Date, homes, placePositions) is { } home && FarFrom(position, home, options))
+            var homeThatNight = HomePositionOn(night.Date, homes, placePositions);
+            if (homeThatNight is { } home && FarFrom(position, home, options))
             {
                 run = run is null
                     ? new Run(night, home, night, home, lastHomeNight)
@@ -59,12 +63,12 @@ public static class TripDetector
 
             // A night at home, or with no home to be away from, ends the run it finds. It is also the night the next run
             // leaves from.
-            if (run is not null) trips.Add(TripOf(run, night, stays, options));
+            if (run is not null) trips.Add(TripOf(run, night, homeThatNight, stays, options));
             run = null;
             lastHomeNight = night;
         }
 
-        if (run is not null) trips.Add(TripOf(run, null, stays, options));
+        if (run is not null) trips.Add(TripOf(run, null, null, stays, options));
         return trips;
     }
 
@@ -74,7 +78,14 @@ public static class TripDetector
     /// </summary>
     private sealed record Run(Night First, GeoPoint FirstHome, Night Last, GeoPoint LastHome, Night? Before);
 
-    private static DetectedTrip TripOf(Run run, Night? after, IReadOnlyList<StayPosition> stays, DetectionOptions options)
+    /// <summary>
+    /// The trip of <paramref name="run"/>. <paramref name="after"/> is the night that ended it, with <paramref name="homeAfter"/>
+    /// the home in effect on it: the return is measured from there, and not from the home of the last away night, because a
+    /// person who moved while away comes back to the new home, which is in effect from the night after the trip. A night after
+    /// with no home in effect (or no home of known position) leaves the return to be measured from the home of the last away night.
+    /// </summary>
+    private static DetectedTrip TripOf(
+        Run run, Night? after, GeoPoint? homeAfter, IReadOnlyList<StayPosition> stays, DetectionOptions options)
     {
         var before = run.Before;
 
@@ -86,7 +97,7 @@ public static class TripDetector
         // Returns when the first stay near home begins; failing that, when the home night after was read. Null if none.
         DateTime? endUtc = after is null
             ? null
-            : FirstStartNearHome(stays, run.Last.InstantUtc, after.InstantUtc, run.LastHome, options) ?? after.InstantUtc;
+            : FirstStartNearHome(stays, run.Last.InstantUtc, after.InstantUtc, homeAfter ?? run.LastHome, options) ?? after.InstantUtc;
 
         var startZone = before?.Zone ?? run.First.Zone;
         var endZone = after?.Zone ?? run.Last.Zone;

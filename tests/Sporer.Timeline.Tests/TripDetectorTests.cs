@@ -4,12 +4,13 @@ namespace Sporer.Timeline.Tests;
 
 public class TripDetectorTests
 {
-    private const long OsloHome = 1, TownHome = 2, LisbonHome = 3, TokyoHome = 4;
+    private const long OsloHome = 1, TownHome = 2, LisbonHome = 3, TokyoHome = 4, FarHome = 5;
 
     private static readonly GeoPoint Oslo = Spots.Home;
     private static readonly GeoPoint Cafe = Spots.Cafe;                         // about 1 km from home
     private static readonly GeoPoint Layover = Geo.Offset(Oslo, 100_000, 0);    // 100 km from home, same zone
     private static readonly GeoPoint Town = Geo.Offset(Oslo, 60_000, 0);        // 60 km from home, same zone
+    private static readonly GeoPoint Far = Geo.Offset(Oslo, 300_000, 0);        // 300 km from home, same zone: a new home
     private static readonly GeoPoint Lisbon = Spots.Lisbon;
     private static readonly GeoPoint Tokyo = Spots.Tokyo;
     private static readonly GeoPoint? Unknown = null;
@@ -21,6 +22,7 @@ public class TripDetectorTests
     {
         [OsloHome] = Oslo,
         [TownHome] = Town,
+        [FarHome] = Far,
         [LisbonHome] = Lisbon,
         [TokyoHome] = Tokyo,
     };
@@ -368,6 +370,49 @@ public class TripDetectorTests
         var trip = Assert.Single(Detect(nights, stays, homes));
 
         Assert.Equal((n2.AddHours(-6), n5.AddHours(5)), (trip.StartUtc, trip.EndUtc));
+    }
+
+    [Fact]
+    public void TripDetector_returns_to_the_new_home_of_the_night_after_the_trip()
+    {
+        // The person moves while away: the nights in Lisbon (2 and 3) are away from Oslo, and the home is backdated to the
+        // night after the trip, night 4, at Far, 300 km from Oslo. The return is the arrival at Far, not 03:00 the next morning.
+        var homes = new[]
+        {
+            new HomePeriod(OsloHome, On(1), On(3)),
+            new HomePeriod(FarHome, On(4), null),
+        };
+        var stays = new[]
+        {
+            Stay(Utc(6, 2, 5), Utc(6, 2, 9), Oslo),            // the leaving stay
+            Stay(Utc(6, 2, 12), Utc(6, 4, 8), Lisbon),
+            Stay(Utc(6, 4, 15), Utc(6, 5, 6), Far),            // the arrival at the new home
+        };
+
+        var trips = Detect(Nights((Oslo, 1), (Lisbon, 2), (Far, 1)), stays, homes);
+
+        Assert.Equal(
+            [new DetectedTrip(On(2), On(3), 2, Utc(6, 2, 9), Utc(6, 4, 15), "Europe/Oslo", "Europe/Oslo",
+                new DateOnly(2026, 6, 2), new DateOnly(2026, 6, 4))],
+            trips);
+    }
+
+    [Fact]
+    public void TripDetector_returns_to_the_old_home_when_no_home_covers_the_night_after_the_trip()
+    {
+        // The home period ends with night 3 and none follows, so the night after the trip has no home in effect to measure
+        // the return from: it is the home of the last away night, as before, and the stay at Oslo is the return.
+        var homes = new[] { new HomePeriod(OsloHome, On(1), On(3)) };
+        var stays = new[]
+        {
+            Stay(Utc(6, 2, 5), Utc(6, 2, 9), Oslo),
+            Stay(Utc(6, 2, 12), Utc(6, 4, 8), Lisbon),
+            Stay(Utc(6, 4, 15), Utc(6, 5, 6), Oslo),
+        };
+
+        var trip = Assert.Single(Detect(Nights((Oslo, 1), (Lisbon, 2), (Oslo, 1)), stays, homes));
+
+        Assert.Equal(Utc(6, 4, 15), trip.EndUtc);
     }
 
     [Fact]
