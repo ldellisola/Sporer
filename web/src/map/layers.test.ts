@@ -290,6 +290,43 @@ describe("rangeGeoJson", () => {
     expect(places.features[0]?.properties.radius).toBe(4);
   });
 
+  // A label goes to the inside of the drawing (P3-R20): a dot east of the middle of it says "east" and has its text on its left, a west one "west".
+  // The middle is the middle, in longitude, of what the map is brought to, the routes and the dots together.
+  test("rangeGeoJson_says_for_each_label_which_side_of_the_middle_of_the_drawing_its_dot_is_on", () => {
+    const places = [rangePlace(1, "West", 300), rangePlace(2, "Just west", 200), rangePlace(3, "East", 100), rangePlace(4, null, 50)].map((p, i) => ({ ...p, lon: [10.1, 10.5, 10.9, 10.95][i]! }));
+
+    const { places: dots } = rangeGeoJson(range(places));
+
+    expect(dots.features.map((feature) => feature.properties.side)).toEqual(["west", "west", "east", undefined]); // 10.1 to 10.95: the middle is 10.525
+    expect(dots.features[3]?.properties).not.toHaveProperty("side"); // a dot with no label has no text to put anywhere
+  });
+
+  test("rangeGeoJson_takes_the_middle_of_the_drawing_from_the_routes_too", () => {
+    const places = [rangePlace(1, "A", 300), rangePlace(2, "B", 200)].map((p, i) => ({ ...p, lon: [10.1, 10.9][i]! }));
+    const moves = [{ id: 7, mode: "drive" as const, start: WHEN.start, end: WHEN.end, geometry: [[10, 59], [13, 59.1]] as LonLat[] }]; // out to 13
+
+    const { places: dots } = rangeGeoJson(range(places, moves));
+
+    expect(dots.features.map((feature) => feature.properties.side)).toEqual(["west", "west"]); // the middle is 11.5, and both are at its west
+  });
+
+  test("rangeGeoJson_puts_a_dot_in_the_middle_of_a_drawing_that_is_one_dot_on_the_west", () => {
+    const { places: dots } = rangeGeoJson(range([rangePlace(1, "Home", 100)]));
+
+    expect(dots.features[0]?.properties.side).toBe("west"); // it has the free width to itself, and its text goes to its right as it did
+  });
+
+  test("rangeGeoJson_tells_the_sides_across_the_antimeridian", () => {
+    // Tokyo to Los Angeles: the flight goes on past 180 and the dot of LA is at -118.4, so that the drawing is the stretch from 139.7 east to 241.6.
+    const tokyo = { ...rangePlace(1, "Tokyo", 200), lon: 139.7 };
+    const la = { ...rangePlace(2, "Los Angeles", 100), lon: -118.4 };
+    const flight = { id: 3, mode: "flight" as const, start: WHEN.start, end: WHEN.end, geometry: [[139.7, 35.7], [190, 50], [241.6, 33.9]] as LonLat[] };
+
+    const { places: dots } = rangeGeoJson(range([tokyo, la], [flight]));
+
+    expect(dots.features.map((feature) => feature.properties.side)).toEqual(["west", "east"]); // not Tokyo at the east of LA, as the numbers would have it
+  });
+
   test("rangeGeoJson_tags_moves_with_id_and_mode", () => {
     const { routes } = rangeGeoJson(
       range([], [
@@ -378,6 +415,14 @@ describe("tripsGeoJson", () => {
     expect(radius(3)).toBeCloseTo(4 + 12 * Math.sqrt(3 / 9), 10);
     expect(radius(2)).toBeCloseTo(4 + 12 * Math.sqrt(2 / 9), 10);
     expect(radius(1)).toBeCloseTo(4 + 12 * Math.sqrt(1 / 9), 10);
+  });
+
+  test("tripsGeoJson_says_for_each_label_which_side_of_the_middle_of_the_cities_its_dot_is_on", () => {
+    const { places } = tripsGeoJson(TWO_TRIPS);
+
+    // From Iceland (-18.6) to Vienna (16.37): the middle is -1.115, so Lisbon, Porto and Madrid are at its west and Paris and Rome at its east.
+    // Vienna and Iceland have no label (they are not among the five with the most nights), and so no side.
+    expect(places.features.map((feature) => feature.properties.side)).toEqual(["west", "west", "west", "east", "east", undefined, undefined]);
   });
 
   test("tripsGeoJson_makes_dots_that_are_no_place_so_that_a_tap_on_one_opens_nothing", () => {
@@ -472,6 +517,19 @@ describe("tripGeoJson", () => {
     ]);
   });
 
+  test("tripGeoJson_says_for_each_label_which_side_of_the_middle_of_the_trip_its_dot_is_on_the_routes_included", () => {
+    const cities = [city("Oslo", 1, 10.75, 59.91), city("Lisbon", 3, -9.14, 38.72), city("Sintra", 1, -9.38, 38.8)];
+
+    const { places } = tripGeoJson(trip([], cities));
+
+    // The cities alone run from -9.38 to 10.75, so that the middle is 0.685: Oslo is at its east, the two near Lisbon at its west.
+    expect(places.features.map((feature) => feature.properties.side)).toEqual(["east", "west", "west"]);
+
+    // A move out past them moves the middle: it is the middle of everything that the map is brought to.
+    const far = tripGeoJson(trip([move(1, "flight", [[10.75, 59.91], [40, 40]])], cities));
+    expect(far.places.features.map((feature) => feature.properties.side)).toEqual(["west", "west", "west"]); // from -9.38 to 40: the middle is 15.31
+  });
+
   test("tripGeoJson_words_a_city_as_the_map_of_the_trips_does", () => {
     // The same words in both: a city that is on the list's map as "Lisbon · 4 nights" is that on its trip's.
     const [lisbon] = [city("Lisbon", 4, -9.14, 38.72)];
@@ -527,7 +585,7 @@ describe("tripGeoJson", () => {
 
     const { places } = tripGeoJson(trip([], [city("Lisbon", 0, -9.14, 38.72)]));
 
-    expect(places.features[0]?.properties).toEqual({ id: 0, radius: 4, label: "Lisbon · 0 nights" });
+    expect(places.features[0]?.properties).toEqual({ id: 0, radius: 4, label: "Lisbon · 0 nights", side: "west" });
   });
 });
 
@@ -559,7 +617,7 @@ describe("heatGeoJson", () => {
   });
 });
 
-/** Evaluates a MapLibre expression for the properties of one feature, for the few operators the pin radius is made of; any other throws. */
+/** Evaluates a MapLibre expression for the properties of one feature, for the few operators the pin radius and the filters are made of; any other throws. */
 function evaluate(expression: unknown, properties: Record<string, unknown>): unknown {
   if (!Array.isArray(expression)) return expression;
   const [operator, ...operands] = expression as [string, ...unknown[]];
@@ -579,6 +637,14 @@ function evaluate(expression: unknown, properties: Record<string, unknown>): unk
       return numbers[0]! / numbers[1]!;
     case "max":
       return Math.max(...numbers);
+    case "has":
+      return Object.hasOwn(properties, values[0] as string);
+    case "==":
+      return values[0] === values[1];
+    case "!=":
+      return values[0] !== values[1];
+    case "all":
+      return values.every(Boolean);
     default:
       throw new Error(`The test cannot evaluate "${operator}"`);
   }
@@ -665,7 +731,7 @@ describe("layerSpecs", () => {
     const visibility = (id: string) => layout(specs.find((spec) => spec.id === id) ?? {})["visibility"] ?? "visible"; // a layer that says none is shown
 
     for (const id of ROUTE_LAYERS) expect(visibility(id), id).toBe("none"); // the list of trips draws no line between its cities
-    for (const id of [LAYER_IDS.places, LAYER_IDS.placeLabels]) expect(visibility(id), id).toBe("visible");
+    for (const id of [LAYER_IDS.places, LAYER_IDS.placeLabelsWest, LAYER_IDS.placeLabelsEast]) expect(visibility(id), id).toBe("visible");
   });
 
   test("layerSpecs_trip_shows_bold_routes_and_city_dots", () => {
@@ -674,7 +740,7 @@ describe("layerSpecs", () => {
 
     for (const id of [LAYER_IDS.routeCasing, LAYER_IDS.dayRoute, LAYER_IDS.dayFlight]) expect(visibility(id), id).toBe("visible"); // bold, as a day's
     for (const id of [LAYER_IDS.rangeRoute, LAYER_IDS.rangeFlight]) expect(visibility(id), id).toBe("none");
-    for (const id of [LAYER_IDS.places, LAYER_IDS.placeLabels]) expect(visibility(id), id).toBe("visible");
+    for (const id of [LAYER_IDS.places, LAYER_IDS.placeLabelsWest, LAYER_IDS.placeLabelsEast]) expect(visibility(id), id).toBe("visible");
     // The bold routes of a trip are the day's, to the layer: the same width, casing and dashes.
     expect(paint(find("trip", LAYER_IDS.dayRoute))["line-width"]).toBe(4);
     expect(paint(find("trip", LAYER_IDS.routeCasing))["line-color"]).toBe("#FFFFFF");
@@ -748,14 +814,54 @@ describe("layerSpecs", () => {
 
   test("layerSpecs_size_place_dots_by_their_radius_and_label_the_top_ones", () => {
     const dots = find("range", LAYER_IDS.places);
-    const labels = find("range", LAYER_IDS.placeLabels);
 
     expect(dots.type).toBe("circle");
     expect(paint(dots)["circle-radius"]).toEqual(["get", "radius"]);
     expect(paint(dots)["circle-color"]).toBe(PIN_COLOR);
-    expect(labels.type).toBe("symbol");
-    expect(layout(labels)["text-field"]).toEqual(["get", "label"]);
-    expect((labels as { filter?: unknown }).filter).toEqual(["has", "label"]);
+    for (const id of [LAYER_IDS.placeLabelsWest, LAYER_IDS.placeLabelsEast]) {
+      const labels = find("range", id);
+      expect(labels.type, id).toBe("symbol");
+      expect(layout(labels)["text-field"], id).toEqual(["get", "label"]);
+      expect((labels as { source: string }).source, id).toBe(SOURCE_IDS.places);
+    }
+  });
+
+  // A label points toward the inside of the drawing (P3-R20): two layers of the same labels, each for the dots of one side of it, each with its own
+  // order of the places a label may be put at, the inward one first. MapLibre moves a label that collides to the next of them, and drops it when
+  // none is free, and the dot stays.
+  describe("the labels of the dots", () => {
+    const west = () => find("trips", LAYER_IDS.placeLabelsWest);
+    const east = () => find("trips", LAYER_IDS.placeLabelsEast);
+    const labelledBy = (properties: Record<string, unknown>) =>
+      [west(), east()].filter((spec) => evaluate((spec as { filter?: unknown }).filter, properties) === true).map((spec) => spec.id);
+
+    test("layerSpecs_put_the_text_of_an_east_dot_on_its_left_and_the_text_of_a_west_dot_on_its_right_and_the_corners_of_that_side_after_that", () => {
+      // The anchor is the side of the text that is next to the dot: "left" is a text on the right of the dot, "top-left" one below it on the right. None
+      // is at the outer side or centred above or below the dot, where the edge of the screen would cut a label off at the outermost dots.
+      expect(layout(west())["text-variable-anchor"]).toEqual(["left", "top-left", "bottom-left"]);
+      expect(layout(east())["text-variable-anchor"]).toEqual(["right", "top-right", "bottom-right"]);
+    });
+
+    test("layerSpecs_label_each_labelled_dot_in_the_one_layer_of_its_side_and_no_dot_that_has_no_label", () => {
+      expect(labelledBy({ id: 1, radius: 8, label: "Lisbon", side: "west" })).toEqual([LAYER_IDS.placeLabelsWest]);
+      expect(labelledBy({ id: 1, radius: 8, label: "Copenhagen", side: "east" })).toEqual([LAYER_IDS.placeLabelsEast]);
+      expect(labelledBy({ id: 1, radius: 8 })).toEqual([]);
+      expect(labelledBy({ id: 1, radius: 8, side: "east" })).toEqual([]);
+      // A labelled dot that says no side is one of the west: its text goes to its right, as every label did.
+      expect(labelledBy({ id: 1, radius: 8, label: "Lisbon" })).toEqual([LAYER_IDS.placeLabelsWest]);
+    });
+
+    test("layerSpecs_set_both_layers_of_labels_alike_but_for_the_side_the_text_goes_to", () => {
+      const { "text-variable-anchor": _w, ...restOfWest } = layout(west());
+      const { "text-variable-anchor": _e, ...restOfEast } = layout(east());
+
+      expect(restOfEast).toEqual(restOfWest); // the same text, size, offset from the dot (by its radius) and justification
+      expect(layout(east())["text-radial-offset"]).toEqual(["+", ["/", ["get", "radius"], 12], 0.3]); // clear of the dot, which is as big as its radius
+      expect(layout(east())["text-justify"]).toBe("auto"); // aligned toward the dot, as the text sits to either side of it
+      expect(paint(east())).toEqual(paint(west()));
+      expect(west().type).toBe("symbol");
+      expect(east().type).toBe("symbol");
+    });
   });
 
   test("layerSpecs_include_a_heatmap_driven_by_the_weight", () => {

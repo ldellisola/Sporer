@@ -1,7 +1,13 @@
+/*
+ * `clip` and not `hidden`: a box that is `overflow: hidden` is no scroll area for a hand but still is one for a script, and focusing or
+ * scrolling to something in it scrolls it. The bottom sheet is as tall as its highest point and moved down by what is not shown, so a card
+ * well below the screen, or one in a sheet that is on its way up, made the whole shell scroll under the map and the bar, which no longer sat
+ * where they were measured. A box that is `clip`ped is no scroll container at all, and has nothing to scroll.
+ */
 .shell {
   position: fixed;
   inset: 0;
-  overflow: hidden;
+  overflow: clip;
   background: var(--surface);
   color: var(--ink);
   font: 16px/1.4 var(--font);

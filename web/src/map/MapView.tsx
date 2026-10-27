@@ -105,8 +105,8 @@ export interface MapViewProps {
    */
   home?: readonly Feature<Geometry, unknown>[] | null;
   /**
-   * What covers the map. The controls are set in by it, and what is fitted is fitted into the rest, with more air at the left and at the
-   * right while a dot of the drawing has a label (see `LABEL_AIR_PX`): the air is for the camera and is not added to the controls' insets.
+   * What covers the map. The controls are set in by it, and what is fitted is fitted into the rest, with a little more air at the left and at
+   * the right while a dot of the drawing has a label (see `LABEL_AIR_PX`): the air is for the camera and is not added to the controls' insets.
    */
   padding?: MapPadding;
   /** The heat button, a button of the map's own like Recenter. Given only where there is a period to show the heat of: without it there is no button. */
@@ -265,18 +265,21 @@ function paddingVariables(padding: MapPadding): CSSProperties {
 }
 
 /**
- * The air a fit leaves at the left and at the right for the labels of the dots, in pixels: about the width of "Lisbon · 4 nights" at the
- * size of a label, less what the label's own offset takes. MapLibre puts a label that does not fit at one side of its dot at another, but
- * it never moves one back inside the screen, so the dot that the fit puts at an edge would lose its name off the screen.
+ * The air a fit leaves at the left and at the right while the drawing has labelled dots, in pixels: what the dot at an edge of the fit takes
+ * beyond its position, which is its radius (16 px at the most) and its outline. The labels point toward the inside of the drawing (`withSides`
+ * of `layers`), so none of them needs room beyond the outermost dots. MapLibre never moves a label back onto the screen once it is beyond its
+ * edge, which is what a label that pointed outward at an edge would have needed the width of the label in air for: so much that a phone would
+ * have no room left to fit anything into.
  */
-const LABEL_AIR_PX = 72;
+const LABEL_AIR_PX = 24;
 
-/** Whether any dot of the drawing carries a label (the places that the period's, the trips' and a trip's dots name). */
+/** Whether any dot of the drawing carries a label (the places that the period's, the trips' and a trip's dots name): they are what the air is for. */
 const hasLabels = (data: MapData): boolean => data.places?.features.some((dot) => dot.properties.label !== undefined) ?? false;
 
 /**
- * The padding that a fit is made with: what covers the map, and for a drawing with labelled dots some air at each side for them. The
- * air is for the camera alone: the controls are set in by the padding that covers the map (`paddingVariables`), which does not change.
+ * The padding that a fit is made with: what covers the map, and for a drawing with labelled dots some air at each side, for the outermost
+ * dots to lie in whole. The air is for the camera alone: the controls are set in by the padding that covers the map (`paddingVariables`),
+ * which does not change.
  */
 function fitPadding(padding: MapPadding, data: MapData): MapPadding {
   return hasLabels(data) ? { ...padding, left: padding.left + LABEL_AIR_PX, right: padding.right + LABEL_AIR_PX } : padding;

@@ -1231,6 +1231,7 @@ describe("App trips", () => {
     expect(mapProps().fitTo).toBeNull();
     expect(mapProps().home).toBeNull();
     expect(periodRequests(paths)).toEqual([]); // a trip that is gone has no dates to ask the heat of
+    expect(mapProps().heatToggle).toBeUndefined(); // and no button for the heat of what does not exist (P3-R22)
 
     fireEvent.click(within(details()).getByRole("button", { name: "See all trips" }));
 

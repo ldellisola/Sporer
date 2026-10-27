@@ -1,10 +1,10 @@
 import { useId } from "react";
-import { tripOf, useTrip } from "../api/queries";
+import { shownOf, useTrip } from "../api/queries";
 import type { TripDay, TripResponse } from "../api/types";
 import { navigate } from "../app/router";
 import { shortDayLabel } from "../time/dates";
 import { formatCount, formatDistance } from "../time/format";
-import { Chip, Chips } from "./Chips";
+import { Chip, Chips, ONGOING } from "./Chips";
 import rows from "./Rows.module.css";
 import { Empty, ErrorState, Loading } from "./States";
 import styles from "./TripPanel.module.css";
@@ -14,9 +14,6 @@ export interface TripPanelProps {
   /** The trip the address asks for. A panel is made for one trip: another trip is another panel (the app keys it by this). */
   id: string;
 }
-
-/** What the chip says of the trip that has not come home yet, as the cards of the list say it. */
-const ONGOING = "Ongoing";
 
 /**
  * A day opens its Day view. The button is named by what the row says, in the order it says it: "Open Sat 12 Sep, Oslo → Lisbon, Oslo Airport,
@@ -99,7 +96,7 @@ function Trip({ trip }: { trip: TripResponse }) {
  */
 export function TripPanel({ id }: TripPanelProps) {
   const trip = useTrip(id);
-  const { gone, shown: found } = tripOf(trip);
+  const { gone, shown: found } = shownOf(trip);
   const kept = useKeptData(found, !gone);
   const shown = kept?.id === id ? kept : undefined;
   return (

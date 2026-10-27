@@ -134,21 +134,11 @@ export const useHeat = (from: string | null, to: string | null, enabled: boolean
 export const usePlace = (id: number | null) => useQuery(placeQueryOptions(id));
 
 /**
- * What a place query shows, for the panel and for the map alike so that they never disagree: `shown` is its place, and `gone` says the
- * place no longer exists (a 404, which asking again cannot change). A place that is gone is shown as none, whatever the query still holds
- * of it from before; under any other failure the place stays, and is what is shown under the error.
+ * What a query of a thing that can go (a place, a trip) shows, for the panel, the bar and the map alike so that they never disagree: `shown` is
+ * the thing, and `gone` says it no longer exists (a 404, which asking again cannot change). A thing that is gone is shown as none, whatever the
+ * query still holds of it from before; under any other failure it stays, and is what is shown under the error. The rule is here and nowhere else.
  */
-export function placeOf(query: { data?: PlaceResponse; error: Error | null }): { gone: boolean; shown: PlaceResponse | undefined } {
-  const gone = isNotFound(query.error);
-  return { gone, shown: gone ? undefined : query.data };
-}
-
-/**
- * What a trip query shows, for the bar, the panel and the map alike so that they never disagree (as `placeOf` does for a place): `shown` is
- * its trip, and `gone` says the trip no longer exists (a 404, which asking again cannot change). A trip that is gone is shown as none,
- * whatever the query still holds of it from before; under any other failure the trip stays, and is what is shown under the error.
- */
-export function tripOf(query: { data?: TripResponse; error: Error | null }): { gone: boolean; shown: TripResponse | undefined } {
+export function shownOf<T>(query: { data?: T; error: Error | null }): { gone: boolean; shown: T | undefined } {
   const gone = isNotFound(query.error);
   return { gone, shown: gone ? undefined : query.data };
 }

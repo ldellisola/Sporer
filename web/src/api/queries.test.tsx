@@ -6,10 +6,10 @@ import { ApiError } from "./client";
 import {
   createQueryClient,
   dayQueryOptions,
-  placeOf,
   prefetchNeighbours,
   rangeQueryOptions,
   refreshInterval,
+  shownOf,
   tripNeighbours,
   tripQueryOptions,
   tripsQueryOptions,
@@ -460,28 +460,45 @@ describe("query hooks", () => {
     expect((result.current.error as ApiError).status).toBe(404);
   });
 
-  // The panel and the map both show a place by this, so that a place that is gone is gone for both.
-  describe("placeOf", () => {
+  // The panels, the bars and the maps of a place and of a trip show them by this, so that what is gone is gone for all of them: one rule for what a
+  // 404 does to what a query still holds, whichever the response is.
+  describe("shownOf", () => {
     const PLACE = { id: 7, name: "Home" } as PlaceResponse;
+    const TRIP = trip("2026-09-12");
 
-    test("placeOf_shows_the_place_the_query_has", () => {
-      expect(placeOf({ data: PLACE, error: null })).toEqual({ gone: false, shown: PLACE });
+    test("shownOf_shows_what_the_query_has", () => {
+      expect(shownOf({ data: PLACE, error: null })).toEqual({ gone: false, shown: PLACE });
+      expect(shownOf({ data: TRIP, error: null })).toEqual({ gone: false, shown: TRIP });
     });
 
-    test("placeOf_shows_nothing_while_there_is_nothing_yet", () => {
-      expect(placeOf({ data: undefined, error: null })).toEqual({ gone: false, shown: undefined });
+    test("shownOf_shows_nothing_while_there_is_nothing_yet", () => {
+      expect(shownOf<PlaceResponse>({ data: undefined, error: null })).toEqual({ gone: false, shown: undefined });
+      expect(shownOf<TripResponse>({ data: undefined, error: null })).toEqual({ gone: false, shown: undefined });
     });
 
-    test("placeOf_drops_the_place_the_query_still_holds_when_the_server_says_it_is_gone", () => {
-      // A 404 is for good: what the query kept of the place from before is not shown any more, on the map or in the panel.
-      expect(placeOf({ data: PLACE, error: new ApiError(404, "/api/places/7") })).toEqual({ gone: true, shown: undefined });
-      expect(placeOf({ data: undefined, error: new ApiError(404, "/api/places/7") })).toEqual({ gone: true, shown: undefined });
+    test("shownOf_drops_what_the_query_still_holds_when_the_server_says_it_is_gone", () => {
+      // A 404 is for good: what the query kept from before is not shown any more, on the map or in the panel, of a place or of a trip.
+      expect(shownOf({ data: PLACE, error: new ApiError(404, "/api/places/7") })).toEqual({ gone: true, shown: undefined });
+      expect(shownOf({ data: undefined, error: new ApiError(404, "/api/places/7") })).toEqual({ gone: true, shown: undefined });
+      expect(shownOf({ data: TRIP, error: new ApiError(404, "/api/trips/2026-09-12") })).toEqual({ gone: true, shown: undefined });
     });
 
-    test("placeOf_keeps_the_place_under_any_other_failure", () => {
+    test("shownOf_keeps_what_it_has_under_any_other_failure", () => {
       for (const error of [new ApiError(500, "/api/places/7"), new ApiError(400, "/api/places/7"), new TypeError("Failed to fetch")]) {
-        expect(placeOf({ data: PLACE, error }), String(error)).toEqual({ gone: false, shown: PLACE });
+        expect(shownOf({ data: PLACE, error }), String(error)).toEqual({ gone: false, shown: PLACE });
+        expect(shownOf({ data: TRIP, error }), String(error)).toEqual({ gone: false, shown: TRIP });
       }
+    });
+
+    test("shownOf_takes_what_a_query_of_either_kind_holds", async () => {
+      // The one function is what the hooks of both are given: the types of their data go through it as they are.
+      stubApi(() => json({}, 404));
+      const client = newClient();
+      const place = renderHook(() => shownOf(usePlace(7)), { wrapper: wrapperFor(client) });
+      const aTrip = renderHook(() => shownOf(useTrip("2026-09-12")), { wrapper: wrapperFor(client) });
+
+      await waitFor(() => expect(place.result.current.gone).toBe(true));
+      await waitFor(() => expect(aTrip.result.current.gone).toBe(true));
     });
   });
 

@@ -1,5 +1,5 @@
 import { useId } from "react";
-import { placeOf, usePlace } from "../api/queries";
+import { shownOf, usePlace } from "../api/queries";
 import type { PlaceResponse, PlaceVisit } from "../api/types";
 import { goBack, navigate } from "../app/router";
 import { dateLabel, dateOf } from "../time/dates";
@@ -107,7 +107,7 @@ function Place({ place }: { place: PlaceResponse }) {
  */
 export function PlacePanel({ id }: PlacePanelProps) {
   const place = usePlace(id);
-  const { gone, shown } = placeOf(place);
+  const { gone, shown } = shownOf(place);
   return (
     <>
       <BackButton />

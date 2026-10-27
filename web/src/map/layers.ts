@@ -9,6 +9,7 @@ import type {
   TripsResponse,
 } from "../api/types";
 import { formatCount } from "../time/format";
+import { boundsOf } from "./bounds";
 import type { StyleSpecification } from "./style";
 
 // --- GeoJSON ---
@@ -33,11 +34,14 @@ export type RouteProperties = { id: number; mode: RouteMode };
  * it is not `id`, which is a stay's, and one place for a pin that merges several stays.
  */
 export type StopProperties = { order: number; label: string; name: string | null; id: number; placeId: number };
+/** Which side of the middle of the drawing a dot is on, by longitude: its label is put on the other one, toward the inside of the drawing. */
+export type LabelSide = "west" | "east";
+
 /**
  * `id` is the place, which a tap on its dot opens (0 for a dot that is no place, the city of a trip: a tap on it opens nothing); `radius` is
- * in pixels; `label` is only there for the places that are named on the map.
+ * in pixels; `label` is only there for the places that are named on the map, and so is `side`, which says where the label goes (see `withSides`).
  */
-export type PlaceProperties = { id: number; radius: number; label?: string };
+export type PlaceProperties = { id: number; radius: number; label?: string; side?: LabelSide };
 export type HeatProperties = { weight: number };
 
 export type RouteCollection = FeatureCollection<LineString, RouteProperties>;
@@ -83,6 +87,26 @@ export function stopOrders(day: DayResponse): Map<number, number> {
     if (segment.kind === "stay" && segment.place !== null) orders.set(segment.id, orders.size + 1);
   }
   return orders;
+}
+
+/**
+ * Says for each labelled dot of a drawing which side of its middle the dot is on, so that its label goes toward the inside of it: the map
+ * does not move a label back onto the screen once it has put it beyond the edge, so the outermost dots would lose their names to it, while a
+ * label that points inward has the whole of the drawing to lie in. The middle is that of the longitudes of everything the map is brought to
+ * (the routes and the dots), where the fit puts the middle of what is free; a dot in the middle itself is of the west, and a drawing that is a
+ * single dot has its label at its right, as every label had. The longitudes are on a circle: a drawing across the antimeridian has its middle
+ * halfway between its two ends the short way round. Dots with no label say nothing. It sets `side` on the dots it is given, which the caller has just made.
+ */
+function withSides(routes: RouteCollection, places: PlaceCollection): PlaceCollection {
+  const bounds = boundsOf([...routes.features, ...places.features]);
+  if (bounds === null) return places;
+  const middle = (bounds[0][0] + bounds[1][0]) / 2;
+  for (const dot of places.features) {
+    if (dot.properties.label === undefined) continue;
+    const away = ((((dot.geometry.coordinates[0] - middle + 540) % 360) + 360) % 360) - 180; // from the middle, east positive, within -180 to 180
+    dot.properties.side = away > 0 ? "east" : "west";
+  }
+  return places;
 }
 
 /** The point on the map that is a place: where its pin is, for whatever is to be brought into view. */
@@ -161,7 +185,7 @@ export function rangeGeoJson(range: RangeResponse): { routes: RouteCollection; p
       return point(place.lon, place.lat, label === undefined ? { id: place.id, radius } : { id: place.id, radius, label });
     }),
   };
-  return { routes, places };
+  return { routes, places: withSides(routes, places) };
 }
 
 /** What a city's dot says on the map of the trips and of a trip, in the trips' wording ("Lisbon · 4 nights", "Lisbon · 1 night"). */
@@ -210,7 +234,8 @@ export function tripsGeoJson(trips: TripsResponse): { routes: RouteCollection; p
       return point(lon!, lat!, labelled.has(city) ? { id: 0, radius, label: cityLabel(city.name, city.nights) } : { id: 0, radius });
     }),
   };
-  return { routes: { type: "FeatureCollection", features: [] }, places };
+  const routes: RouteCollection = { type: "FeatureCollection", features: [] };
+  return { routes, places: withSides(routes, places) };
 }
 
 /**
@@ -230,7 +255,7 @@ export function tripGeoJson(trip: TripResponse): { routes: RouteCollection; plac
     type: "FeatureCollection",
     features: trip.cities.map((city) => point(city.lon, city.lat, { id: 0, radius: dotRadius(city.nights, max), label: cityLabel(city.name, city.nights) })),
   };
-  return { routes, places };
+  return { routes, places: withSides(routes, places) };
 }
 
 /** A point for each cell of the heat, weighing what share of the most time spent in any cell its time is (0 to 1). */
@@ -261,7 +286,8 @@ export const LAYER_IDS = {
   rangeRoute: "sporer-range-route",
   rangeFlight: "sporer-range-flight",
   places: "sporer-places",
-  placeLabels: "sporer-place-labels",
+  placeLabelsWest: "sporer-place-labels-west",
+  placeLabelsEast: "sporer-place-labels-east",
   stops: "sporer-stops",
   stopNames: "sporer-stop-names",
   stopNumbers: "sporer-stop-numbers",
@@ -335,6 +361,41 @@ type CircleRadius = Extract<NonNullable<NonNullable<CircleLayer["paint"]>["circl
  * 6 px and 2.2 px for each character of the label, which is the width of the text and a margin.
  */
 const PIN_RADIUS: CircleRadius = ["max", 12, ["+", 6, ["*", 2.2, ["length", ["to-string", ["get", "label"]]]]]];
+
+type SymbolLayer = Extract<LayerSpecification, { type: "symbol" }>;
+type Anchors = NonNullable<NonNullable<SymbolLayer["layout"]>["text-variable-anchor"]>;
+
+/** The dots that carry a label, those at the east of the drawing and the others (one that says no side is one of those). */
+const LABELLED_EAST: FilterSpecification = ["all", ["has", "label"], ["==", ["get", "side"], "east"]];
+const LABELLED_WEST: FilterSpecification = ["all", ["has", "label"], ["!=", ["get", "side"], "east"]];
+
+/**
+ * The names of the dots on one side of the drawing. A label goes toward the inside of it (see `withSides`), which one layer cannot say for
+ * both sides, since the order of the places a label may be put at is not something a feature can choose: the west dots have theirs at the right
+ * of the dot, the east dots at its left (the anchor is the side of the text that is next to the dot, so "left" is a text on the right).
+ * A label that collides with another is moved to the next place, which is at a corner of the dot on the same side, above or below, and one that
+ * has none free is left out, and its dot stays. All the places are inward ones, and none is at the outer side, or centred above or below, where a
+ * label that has been put by the dot at the edge of the screen would be cut off: MapLibre keeps a label at the place it last found free, and does
+ * not go back to its first choice once the camera has moved on (a fit that starts at the world finds some places taken that are free when it ends),
+ * so a place that clips at the edge would stay once it had been taken. A dot that says no side is a west one, as every dot was.
+ */
+function placeLabels(id: string, filter: FilterSpecification, anchors: Anchors, paint: SymbolLayer["paint"]): LayerSpecification {
+  return {
+    id,
+    type: "symbol",
+    source: SOURCE_IDS.places,
+    filter,
+    layout: {
+      "text-field": ["get", "label"],
+      "text-font": BOLD_FONT,
+      "text-size": LABEL_SIZE,
+      "text-variable-anchor": anchors,
+      "text-radial-offset": ["+", ["/", ["get", "radius"], LABEL_SIZE], 0.3], // clear of the dot, in ems
+      "text-justify": "auto",
+    },
+    paint,
+  };
+}
 
 /**
  * Every layer the map draws, from the bottom up: the heat, the routes, the place dots with their labels, the stop pins with their
@@ -427,21 +488,8 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
         "circle-stroke-width": 2,
       },
     },
-    {
-      id: LAYER_IDS.placeLabels,
-      type: "symbol",
-      source: SOURCE_IDS.places,
-      filter: ["has", "label"],
-      layout: {
-        "text-field": ["get", "label"],
-        "text-font": BOLD_FONT,
-        "text-size": LABEL_SIZE,
-        "text-variable-anchor": ["left", "right", "top", "bottom"],
-        "text-radial-offset": ["+", ["/", ["get", "radius"], LABEL_SIZE], 0.3], // clear of the dot, in ems
-        "text-justify": "auto",
-      },
-      paint: labelPaint,
-    },
+    placeLabels(LAYER_IDS.placeLabelsWest, LABELLED_WEST, ["left", "top-left", "bottom-left"], labelPaint),
+    placeLabels(LAYER_IDS.placeLabelsEast, LABELLED_EAST, ["right", "top-right", "bottom-right"], labelPaint),
     {
       id: LAYER_IDS.stops,
       type: "circle",

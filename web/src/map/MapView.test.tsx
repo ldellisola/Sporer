@@ -615,13 +615,13 @@ describe("MapView", () => {
     // The trips say what they are, and the list draws no routes at all (it has none, and what is left of the range's must not show).
     rerender(view({ data: { routes: EMPTY_ROUTES, places: dots, view: "trips" } }));
     expect([...range, ...day].map(visibility)).toEqual(["none", "none", "none", "none", "none"]);
-    expect([LAYER_IDS.places, LAYER_IDS.placeLabels].map(visibility)).toEqual(["visible", "visible"]);
+    expect([LAYER_IDS.places, LAYER_IDS.placeLabelsWest, LAYER_IDS.placeLabelsEast].map(visibility)).toEqual(["visible", "visible", "visible"]);
     expect(map.sources.get(SOURCE_IDS.places)?.data).toBe(dots);
 
     // A trip is drawn bold, as a day is, with its cities as dots.
     rerender(view({ data: { routes: routes(4), places: dots, view: "trip" } }));
     expect([...range, ...day].map(visibility)).toEqual(["none", "none", "visible", "visible", "visible"]);
-    expect([LAYER_IDS.places, LAYER_IDS.placeLabels].map(visibility)).toEqual(["visible", "visible"]);
+    expect([LAYER_IDS.places, LAYER_IDS.placeLabelsWest, LAYER_IDS.placeLabelsEast].map(visibility)).toEqual(["visible", "visible", "visible"]);
 
     // And a day is a day again without the data having to say so.
     rerender(view({ data: { routes: EMPTY_ROUTES, stops: stops() } }));
@@ -645,7 +645,7 @@ describe("MapView", () => {
     map.emit("style.load");
 
     expect(ROUTE_LAYERS.map(visibility)).toEqual(["none", "none", "none", "none", "none"]); // added as the trips have them, not as the specs of a period
-    expect([LAYER_IDS.places, LAYER_IDS.placeLabels].map(visibility)).toEqual(["visible", "visible"]);
+    expect([LAYER_IDS.places, LAYER_IDS.placeLabelsWest, LAYER_IDS.placeLabelsEast].map(visibility)).toEqual(["visible", "visible", "visible"]);
     expect(map.sources.get(SOURCE_IDS.places)?.data).toBe(dots);
   });
 
@@ -1689,11 +1689,11 @@ describe("MapView", () => {
       expect(map.fitCalls[2]?.bounds).toEqual([[-0.1, 51.5], [-0.1, 51.5]]);
     });
 
-    // A label that does not fit beside its dot is put on the other side of it, but MapLibre never moves one back inside the screen, so the
-    // dots at the edges of the fit would have their names cut off. The fit leaves some air at the sides for them (and for no other reason:
-    // the controls are set in by the padding itself, which does not change).
+    // A label points toward the inside of the drawing (the layers say which side of it a dot is on), so that the dots at the edges of the fit have
+    // their names on the screen: all that the fit leaves at the sides is room for the dots themselves, their radius and their outline (and for no
+    // other reason: the controls are set in by the padding itself, which does not change).
     describe("room for the labels", () => {
-      const LABEL_AIR = 72;
+      const LABEL_AIR = 24;
       const dot = (label: string | undefined, lon: number): Feature<Point, object> => ({
         type: "Feature",
         properties: label === undefined ? { id: 1, radius: 8 } : { id: 1, radius: 8, label },

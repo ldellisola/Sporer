@@ -4,15 +4,12 @@ import type { TripListItem } from "../api/types";
 import { navigate } from "../app/router";
 import { dateRangeLabel } from "../time/dates";
 import { formatCount } from "../time/format";
-import { Chip } from "./Chips";
+import { Chip, ONGOING } from "./Chips";
 import rows from "./Rows.module.css";
 import { Empty, ErrorState, Loading } from "./States";
 import { TripThumbnail } from "./TripThumbnail";
 import styles from "./TripsPanel.module.css";
 import { useKeptData } from "./useKeptData";
-
-/** What the chip says of the trip that has not come home yet, on its card and in the name of its button. */
-const ONGOING = "Ongoing";
 
 /** The cities of a trip as its card lists them: "Lisbon · Sintra". A trip with none that are known has none to list. */
 const citiesOf = (trip: TripListItem): string => trip.cities.map((city) => city.name).join(" · ");

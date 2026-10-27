@@ -916,6 +916,7 @@ const heatOf = (seconds: number): HeatResponse => ({ maxSeconds: seconds, cells:
 const HEAT_22 = heatOf(7200);
 const HEAT_23 = heatOf(3600);
 const HEAT_WEEK_19 = heatOf(36_000);
+const HEAT_LISBON_TRIP = heatOf(50_000);
 const HEAT_WEEK_26 = heatOf(18_000);
 
 const heatPaths = (paths: string[]): string[] => paths.filter((path) => path.startsWith("/api/heat"));
@@ -1289,7 +1290,7 @@ describe("useViewMap a trip", () => {
 // The heat of a trip is the heat of its dates, from the day it left to the day it came back, for the trip that is on screen: the glow of another
 // trip (or of a day, or of the dates that the trip had before it was loaded) is never under its routes.
 describe("useViewMap the heat of a trip", () => {
-  const HEAT_TRIP = heatOf(50_000);
+  const HEAT_TRIP = HEAT_LISBON_TRIP;
   const HEAT_COPENHAGEN = heatOf(9000);
 
   test("useViewMap_asks_for_the_heat_of_the_dates_of_the_trip_and_draws_it_with_the_routes_once_heat_is_on", async () => {
@@ -1418,6 +1419,7 @@ describe("useViewMap the heat of a trip", () => {
     });
     expect(result.current.data.routes.features).toEqual([]);
     expect(result.current.data.heat).toBeUndefined();
+    expect(result.current.heat.available).toBe(false); // nor the button
   });
 
   test("useViewMap_reports_a_heat_of_a_trip_that_could_not_be_had_and_asks_again_on_retry", async () => {
@@ -1450,6 +1452,29 @@ describe("useViewMap the heat of a trip", () => {
     expect(heatPaths(paths)).toEqual([]);
     expect(result.current.data.heat).toBeUndefined();
     expect(result.current.heat.failed).toBe(false);
+    expect(result.current.heat.available).toBe(false); // and no button for a heat that there is nothing to show of
+  });
+
+  test("useViewMap_has_the_heat_button_for_a_trip_while_it_loads_and_takes_it_away_when_the_trip_turns_out_to_be_gone", async () => {
+    // P3-R22: the button is there as soon as the trip is asked for, so that it does not come in late, and goes if the answer is a 404.
+    let release: (response: Response) => void = () => undefined;
+    stubApi({ [tripKey("2026-01-01")]: () => new Promise<Response>((resolve) => (release = resolve)) });
+    const { result } = setup({ view: "trip", id: "2026-01-01" }, true);
+    expect(result.current.heat.available).toBe(true);
+
+    release(new Response("{}", { status: 404 }));
+
+    await waitFor(() => expect(result.current.heat.available).toBe(false));
+  });
+
+  test("useViewMap_has_the_heat_button_again_when_a_trip_that_is_gone_is_stepped_away_from_to_one_that_is_there", async () => {
+    stubApi({ [tripKey("2026-09-12")]: LISBON });
+    const { result, go } = setup({ view: "trip", id: "2026-01-01" });
+    await waitFor(() => expect(result.current.heat.available).toBe(false));
+
+    go(TRIP);
+
+    await waitFor(() => expect(result.current.heat.available).toBe(true));
   });
 });
 
@@ -1586,6 +1611,29 @@ describe("useViewMap heat and the routes shown", () => {
     release(Response.json(NEW_YORK_DAY));
     await waitFor(() => expect(result.current.data.routes).toEqual(dayGeoJson(NEW_YORK_DAY).routes));
     expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_23)); // the 23rd's routes and the 23rd's heat
+  });
+
+  test("useViewMap_draws_no_heat_when_a_trip_gives_way_to_a_day_until_the_day_is_drawn", async () => {
+    // P2-R52 across the kinds of view: a trip's routes do not stay for a day (it is another kind of view), so nor does its glow, and the day's
+    // heat, which is there before the day's routes are, is not drawn under no routes, or under the routes of the trip.
+    let release: (response: Response) => void = () => undefined;
+    stubApi({
+      [tripKey("2026-09-12")]: LISBON,
+      "2026-10-22": () => new Promise<Response>((resolve) => (release = resolve)),
+      [heatKey("2026-09-12", "2026-09-16")]: HEAT_LISBON_TRIP,
+      [heatKey("2026-10-22")]: HEAT_22,
+    });
+    const { result, go, client } = setup(TRIP, true);
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_LISBON_TRIP)));
+
+    go(DAY_22);
+    await waitFor(() => expect(client.getQueryState(["heat", "2026-10-22", "2026-10-22"])?.status).toBe("success")); // the day's heat has come...
+
+    expect(result.current.data.routes.features).toEqual([]); // ...and its routes have not, and none of the trip's are left
+    expect(result.current.data.heat).toBeUndefined(); // so there is no glow of either
+    release(Response.json(OSLO_DAY));
+    await waitFor(() => expect(result.current.data.routes).toEqual(dayGeoJson(OSLO_DAY).routes));
+    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_22)); // the day's routes and the day's heat, together
   });
 
   test("useViewMap_does_not_draw_the_heat_of_the_period_before_under_the_routes_of_the_next_while_its_heat_loads", async () => {

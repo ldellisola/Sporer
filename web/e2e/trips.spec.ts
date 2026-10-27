@@ -95,10 +95,20 @@ const grip = (page: Page): Locator => page.getByRole("button", { name: "Resize p
 /**
  * Waits for the sheet to come to rest: the transition that moves it (a few hundred milliseconds) has finished. A card that is tapped while the
  * sheet is on its way is found too far down, and the page, which is as tall as the sheet before it is moved up, is scrolled to bring it up: the map
- * and the bar are then not where the shell has measured them.
+ * and the bar are then not where the shell has measured them. (The shell is `overflow: clip` now, which no script can scroll; the wait stays so that
+ * a click is made where the card is going to be.)
+ *
+ * A transition that is cancelled, or is restarted by another move of the sheet, rejects its `finished`: that is the sheet moving on and not a
+ * failure, so each rejection is let go and what is left is looked at again, until the sheet has no animation on it. A frame between the looks keeps
+ * the loop from spinning on an animation that has finished and is still listed.
  */
 async function sheetAtRest(page: Page): Promise<void> {
-  await details(page).evaluate((sheet) => Promise.all(sheet.getAnimations().map((animation) => animation.finished)).then(() => undefined));
+  await details(page).evaluate(async (sheet) => {
+    while (sheet.getAnimations().length > 0) {
+      await Promise.all(sheet.getAnimations().map((animation) => animation.finished.catch(() => undefined)));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+  });
 }
 
 /** On a phone the sheet starts at its peek, which shows no card: bring it up to full, where the list can be read and its cards tapped. */
@@ -121,6 +131,32 @@ async function halfSheet(page: Page): Promise<void> {
   await expect(details(page).getByRole("list", { name: "Trips" })).toBeInViewport({ ratio: 1 });
 }
 
+// P3-R21: the shell never scrolls, whatever is focused or clicked in the sheet that moves over it. The sheet is as tall as its highest point and moved
+// down by what is not shown, so that a card of the list can be well below the screen while the sheet is at its peek, and focusing it asks the browser
+// to bring it into view: a shell that is `overflow: hidden` is scrolled by that (nothing can scroll it by hand, and code can), and the map, the bar and
+// the padding the map is given are then not where they were measured. `overflow: clip` has nothing to scroll. On a desktop the sidebar is fixed and
+// there is nothing to see, which is no reason not to look.
+test("focusing_a_card_in_the_sheet_never_scrolls_the_shell", async ({ page }) => {
+  await fixToday(page);
+  await mockApi(page);
+  await page.goto("/trips");
+  await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+  const cards = details(page).getByRole("list", { name: "Trips" }).getByRole("button");
+  await expect(cards).toHaveCount(3);
+  const scrolledBy = () => page.locator("main[data-layout]").evaluate((shell) => [shell.scrollTop, shell.scrollLeft]);
+
+  await cards.last().focus(); // on a phone: below the edge of the screen, with the sheet at its peek
+  expect(await scrolledBy()).toEqual([0, 0]);
+
+  if (!isWide(page)) await grip(page).click(); // and on its way up, which is when a card was clicked and the shell scrolled
+  await cards.nth(1).focus();
+  expect(await scrolledBy()).toEqual([0, 0]);
+  await sheetAtRest(page);
+  await cards.first().focus();
+  expect(await scrolledBy()).toEqual([0, 0]);
+  await expect(page.locator("main[data-layout]")).toHaveCSS("overflow", "clip"); // what makes it so
+});
+
 const PIN: Rgb = [0xff, 0x37, 0x5f];
 const BACKGROUND: Rgb = [0xdf, 0xe6, 0xea]; // the flat style of the test (public/test-style.json)
 
@@ -137,11 +173,11 @@ const worldOf = ([lon, lat]: [number, number]) => ({
 });
 
 /**
- * The air that the fit leaves at the left and at the right of what is free while a dot has a label, so that the outermost dots' names stay on
- * the screen (`LABEL_AIR_PX` of MapView). The cities of the trips are all named, so their fit has it; the padding that the controls are set in
- * (`--map-padding-*`) has not.
+ * The air that the fit leaves at the left and at the right of what is free while a dot has a label, for the dots at the edges to lie in whole (`LABEL_AIR_PX`
+ * of MapView). The cities of the trips are all named, so their fit has it; the padding that the controls are set in (`--map-padding-*`) has not. A label
+ * goes toward the inside of the drawing, so none of them needs more room than this.
  */
-const LABEL_AIR = 72;
+const LABEL_AIR = 24;
 
 /**
  * Where on the page `at` is once the map has been brought to all of `positions`, as the map is when it is fitted: what the bar and the panel
@@ -244,15 +280,29 @@ test.describe("the trips list", () => {
     await expect.poll(() => dotAt(NEW_YORK), PIXEL_POLL).toBe(true);
     await expect.poll(() => dotAt(COPENHAGEN), PIXEL_POLL).toBe(true);
     await expect.poll(() => dotAt(LISBON), PIXEL_POLL).toBe(true);
-    // The label of the easternmost city is drawn: its ink is at the right of its dot, inside the screen. MapLibre does not move a label that
-    // is put beside a dot at the edge back inside the window, so a fit that left no room there (the air for the labels) would have it all off it.
+    // The label of the easternmost city is drawn whole (P3-R20): it points toward the inside of the drawing, so its text is on the left of its dot, and
+    // none of it is cut off by the edge of the screen. MapLibre does not move a label that has been put beyond the edge of the window back inside it,
+    // which is what the label of Copenhagen was, at the right of its dot at the edge of the fit: its ink is around the dot, and the last columns of the
+    // screen have none.
     const east = await whereOnThePage(page, CITIES, COPENHAGEN, LABEL_AIR);
-    const room = page.viewportSize()!.width - (east.x + 18); // from the dot's edge (it is 14 px across at the most) to the edge of the screen
-    const inkBeside = async () => (room < 4 ? 0 : inkIn(page, { x: east.x + 18, y: east.y - 16, width: Math.min(40, room), height: 32 }));
-    await expect.poll(async () => (await inkBeside()) > 20, PIXEL_POLL).toBe(true);
-    // Between New York and Lisbon there is nothing: the map shows the cities, and no line from one to the next.
-    const between = await whereOnThePage(page, CITIES, [(NEW_YORK[0] + LISBON[0]) / 2, (NEW_YORK[1] + LISBON[1]) / 2], LABEL_AIR);
-    expect(sameColour(await pixelAt(page, between.x, between.y), BACKGROUND)).toBe(true);
+    const { width } = page.viewportSize()!;
+    const labelDrawnWhole = async (): Promise<boolean> => {
+      const left = east.x - 100;
+      const right = Math.min(width, east.x + 60);
+      const around = await inkIn(page, { x: left, y: east.y - 32, width: right - left, height: 64 });
+      const atTheEdge = await inkIn(page, { x: width - 4, y: east.y - 32, width: 4, height: 64 });
+      return around > 100 && atTheEdge === 0;
+    };
+    await expect.poll(labelDrawnWhole, PIXEL_POLL).toBe(true);
+    // Between New York and Lisbon there is nothing: the map shows the cities, and no line from one to the next. A name may be written across some of the
+    // way (a label is put beside its dot, toward the inside of the drawing, which is toward the other city), but a line would be across all of it.
+    let background = 0;
+    for (const share of [0.2, 0.3, 0.4, 0.5, 0.6, 0.7]) {
+      const at: [number, number] = [NEW_YORK[0] + (LISBON[0] - NEW_YORK[0]) * share, NEW_YORK[1] + (LISBON[1] - NEW_YORK[1]) * share];
+      const { x, y } = await whereOnThePage(page, CITIES, at, LABEL_AIR);
+      if (sameColour(await pixelAt(page, x, y), BACKGROUND)) background += 1;
+    }
+    expect(background).toBeGreaterThanOrEqual(3);
 
     // A card opens its trip, and Back is to the list.
     await openSheet(page);
@@ -303,8 +353,9 @@ test.describe("a trip", () => {
   test.use({ deviceScaleFactor: 1 });
 
   test("opening_a_trip_from_the_list_shows_its_days_and_steps_to_the_next_trip", async ({ page }) => {
-    // Three polls of PIXEL_POLL run one after the other, which is more than the 30 s that Playwright gives a test (see PIXEL_POLL).
-    test.setTimeout(30_000 + 3 * PIXEL_POLL.timeout);
+    // Four polls of PIXEL_POLL run one after the other (Lisbon's dot, Lisbon's dot again, Copenhagen's, and the background where Lisbon was), which is more
+    // than the 30 s that Playwright gives a test (see PIXEL_POLL).
+    test.setTimeout(30_000 + 4 * PIXEL_POLL.timeout);
     await fixToday(page);
     const api = await mockApi(page);
     await page.goto("/trips");
