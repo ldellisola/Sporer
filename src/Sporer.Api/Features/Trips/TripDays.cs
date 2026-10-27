@@ -51,7 +51,7 @@ public static class TripDays
 
             days.Add(new TripDay(
                 date,
-                TripNaming.DayLine([.. stays.Select(s => (s.City, s.PlaceName))], moves.Count > 0),
+                TripNaming.DayLine([.. stays.Select(s => (s.City, s.Country, s.PlaceName))], moves.Count > 0),
                 Highlights(detail, date, stays),
                 moves.Where(m => m.LocalStartDate == date && m.Mode != Flight).Sum(m => m.DistanceM),
                 moves.Count(m => m.Mode == Flight)));

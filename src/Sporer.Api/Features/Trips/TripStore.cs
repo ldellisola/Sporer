@@ -292,6 +292,12 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     /// stay keeps the local dates it was stored with.
     /// </para>
     /// <para>
+    /// Segments do not overlap (see <see cref="SegmentStore.FindLastEndAsync"/>), so the only one that can overlap the span and
+    /// start before it is the last one that starts at or before its start: the read begins there, on <c>ix_segment_start</c>,
+    /// as <see cref="SegmentStore.FindCoveringAsync"/> does, and does not go through the history behind it. A stay of three
+    /// weeks that began long before the trip is found that way.
+    /// </para>
+    /// <para>
     /// The place of a stay and of a night is resolved to the place that survives merges, as in the list, and its name, city and
     /// country are read now. <see cref="TripDetail.SleepPlaces"/> covers the nights from the one before the trip's first local
     /// day to the one of its last: the days of the trip each look at the night before and the night of their date. A place
@@ -349,6 +355,7 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
                        case when kind = 'move' then geometry_coarse::text end as geometry
                 from segment
                 where kind in ('stay', 'move') and start_utc < @SpanEnd and end_utc > @SpanStart
+                  and start_utc >= coalesce((select max(start_utc) from segment where start_utc <= @SpanStart), @SpanStart)
             ),
             named as (
                 select place_id from spanned where place_id is not null

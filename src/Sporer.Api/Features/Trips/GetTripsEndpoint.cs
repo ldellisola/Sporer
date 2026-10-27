@@ -1,6 +1,4 @@
-using System.Globalization;
 using FastEndpoints;
-using Sporer.Timeline;
 
 namespace Sporer.Api.Features.Trips;
 
@@ -32,25 +30,6 @@ internal sealed class GetTripsEndpoint(TripStore store) : EndpointWithoutRequest
         var thumbnail = TripThumbnail.Line(
             stored.HomeAtStart, nights.Select(n => n.Position), trip.EndUtc is null ? null : stored.HomeAtEnd);
 
-        return new TripDto(
-            Text(trip.FirstNight),
-            TripNaming.Name([.. nights.Select(n => (n.Date, n.City, n.Country))]),
-            Text(trip.FirstNight),
-            Text(trip.LastNight),
-            trip.Nights,
-            trip.StartUtc,
-            trip.EndUtc,
-            trip.StartZone,
-            trip.EndZone,
-            Text(trip.LocalStartDate),
-            Text(trip.LocalEndDate),
-            trip.EndUtc is null,
-            [.. TripNaming.Cities(nights).Select(c => new TripCityDto(c.Name, c.Country, c.Nights, c.Latitude, c.Longitude))],
-            LonLat(thumbnail));
+        return new TripDto(TripMapping.Summary(trip, nights), TripMapping.LonLat(thumbnail));
     }
-
-    private static string Text(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-
-    /// <summary>A line as <c>[[lon,lat],...]</c>, the order the stored lines and GeoJSON have.</summary>
-    private static double[][] LonLat(IReadOnlyList<GeoPoint> line) => [.. line.Select(p => new[] { p.Longitude, p.Latitude })];
 }

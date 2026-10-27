@@ -75,7 +75,9 @@ public class TripEndpointTests(DatabaseFixture db)
         await using var api = new ApiFactory(cs);
         var client = api.CreateClient(); // starting the host runs the migrations
         var home = await PlaceAsync(cs, Spots.Home, "Oslo", "Norway");
-        var airport = await PlaceAsync(cs, Geo.Offset(Spots.Home, 30_000, 0), "Oslo", "Norway", osmName: "Oslo Airport");
+        // Farther from home than the 50 km a night must be away by: a detected trip begins when the last stay within that of home
+        // ends, so it begins at home here, and the drive to the airport is the first move of the trip.
+        var airport = await PlaceAsync(cs, Geo.Offset(Spots.Home, 60_000, 0), "Oslo", "Norway", osmName: "Oslo Airport");
         var hotel = await PlaceAsync(cs, Spots.Lisbon, "Lisbon", "Portugal", osmName: "Hotel Avenida");
         // The owner's name for a place wins over OpenStreetMap's.
         var market = await PlaceAsync(
@@ -89,7 +91,7 @@ public class TripEndpointTests(DatabaseFixture db)
 
         // Day one: the stay at home ends as the trip starts, and the last one begins as it ends: neither is in the trip.
         await StayAsync(cs, home, Utc(9, 11, 20), Utc(9, 12, 8), Oslo);
-        var toAirport = await MoveAsync(cs, "drive", Utc(9, 12, 8), Utc(9, 12, 8, 40), 3200, Oslo);
+        var toAirport = await MoveAsync(cs, "drive", Utc(9, 12, 8), Utc(9, 12, 8, 40), 61_000, Oslo);
         await StayAsync(cs, airport, Utc(9, 12, 8, 40), Utc(9, 12, 10), Oslo);
         var flightOut = await MoveAsync(cs, "flight", Utc(9, 12, 10), Utc(9, 12, 13), 2_738_800, Oslo, Lisbon, FlightLine);
         await StayAsync(cs, hotel, Utc(9, 12, 13), Utc(9, 13, 8)); // across midnight: it is part of both days
@@ -133,13 +135,13 @@ public class TripEndpointTests(DatabaseFixture db)
         Assert.Equal(2, stats.GetProperty("flights").GetInt32());
         Assert.Equal(2, stats.GetProperty("cities").GetInt32());
         Assert.Equal(4, stats.GetProperty("places").GetInt32());
-        Assert.Equal(3200.0 + 1000 + 800, stats.GetProperty("groundDistanceMeters").GetDouble());
+        Assert.Equal(61_000.0 + 1000 + 800, stats.GetProperty("groundDistanceMeters").GetDouble());
 
         // Moves: those of the span, in time order, with the stored line (within the budget, it is not simplified).
         var moves = MovesOf(body);
         Assert.Equal([toAirport, flightOut, toMarket, toTower, flightBack], moves.Select(m => m.GetProperty("id").GetInt64()));
         Assert.Equal(["drive", "flight", "walk", "walk", "flight"], moves.Select(m => m.GetProperty("mode").GetString()));
-        Assert.Equal([3200.0, 2_738_800, 1000, 800, 2_700_000], moves.Select(m => m.GetProperty("distanceMeters").GetDouble()));
+        Assert.Equal([61_000.0, 2_738_800, 1000, 800, 2_700_000], moves.Select(m => m.GetProperty("distanceMeters").GetDouble()));
         Assert.Equal(LineOf(FlightLine), Line(moves[1].GetProperty("geometry")));
         Assert.Equal(LineOf(WalkLine), Line(moves[2].GetProperty("geometry")));
 
@@ -153,7 +155,7 @@ public class TripEndpointTests(DatabaseFixture db)
         Assert.Equal(["Time Out Market", "Belem Tower"], Highlights(days[1]));
         Assert.Empty(Highlights(days[2]));
         // Ground distance is of the moves that start on the day, flights of those that touch it.
-        Assert.Equal([3200.0, 1800, 0], days.Select(d => d.GetProperty("groundDistanceMeters").GetDouble()));
+        Assert.Equal([61_000.0, 1800, 0], days.Select(d => d.GetProperty("groundDistanceMeters").GetDouble()));
         Assert.Equal([1, 0, 1], days.Select(d => d.GetProperty("flights").GetInt32()));
     }
 
@@ -167,8 +169,8 @@ public class TripEndpointTests(DatabaseFixture db)
         var harbour = await PlaceAsync(cs, Geo.Offset(Spots.Home, 800, 0), "Oslo", "Norway", osmName: "Aker Brygge");
         var hotel = await PlaceAsync(cs, Spots.Lisbon, "Lisbon", "Portugal", osmName: "Hotel");
         var cafe = await PlaceAsync(cs, Geo.Offset(Spots.Lisbon, 400, 0), "Lisbon", "Portugal", osmName: "Cafe");
-        var hutA = await PlaceAsync(cs, Geo.Offset(Spots.Lisbon, 90_000, 0), country: "Portugal", osmName: "Hut A"); // no city
-        var hutB = await PlaceAsync(cs, Geo.Offset(Spots.Lisbon, 91_000, 0), country: "Portugal", osmName: "Hut B");
+        var hutA = await PlaceAsync(cs, Geo.Offset(Spots.Lisbon, 90_000, 0), osmName: "Hut A"); // a name, but no city and no country
+        var hutB = await PlaceAsync(cs, Geo.Offset(Spots.Lisbon, 91_000, 0), osmName: "Hut B");
         var nowhere = await PlaceAsync(cs, Geo.Offset(Spots.Lisbon, 92_000, 0)); // not geocoded: no city, no country, no name
         await StoreAsync(api, [], [], Trip(D(9, 12), D(9, 14), Utc(9, 12, 6), Utc(9, 15, 20), Lisbon, Lisbon));
         // Day one: two stays in Oslo and two in Lisbon.
@@ -176,7 +178,7 @@ public class TripEndpointTests(DatabaseFixture db)
         await StayAsync(cs, harbour, Utc(9, 12, 8, 15), Utc(9, 12, 9));
         await StayAsync(cs, hotel, Utc(9, 12, 12), Utc(9, 12, 14));
         await StayAsync(cs, cafe, Utc(9, 12, 14, 30), Utc(9, 12, 16));
-        // Day two: no city anywhere, so the names; a stay at a place with none of them says nothing.
+        // Day two: no city or country anywhere, so the names; a stay at a place with none of them says nothing.
         await StayAsync(cs, hutA, Utc(9, 13, 8), Utc(9, 13, 11));
         await StayAsync(cs, nowhere, Utc(9, 13, 11, 30), Utc(9, 13, 12));
         await StayAsync(cs, hutB, Utc(9, 13, 12, 30), Utc(9, 13, 13, 30));
@@ -192,6 +194,33 @@ public class TripEndpointTests(DatabaseFixture db)
         Assert.Equal(["Hut A", "Hut B"], Highlights(days[1])); // the place with no name is no highlight, and has the least time anyway
         Assert.Empty(Highlights(days[2]));
         Assert.Empty(Highlights(days[3]));
+    }
+
+    [Fact]
+    public async Task Trip_detail_day_line_names_a_stay_at_a_place_with_only_a_country_by_its_country()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var hotel = await PlaceAsync(cs, Spots.Lisbon, "Lisbon", "Portugal", osmName: "Hotel");
+        var hutA = await PlaceAsync(cs, Geo.Offset(Spots.Lisbon, 90_000, 0), country: "Portugal", osmName: "Hut A"); // no city
+        var hutB = await PlaceAsync(cs, Geo.Offset(Spots.Lisbon, 91_000, 0), country: "Portugal", osmName: "Hut B");
+        var border = await PlaceAsync(cs, Geo.Offset(Spots.Lisbon, 200_000, 0), country: "Spain", osmName: "Border post");
+        await StoreAsync(api, [], [], Trip(D(9, 12), D(9, 13), Utc(9, 12, 6), Utc(9, 14, 20), Lisbon, Lisbon));
+        // Day one: the hotel, then two places in the countryside, then one in Spain: the cities the trip is drawn with are
+        // Lisbon, Portugal and Spain (see TripNaming.Cities), and the day says the same, the two huts as one.
+        await StayAsync(cs, hotel, Utc(9, 12, 7), Utc(9, 12, 8));
+        await StayAsync(cs, hutA, Utc(9, 12, 9), Utc(9, 12, 10));
+        await StayAsync(cs, hutB, Utc(9, 12, 10, 30), Utc(9, 12, 11));
+        await StayAsync(cs, border, Utc(9, 12, 12), Utc(9, 12, 13));
+        // Day two: only the huts, which have a name each and no city, and say "Portugal" and nothing of the names.
+        await StayAsync(cs, hutA, Utc(9, 13, 9), Utc(9, 13, 10));
+        await StayAsync(cs, hutB, Utc(9, 13, 10, 30), Utc(9, 13, 11));
+
+        using var body = await GetTripAsync(client, "2026-09-12");
+
+        var days = DaysOf(body);
+        Assert.Equal(["Lisbon → Portugal → Spain", "Portugal", "No data"], days.Select(d => d.GetProperty("description").GetString()));
     }
 
     // ---- the highlights ----------------------------------------------------------------------------------------------
@@ -301,8 +330,11 @@ public class TripEndpointTests(DatabaseFixture db)
         Assert.Equal(1500.0 + 700, stats.GetProperty("groundDistanceMeters").GetDouble());
         var moves = MovesOf(body);
         Assert.Equal(4, moves.Count);
-        // A mode that could not be told is no mode (the web reads `mode?: Mode | null`), never a made-up one.
-        Assert.Equal(["drive", "flight", null, "walk"], moves.Select(m => m.TryGetProperty("mode", out var mode) ? mode.GetString() : null));
+        // A mode that could not be told is no mode, never a made-up one, and it is written as `"mode": null`, as the day and the
+        // range write it (P3-R14), not left out: the property is there and its value is null.
+        Assert.All(moves, m => Assert.True(m.TryGetProperty("mode", out _)));
+        Assert.Equal(JsonValueKind.Null, moves[2].GetProperty("mode").ValueKind);
+        Assert.Equal(["drive", "flight", null, "walk"], moves.Select(m => m.GetProperty("mode").GetString()));
         Assert.Equal([1500.0, 100_000, 700, 0], moves.Select(m => m.GetProperty("distanceMeters").GetDouble()));
     }
 

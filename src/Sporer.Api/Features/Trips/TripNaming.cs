@@ -102,15 +102,17 @@ public static class TripNaming
 
     /// <summary>
     /// The line that describes a day of a trip from the stays that touch it, <paramref name="staysInOrder"/>, earliest first,
-    /// each as the city and the name of its place (null for what it has not got): the cities in the order they were stayed in,
-    /// joined by " → ", with a city that follows itself said once ("Oslo → Lisbon", and "Oslo → Lisbon → Oslo" for a return).
-    /// A stay with no city is passed over while another has one; when none has, the place names say it the same way. A day with
-    /// nothing to describe it by, whether it has no stay or only stays that no city or name belongs to (places the geocoder has
-    /// not reached), is "Travelling" if <paramref name="hasMoves"/> and "No data" if not.
+    /// each as the city, the country and the name of its place (null for what it has not got): the cities in the order they were
+    /// stayed in, joined by " → ", with a city that follows itself said once ("Oslo → Lisbon", and "Oslo → Lisbon → Oslo" for a
+    /// return). A stay is in the city <see cref="CityKey"/> draws it under, its own, else its country, so a day at places that
+    /// have only a country reads as the trip's cities do ("Portugal"). A stay with neither is passed over while another has one;
+    /// when none has, the place names say it the same way. A day with nothing to describe it by, whether it has no stay or only
+    /// stays that no city, country or name belongs to (places the geocoder has not reached), is "Travelling" if
+    /// <paramref name="hasMoves"/> and "No data" if not.
     /// </summary>
-    public static string DayLine(IReadOnlyList<(string? City, string? PlaceName)> staysInOrder, bool hasMoves)
+    public static string DayLine(IReadOnlyList<(string? City, string? Country, string? PlaceName)> staysInOrder, bool hasMoves)
     {
-        var line = Collapse(staysInOrder.Select(s => Clean(s.City)));
+        var line = Collapse(staysInOrder.Select(s => CityKey(s.City, s.Country)?.Name));
         if (line.Count == 0)
             line = Collapse(staysInOrder.Select(s => Clean(s.PlaceName)));
 

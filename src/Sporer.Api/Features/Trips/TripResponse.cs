@@ -3,27 +3,29 @@ using System.Text.Json.Serialization;
 namespace Sporer.Api.Features.Trips;
 
 /// <summary>
-/// One trip with all its page is drawn from, as served by <c>GET /api/trips/{id}</c>. The fields from <paramref name="Id"/> to
-/// <paramref name="Cities"/> are those of a list item (see <see cref="TripDto"/>), without its thumbnail. For an ongoing trip the
-/// last of its <paramref name="Days"/> is the day after its last night, and its moves and stays are those of the timeline so far.
+/// One trip with all its page is drawn from, as served by <c>GET /api/trips/{id}</c>: its <see cref="TripSummary"/>, as a list
+/// item has it, and its <see cref="Stats"/>, <see cref="Moves"/> and <see cref="Days"/>, but not the list's thumbnail. For an
+/// ongoing trip the last of its days is the day after its last night, and its moves and stays are those of the timeline so far.
 /// </summary>
-public sealed record TripResponse(
-    string Id,
-    string Name,
-    string FirstNight,
-    string LastNight,
-    int Nights,
-    DateTime Start,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] DateTime? End,
-    string StartTimeZone,
-    string EndTimeZone,
-    string LocalStartDate,
-    string LocalEndDate,
-    bool Ongoing,
-    IReadOnlyList<TripCityDto> Cities,
-    TripStatsDto Stats,
-    IReadOnlyList<TripMoveDto> Moves,
-    IReadOnlyList<TripDayDto> Days);
+public sealed record TripResponse : TripSummary
+{
+    public TripResponse(
+        TripSummary summary, TripStatsDto stats, IReadOnlyList<TripMoveDto> moves, IReadOnlyList<TripDayDto> days) : base(summary)
+    {
+        Stats = stats;
+        Moves = moves;
+        Days = days;
+    }
+
+    [JsonPropertyOrder(1)]
+    public TripStatsDto Stats { get; }
+
+    [JsonPropertyOrder(1)]
+    public IReadOnlyList<TripMoveDto> Moves { get; }
+
+    [JsonPropertyOrder(1)]
+    public IReadOnlyList<TripDayDto> Days { get; }
+}
 
 /// <summary>
 /// What the trip adds up to (see <see cref="TripDays.Stats"/>): the number of flights, of distinct cities and of distinct places

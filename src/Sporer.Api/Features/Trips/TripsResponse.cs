@@ -6,18 +6,21 @@ namespace Sporer.Api.Features.Trips;
 public sealed record TripsResponse(IReadOnlyList<TripDto> Trips);
 
 /// <summary>
-/// A trip. <paramref name="Id"/> is its first night (<c>yyyy-MM-dd</c>), which is the same after every rebuild as long as the
-/// trip starts the same night; <paramref name="FirstNight"/> and <paramref name="LastNight"/> are the dates of the evenings of
-/// its first and last away night, and <paramref name="Nights"/> counts every night between, those with no known position
-/// too. <paramref name="Start"/> and <paramref name="End"/> are when the person left and came back (ISO-8601 UTC, <c>Z</c>);
-/// <paramref name="End"/> is always there, and null while the trip is <paramref name="Ongoing"/>. The local dates are those
-/// of the start and end in <paramref name="StartTimeZone"/> and <paramref name="EndTimeZone"/>, the IANA zones they were in
-/// (for an ongoing trip the end date is the day after its last night). <paramref name="Name"/> is made up when asked for
-/// (see <see cref="TripNaming"/>), as are <paramref name="Cities"/>, and <paramref name="Thumbnail"/> is the line to draw
-/// for the trip, <c>[[lon,lat],...]</c>: home, the places it slept at, home (see <see cref="TripThumbnail"/>); an ongoing trip
-/// has not come back, so its line stops at the last place.
+/// What a trip is described by wherever it is served: the list and the trip's own page both begin with it, and are made
+/// from it (see <see cref="TripMapping.Summary"/>). <paramref name="Id"/> is its first night (<c>yyyy-MM-dd</c>), which is the
+/// same after every rebuild as long as the trip starts the same night; <paramref name="FirstNight"/> and
+/// <paramref name="LastNight"/> are the dates of the evenings of its first and last away night, and <paramref name="Nights"/>
+/// counts every night between, those with no known position too. <paramref name="Start"/> and <paramref name="End"/> are when
+/// the person left and came back (ISO-8601 UTC, <c>Z</c>); <paramref name="End"/> is always there, and null while the trip is
+/// <paramref name="Ongoing"/>. The local dates are those of the start and end in <paramref name="StartTimeZone"/> and
+/// <paramref name="EndTimeZone"/>, the IANA zones they were in (for an ongoing trip the end date is the day after its last
+/// night). <paramref name="Name"/> is made up when asked for (see <see cref="TripNaming"/>), as are <paramref name="Cities"/>.
 /// </summary>
-public sealed record TripDto(
+/// <remarks>
+/// Not abstract, so that <see cref="TripMapping.Summary"/> can make one to build the others from; what the others add to it is
+/// ordered after it (<c>JsonPropertyOrder(1)</c>), so that the JSON reads these fields first, in this order.
+/// </remarks>
+public record TripSummary(
     string Id,
     string Name,
     string FirstNight,
@@ -30,8 +33,20 @@ public sealed record TripDto(
     string LocalStartDate,
     string LocalEndDate,
     bool Ongoing,
-    IReadOnlyList<TripCityDto> Cities,
-    double[][] Thumbnail);
+    IReadOnlyList<TripCityDto> Cities);
+
+/// <summary>
+/// A trip of the list: its <see cref="TripSummary"/>, and its <see cref="Thumbnail"/>, the line to draw for the trip,
+/// <c>[[lon,lat],...]</c>: home, the places it slept at, home (see <see cref="TripThumbnail"/>); an ongoing trip has not come
+/// back, so its line stops at the last place.
+/// </summary>
+public sealed record TripDto : TripSummary
+{
+    public TripDto(TripSummary summary, double[][] thumbnail) : base(summary) => Thumbnail = thumbnail;
+
+    [JsonPropertyOrder(1)]
+    public double[][] Thumbnail { get; }
+}
 
 /// <summary>
 /// A city a trip stayed in: its <paramref name="Name"/> (the country, for nights whose place has no city), the number of its

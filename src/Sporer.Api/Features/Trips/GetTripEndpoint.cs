@@ -1,7 +1,6 @@
 using System.Globalization;
 using FastEndpoints;
 using Sporer.Api.Features.Range;
-using Sporer.Timeline;
 
 namespace Sporer.Api.Features.Trips;
 
@@ -10,7 +9,7 @@ namespace Sporer.Api.Features.Trips;
 /// trip view. The id is the date of the trip's first night, <c>yyyy-MM-dd</c>; anything else, and a date that no trip began on,
 /// is a 404 (a malformed id is not a different kind of mistake from an unknown one: both name no trip). Reads only. What it is
 /// read with is described by <see cref="TripStore.FindAsync"/>; the name, cities, stats and days are made from it here, each
-/// time, as the list's are (see <see cref="GetTripsEndpoint"/>).
+/// time, and the name and cities as the list's are (see <see cref="TripMapping.Summary"/>).
 /// </summary>
 internal sealed class GetTripEndpoint(TripStore store) : EndpointWithoutRequest<TripResponse>
 {
@@ -44,26 +43,9 @@ internal sealed class GetTripEndpoint(TripStore store) : EndpointWithoutRequest<
         var lines = VertexBudget.Fit([.. detail.Moves.Select(m => m.Line)]);
 
         await Send.OkAsync(new TripResponse(
-            Text(trip.FirstNight),
-            TripNaming.Name([.. nights.Select(n => (n.Date, n.City, n.Country))]),
-            Text(trip.FirstNight),
-            Text(trip.LastNight),
-            trip.Nights,
-            trip.StartUtc,
-            trip.EndUtc,
-            trip.StartZone,
-            trip.EndZone,
-            Text(trip.LocalStartDate),
-            Text(trip.LocalEndDate),
-            trip.EndUtc is null,
-            [.. TripNaming.Cities(nights).Select(c => new TripCityDto(c.Name, c.Country, c.Nights, c.Latitude, c.Longitude))],
+            TripMapping.Summary(trip, nights),
             new TripStatsDto(stats.Flights, stats.Cities, stats.Places, stats.GroundDistanceMeters),
-            [.. detail.Moves.Select((m, k) => new TripMoveDto(m.Id, m.Mode, m.DistanceM, LonLat(lines[k])))],
-            [.. TripDays.Days(detail).Select(d => new TripDayDto(Text(d.Date), d.Description, d.Highlights, d.GroundDistanceMeters, d.Flights))]), ct);
+            [.. detail.Moves.Select((m, k) => new TripMoveDto(m.Id, m.Mode, m.DistanceM, TripMapping.LonLat(lines[k])))],
+            [.. TripDays.Days(detail).Select(d => new TripDayDto(TripMapping.Text(d.Date), d.Description, d.Highlights, d.GroundDistanceMeters, d.Flights))]), ct);
     }
-
-    private static string Text(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-
-    /// <summary>A line as <c>[[lon,lat],...]</c>, the order the stored lines and GeoJSON have.</summary>
-    private static double[][] LonLat(IReadOnlyList<GeoPoint> line) => [.. line.Select(p => new[] { p.Longitude, p.Latitude })];
 }

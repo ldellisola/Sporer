@@ -240,19 +240,20 @@ public class TripNamingTests
 
     // ---- the line of a day -----------------------------------------------------------------------------------------------
 
-    /// <summary>The stays of a day, as (city, place name), in time order.</summary>
-    private static IReadOnlyList<(string? City, string? PlaceName)> Stays(params (string? City, string? PlaceName)[] stays) => stays;
+    /// <summary>The stays of a day, as (city, country, place name), in time order.</summary>
+    private static IReadOnlyList<(string? City, string? Country, string? PlaceName)> Stays(
+        params (string? City, string? Country, string? PlaceName)[] stays) => stays;
 
     [Fact]
     public void TripNaming_day_line_is_the_city_of_a_day_spent_in_one()
     {
-        Assert.Equal("Oslo", TripNaming.DayLine(Stays(("Oslo", "Home")), hasMoves: false));
+        Assert.Equal("Oslo", TripNaming.DayLine(Stays(("Oslo", "Norway", "Home")), hasMoves: false));
     }
 
     [Fact]
     public void TripNaming_day_line_says_the_cities_in_order_and_a_city_that_follows_itself_once()
     {
-        var stays = Stays(("Oslo", "Airport"), ("Oslo", "Cafe"), ("Lisbon", "Hotel"), ("Lisbon", "Market"));
+        var stays = Stays(("Oslo", "Norway", "Airport"), ("Oslo", "Norway", "Cafe"), ("Lisbon", "Portugal", "Hotel"), ("Lisbon", "Portugal", "Market"));
 
         Assert.Equal("Oslo → Lisbon", TripNaming.DayLine(stays, hasMoves: true));
     }
@@ -260,30 +261,48 @@ public class TripNamingTests
     [Fact]
     public void TripNaming_day_line_says_a_city_again_when_the_person_returns_to_it()
     {
-        Assert.Equal("Oslo → Lisbon → Oslo", TripNaming.DayLine(Stays(("Oslo", null), ("Lisbon", null), ("Oslo", null)), hasMoves: true));
+        var stays = Stays(("Oslo", "Norway", null), ("Lisbon", "Portugal", null), ("Oslo", "Norway", null));
+
+        Assert.Equal("Oslo → Lisbon → Oslo", TripNaming.DayLine(stays, hasMoves: true));
     }
 
     [Fact]
-    public void TripNaming_day_line_passes_over_a_stay_with_no_city_while_another_has_one()
+    public void TripNaming_day_line_names_a_stay_with_no_city_by_its_country_as_the_trips_cities_do()
     {
-        // The stay with no city does not come between the two in Lisbon, and its name is not used: the cities say the day.
-        Assert.Equal("Lisbon", TripNaming.DayLine(Stays(("Lisbon", "Hotel"), (null, "Mountain hut"), ("Lisbon", "Cafe")), hasMoves: false));
-        Assert.Equal("Lisbon", TripNaming.DayLine(Stays((null, "Mountain hut"), ("Lisbon", null)), hasMoves: false));
+        // Two places in the countryside of Portugal are one stay after another in "Portugal", which is how TripNaming.Cities draws them.
+        Assert.Equal("Portugal", TripNaming.DayLine(Stays((null, "Portugal", "Hut A"), (null, "Portugal", "Hut B")), hasMoves: true));
+        Assert.Equal("Portugal", TripNaming.DayLine(Stays((" ", "Portugal", null)), hasMoves: false));
+        Assert.Equal("Lisbon → Portugal → Spain", TripNaming.DayLine(
+            Stays(("Lisbon", "Portugal", "Hotel"), (null, "Portugal", "Hut"), (null, "Spain", "Hut"), (null, "Spain", null)), hasMoves: true));
+
+        // The country is the city's name for its own sake: where the two are one, as Singapore, the day says it once.
+        Assert.Equal("Singapore", TripNaming.DayLine(Stays((null, "Singapore", null), ("Singapore", "Singapore", null)), hasMoves: false));
     }
 
     [Fact]
-    public void TripNaming_day_line_without_any_city_is_the_place_names_the_same_way()
+    public void TripNaming_day_line_passes_over_a_stay_with_neither_city_nor_country_while_another_has_one()
     {
-        var stays = Stays((null, "Hut A"), (null, "Hut A"), (null, null), (null, "Hut B"));
+        // The stay with nothing but a name does not come between the two in Lisbon, and its name is not used: the cities say the day.
+        Assert.Equal("Lisbon", TripNaming.DayLine(
+            Stays(("Lisbon", "Portugal", "Hotel"), (null, null, "Mountain hut"), ("Lisbon", "Portugal", "Cafe")), hasMoves: false));
+        Assert.Equal("Lisbon", TripNaming.DayLine(Stays((null, null, "Mountain hut"), ("Lisbon", null, null)), hasMoves: false));
+        // One that has a country is not passed over: it is in that country.
+        Assert.Equal("Portugal", TripNaming.DayLine(Stays((null, null, "Mountain hut"), (null, "Portugal", null)), hasMoves: false));
+    }
+
+    [Fact]
+    public void TripNaming_day_line_without_any_city_or_country_is_the_place_names_the_same_way()
+    {
+        var stays = Stays((null, null, "Hut A"), (null, null, "Hut A"), (null, null, null), (null, null, "Hut B"));
 
         Assert.Equal("Hut A → Hut B", TripNaming.DayLine(stays, hasMoves: true));
     }
 
     [Fact]
-    public void TripNaming_day_line_counts_an_empty_city_or_name_as_none()
+    public void TripNaming_day_line_counts_an_empty_city_country_or_name_as_none()
     {
-        Assert.Equal("Hut", TripNaming.DayLine(Stays(("", "Hut"), (" ", "Hut")), hasMoves: false));
-        Assert.Equal("Travelling", TripNaming.DayLine(Stays(("", " "), (" ", "")), hasMoves: true));
+        Assert.Equal("Hut", TripNaming.DayLine(Stays(("", "", "Hut"), (" ", " ", "Hut")), hasMoves: false));
+        Assert.Equal("Travelling", TripNaming.DayLine(Stays(("", "", " "), (" ", " ", "")), hasMoves: true));
     }
 
     [Fact]
@@ -292,8 +311,8 @@ public class TripNamingTests
         Assert.Equal("Travelling", TripNaming.DayLine(Stays(), hasMoves: true));
         Assert.Equal("No data", TripNaming.DayLine(Stays(), hasMoves: false));
         // Stays at places the geocoder has not named leave the day as it is with no stays at all.
-        Assert.Equal("Travelling", TripNaming.DayLine(Stays((null, null), (null, null)), hasMoves: true));
-        Assert.Equal("No data", TripNaming.DayLine(Stays((null, null)), hasMoves: false));
+        Assert.Equal("Travelling", TripNaming.DayLine(Stays((null, null, null), (null, null, null)), hasMoves: true));
+        Assert.Equal("No data", TripNaming.DayLine(Stays((null, null, null)), hasMoves: false));
     }
 
     [Fact]
