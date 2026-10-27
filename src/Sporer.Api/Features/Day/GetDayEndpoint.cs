@@ -11,7 +11,9 @@ namespace Sporer.Api.Features.Day;
 /// <c>GET /api/day/{date}</c>: one local day of the stored timeline. A day is the local calendar date of the segments
 /// (see <see cref="SegmentStore.FindDayAsync"/>), so a stay that crosses midnight is on both days. A stay at the home in
 /// effect on that day is marked <c>home</c> (see <see cref="TripStore.FindHomeOnAsync"/>): one at the home place, or at a place
-/// within <see cref="DetectionOptions.HomeRadiusMeters"/> of it, which is the same home that GPS drift made another place of.
+/// within <see cref="DetectionOptions.HomeRadiusMeters"/> of it that was the night location on a night of that home period,
+/// which is the same home that GPS drift made another place of. A place near the home that was never where the night was
+/// spent (a café, a shop, a gym) is not home and keeps its number.
 /// Reads only: nothing here waits for or triggers processing; <c>state</c> says whether more is on its way.
 /// </summary>
 internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, ProcessingQueue queue, DetectionOptions options)
@@ -77,8 +79,10 @@ internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, Pro
 
     /// <summary>
     /// A stay is at home when its place (the surviving one, as the home is) is the <paramref name="home"/> place, or is within
-    /// <paramref name="radiusMeters"/> of the home's position: GPS drift can split one home into several places. A stay with no
-    /// place, and every stay of a day with no home in effect (<paramref name="home"/> null), is not.
+    /// <paramref name="radiusMeters"/> of the home's position and was the night location on a night of the home period
+    /// (<see cref="HomeInEffect.NightPlaceIds"/>): GPS drift can split one home into several places, and home detection counts
+    /// only places that nights were spent at, so a nearby place that none was is not part of the home. A stay with no place,
+    /// and every stay of a day with no home in effect (<paramref name="home"/> null), is not.
     /// </summary>
     private static DaySegmentDto Map(DaySegment s, HomeInEffect? home, double radiusMeters) => s.Kind switch
     {
@@ -93,7 +97,8 @@ internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, Pro
     private static bool IsHome(DayPlace? place, HomeInEffect? home, double radiusMeters)
         => place is not null && home is not null
             && (place.Id == home.PlaceId
-                || Geo.DistanceMeters(new GeoPoint(place.Latitude, place.Longitude), home.Position) <= radiusMeters);
+                || (home.NightPlaceIds.Contains(place.Id)
+                    && Geo.DistanceMeters(new GeoPoint(place.Latitude, place.Longitude), home.Position) <= radiusMeters));
 
     /// <summary>A gap stores the positions either side of it as a two-point line: the first is where it starts, the last where it ends.</summary>
     private static GapDto MapGap(DaySegment s)

@@ -20,9 +20,11 @@ public sealed record StoredTrip(
 
 /// <summary>
 /// The home in effect on a date: the place that survives merges (the id the day and range views give a stay at it) and that
-/// place's position.
+/// place's position. <paramref name="NightPlaceIds"/> are the surviving places that were the night location on at least one
+/// night of that home period, the home place among them when it was: the places home detection counted for it, and so the
+/// only ones near the home that are the home too (a café next door is never the 03:00 location).
 /// </summary>
-public sealed record HomeInEffect(long PlaceId, GeoPoint Position);
+public sealed record HomeInEffect(long PlaceId, GeoPoint Position, IReadOnlySet<long> NightPlaceIds);
 
 /// <summary>
 /// A stay inside a trip, as the trip's days are made from it: <paramref name="StartUtc"/> and <paramref name="EndUtc"/> are the
@@ -300,15 +302,44 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
 
     /// <summary>
     /// The place that was home on <paramref name="date"/>, the one that survives merges (the id the day and range views give a
-    /// stay at it), with its position, or null when no home period covers the date. Both ends of a period are days it covers.
+    /// stay at it), with its position and the places that were the night location during that home period (see
+    /// <see cref="HomeInEffect"/>), or null when no home period covers the date. Both ends of a period are days it covers.
     /// Where periods overlap, the one the trips list would take for the date is taken (see <see cref="LoadHomesAsync"/>): the
     /// home in effect is the one of the day looked at, not of today.
     /// </summary>
+    /// <remarks>
+    /// The night places are those of the nights dated from the period's first to its last day (an open period has no last),
+    /// each resolved to its surviving place with <see cref="PlaceStore.Survivors"/> as the other reads are, and a night with no
+    /// place or whose merges never end has none. They are what <c>HomeDetector</c> counted to make the period, which is why a
+    /// place near the home is part of it only if it is among them. The homes and the nights are read in one snapshot, so that a
+    /// refresh that lands in the middle (it replaces nights and homes together) cannot give a home the nights of another.
+    /// </remarks>
     public async Task<HomeInEffect?> FindHomeOnAsync(DateOnly date, CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
 
-        return HomeOn(date, await LoadHomesAsync(connection, null, ct)) is { } home ? new HomeInEffect(home.PlaceId, home.Position) : null;
+        var homes = await LoadHomesAsync(connection, transaction, ct);
+        if (HomeOn(date, homes) is not { } home)
+            return null;
+
+        var nightPlaces = await connection.QueryAsync<long>(new CommandDefinition(
+            $"""
+            with recursive
+            named as (
+                select place_id from night where date >= @From and (@To::date is null or date <= @To::date) and place_id is not null
+            ),
+            {PlaceStore.Survivors}
+            select distinct survivor.id
+            from night n
+            join survivor on survivor.origin = n.place_id
+            where n.date >= @From and (@To::date is null or n.date <= @To::date)
+            """,
+            new { From = home.From, To = home.To }, transaction, cancellationToken: ct));
+
+        await transaction.CommitAsync(ct);
+
+        return new HomeInEffect(home.PlaceId, home.Position, nightPlaces.ToHashSet());
     }
 
     /// <summary>
