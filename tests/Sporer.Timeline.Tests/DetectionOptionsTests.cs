@@ -23,6 +23,17 @@ public class DetectionOptionsTests
     }
 
     [Fact]
+    public void DetectionOptions_defaults_for_nights_homes_and_trips()
+    {
+        var o = new DetectionOptions();
+        Assert.Equal(3, o.NightHour);
+        Assert.Equal(TimeSpan.FromHours(12), o.NightPointWindow);
+        Assert.Equal(90, o.HomeWindowNights);
+        Assert.Equal(60, o.HomeMinNights);
+        Assert.Equal(50, o.TripMinDistanceKm);
+    }
+
+    [Fact]
     public void Values_can_be_overridden_with_init_syntax()
     {
         var o = new DetectionOptions { StayRadiusMeters = 40, GapMinDuration = TimeSpan.FromMinutes(10) };
