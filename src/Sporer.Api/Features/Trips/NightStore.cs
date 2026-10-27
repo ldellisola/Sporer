@@ -22,15 +22,28 @@ public sealed class NightStore(NpgsqlDataSource dataSource)
     public async Task ReplaceAsync(
         DateOnly from, DateOnly to, IReadOnlyList<(Night Night, string Source)> nights, CancellationToken ct = default)
     {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+
+        await ReplaceAsync(connection, transaction, from, to, nights, ct);
+
+        await transaction.CommitAsync(ct);
+    }
+
+    /// <summary>
+    /// The same, in the caller's transaction, which commits it or not: it is how the nights are written together with what
+    /// is derived from them (see <see cref="TripStore.ReplaceAllAsync"/>).
+    /// </summary>
+    internal async Task ReplaceAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, DateOnly from, DateOnly to,
+        IReadOnlyList<(Night Night, string Source)> nights, CancellationToken ct = default)
+    {
         foreach (var (night, _) in nights)
         {
             if (night.Date < from || night.Date > to)
                 throw new ArgumentException(
                     $"The night of {night.Date:yyyy-MM-dd} is outside the range {from:yyyy-MM-dd} to {to:yyyy-MM-dd}.", nameof(nights));
         }
-
-        await using var connection = await dataSource.OpenConnectionAsync(ct);
-        await using var transaction = await connection.BeginTransactionAsync(ct);
 
         await connection.ExecuteAsync(new CommandDefinition(
             "delete from night where date >= @From and date <= @To",
@@ -55,8 +68,6 @@ public sealed class NightStore(NpgsqlDataSource dataSource)
                 }).ToList(),
                 transaction, cancellationToken: ct));
         }
-
-        await transaction.CommitAsync(ct);
     }
 
     /// <summary>

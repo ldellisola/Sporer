@@ -17,7 +17,8 @@ public interface ITripRefresher
 /// The one path from the stored timeline to the nights, homes and trips: it builds the nights of the window that changed,
 /// then works out the home periods and the trips from all of them. Whether a place is home depends on 90 nights, and a trip
 /// on the nights on both sides of it, so a change in one window can move either of them anywhere in the history. They are
-/// therefore not patched but recomputed in memory (a few thousand nights and the stays), and written in one transaction.
+/// therefore not patched but recomputed in memory (a few thousand nights and the stays), and the new nights, homes and trips
+/// are written together in one transaction.
 /// </summary>
 public sealed class TripRefresher(
     NightBuilder builder,
@@ -29,13 +30,17 @@ public sealed class TripRefresher(
 {
     public async Task RefreshAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
     {
-        // The nights of the window are rebuilt and stored; the dates the builder leaves out lose their rows.
+        // The nights of the window are built afresh. They are not stored yet: the nights, the homes and the trips are written
+        // together at the end, so that the trips a reader finds always belong to the nights it finds.
         var (from, to, built) = await builder.BuildAsync(fromUtc, toUtc, ct);
-        await nights.ReplaceAsync(from, to, built, ct);
 
-        // A night keeps the place its stay had, which may have been merged into another since: the home is the survivor.
+        // Every stored night outside the window, and the built ones in it: the dates the builder left out have none now.
         var survivors = await places.LoadSurvivorsAsync(ct);
         var all = (await nights.LoadAllAsync(ct))
+            .Where(n => n.Date < from || n.Date > to)
+            .Concat(built.Select(b => b.Night))
+            .OrderBy(n => n.Date)
+            // A night keeps the place its stay had, which may have been merged into another since: the home is the survivor.
             .Select(n => n.PlaceId is { } id && survivors.TryGetValue(id, out var survivor) ? n with { PlaceId = survivor } : n)
             .ToList();
 
@@ -43,6 +48,6 @@ public sealed class TripRefresher(
         var homePositions = await places.LoadPositionsAsync(homes.Select(h => h.PlaceId), ct);
         var detected = TripDetector.Detect(all, homes, homePositions, await segments.LoadStayPositionsAsync(ct), options);
 
-        await trips.ReplaceDetectedAsync(homes, detected, ct);
+        await trips.ReplaceAllAsync(from, to, built, homes, detected, ct);
     }
 }

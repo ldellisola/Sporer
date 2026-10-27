@@ -30,6 +30,13 @@ public sealed record SimulatorOptions(DateOnly From, DateOnly To, TimeSpan Movin
 
 /// <summary>
 /// What a simulated life holds that a test can look for: each trip's name, the local date it starts on (the morning the
-/// person leaves for the airport) and how many nights it lasts at the destination, and the local date of the house move.
+/// person leaves for the airport) and how many nights it lasts at the destination, and the local date planned for the house
+/// move.
 /// </summary>
+/// <remarks>
+/// The plan is made before anything is lived, so it cannot say what a trip does to the days around it. A trip that includes
+/// the day planned for the move takes it over: the person is away, and the run never moves house. The trips are placed at
+/// 22 %, 40 % and 72 % of the history and the move at 57 %, so this cannot happen while all three trips fit (which takes more
+/// than three months); in a history of a few weeks, with fewer trips, it can, and then the move day of the plan is not lived.
+/// </remarks>
 public sealed record SimulatorPlan(IReadOnlyList<(string Name, DateOnly Start, int Nights)> Trips, DateOnly MoveDay);

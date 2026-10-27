@@ -6,9 +6,9 @@ namespace Sporer.Api.Features.Timeline;
 
 /// <summary>
 /// What a rebuild did: <paramref name="Written"/> segments were stored, and the timeline between <paramref name="RebuiltFromUtc"/>
-/// and <paramref name="RebuiltToUtc"/> is what was recomputed. That is the range that was asked for widened to the stays
-/// around it, which is wider than the request, and it is the window whatever is derived from the segments (the nights, the
-/// homes and the trips) has to be refreshed over.
+/// and <paramref name="RebuiltToUtc"/> is what was recomputed. That is the range that was asked for, widened to the stays
+/// around it where there are any (with none stored, it is the range itself), and it is the window whatever is derived from
+/// the segments (the nights, the homes and the trips) has to be refreshed over.
 /// </summary>
 public sealed record ReprocessResult(int Written, DateTime RebuiltFromUtc, DateTime RebuiltToUtc);
 

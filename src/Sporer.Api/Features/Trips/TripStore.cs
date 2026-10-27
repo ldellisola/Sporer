@@ -9,7 +9,7 @@ namespace Sporer.Api.Features.Trips;
 /// rebuilt since they were last worked out (<c>night_refresh</c>). Everything in it is derived, and is rewritten as a whole
 /// from the nights by <see cref="TripRefresher"/>.
 /// </summary>
-public sealed class TripStore(NpgsqlDataSource dataSource)
+public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore)
 {
     /// <summary>
     /// Adds <paramref name="fromUtc"/> to <paramref name="toUtc"/> to the window that waits to be refreshed: the window
@@ -63,6 +63,36 @@ public sealed class TripStore(NpgsqlDataSource dataSource)
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
+        await ReplaceDetectedAsync(connection, transaction, homes, trips, ct);
+
+        await transaction.CommitAsync(ct);
+    }
+
+    /// <summary>
+    /// Replaces the nights dated <paramref name="from"/> to <paramref name="to"/> by <paramref name="nights"/> (as
+    /// <see cref="NightStore"/> does) and every detected home period and trip by <paramref name="homes"/> and
+    /// <paramref name="trips"/>, all in one
+    /// transaction. The homes and trips are worked out from the nights, so a reader must never find new nights with the old
+    /// trips, which two transactions would allow for as long as it took the second to run or, after a failure between them,
+    /// for good: a failure leaves all of it as it was.
+    /// </summary>
+    public async Task ReplaceAllAsync(
+        DateOnly from, DateOnly to, IReadOnlyList<(Night Night, string Source)> nights,
+        IReadOnlyList<HomePeriod> homes, IReadOnlyList<DetectedTrip> trips, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+
+        await nightStore.ReplaceAsync(connection, transaction, from, to, nights, ct);
+        await ReplaceDetectedAsync(connection, transaction, homes, trips, ct);
+
+        await transaction.CommitAsync(ct);
+    }
+
+    private static async Task ReplaceDetectedAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction,
+        IReadOnlyList<HomePeriod> homes, IReadOnlyList<DetectedTrip> trips, CancellationToken ct)
+    {
         await connection.ExecuteAsync(new CommandDefinition(
             "delete from home_period where source = 'detected'; delete from trip;", transaction: transaction, cancellationToken: ct));
 
@@ -95,8 +125,6 @@ public sealed class TripStore(NpgsqlDataSource dataSource)
                 }).ToList(),
                 transaction, cancellationToken: ct));
         }
-
-        await transaction.CommitAsync(ct);
     }
 
     /// <summary>Npgsql writes only UTC values to timestamptz. Everything in the timeline is UTC; unspecified means UTC too.</summary>

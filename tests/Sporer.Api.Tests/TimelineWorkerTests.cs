@@ -102,6 +102,9 @@ public class TimelineWorkerTests(DatabaseFixture db)
         /// <summary>Fails every call with <paramref name="error"/>; null stops it.</summary>
         public void FailWith(Exception? error) => _failWith = error;
 
+        /// <summary>Runs, awaited, when a refresh is asked for, before anything else (it can cancel, as a host that stops does).</summary>
+        public Func<CancellationToken, Task>? OnCall { get; set; }
+
         public (DateTime From, DateTime To)[] TakeCalls()
         {
             var calls = Calls.ToArray();
@@ -112,6 +115,8 @@ public class TimelineWorkerTests(DatabaseFixture db)
         public async Task RefreshAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
         {
             _calls.Enqueue((fromUtc, toUtc));
+            if (OnCall is { } hook)
+                await hook(ct);
             if (_failWith is { } error)
                 throw error;
             await inner.RefreshAsync(fromUtc, toUtc, ct);
@@ -207,6 +212,7 @@ public class TimelineWorkerTests(DatabaseFixture db)
         Assert.Equal(version, AlgorithmVersion.Compute(new DetectionOptions()));
         Assert.NotEqual(version, AlgorithmVersion.Compute(new DetectionOptions { StayRadiusMeters = 150 }));
         Assert.NotEqual(version, AlgorithmVersion.Compute(new DetectionOptions { StayMinDuration = TimeSpan.FromMinutes(6) }));
+        Assert.NotEqual(version, AlgorithmVersion.Compute(new DetectionOptions { HomeMinNights = 61 })); // the home and trip options count too
     }
 
     [Fact]
@@ -956,22 +962,62 @@ public class TimelineWorkerTests(DatabaseFixture db)
         Assert.Equal([window], h.Refresher.TakeCalls());
         h.Processor.TakeCalls();
 
-        // The next pass has nothing else to do, so it is not work: the loop waits its poll interval, not spins. It tries again,
-        // and the error is saved again (a pass saves what is failing, so the next save does not wipe it).
+        // It waits before trying again, as a failed backfill step does (2 minutes the first time): the passes in between are not
+        // work, so the loop waits its poll interval, and do not call the refresher. They still save the error, which a pass
+        // that saved only what it found would wipe.
+        clock.Advance(TimeSpan.FromMinutes(1));
         Assert.False(await h.Worker.RunOnceAsync(Ct));
-        Assert.Equal([window], h.Refresher.TakeCalls());
+        Assert.Empty(h.Refresher.Calls);
         Assert.Equal(window, await PendingAsync(cs));
         Assert.Contains("refresh exploded", (await StateAsync(cs)).LastError);
+
+        // Then it is tried again from the same window, fails again, and waits twice as long.
+        clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.False(await h.Worker.RunOnceAsync(Ct));
+        Assert.Equal([window], h.Refresher.TakeCalls());
+        clock.Advance(TimeSpan.FromMinutes(3));
+        Assert.False(await h.Worker.RunOnceAsync(Ct));
+        Assert.Empty(h.Refresher.Calls);
         Assert.Empty(h.Processor.Calls);
+        Assert.Contains("refresh exploded", (await StateAsync(cs)).LastError);
 
         // Once it works the window is refreshed and cleared, and the error with it.
         h.Refresher.FailWith(null);
+        clock.Advance(TimeSpan.FromMinutes(1));
         Assert.True(await h.Worker.RunOnceAsync(Ct));
         Assert.Equal([window], h.Refresher.TakeCalls());
         Assert.Equal((null, null), await PendingAsync(cs));
         Assert.Null((await StateAsync(cs)).LastError);
         Assert.False(await h.Worker.RunOnceAsync(Ct));
         Assert.Empty(h.Refresher.Calls);
+
+        // A success starts the wait over: the next failure is tried again after 2 minutes, not after the 8 that came next.
+        await AddDirtyAsync(cs, T(10, 0), T(10, 30), clock.GetUtcNow().UtcDateTime.AddMinutes(-5));
+        h.Refresher.FailWith(new InvalidOperationException("refresh exploded again"));
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+        h.Refresher.TakeCalls();
+        clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.False(await h.Worker.RunOnceAsync(Ct));
+        Assert.Single(h.Refresher.Calls);
+    }
+
+    [Fact]
+    public async Task A_restart_forgets_the_wait_of_a_failing_refresh()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = ClockAfterThreeWeeks();
+        await using var h = Start(cs, clock);
+        await PointSeeder.InsertAsync(cs, CommuteDays(0, 14), Ct);
+        h.Refresher.FailWith(new InvalidOperationException("refresh exploded"));
+        Assert.True(await h.Worker.RunOnceAsync(Ct)); // week 1; its refresh fails and now waits 2 minutes
+        Assert.Single(h.Refresher.TakeCalls());
+
+        // The algorithm version changes under the running worker (as it would for a new one after a restart): the backfill starts
+        // over, which clears what was pending, so a failure of the old window has nothing to wait for.
+        await Sql.ExecAsync(cs, "update processing_state set algorithm_version = 'old'", ct: Ct);
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+
+        Assert.Single(h.Refresher.TakeCalls()); // the first week again, refreshed at once, not after the 2 minutes
     }
 
     [Fact]
@@ -990,7 +1036,7 @@ public class TimelineWorkerTests(DatabaseFixture db)
         Assert.DoesNotContain("chunk exploded", state.LastError);
 
         h.Processor.FailNext(new InvalidOperationException("chunk exploded"));
-        Assert.True(await h.Worker.RunOnceAsync(Ct)); // week 2 fails, and week 1 is refreshed again, and fails again
+        Assert.True(await h.Worker.RunOnceAsync(Ct)); // week 2 fails; week 1's refresh is still waiting, and its error is saved again
         state = await StateAsync(cs);
         Assert.Equal(T(7, 0, 7), state.BackfillCursor);
         Assert.Contains("chunk exploded", state.LastError);
@@ -1006,6 +1052,39 @@ public class TimelineWorkerTests(DatabaseFixture db)
         Assert.Equal((null, null), await PendingAsync(cs));
         // The night before the first day to the night of the last day but one: the last day's night has not happened.
         Assert.Equal(14, await CountAsync(cs, "night"));
+    }
+
+    [Fact]
+    public async Task A_stop_during_the_refresh_keeps_the_step_the_backfill_has_just_done()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var h = Start(cs, ClockAfterThreeWeeks());
+        await PointSeeder.InsertAsync(cs, CommuteDays(0, 14), Ct);
+        using var stopping = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        h.Refresher.OnCall = token =>
+        {
+            stopping.Cancel(); // the host stops while the refresh runs
+            token.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => h.Worker.RunOnceAsync(stopping.Token));
+
+        // The cursor has moved past the week that was rebuilt, and its attempt is cleared: had they been lost, the next starts would
+        // find the week's attempts counting up to a chunk the process cannot get through, and set a good one aside.
+        var state = await StateAsync(cs);
+        Assert.Equal(T(7, 0, 7), state.BackfillCursor);
+        Assert.Equal(0, await Sql.ScalarAsync<int>(cs, "select backfill_chunk_attempts from processing_state", ct: Ct));
+        Assert.NotNull((await PendingAsync(cs)).From); // and the window that was being refreshed is still waiting
+        Assert.Empty(await DirtyAsync(cs));
+
+        // The next process refreshes it, and goes on from the second week.
+        h.Refresher.OnCall = null;
+        h.Processor.TakeCalls();
+        h.Refresher.TakeCalls();
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+        Assert.Equal([(T(7, 0, 7), T(7, 0, 14))], h.Processor.TakeCalls());
+        Assert.Equal((null, null), await PendingAsync(cs));
     }
 
     [Fact]

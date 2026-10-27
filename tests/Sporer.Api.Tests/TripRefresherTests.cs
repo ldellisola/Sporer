@@ -133,8 +133,9 @@ public class TripRefresherTests(DatabaseFixture db)
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
         var refresher = api.Services.GetRequiredService<ITripRefresher>();
-        // Home for 30 nights at one place and then for 76 at a place that has been merged into the first since. Neither alone is
-        // home for 60 of the last 90 nights unless the merge counts: the second one alone would be, with the wrong id.
+        // Home for 30 nights at one place and then for 76 at a place that has been merged into the first since. The first alone
+        // is not home for 60 of the last 90 nights; the second alone is, so without the merge the home would be the second
+        // place. With it, the home is the first, for all 106.
         var survivor = await PlaceAsync(cs, Spots.Home);
         var merged = await PlaceAsync(cs, Geo.Offset(Spots.Home, 30, 0), mergedInto: survivor);
         await StayAsync(cs, Utc(3, 31, 12), Utc(4, 30, 7), survivor, Spots.Home);
@@ -145,6 +146,32 @@ public class TripRefresherTests(DatabaseFixture db)
         Assert.Equal([new HomeRow(survivor, "2026-03-31", null, "detected")], await HomesAsync(cs));
         // The nights keep the place their stay had: the merge is resolved when they are read, not when they are stored.
         Assert.Equal([survivor, merged], await Sql.QueryAsync<long>(cs, "select distinct place_id from night where place_id is not null order by place_id", ct: Ct));
+    }
+
+    [Fact]
+    public async Task TripRefresher_leaves_the_old_nights_homes_and_trips_when_writing_the_new_ones_fails()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var refresher = api.Services.GetRequiredService<ITripRefresher>();
+        var nights = api.Services.GetRequiredService<NightStore>();
+        var (home, lisbon, _) = await SeedOneTripAsync(cs);
+        await refresher.RefreshAsync(Utc(4, 1), Utc(7, 15, 12), Ct);
+        var (nightsBefore, homesBefore, tripsBefore) = (await nights.LoadAllAsync(Ct), await HomesAsync(cs), await TripsAsync(cs));
+        Assert.NotEmpty(tripsBefore);
+
+        // The timeline has changed (a month more at home, then a stay at the other place), so that the new nights, homes and trips
+        // all differ from the stored ones, and writing a trip fails: whatever was written before it must go too.
+        await Sql.ExecAsync(cs, "alter table trip add constraint no_trip_may_be_written check (nights < 0) not valid", ct: Ct);
+        await StayAsync(cs, Utc(7, 15, 12), Utc(8, 20, 7), home, Spots.Home);
+        await StayAsync(cs, Utc(8, 20, 12), Utc(8, 23, 8), lisbon, Spots.Lisbon, "Europe/Lisbon");
+
+        await Assert.ThrowsAsync<PostgresException>(() => refresher.RefreshAsync(Utc(7, 15), Utc(8, 23, 8), Ct));
+
+        // Nights that a reader would find new, with trips that are old, are what two transactions would have left.
+        Assert.Equal(nightsBefore, await nights.LoadAllAsync(Ct));
+        Assert.Equal(homesBefore, await HomesAsync(cs));
+        Assert.Equal(tripsBefore, await TripsAsync(cs));
     }
 
     [Fact]
@@ -262,6 +289,32 @@ public class TripRefresherTests(DatabaseFixture db)
             store.ReplaceDetectedAsync([new HomePeriod(999_999, D(1, 1), null)], [], Ct)); // no such place
 
         Assert.Equal([new HomeRow(place, "2026-01-01", null, "detected")], await HomesAsync(cs)); // the deletes went with it
+        Assert.Equal(["2026-05-03"], (await TripsAsync(cs)).Select(t => t.Id));
+    }
+    [Fact]
+    public async Task TripStore_replace_all_leaves_the_nights_homes_and_trips_as_they_were_when_a_write_fails()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var store = api.Services.GetRequiredService<TripStore>();
+        var nights = api.Services.GetRequiredService<NightStore>();
+        var place = await PlaceAsync(cs, Spots.Home);
+        var old = new Night(D(6, 1), Utc(6, 2, 1), "Europe/Oslo", place, Spots.Home);
+        var trip = new DetectedTrip(D(5, 3), D(5, 5), 3, Utc(5, 3, 8), Utc(5, 6, 9), "Europe/Oslo", "Europe/Oslo", D(5, 3), D(5, 6));
+        await store.ReplaceAllAsync(D(6, 1), D(6, 3), [(old, "stay")], [new HomePeriod(place, D(6, 1), null)], [trip], Ct);
+        var changed = old with { PlaceId = null, Position = Spots.Cafe };
+
+        // The nights are written first and the home period fails (no such place): the nights go back with it.
+        await Assert.ThrowsAsync<PostgresException>(() =>
+            store.ReplaceAllAsync(D(6, 1), D(6, 3), [(changed, "point")], [new HomePeriod(999_999, D(6, 1), null)], [], Ct));
+
+        Assert.Equal([old], await nights.LoadAllAsync(Ct));
+        Assert.Equal([new HomeRow(place, "2026-06-01", null, "detected")], await HomesAsync(cs));
+        Assert.Equal(["2026-05-03"], (await TripsAsync(cs)).Select(t => t.Id));
+
+        // And a night outside the range fails before anything is written.
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            store.ReplaceAllAsync(D(6, 1), D(6, 3), [(old with { Date = D(6, 9) }, "stay")], [], [], Ct));
         Assert.Equal(["2026-05-03"], (await TripsAsync(cs)).Select(t => t.Id));
     }
 }
