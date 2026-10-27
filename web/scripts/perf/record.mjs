@@ -8,8 +8,10 @@
 //   - a typical day (the median weekday by the size of its answer) and the heaviest day,
 //   - a typical month and the heaviest month (the same, over whole calendar months),
 //   - one year (the calendar year given, else the one whose answer is the largest),
-// and, for each, what the app asks for on top of it: the status, and the two days or periods either side (it prefetches the one before and
-// the one after whatever is on show, so a step to the next one asks for the one after that).
+//   - the list of trips and every trip of it (there are few: the trip of /trip/{id} is asked for with the list, which the bar of a trip names
+//     its neighbours from, and the app prefetches the trips either side of the one on show, so all of them are needed whichever is opened),
+// and, for each day, month and year, what the app asks for on top of it: the status, and the two days or periods either side (it prefetches
+// the one before and the one after whatever is on show, so a step to the next one asks for the one after that).
 // Everything goes to perf/recorded/, as the server wrote it, with an index of the requests it answers. The directory is not
 // committed (a year of routes is half a megabyte): record again on the machine that measures. It is written to perf/recorded.partial/
 // first and takes the place of the old recording only when it is complete, so that a server that fails half-way (or a run that is
@@ -97,6 +99,9 @@ for (let year = Number(first.slice(0, 4)); year <= Number(last.slice(0, 4)); yea
 }
 const year = yearArg ? Number(yearArg) : [...years].sort((a, b) => b.bytes - a.bytes)[0].year;
 
+// The trips the history has, newest first as the API lists them: one scenario for the list and one for each trip.
+const trips = (await peek("/api/trips")).json.trips;
+
 // --- Recording them, and what the app asks for around each ---
 // Into a directory of its own: the old recording goes only once this one is complete (a server that was not there, that failed while
 // the days were looked at or that fails now, leaves it as it was), and what a failed run began is taken away again.
@@ -125,6 +130,18 @@ for (const [id, label, one] of [
 }
 for (const y of [-2, -1, 0, 1, 2].map((k) => year + k)) await record(rangePath({ from: `${y}-01-01`, to: `${y}-12-31` }), `range-${y}`);
 scenarios.push({ id: "year", label: `the calendar year ${year}`, url: `/year/${year}`, request: rangePath({ from: `${year}-01-01`, to: `${year}-12-31` }) });
+
+await record("/api/trips", "trips");
+scenarios.push({ id: "trips", label: "the list of trips", url: "/trips", request: "/api/trips" });
+for (const trip of trips) {
+  await record(`/api/trips/${trip.id}`, `trip-${trip.id}`);
+  scenarios.push({
+    id: `trip-${trip.id}`,
+    label: `the trip of ${trip.nights} ${trip.nights === 1 ? "night" : "nights"} from ${trip.id}`,
+    url: `/trip/${trip.id}`,
+    request: `/api/trips/${trip.id}`,
+  });
+}
 
 await record("/api/status", "status");
 

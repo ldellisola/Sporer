@@ -11,10 +11,12 @@ The server is a .NET 10 API, and it also serves the web app that shows the timel
 | Endpoint | What it does |
 | --- | --- |
 | `POST /api/overland` | Receives Overland batches. Answers `{"result":"ok"}` once the points are stored. |
-| `GET /api/day/{yyyy-MM-dd}` | One local day of the timeline. `state` is `pending` while work that affects that day is still waiting. |
+| `GET /api/day/{yyyy-MM-dd}` | One local day of the timeline. A stay at the home in effect on that day (see "Trips and home") has `"home": true`. `state` is `pending` while work that affects that day is still waiting. |
 | `GET /api/range?from=yyyy-MM-dd&to=yyyy-MM-dd` | A stretch of local days (at most 400, both ends counted) in one answer: every move with its line (simplified further if there would be more than 50 000 vertices), the places with the time spent there inside the range, and a list of the days. `state` is `pending` while work that affects the range is still waiting. |
 | `GET /api/heat?from=yyyy-MM-dd&to=yyyy-MM-dd` | Where the time of a range (the same dates, the same limit as `/api/range`) was spent, for a heat layer: `cells` are `[lon, lat, seconds]`, the most seconds first, one per cell of a grid of 0.001 degrees (about 111 m of latitude; a degree of longitude is shorter the further you are from the equator, so a cell is narrower than it is tall), weighted by the time of the stays in it, not by points; `maxSeconds` is the first one's weight (0 when there are none). |
 | `GET /api/places/{id}` | A place and the time spent at it: name, address, centre, total seconds, number of visits, first and last visit, and the latest 50 stays (`start`, `end`, local `date`, `timeZone`), newest first. A place merged into another is served as the one it was merged into, with the time of both. `404` for an id that is no place of the timeline (unknown, or no stay names the place it leads to or any place merged into it), `400` for one that is not a positive whole number. |
+| `GET /api/trips` | The trips, newest first, as `{"trips": [...]}` (an empty list when there are none). Each has its `id` (the date of its first away night, `yyyy-MM-dd`), a `name` (`"Lisbon"`, `"Lisbon & Porto"`; `"Trip"` until its places are named), `firstNight`, `lastNight` and `nights` (every night from the first to the last, those with no known position too), `start` and `end` (when you left and came back, UTC; `end` is `null` while the trip is `ongoing`), `startTimeZone`, `endTimeZone`, `localStartDate` and `localEndDate`, its `cities` (name, country, nights and mean position of each city slept in), and a `thumbnail`: the line `[[lon, lat], ...]` of home, the places it slept at and home again (it stops at the last place while the trip is ongoing). There is no `state`: the trips are worked out after the timeline, once per pass of the background worker, so a trip can follow new points by a moment. |
+| `GET /api/trips/{id}` | One trip, `id` being the date of its first away night. The fields of the list (without the thumbnail), its `stats` (`flights`, `cities`, `places`, and `groundDistanceMeters`, the distance of the moves that are not flights), its `moves` (`id`, `mode`, `distanceMeters` and the `geometry` of each, simplified further if all of them together would have more than 50 000 vertices) and its `days`: for each local day of the trip a `description` (`"Oslo → Lisbon"`), up to three `highlights` (the named places with the most time that day, not counting the one slept in), `groundDistanceMeters` and `flights`. `404` for an id that is no stored trip (unknown, or not a date). There is no `state`, as for the list. |
 | `GET /api/status` | Processing health: algorithm version, backfill progress, pending and failed work, place naming progress, warnings. |
 | `GET /api/config` | What the web app needs to know before it can draw: the map styles for the light and the dark colour scheme (`Map__StyleLight`, `Map__StyleDark`, see below). |
 
@@ -24,7 +26,8 @@ The web app is at `https://sporer.lud.ar` (that is, at `/` of wherever you publi
 month, year or range of the timeline on a map with a panel beside it (a sidebar on a wide window, a bottom sheet you pull up
 on a phone), and a place with the time you have spent at it. The address says what is shown, so a view can be bookmarked
 and the Back button works: `/day/2026-10-22`, `/week/2026-10-19`, `/month/2026-10`, `/year/2026`,
-`/range/2026-10-01..2026-10-22`, `/place/7`. Anything else opens today. The map follows the light or dark setting of the
+`/range/2026-10-01..2026-10-22`, `/place/7`, `/trips` (the list of your trips, opened by the Trips button of the card at the top of the
+map) and `/trip/2026-09-12` (one trip, named by the date of its first night; see "Trips and home"). Anything else opens today. The map follows the light or dark setting of the
 device, and the ◐ button of the map draws where the time of a period was spent as a heat layer.
 
 **On an iPhone**, open `https://sporer.lud.ar` in Safari, tap Share, then **Add to Home Screen**. It opens from the home
@@ -32,6 +35,31 @@ screen in a window of its own, without Safari's bars. On a desktop browser it is
 
 The web app is built into the image: nothing else needs to be installed or run next to it. It is served by the same process
 as the API, from `wwwroot` next to `Sporer.Api.dll`.
+
+## Trips and home
+
+Sporer works out where you live and when you were away from it, from the places you slept at. All of it is derived from the timeline and is
+worked out again with it, so nothing here has to be entered or kept up to date by hand.
+
+- **A night** is named by the evening it begins: the night of 22 October is where you were at **03:00 local time on 23 October**, by the
+  clock of the zone you were in then. Its place is the stay that covers that moment; if none does, the nearest raw point within 12 hours;
+  if there is none, the night is unknown.
+- **Home** is a place that was where you slept on **at least 60 of 90 nights in a row** (a night that is unknown counts against it). A place
+  that reaches that bar is home from the first of those nights, and the first home of the history from the first night there is. A long stay
+  that stays below the bar, a month abroad or a winter with someone, never becomes home: it is a trip.
+- **Away** means sleeping at least **50 km** from the home you had that night. While there is no home, no night is away.
+- **A trip** is a run of away nights in a row. Unknown nights between two of them belong to it, and an unknown night never starts or ends
+  one. It starts when you left (the end of the last stay within 50 km of home) and ends when you came back (the start of the first one).
+  A trip whose last away night is the last night that is stored is **ongoing**, and has no end yet. Its id is the date of its first away
+  night.
+- **Names** are made when they are asked for, from the cities and countries of the places you slept at, in English: `Lisbon`,
+  `Lisbon & Porto`, or the countries when it was three cities or more, and `Trip` until the places have been named (see "Place naming").
+  The list says how long it was as `Lisbon · 4 nights` (`1 night`).
+
+On the Day view a stay at the home of that day is drawn with a house instead of a number, on the map and in the list, and the numbers count
+the other stays that have a place. The thresholds are the `Detection__*` settings below: `Detection__TripMinDistanceKm`,
+`Detection__HomeMinNights`, `Detection__HomeWindowNights`, `Detection__NightHour` and `Detection__NightPointWindow`. Changing one rebuilds the
+whole timeline, as changing any of them does.
 
 ## Running it
 
@@ -146,6 +174,11 @@ start (see "First start" below).
 | `Detection__PlaceRadiusMeters` | `75` | A stay within this distance of a known place is matched to it. |
 | `Detection__DetailToleranceMeters` | `5` | Line simplification tolerance of the detailed track. |
 | `Detection__CoarseToleranceMeters` | `50` | Line simplification tolerance of the coarse track. |
+| `Detection__NightHour` | `3` | The hour of local time (24-hour clock) a night is located at: the night of an evening is placed at this hour on the next day, in the zone you were in then. |
+| `Detection__NightPointWindow` | `12:00:00` | When no stay covers a night's moment, the nearest raw point within this long of it locates the night; if there is none, the night is unknown. |
+| `Detection__HomeWindowNights` | `90` | A new home is judged over this many consecutive calendar nights. |
+| `Detection__HomeMinNights` | `60` | A place becomes home once it is where you slept on at least this many of the last `Detection__HomeWindowNights` nights; unknown nights count against it. Keep it above half the window, so that only one place can qualify at a time. |
+| `Detection__TripMinDistanceKm` | `50` | A night is away, and part of a trip, when its place is at least this far from the home you had that night. |
 
 ## Overland
 
@@ -194,6 +227,32 @@ set aside the same way. Later processing does not reach back into a set-aside ra
 hold up the rest, live data included. The failed range of a backfill step also covers the step after it, which is rebuilt
 together with it when the retry goes through (until then those days show as `pending`). The same backfill runs again
 whenever the detection thresholds or the detection code change, and starts without any failed ranges.
+
+## Owner's checklist: trips and home
+
+After the first backfill of your real history has finished (`backfill.percent` is 100 at `https://sporer.lud.ar/api/status`), open the app on
+the phone, over the VPN, and check:
+
+- [ ] **The home periods look right, including any move.** There is no screen for the periods yet: open a day well before and a day well
+  after a move you remember, and look for the house on the stays at home (it is where the number would be). It should be at the old place
+  before the move and the new one after it. A move is noticed once the new place has 60 nights of the last 90, but it is dated from the
+  first of them. If a move you made is not there at all, say so: a new home whose nights are spread over several places close to each
+  other (a stay matches a place within 75 m, or makes its own) can fail the 60-of-90 bar, as the synthetic history's move does. (The
+  periods are in the `home_period` table: `select * from home_period order by from_date`.)
+- [ ] **Each trip you remember is listed**, at `/trips`, with sensible dates, a name and a number of nights. Look for a trip that is missing
+  (it was nearer than 50 km, or it began before the first home) and for one that is not a trip.
+- [ ] **A long stay is not mistaken for a move.** A month or two away from home is one trip, and when you are back the house is still at
+  your own place. (A stay of 60 nights or more out of 90 at one place is a move, by design.)
+- [ ] **Home stops show a house** on the Day view, on the map and in the list, and no stop that is not home does.
+- [ ] **The day lines of a trip read well**: open a trip and read each day's line (`Oslo → Lisbon`, its highlights, its distance and its
+  flights). Say if a line reads wrong for a day you remember.
+- [ ] **Time the trips list and a trip on the phone**, opened from the home screen, over the VPN. On the synthetic history the cards and
+  the days show in about 0.8 seconds on a phone-sized page with the processor held back four times (the target is 2 seconds), without
+  the network. Say how long they take on the real device; the first load of the app also fetches half a megabyte of JavaScript. The measurements and how to repeat them are in `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md`.
+
+If a trip is missing or wrongly there, or a home is wrong, the settings are `Detection__TripMinDistanceKm`, `Detection__HomeMinNights` and
+`Detection__HomeWindowNights` (see "Detection thresholds"); changing one rebuilds the timeline, which takes a few minutes for years of
+history.
 
 ## Releases
 
@@ -259,8 +318,8 @@ access gets a plain background instead of a map; the rest of the page works.
 | `npm run typecheck` | `tsc --noEmit`, with `strict` on, for the app and, as a project of its own (`web/perf/tsconfig.json`), for the performance run. |
 | `npm test` | The unit and component tests (Vitest, jsdom). |
 | `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. |
-| `npm run perf` | The web performance run (spec §8): times the panel's rows and the map's idle for a day, a month and a year on a phone-sized page with the processor held back 4 times, against API answers recorded by `npm run perf:record` from a server over the synthetic history. Not part of `npm run e2e` or CI; takes about four minutes. How to run it, and its results, are in `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md`. |
-| `npm run perf:record` | Records those API answers (`node scripts/perf/record.mjs <api-url> <first-date> <last-date>`) into `web/perf/recorded/`, which git ignores. |
+| `npm run perf` | The web performance run (spec §8): times the panel's rows and the map's idle for a day, a month and a year, for the list of trips and for each trip, on a phone-sized page with the processor held back 4 times, against API answers recorded by `npm run perf:record` from a server over the synthetic history. Not part of `npm run e2e` or CI; takes about six minutes (65 tests for the synthetic history's three trips). How to run it, and its results, are in `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md` and, for the trips, `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md`. |
+| `npm run perf:record` | Records those API answers, the trips' among them (`node scripts/perf/record.mjs <api-url> <first-date> <last-date>`), into `web/perf/recorded/`, which git ignores. |
 | `npm run perf:bundle` | After a build: the size of each JavaScript file of the production bundle, gzipped and Brotli-compressed. |
 | `npm run build` | Type checks and builds the web app into `src/Sporer.Api/wwwroot`, which the API serves (and git ignores). |
 | `npm run icons` | Draws the PNG icons in `public/icons/` again from `icon.svg`. Only when the icon changes. |
@@ -278,7 +337,10 @@ dotnet run --project tools/Sporer.SyntheticData -c Release -- --connection "<Npg
 ```
 
 `5s` gives about a million rows; `500ms` gives 10.7 million. `tools/perf/day-latency.sh` and `tools/perf/ingest-latency.sh`
-time the day view and ingest, `tools/perf/api-latency.sh` the range, heat and place endpoints too, and `tools/perf/explain.sql` shows
-the plans of their queries. The measurements at 10 million rows, and how to repeat them, are in
-`docs/superpowers/plans/2026-10-23-sporer-plan-1-perf.md` (server) and `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md`
-(range, heat, place, the web app).
+time the day view and ingest, `tools/perf/api-latency.sh` the range, heat, place and trips endpoints too, and `tools/perf/explain.sql` and
+`tools/perf/explain-trips.sql` show the plans of their queries. `tools/perf/backfill-time.sh` times the first backfill,
+`tools/perf/refresh-latency.sh` the refresh of the homes and trips after new points, and `tools/perf/name-places.sql` names the generated
+places the way Nominatim would. The measurements at 10 million rows, and how to repeat them, are in
+`docs/superpowers/plans/2026-10-23-sporer-plan-1-perf.md` (server), `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md` (range, heat,
+place, the web app) and `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md` (the nights, homes and trips: the backfill, the refresh,
+the trips endpoints and views).
