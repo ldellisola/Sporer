@@ -43,6 +43,31 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     /// </summary>
     internal const string InUse = "p.merged_into_id is null and exists (select 1 from segment s where s.place_id = p.id)";
 
+    /// <summary>
+    /// The SQL for the place each of some places stands for, to follow <c>with recursive</c> and a list of CTEs that includes
+    /// <c>named</c> (its <c>place_id</c> column holds the places a query needs) and to be followed by more of them.
+    /// <c>survivor</c> maps each of those places (<c>origin</c>) to the place it stands for (<c>id</c>): a place merged into
+    /// another is followed through <c>merged_into_id</c>, up to 32 links, as the day view does, to the one that is not merged
+    /// into any. A chain that never ends (a cycle, which the app does not write but the schema allows) has no survivor, so an
+    /// inner join on <c>survivor</c> drops the places on it and a left join finds nothing for them. The range and trip views
+    /// share this, so that they cannot disagree with each other about which place a stay is at.
+    /// </summary>
+    internal const string Survivors =
+        """
+        chain as (
+            select p.id as origin, p.id, p.merged_into_id, 0 as depth
+            from place p
+            where p.id in (select place_id from named)
+            union all
+            select chain.origin, next.id, next.merged_into_id, chain.depth + 1
+            from chain join place next on next.id = chain.merged_into_id
+            where chain.depth < 32
+        ),
+        survivor as (
+            select origin, id from chain where merged_into_id is null
+        )
+        """;
+
     /// <summary>The most stays <see cref="FindDetailAsync"/> lists.</summary>
     public const int RecentVisitCount = 50;
 

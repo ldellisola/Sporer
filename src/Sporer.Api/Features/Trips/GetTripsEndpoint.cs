@@ -27,7 +27,10 @@ internal sealed class GetTripsEndpoint(TripStore store) : EndpointWithoutRequest
     private static TripDto ToDto(StoredTrip stored)
     {
         var (trip, nights) = (stored.Trip, stored.Nights);
-        var thumbnail = TripThumbnail.Line(stored.HomeAtStart, nights.Select(n => n.Position), stored.HomeAtEnd);
+
+        // A trip that is still going has not come back, so a line home would show a journey that has not happened.
+        var thumbnail = TripThumbnail.Line(
+            stored.HomeAtStart, nights.Select(n => n.Position), trip.EndUtc is null ? null : stored.HomeAtEnd);
 
         return new TripDto(
             Text(trip.FirstNight),

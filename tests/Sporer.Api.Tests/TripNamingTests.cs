@@ -199,6 +199,30 @@ public class TripNamingTests
     }
 
     [Fact]
+    public void TripNaming_cities_make_one_group_of_a_night_named_by_its_country_and_a_city_of_the_same_name_in_it()
+    {
+        // Singapore is a city and a country: a night whose place has only the country, and one whose place has the city, are
+        // both "Singapore, Singapore" on the map, and so one entry.
+        var cities = TripNaming.Cities(
+        [
+            At(1, null, "Singapore", 1.30, 103.80), At(2, "Singapore", "Singapore", 1.40, 103.90), At(3, "Lisbon", "Portugal", 38, -9),
+        ]);
+
+        Assert.Equal(
+            [("Singapore", (string?)"Singapore", 2, 1.35, 103.85), ("Lisbon", "Portugal", 1, 38.0, -9.0)],
+            cities.Select(c => (c.Name, c.Country, c.Nights, c.Latitude, c.Longitude)));
+    }
+
+    [Fact]
+    public void TripNaming_cities_keep_a_night_named_by_its_country_apart_from_a_city_of_that_name_in_another_country()
+    {
+        // Peru, Indiana is not Peru.
+        var cities = TripNaming.Cities([At(1, null, "Peru"), At(2, "Peru", "United States")]);
+
+        Assert.Equal([("Peru", (string?)"Peru"), ("Peru", "United States")], cities.Select(c => (c.Name, c.Country)));
+    }
+
+    [Fact]
     public void TripNaming_cities_keep_a_city_that_has_no_country()
     {
         var cities = TripNaming.Cities([At(1, "Somewhere", null, 1, 2)]);

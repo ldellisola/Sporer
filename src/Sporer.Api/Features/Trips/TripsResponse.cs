@@ -14,7 +14,8 @@ public sealed record TripsResponse(IReadOnlyList<TripDto> Trips);
 /// of the start and end in <paramref name="StartTimeZone"/> and <paramref name="EndTimeZone"/>, the IANA zones they were in
 /// (for an ongoing trip the end date is the day after its last night). <paramref name="Name"/> is made up when asked for
 /// (see <see cref="TripNaming"/>), as are <paramref name="Cities"/>, and <paramref name="Thumbnail"/> is the line to draw
-/// for the trip, <c>[[lon,lat],...]</c>: home, the places it slept at, home (see <see cref="TripThumbnail"/>).
+/// for the trip, <c>[[lon,lat],...]</c>: home, the places it slept at, home (see <see cref="TripThumbnail"/>); an ongoing trip
+/// has not come back, so its line stops at the last place.
 /// </summary>
 public sealed record TripDto(
     string Id,

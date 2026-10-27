@@ -2,6 +2,7 @@ using System.Data;
 using System.Globalization;
 using Dapper;
 using Npgsql;
+using Sporer.Api.Features.Timeline;
 using Sporer.Timeline;
 
 namespace Sporer.Api.Features.Trips;
@@ -141,29 +142,6 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     }
 
     /// <summary>
-    /// The SQL that follows <c>with recursive</c> and a <c>named</c> list (its <c>place_id</c> column holds the places a query
-    /// needs), to go on with more tables. <c>survivor</c> maps each of those places (<c>origin</c>) to the place it stands for
-    /// (<c>id</c>): a place merged into another is followed through <c>merged_into_id</c>, up to 32 links, as the day and range
-    /// views do, to the one that is not merged into any. A chain that never ends (a cycle, which the app does not write but the
-    /// schema allows) has no survivor.
-    /// </summary>
-    private const string Survivors =
-        """
-        chain as (
-            select p.id as origin, p.id, p.merged_into_id, 0 as depth
-            from place p
-            where p.id in (select place_id from named)
-            union all
-            select chain.origin, next.id, next.merged_into_id, chain.depth + 1
-            from chain join place next on next.id = chain.merged_into_id
-            where chain.depth < 32
-        ),
-        survivor as (
-            select origin, id from chain where merged_into_id is null
-        )
-        """;
-
-    /// <summary>
     /// Every trip, newest first, with its nights and the homes it began and ended at. Trips, nights and home periods are read
     /// in one snapshot, so that a refresh that lands in the middle (it replaces all three together) cannot leave a trip with the
     /// nights of another; and in a constant number of queries, whatever the number of trips.
@@ -206,7 +184,7 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
                 join night n on n.date between t.id and t.last_night
                 where n.latitude is not null and n.longitude is not null
             ),
-            {Survivors}
+            {PlaceStore.Survivors}
             select to_char(named.trip_id, 'YYYY-MM-DD') as TripId, to_char(named.date, 'YYYY-MM-DD') as Date,
                    p.city as City, p.country as Country, named.latitude as Latitude, named.longitude as Longitude
             from named
@@ -222,7 +200,7 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
             named as (
                 select place_id from home_period
             ),
-            {Survivors}
+            {PlaceStore.Survivors}
             select to_char(h.from_date, 'YYYY-MM-DD') as FromDate, to_char(h.to_date, 'YYYY-MM-DD') as ToDate,
                    p.latitude as Latitude, p.longitude as Longitude
             from home_period h

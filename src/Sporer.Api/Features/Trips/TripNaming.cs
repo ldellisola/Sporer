@@ -59,9 +59,11 @@ public static class TripNaming
     public static string NightsLabel(int nights) => nights == 1 ? "1 night" : $"{nights} nights";
 
     /// <summary>
-    /// The cities of a trip: its known <paramref name="nights"/> grouped by city and country, in the order a name is built in
-    /// (most nights first, then the earlier first night). A night whose place has no city is grouped under its country, and one
-    /// with neither is left out: there is nothing to put on the map for it.
+    /// The cities of a trip: its known <paramref name="nights"/> grouped by the name they are drawn under and their country, in
+    /// the order a name is built in (most nights first, then the earlier first night). A night whose place has no city is
+    /// drawn under its country, and one with neither is left out: there is nothing to put on the map for it. The group is the
+    /// name as drawn, not the city field, so that a night with only the country "Singapore" and a night in the city of
+    /// Singapore (also in Singapore) are one entry, not two that look the same; the same name in another country is another.
     /// </summary>
     public static IReadOnlyList<TripCity> Cities(IReadOnlyList<TripNight> nights)
     {
@@ -71,8 +73,8 @@ public static class TripNaming
 
         return
         [
-            .. Rank(named, n => (n.City, n.Country), n => n.Night.Date).Select(g => new TripCity(
-                g.Key.City ?? g.Key.Country!,
+            .. Rank(named, n => (Name: n.City ?? n.Country!, n.Country), n => n.Night.Date).Select(g => new TripCity(
+                g.Key.Name,
                 g.Key.Country,
                 g.Count(),
                 g.Average(n => n.Night.Position.Latitude),

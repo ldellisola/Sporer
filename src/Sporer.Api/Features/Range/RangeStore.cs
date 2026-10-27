@@ -2,6 +2,7 @@ using System.Data;
 using System.Text.Json;
 using Dapper;
 using Npgsql;
+using Sporer.Api.Features.Timeline;
 using Sporer.Timeline;
 
 namespace Sporer.Api.Features.Range;
@@ -37,31 +38,22 @@ public sealed class RangeStore(NpgsqlDataSource dataSource)
     /// <summary>
     /// The SQL for the stays that touch the range and the place each one is shown as, to start a <c>with recursive</c> list that
     /// goes on with more tables. <c>stays</c> are the stays with a place, selected as the day view selects its segments (the
-    /// local dates overlap the range, which <c>ix_segment_local_dates</c> serves). <c>survivor</c> maps each place a stay
-    /// names (<c>origin</c>) to the place it stands for (<c>id</c>): a place merged into another is followed through
-    /// <c>merged_into_id</c>, up to 32 links, as the day view does, to the one that is not merged into any. A chain that never
-    /// ends (a cycle, which the app does not write but the schema allows) has no survivor, so its stays are left out.
+    /// local dates overlap the range, which <c>ix_segment_local_dates</c> serves). <c>named</c> is the places they name, and
+    /// <c>survivor</c> maps each of them to the place it stands for (see <see cref="PlaceStore.Survivors"/>), so a stay whose
+    /// merges never end is left out wherever it is joined to <c>survivor</c>.
     /// </summary>
     private const string StaysWithSurvivors =
-        """
+        $"""
         with recursive
         stays as (
             select place_id, start_utc, end_utc, start_tz, local_start_date
             from segment
             where kind = 'stay' and place_id is not null and local_start_date <= @To and local_end_date >= @From
         ),
-        chain as (
-            select p.id as origin, p.id, p.merged_into_id, 0 as depth
-            from place p
-            where p.id in (select place_id from stays)
-            union all
-            select chain.origin, next.id, next.merged_into_id, chain.depth + 1
-            from chain join place next on next.id = chain.merged_into_id
-            where chain.depth < 32
+        named as (
+            select place_id from stays
         ),
-        survivor as (
-            select origin, id from chain where merged_into_id is null
-        )
+        {PlaceStore.Survivors}
         """;
 
     /// <summary>

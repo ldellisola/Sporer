@@ -280,6 +280,25 @@ public class TripsEndpointTests(DatabaseFixture db)
         Assert.Equal([LonLat(Spots.Home), LonLat(Spots.Lisbon), LonLat(Porto), LonLat(Spots.Home)], Line(trip.GetProperty("thumbnail")));
     }
 
+    [Fact]
+    public async Task Trips_city_without_a_country_has_a_null_country_that_is_still_in_the_json()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var home = await PlaceAsync(cs, Spots.Home, "Oslo", "Norway");
+        var somewhere = await PlaceAsync(cs, Spots.Lisbon, city: "Somewhere"); // the geocoder gave a city and no country
+        await StoreAsync(api, [Stay(D(9, 12), somewhere, Spots.Lisbon)], [new HomePeriod(home, D(1, 1), null)],
+            Trip(D(9, 12), D(9, 12), Utc(9, 12, 7), Utc(9, 13, 12)));
+
+        using var body = await GetTripsAsync(client);
+
+        var city = Assert.Single(TripsOf(body).Single().GetProperty("cities").EnumerateArray());
+        Assert.Equal("Somewhere", city.GetProperty("name").GetString());
+        Assert.True(city.TryGetProperty("country", out var country), "country is left out of the JSON when it is null");
+        Assert.Equal(JsonValueKind.Null, country.ValueKind);
+    }
+
     // ---- the home of the thumbnail ---------------------------------------------------------------------------------
 
     [Fact]
@@ -378,6 +397,50 @@ public class TripsEndpointTests(DatabaseFixture db)
 
         var ownersAt = Geo.Offset(Spots.Home, 7000, 0);
         Assert.Equal([LonLat(ownersAt), LonLat(Spots.Lisbon), LonLat(ownersAt)], Line(Assert.Single(TripsOf(body)).GetProperty("thumbnail")));
+    }
+
+    [Fact]
+    public async Task Trips_thumbnail_prefers_the_period_that_began_later_where_periods_of_one_source_overlap()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var earlierAt = Spots.Home;
+        var laterAt = Geo.Offset(Spots.Home, 7000, 0);
+        var earlier = await PlaceAsync(cs, earlierAt);
+        var later = await PlaceAsync(cs, laterAt);
+        var lisbon = await PlaceAsync(cs, Spots.Lisbon, "Lisbon", "Portugal");
+        // Both are detected and both cover the trip. The one that began later is stored first, so that it is neither the
+        // first in date order nor the newest row: only its start can make it the answer.
+        await StoreAsync(api, [Stay(D(9, 12), lisbon, Spots.Lisbon)],
+            [new HomePeriod(later, D(9, 1), null), new HomePeriod(earlier, D(1, 1), null)],
+            Trip(D(9, 12), D(9, 12), Utc(9, 12, 7), Utc(9, 13, 12)));
+
+        using var body = await GetTripsAsync(client);
+
+        Assert.Equal([LonLat(laterAt), LonLat(Spots.Lisbon), LonLat(laterAt)], Line(Assert.Single(TripsOf(body)).GetProperty("thumbnail")));
+    }
+
+    [Fact]
+    public async Task Trips_thumbnail_of_an_ongoing_trip_does_not_end_at_home()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var home = await PlaceAsync(cs, Spots.Home);
+        var lisbon = await PlaceAsync(cs, Spots.Lisbon, "Lisbon", "Portugal");
+        await StoreAsync(api,
+            [Stay(D(7, 9), lisbon, Spots.Lisbon), Stay(D(10, 20), lisbon, Spots.Lisbon), Stay(D(10, 21), lisbon, Spots.Lisbon)],
+            [new HomePeriod(home, D(1, 1), null)], // the home is still in effect on the last night of both
+            Trip(D(7, 9), D(7, 9), Utc(7, 9, 7), Utc(7, 10, 14)),
+            Trip(D(10, 20), D(10, 21), Utc(10, 20, 8), null));
+
+        using var body = await GetTripsAsync(client);
+
+        var trips = TripsOf(body);
+        Assert.True(trips[0].GetProperty("ongoing").GetBoolean());
+        Assert.Equal([LonLat(Spots.Home), LonLat(Spots.Lisbon)], Line(trips[0].GetProperty("thumbnail"))); // the person has not come back
+        Assert.Equal([LonLat(Spots.Home), LonLat(Spots.Lisbon), LonLat(Spots.Home)], Line(trips[1].GetProperty("thumbnail")));
     }
 
     // ---- nothing, and the cache ----------------------------------------------------------------------------------------
