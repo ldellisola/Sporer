@@ -161,6 +161,23 @@ public class TripDetectorTests
     }
 
     [Fact]
+    public void TripDetector_finds_nothing_without_nights()
+        => Assert.Empty(Detect([]));
+
+    [Fact]
+    public void TripDetector_a_single_away_night_is_an_ongoing_trip_starting_at_its_own_instant()
+    {
+        var nights = Nights((Lisbon, 1));
+
+        var trip = Assert.Single(Detect(nights));
+
+        Assert.Equal(
+            new DetectedTrip(On(1), On(1), 1, nights[0].InstantUtc, null, "Europe/Lisbon", "Europe/Lisbon",
+                new DateOnly(2026, 6, 2), On(1).AddDays(1)),
+            trip);
+    }
+
+    [Fact]
     public void TripDetector_uses_the_home_in_effect_each_night()
     {
         // The home moves 60 km to Town after night 6. The visit to Town on nights 3 and 4 was a trip then; the nights
@@ -236,6 +253,40 @@ public class TripDetectorTests
         Assert.Equal(nights[1].InstantUtc, trip.StartUtc);
         Assert.Equal("Europe/Lisbon", trip.StartZone);
         Assert.Equal(On(3), trip.LocalStartDate); // 03:00 Lisbon time on the day after the night
+    }
+
+    [Fact]
+    public void TripDetector_leaves_from_the_last_home_night_across_the_unknown_nights_before_the_trip()
+    {
+        // home, ?, Lisbon, home: the unknown night does not forget the home night before it, so the trip still leaves
+        // from night 1, in the zone it was read in, rather than from its own first away night in Lisbon.
+        var nights = Nights((Oslo, 1), (Unknown, 1), (Lisbon, 1), (Oslo, 1));
+
+        var trip = Assert.Single(Detect(nights));
+
+        Assert.Equal(nights[0].InstantUtc, trip.StartUtc);
+        Assert.Equal("Europe/Oslo", trip.StartZone);
+        Assert.Equal(On(3), trip.FirstNight);
+    }
+
+    [Fact]
+    public void TripDetector_does_not_take_a_stay_at_exactly_the_threshold_for_one_near_home()
+    {
+        // A stay is near home only when it is closer than the threshold. Set the bar to the very distance of this stay
+        // (measured as the detector does), so it is exactly at it: it is away, and the trip leaves and returns at the
+        // home nights instead of at a stay that is not near home.
+        var edge = Geo.Offset(Oslo, 50_100, 0);
+        var options = new DetectionOptions { TripMinDistanceKm = Geo.DistanceMeters(edge, Oslo) / 1000 };
+        var nights = Nights((Oslo, 1), (Lisbon, 1), (Oslo, 1));
+        var stays = new[]
+        {
+            Stay(Utc(6, 2, 5), Utc(6, 2, 6), edge),     // between the home night and the away night
+            Stay(Utc(6, 3, 22), Utc(6, 3, 23), edge),   // between the away night and the home night
+        };
+
+        var trip = Assert.Single(Detect(nights, stays, options: options));
+
+        Assert.Equal((nights[0].InstantUtc, nights[2].InstantUtc), (trip.StartUtc, trip.EndUtc));
     }
 
     [Fact]

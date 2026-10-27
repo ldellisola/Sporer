@@ -14,7 +14,10 @@ public static class TripDetector
     /// no home in effect is never away.
     /// </summary>
     /// <param name="nights">One night per date. A date with no night counts as an unknown night.</param>
-    /// <param name="homes">The home periods, as <see cref="HomeDetector"/> finds them (or as the owner set them).</param>
+    /// <param name="homes">
+    /// The home periods, as <see cref="HomeDetector"/> finds them (or as the owner set them). Periods should not overlap;
+    /// if they do, the first in list order that covers a night is the home in effect that night.
+    /// </param>
     /// <param name="placePositions">
     /// The position of each place a home period names. A home whose place is missing here has no known position, so the
     /// nights it covers count as at home: a gap in the data must not invent a trip.
@@ -54,7 +57,8 @@ public static class TripDetector
                 continue;
             }
 
-            // A night at home, or with no home to be away from, ends the run it finds and may be the next one's start.
+            // A night at home, or with no home to be away from, ends the run it finds. It is also the night the next run
+            // leaves from.
             if (run is not null) trips.Add(TripOf(run, night, stays, options));
             run = null;
             lastHomeNight = night;
@@ -119,22 +123,22 @@ public static class TripDetector
     private static bool FarFrom(GeoPoint position, GeoPoint home, DetectionOptions options)
         => Geo.DistanceMeters(position, home) / 1000 >= options.TripMinDistanceKm;
 
-    /// <summary>The end of the last stay near <paramref name="home"/> that ends in (<paramref name="after"/>, <paramref name="upTo"/>].</summary>
+    /// <summary>The end of the last stay near <paramref name="home"/> that ends in (<paramref name="since"/>, <paramref name="until"/>].</summary>
     private static DateTime? LastEndNearHome(
-        IReadOnlyList<StayPosition> stays, DateTime after, DateTime upTo, GeoPoint home, DetectionOptions options)
+        IReadOnlyList<StayPosition> stays, DateTime since, DateTime until, GeoPoint home, DetectionOptions options)
     {
-        // The last stay that ends by upTo, then back through the ones that still end after `after`.
-        for (var i = CountWhile(stays, s => s.EndUtc <= upTo) - 1; i >= 0 && stays[i].EndUtc > after; i--)
+        // The last stay that ends by `until`, then back through the ones that still end after `since`.
+        for (var i = CountWhile(stays, s => s.EndUtc <= until) - 1; i >= 0 && stays[i].EndUtc > since; i--)
             if (!FarFrom(stays[i].Position, home, options)) return stays[i].EndUtc;
         return null;
     }
 
-    /// <summary>The start of the first stay near <paramref name="home"/> that starts in [<paramref name="from"/>, <paramref name="before"/>).</summary>
+    /// <summary>The start of the first stay near <paramref name="home"/> that starts in [<paramref name="since"/>, <paramref name="until"/>).</summary>
     private static DateTime? FirstStartNearHome(
-        IReadOnlyList<StayPosition> stays, DateTime from, DateTime before, GeoPoint home, DetectionOptions options)
+        IReadOnlyList<StayPosition> stays, DateTime since, DateTime until, GeoPoint home, DetectionOptions options)
     {
-        // The first stay that starts at or after `from`, then forward through the ones that still start before `before`.
-        for (var i = CountWhile(stays, s => s.StartUtc < from); i < stays.Count && stays[i].StartUtc < before; i++)
+        // The first stay that starts at or after `since`, then forward through the ones that still start before `until`.
+        for (var i = CountWhile(stays, s => s.StartUtc < since); i < stays.Count && stays[i].StartUtc < until; i++)
             if (!FarFrom(stays[i].Position, home, options)) return stays[i].StartUtc;
         return null;
     }
