@@ -16,7 +16,7 @@ The server is a .NET 10 API, and it also serves the web app that shows the timel
 | `GET /api/heat?from=yyyy-MM-dd&to=yyyy-MM-dd` | Where the time of a range (the same dates, the same limit as `/api/range`) was spent, for a heat layer: `cells` are `[lon, lat, seconds]`, the most seconds first, one per cell of a grid of 0.001 degrees (about 111 m of latitude; a degree of longitude is shorter the further you are from the equator, so a cell is narrower than it is tall), weighted by the time of the stays in it, not by points; `maxSeconds` is the first one's weight (0 when there are none). |
 | `GET /api/places/{id}` | A place and the time spent at it: name, address, centre, total seconds, number of visits, first and last visit, and the latest 50 stays (`start`, `end`, local `date`, `timeZone`), newest first. A place merged into another is served as the one it was merged into, with the time of both. `404` for an id that is no place of the timeline (unknown, or no stay names the place it leads to or any place merged into it), `400` for one that is not a positive whole number. |
 | `GET /api/trips` | The trips, newest first, as `{"trips": [...]}` (an empty list when there are none). Each has its `id` (the date of its first away night, `yyyy-MM-dd`), a `name` (`"Lisbon"`, `"Lisbon & Porto"`; `"Trip"` until its places are named), `firstNight`, `lastNight` and `nights` (every night from the first to the last, those with no known position too), `start` and `end` (when you left and came back, UTC; `end` is `null` while the trip is `ongoing`), `startTimeZone`, `endTimeZone`, `localStartDate` and `localEndDate`, its `cities` (name, country, nights and mean position of each city slept in), and a `thumbnail`: the line `[[lon, lat], ...]` of home, the places it slept at and home again (it stops at the last place while the trip is ongoing). There is no `state`: the trips are worked out after the timeline, once per pass of the background worker, so a trip can follow new points by a moment. |
-| `GET /api/trips/{id}` | One trip, `id` being the date of its first away night. The fields of the list (without the thumbnail), its `stats` (`flights`, `cities`, `places`, and `groundDistanceMeters`, the distance of the moves that are not flights), its `moves` (`id`, `mode`, `distanceMeters` and the `geometry` of each, simplified further if all of them together would have more than 50 000 vertices) and its `days`: for each local day of the trip a `description` (`"Oslo → Lisbon"`), up to three `highlights` (the named places with the most time that day, not counting the one slept in), `groundDistanceMeters` and `flights`. `404` for an id that is no stored trip (unknown, or not a date). There is no `state`, as for the list. |
+| `GET /api/trips/{id}` | One trip, `id` being the date of its first away night. The fields of the list (without the thumbnail), its `stats` (`flights`, `cities`, `places`, and `groundDistanceMeters`, the distance of the moves that are not flights), its `moves` (`id`, `mode`, `distanceMeters` and the `geometry` of each, simplified further if all of them together would have more than 50 000 vertices) and its `days`: for each local day of the trip a `description` (`"Oslo → Lisbon"`), up to three `highlights` (the named places with the most time that day, not counting the place slept at the night before or the place slept at that night), `groundDistanceMeters` and `flights`. `404` for an id that is no stored trip (unknown, or not a date). There is no `state`, as for the list. |
 | `GET /api/status` | Processing health: algorithm version, backfill progress, pending and failed work, place naming progress, warnings. |
 | `GET /api/config` | What the web app needs to know before it can draw: the map styles for the light and the dark colour scheme (`Map__StyleLight`, `Map__StyleDark`, see below). |
 
@@ -27,8 +27,8 @@ month, year or range of the timeline on a map with a panel beside it (a sidebar 
 on a phone), and a place with the time you have spent at it. The address says what is shown, so a view can be bookmarked
 and the Back button works: `/day/2026-10-22`, `/week/2026-10-19`, `/month/2026-10`, `/year/2026`,
 `/range/2026-10-01..2026-10-22`, `/place/7`, `/trips` (the list of your trips, opened by the Trips button of the card at the top of the
-map) and `/trip/2026-09-12` (one trip, named by the date of its first night; see "Trips and home"). Anything else opens today. The map follows the light or dark setting of the
-device, and the ◐ button of the map draws where the time of a period was spent as a heat layer.
+map) and `/trip/2026-09-12` (one trip, named by the date of its first night; see "Trips and home"). Anything else opens today. The map
+follows the light or dark setting of the device, and the ◐ button of the map draws where the time of a period was spent as a heat layer.
 
 **On an iPhone**, open `https://sporer.lud.ar` in Safari, tap Share, then **Add to Home Screen**. It opens from the home
 screen in a window of its own, without Safari's bars. On a desktop browser it is just a page. It does not work offline yet.
@@ -240,7 +240,7 @@ the phone, over the VPN, and check:
   other (a stay matches a place within 75 m, or makes its own) can fail the 60-of-90 bar, as the synthetic history's move does. (The
   periods are in the `home_period` table: `select * from home_period order by from_date`.)
 - [ ] **Each trip you remember is listed**, at `/trips`, with sensible dates, a name and a number of nights. Look for a trip that is missing
-  (it was nearer than 50 km, or it began before the first home) and for one that is not a trip.
+  (it was nearer than 50 km) and for one that is not a trip.
 - [ ] **A long stay is not mistaken for a move.** A month or two away from home is one trip, and when you are back the house is still at
   your own place. (A stay of 60 nights or more out of 90 at one place is a move, by design.)
 - [ ] **Home stops show a house** on the Day view, on the map and in the list, and no stop that is not home does.
@@ -248,7 +248,8 @@ the phone, over the VPN, and check:
   flights). Say if a line reads wrong for a day you remember.
 - [ ] **Time the trips list and a trip on the phone**, opened from the home screen, over the VPN. On the synthetic history the cards and
   the days show in about 0.8 seconds on a phone-sized page with the processor held back four times (the target is 2 seconds), without
-  the network. Say how long they take on the real device; the first load of the app also fetches half a megabyte of JavaScript. The measurements and how to repeat them are in `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md`.
+  the network. Say how long they take on the real device; the first load of the app also fetches half a megabyte of JavaScript. The
+  measurements and how to repeat them are in `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md`.
 
 If a trip is missing or wrongly there, or a home is wrong, the settings are `Detection__TripMinDistanceKm`, `Detection__HomeMinNights` and
 `Detection__HomeWindowNights` (see "Detection thresholds"); changing one rebuilds the timeline, which takes a few minutes for years of

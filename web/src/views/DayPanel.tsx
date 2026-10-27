@@ -82,7 +82,11 @@ function StayRow({ stay, order, when, onFocus }: { stay: StaySegment; order: num
       <span className={rows.duration}>{formatDuration(secondsOf(stay))}</span>
       {place !== null && (home || order !== undefined) && (
         <FitButton
-          label={home ? `Show home, ${place.name ?? "unnamed place"}, ${when}, on the map` : `Show stop ${order}, ${place.name ?? "unnamed place"}, on the map`}
+          label={
+            home
+              ? `Show home, ${place.name ?? "unnamed place"}, ${when}, on the map`
+              : `Show stop ${order}, ${place.name ?? "unnamed place"}, on the map`
+          }
           onClick={() => onFocus([placePoint(place)])}
         />
       )}

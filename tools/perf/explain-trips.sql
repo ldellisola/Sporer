@@ -1,6 +1,6 @@
 -- The plans of every query the trips endpoints run, with their real timings and buffers (EXPLAIN (ANALYZE, BUFFERS)).
 --
---   docker exec -i sporer-perf-db psql -U postgres -d perf -X -v trip=2026-03-04 < tools/perf/explain-trips.sql
+--   docker exec -i sporer-perf-db psql -U postgres -d perf -X -v trip=2026-02-20 < tools/perf/explain-trips.sql
 --
 -- `trip` is the id of a trip (the date of its first night, as GET /api/trips lists them). The queries are copied from TripStore
 -- (ListAsync, LoadHomesAsync, FindAsync) with PlaceStore.Survivors spelled out, and the parameters as psql variables; change one

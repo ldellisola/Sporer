@@ -20,14 +20,14 @@ and 2, where it says so. The backfill, the refresh and the plans were measured b
 | What (spec §9, Plan 3 brief) | Target | Measured | Verdict |
 | --- | --- | --- | --- |
 | **Backfill**, the whole history, from the start of the API to 100 % with nothing pending | the night and trip work adds ≤ 20 % to `main`'s (Plan 2's head) on this machine | `main` 181.2 / 179.0 / 174.6 s (mean 178.3), Plan 3 189.8 / 180.8 s (mean 185.3): **+3.9 %** on the means; the two back-to-back pairs +4.7 % and +1.0 %. (Plan 2 measured 167 s: `main` takes about 7 % longer on this machine) | Met, 16 points under |
-| **Refresh**, one live refresh of the nights, homes and trips after a dirty range, 30 in a running process | ≤ 200 ms | p50 **33.0 ms**, p95 **66.0 ms**, max 94 ms (30 more, in a process started 10 s before: p50 35.0, p95 78.0, max 217, which is the first refresh after the start) | Met, 2.6 to 3 times under at p95. **The first refresh after a start is 174 to 225 ms** (six starts, five over 200 ms by 3 to 12 %): the JIT, see "Refresh" |
+| **Refresh**, one live refresh of the nights, homes and trips after a dirty range, 30 in a running process | ≤ 200 ms | p50 **33.0 ms**, p95 **66.0 ms**, max 94 ms (30 more, in a process started 10 s before: p50 35.0, p95 78.0, max 217, which is the first refresh after the start) | Met, 2.6 to 3 times under at p95. **The first refresh after a start is 174 to 225 ms** (six starts, four over 200 ms by 3 to 12 %): the JIT, see "Refresh" |
 | **`/api/trips`**, 50 requests | ≤ 200 ms server time | p50 **8.0 ms**, p95 **13.4 ms**, max 15.3 ms (right after the start: 8.5 / 17.8 / 21.0); no place named: p50 7.8-10.0, p95 10.7-16.4 over three runs. 557 B Brotli, 1,648 B raw | Met, 11 to 15 times under at p95 |
 | **`/api/trips/{id}`**, 50 requests for each of the three trips, with sizes | ≤ 400 ms | 25 nights: p50 13.5, p95 **21.0** ms, 9,555 B Brotli, 33,076 B raw; 6 nights: 11.3 / **21.0** ms, 3,940 / 11,717 B; 2 nights: 9.9 / **15.0** ms, 2,996 / 7,940 B. The worst p95 over every run of both kinds, 27.7 ms | Met, 14 to 27 times under |
 | **Plans** (`EXPLAIN (ANALYZE, BUFFERS)`) of the trips list and detail queries | no query scans a large table | every one of the 7 queries runs in **0.02 to 2.0 ms** (the 25-night trip's stays and moves, 199 segments, 1.97 ms, the slowest); the segments are read from `ix_segment_start`, the nights from their primary key, the `Seq Scan`s are on `trip`, `place`, `home_period`: three rows, 87 rows, one row | Met |
 | **Web, cold navigation to the trips list's cards** (4× CPU, 7 runs) | ≤ 2 s (the month's) | median **826 ms**, worst 957 ms (no place named: 754 / 888) | Met, 2.1 times under at the worst |
 | **Web, cold navigation to a trip's day rows**, the three synthetic trips | ≤ 2 s | 25 nights, 26 days: median **811 ms**, worst 885; 6 nights, 7 days: **742** / 842; 2 nights, 3 days: **756** / 832 (no place named: 854 / 1,026, 838 / 865, 760 / 939) | Met, 2.3 to 2.4 times under at the worst |
 | *Information:* panel rows **painted**, trips list / three trips | read against the same | median 1,019 / 1,015 / 975 / 1,001 ms, worst 1,214 / 1,181 / 1,063 / 1,065 | Inside 2 s |
-| *Information:* **map `idle`** from cold navigation, trips list / three trips | read against the same, with Plan 2's caveats | median 2,168 / 1,910 / 1,796 / 1,924 ms, worst 2,487 / 2,097 / 1,933 / 2,057 | The list's is over 2 s, by 8 % at the median. **Not a verdict:** software WebGL, see the caveats (the month's on this machine, 2,283 / 2,514 ms, is over it too) |
+| *Information:* **map `idle`** from cold navigation, trips list / three trips | read against the same, with Plan 2's caveats | median 2,168 / 1,910 / 1,796 / 1,924 ms, worst 2,487 / 2,097 / 1,933 / 2,057 | The list's is over 2 s, by 8 % at the median, and unnamed it is 1,479 / 1,584 ms: **the names add 47 %** (the city dots and labels the list draws only when its places are named), see "Web". Not a verdict, as the idle is read with the caveats (software WebGL: the month's on this machine, 2,283 / 2,514 ms, is over 2 s too) |
 | *Information, what Plan 3 did to what was there:* the **day** endpoint | Plan 2's: ≤ 200 ms | p50 8.6-11.5 ms, p95 12.9-19.7 ms over five runs, against `main`'s 5.9-7.2 and 10.4-12.2 on the same machine and history: **about 2.5 ms more**, the home lookup. Range, heat and place: the same | Met |
 | *Information:* the **web app's start** | Plan 2's: main-thread JavaScript ≤ 450 kB gzip | 383.9 kB (Plan 2: 379.0): the page's own chunk 102.6 kB (97.6), MapLibre's chunk 281.4 kB (281.4) | Met, 66 kB under |
 | *Information:* the cold **day, month and year** views, against `main` on this machine | Plan 2's: ≤ 1 s / 2 s / 3 s | the day, the heaviest day, the month and the heaviest month **−8 % to +14 %** of `main`'s rows in the DOM (the spread of runs of the same code is as large: `main`'s day 760-868 ms); the year **+12 % on average**: 1,171-1,277 ms against 1,064-1,211 | Met: every median is inside its target (day 0.80-0.91 s, month 0.85-0.92 s, year 1.17-1.28 s). The year is the one that is slower, by about 140 ms; see "Web" |
@@ -62,13 +62,15 @@ Decisions that shaped how it was measured, so that the numbers are read with the
   highlights: smaller answers and less on the screen than the owner's will have. `tools/perf/name-places.sql` gives the 87 places a city,
   a country (Oslo, Tromsø, Lisbon, Tokyo, by where they are) and, to three in four, an OSM name, as Nominatim would have. The server and
   the web runs were made without the names first and again with them; the tables give the named run and, where it says so, the
-  other. (The backfill, the refresh and the plans are of the first, which they do not depend on.) Nothing else was different. (The typical day and month are chosen by the size of their answers, which the names change,
-  so they are other days and months in the two runs: 2025-12-05 and 2025-05 without the names, 2026-01-12 and 2024-10 with them.)
+  other. (The backfill, the refresh and the plans are of the first, which they do not depend on.) Nothing else was different. (The
+  typical day and month are chosen by the size of their answers, which the names change, so they are other days and months in the two
+  runs: 2025-12-05 and 2025-05 without the names, 2026-01-12 and 2024-10 with them.)
 - **No fix.** Nothing missed, so nothing was changed in the server or the app, no migration was added, and no detection result was touched.
 
 ## Machine and setup
 
-The same kind of machine and the same tools as Plan 2's, and a few percent slower: `main` itself took 175 to 181 s here, against 167 s in Plan 2 (about 7 % more).
+The same kind of machine and the same tools as Plan 2's, and a few percent slower: `main` itself took 175 to 181 s here, against 167 s in
+Plan 2 (about 7 % more).
 
 - 4 vCPU Intel Xeon @ 2.80 GHz, 15 GB RAM, Linux 6.18 in a container with Docker. Client and server share the machine and its four CPUs
   (during the web runs the API was stopped and the database idle).
@@ -154,9 +156,9 @@ In the order they ran, the second set: 217, 56, 54, 36, 51, 38, 53, 33, 43, 41, 
 after a start is the slow one**: 174 ms (a start of five rounds, no place named), 217, 225, 206, 216 and 188 ms in six starts (the
 second refresh of each: 50 to 62 ms). It is the JIT compiling the refresh's code (and Dapper building its readers) the first time, as Plan 2
 found for the first requests of a fresh process; it happens once per start, in the worker and not in a request, a minute or more after
-the batch that started it, and ingest does not wait on it. It is over 200 ms by 3 to 12 % in five of the six, which is why it is said here
-and is not in the percentiles: nothing was done about it (a warm-up at the start, or ReadyToRun compilation of the image, is a change to
-the product for a job that runs behind a debounce of a minute).
+the batch that started it, and ingest does not wait on it. It is over 200 ms by 3 to 12 % in four of the six (217, 225, 206 and 216),
+which is why it is said here and is not in the percentiles: nothing was done about it (a warm-up at the start, or ReadyToRun compilation
+of the image, is a change to the product for a job that runs behind a debounce of a minute).
 
 One refresh, statement by statement (the database's log: 65 ms from the read of the window to the update that empties it, a window of two
 nights, 17 statements): the read of every night 2.5 ms, the read of every stay's position 7.8 ms, each of the others 0.02 to 0.4 ms, 12 ms
@@ -232,9 +234,10 @@ Run after the backfill (no place named), for the trip of 25 nights, the longest;
 | Detail: its stays and moves | Index Scan on `ix_segment_start` from the last segment that starts at or before the span (an Index Only Scan Backward, 1 row) to its end: 199 segments of 7,607, the chain over `place` | 1.97 ms | 44 |
 
 (The 6-night trip's detail: 0.96 ms for the stays and moves, 0.31 ms for the nights; the 2-night trip's, 0.35 ms for the nights; the lists
-and the trip's own row the same.) **No query scans a large table**: the `Seq Scan`s are on `trip`, `place` and `home_period`, the `night` table is read through its primary key and `segment` through `ix_segment_start`, and the stays and
-moves of a trip are read from the one that starts at or before it (the query's lower bound, "the latest segment that starts at or before
-the span start", so that a trip that began after years of history does not read them; here it reads 199 rows, not 7,607).
+and the trip's own row the same.) **No query scans a large table**: the `Seq Scan`s are on `trip`, `place` and `home_period`, the `night`
+table is read through its primary key and `segment` through `ix_segment_start`, and the stays and moves of a trip are read from the one
+that starts at or before it (the query's lower bound, "the latest segment that starts at or before the span start", so that a trip that
+began after years of history does not read them; here it reads 199 rows, not 7,607).
 Every query is far inside its endpoint's target, so **no index and no migration was added**. The planner chooses a `Seq Scan` of `trip`
 because it has three rows; it would use its primary key when it has hundreds.
 
@@ -298,15 +301,20 @@ How to read it:
 - **The rows are painted at about 1.0 s**, 0.2 to 0.25 s after they are in the DOM: the same wait as Plan 2's, MapLibre's parse arriving in the
   same stretch as the rows on a mocked API over loopback (see "Where the time goes" there).
 - **The map's `idle` is 1.8 to 2.2 s**, the trips list the slowest (2,168 ms at the median, 2,487 at the worst: over 2 s, as the month's is
-  on this machine: 2,283 / 2,514). It is the camera move (600 ms by design) and the frames drawn in software on top of the start, and
-  the list also draws every trip; read it with Plan 2's caveats, not as a verdict. The routes of a trip are on the map 1.7 to 1.9 s
-  after the start.
-- **Without names the numbers are the same within the run-to-run spread** (about ±10 %): the answers are smaller by a few hundred bytes
-  and the days have no second line.
+  on this machine: 2,283 / 2,514). It is the camera move (600 ms by design) and the frames drawn in software on top of the start; read
+  it with Plan 2's caveats, not as a verdict. The routes of a trip are on the map 1.7 to 1.9 s after the start.
+- **The names make the trips list's map slower, and nothing else here.** Without names the list's map idles at 1,479 / 1,584 ms against
+  2,168 / 2,487 with them: **+47 %** at the median (+57 % at the worst), about five times the spread of the runs. It is not the
+  software WebGL, which is the same in both runs: it is what the names add to the drawing. With no place named the trips have no cities,
+  so the list's map draws no dot and no label; named, it draws a dot for each city slept in and names the five with the most nights
+  ("Lisbon · 9 nights"), and the labels are what the map has to lay out (its glyphs and their placing) before it idles. (The trips'
+  maps draw their routes either way, and their idle is the same with and without names, within the spread.) Everything else is within
+  the run-to-run spread, about ±10 % (the list's rows in the DOM +10 % and painted +8 %; the three trips' rows and idle −11 % to +11 %):
+  the answers are smaller by a few hundred bytes and the days have no second line.
 
-**Plan 3's effect on the views that were there** (the control): the day, month and year scenarios were run on this machine with `main`'s web app too (a `git worktree` of
-`ba52d52`, the same Chromium, the same recorded answers: the `home` of a day's stays that `main` does not read is in them), once for all
-five and then, alternating, for the day and the year only. Rows in the DOM, median / worst of 7, ms:
+**Plan 3's effect on the views that were there** (the control): the day, month and year scenarios were run on this machine with `main`'s
+web app too (a `git worktree` of `ba52d52`, the same Chromium, the same recorded answers: the `home` of a day's stays that `main` does
+not read is in them), once for all five and then, alternating, for the day and the year only. Rows in the DOM, median / worst of 7, ms:
 
 | | Typical day | Heaviest day | Typical month | Heaviest month | Year |
 | --- | --- | --- | --- | --- | --- |
@@ -320,9 +328,10 @@ five and then, alternating, for the day and the year only. Rows in the DOM, medi
 | second pair | 760 / 826 | 797 / 876 | 1,076 / 1,215 | 1,255 / 1,553 |
 
 The day, the heaviest day, the month and the heaviest month are the same as `main`'s within the spread of the machine (one day of `main`'s
-is 760 ms in one run and 868 in the next). **The year is slower, by about 140 ms on average** (12 %: +213, +201 and +179 ms in three comparisons and −40 ms in the fourth;
-1,171-1,277 ms against 1,064-1,211). Why was not looked into: it is 2.3 times inside its 3 s, and Plan 2's own year ran from 1.0 to 1.3 s. The worst of seven for the day is over 1 s in some runs of both (`main` 1,003; Plan 3 1,072 and 1,423, the latter one slow run of
-seven whose median is 804), as the heaviest day's worst of seven was in Plan 2.
+is 760 ms in one run and 868 in the next). **The year is slower, by about 140 ms on average** (12 %: +213, +201 and +179 ms in three
+comparisons and −40 ms in the fourth; 1,171-1,277 ms against 1,064-1,211). Why was not looked into: it is 2.3 times inside its 3 s, and
+Plan 2's own year ran from 1.0 to 1.3 s. The worst of seven for the day is over 1 s in some runs of both (`main` 1,003; Plan 3 1,072 and
+1,423, the latter one slow run of seven whose median is 804), as the heaviest day's worst of seven was in Plan 2.
 
 **Bundle** (`npm run build`, `npm run perf:bundle`): the main-thread JavaScript is **383.9 kB** gzip (Plan 2: 379.0 kB), 66 kB under the
 450 kB of P2-R63: the page starts with 102.6 kB (97.6) and the map fetches MapLibre's chunk, 281.4 kB (the same), when it mounts;
@@ -350,7 +359,8 @@ VPN, Traefik and Authentik. Also:
   a retry of a set-aside range) builds seven nights and costs about 55 ms a pass (the backfill's share, above); a client that sends a
   year of points at once refreshes once at the end of its pieces, and builds the nights of the year.
 - **The first refresh after a start is 0.17 to 0.23 s**, above the target for that one request (see "Refresh").
-- **Seven runs of the web scenarios** are a sample of the tail, not a bound; the worst of seven for the trips is 957 ms at the most.
+- **Seven runs of the web scenarios** are a sample of the tail, not a bound; the worst of seven for the trips' rows is 957 ms at the most
+  with the places named, and 1,026 ms with none (the 25-night trip).
 - The Plan 2 documents' numbers are not repeated here: this machine is a few percent slower than theirs, and where Plan 3 could have
   changed a Plan 2 figure it is compared with `main` on this machine (above) and not with Plan 2's.
 
@@ -378,19 +388,32 @@ TSDB_CONNECTION_STRING="${TSDB_CONNECTION_STRING/perf_raw/perf_main}" \
 export TSDB_CONNECTION_STRING="${TSDB_CONNECTION_STRING/perf_raw/perf}"
 KEEP=1 tools/perf/backfill-time.sh $api sporer-perf-db perf                   # leaves the API running (stop it with pkill -f Sporer.Api.dll); drop and make the database again to repeat
 
-# --- The server: latencies and sizes (the trips are the last of its output), the plans; then again with the places named ---
+# --- The server, no place named: latencies and sizes (the trips are the last of its output), and the plans ---
 tools/perf/api-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22         # about 2 minutes; the 10th argument is the trips' requests
 docker exec -i sporer-perf-db psql -U postgres -d perf -X -v trip=2026-02-20 < tools/perf/explain-trips.sql
+
+# --- The refresh, no place named: the API with no debounce, then the script (about 3 minutes for 30 rounds) ---
+pkill -f Sporer.Api.dll; sleep 2; Processing__Debounce=00:00:00 dotnet $api & sleep 8
+tools/perf/refresh-latency.sh http://127.0.0.1:5100 sporer-perf-db perf 30    # the first of a fresh start is the slow one: start the API again to see it
+
+# --- Then the places named, and the server again ---
 docker exec -i sporer-perf-db psql -U postgres -d perf -X < tools/perf/name-places.sql    # what the owner's places will look like
 tools/perf/api-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22
 
-# --- The refresh: the API with no debounce, then the script (about 3 minutes for 30 rounds) ---
-pkill -f Sporer.Api.dll; Processing__Debounce=00:00:00 dotnet $api & sleep 8
-tools/perf/refresh-latency.sh http://127.0.0.1:5100 sporer-perf-db perf 30    # the first of a fresh start is the slow one: start the API again to see it
-
-# --- The long list of trips, on a copy (the worker off, so that it does not work the trips out again) ---
+# --- The long list of trips, on a copy. Stop the API first: a template database must have no other session ("source database
+#     is being accessed by other users"). The API over the copy has the worker off, so that it does not work the trips out again ---
+pkill -f Sporer.Api.dll; sleep 2
 docker exec sporer-perf-db psql -U postgres -c "create database perf_scale template perf strategy file_copy"
 docker exec -i sporer-perf-db psql -U postgres -d perf_scale -X < tools/perf/scale-trips.sql
+TSDB_CONNECTION_STRING="${TSDB_CONNECTION_STRING%perf}perf_scale" Processing__Enabled=false dotnet $api & sleep 8
+for path in /api/trips /api/trips /api/trips/2024-07-01; do     # the list twice, then the first of the added trips: 20 to warm up, 50 measured
+  for i in $(seq 70); do curl -s -o /dev/null -H 'Accept-Encoding: br' -w '%{time_total}\n' http://127.0.0.1:5100$path; done |
+    tail -n 50 | sort -g | awk -f tools/perf/percentiles.awk
+done
+curl -s -o /dev/null -H 'Accept-Encoding: br' -w '%{size_download} B Brotli\n' http://127.0.0.1:5100/api/trips
+curl -s -o /dev/null -H 'Accept-Encoding: identity' -w '%{size_download} B raw\n' http://127.0.0.1:5100/api/trips
+pkill -f Sporer.Api.dll; sleep 2
+dotnet $api & sleep 8                                             # over `perf` again, for the web's recording
 
 # --- The web: record once (the API running over the history), then measure (the API may be stopped) ---
 cd web

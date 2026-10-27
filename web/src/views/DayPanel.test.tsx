@@ -318,14 +318,27 @@ describe("DayPanel home", () => {
     expect(cafe!.querySelector("svg")).toBeNull(); // a number is not a house
   });
 
-  test("DayPanel_names_the_button_of_a_home_row_home_and_takes_the_map_to_the_place", async () => {
+  test("DayPanel_names_the_buttons_of_two_home_rows_by_their_times_and_takes_the_map_to_the_place", async () => {
+    // Away to the café and back: the same place twice (the stay that began the day before, the one that goes on after it), with no number
+    // and nothing but the times to tell the rows and their buttons by.
     stubApi({ "2026-10-22": day([stay(1, HOME, HOME_MORNING), stay(2, CAFE), stay(3, HOME, HOME_EVENING)]) });
     const { onFocus } = mount("2026-10-22");
     await screen.findByRole("list");
 
-    const buttons = screen.getAllByRole("button", { name: /^Show .* on the map$/ }).map((button) => button.getAttribute("aria-label"));
-    // Both stays at home are the same place, so the times of their rows are what tells their buttons apart: there is no number.
+    const [morning, , evening] = rows();
+    expect(parts(morning!)).toEqual(["Home", "until 08:32", "10h 32m"]);
+    expect(parts(evening!)).toEqual(["Home", "from 17:10", "6h 50m"]);
+    const buttons = screen.getAllByRole("button", { name: /^Show .* on the map$/ }).map((button) => button.getAttribute("aria-label")!);
     expect(buttons).toEqual(["Show home, Home, until 08:32, on the map", "Show stop 1, Café, on the map", "Show home, Home, from 17:10, on the map"]);
+    expect(new Set(buttons).size).toBe(3);
+    // Each holds what its own row says (WCAG 2.5.3), and each one is found by it.
+    for (const [row, name] of [[morning!, buttons[0]!], [evening!, buttons[2]!]] as const) {
+      const [place, when] = parts(row);
+      expect(name).toContain(place);
+      expect(name).toContain(when);
+      expect(within(row).getByRole("button", { name })).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("button", { name: "Show home, Home, from 17:10, on the map" })).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Show home, Home, from 17:10, on the map" }));
     expect(onFocus).toHaveBeenCalledWith([placePoint(HOME)]);
@@ -349,28 +362,6 @@ describe("DayPanel home", () => {
       "Show home, Home, 10:00 – 11:00, on the map",
       "Show home, unnamed place, 10:00 – 11:00, on the map",
     ]);
-  });
-
-  test("DayPanel_gives_two_home_rows_of_one_day_buttons_of_their_own_by_the_times_on_the_rows", async () => {
-    // Away to the café and back: the same place twice, with nothing but the times to tell the rows by (the one that began the day before, the one that goes on after it).
-    stubApi({ "2026-10-22": day([stay(1, HOME, HOME_MORNING), stay(2, CAFE), stay(3, HOME, HOME_EVENING)]) });
-    mount("2026-10-22");
-    await screen.findByRole("list");
-
-    const [morning, , evening] = [rows()[0]!, rows()[1]!, rows()[2]!];
-    expect(parts(morning)).toEqual(["Home", "until 08:32", "10h 32m"]);
-    expect(parts(evening)).toEqual(["Home", "from 17:10", "6h 50m"]);
-    const names = [morning, evening].map((row) => within(row).getByRole("button", { name: /^Show home, / }).getAttribute("aria-label")!);
-    expect(names).toEqual(["Show home, Home, until 08:32, on the map", "Show home, Home, from 17:10, on the map"]);
-    expect(new Set(names).size).toBe(2);
-    // Each holds what its own row says (WCAG 2.5.3), and each one is found by it.
-    for (const [row, name] of [[morning, names[0]!], [evening, names[1]!]] as const) {
-      const [place, when] = parts(row);
-      expect(name).toContain(place);
-      expect(name).toContain(when);
-      expect(within(row).getByRole("button", { name })).toBeInTheDocument();
-    }
-    expect(screen.getAllByRole("button", { name: "Show home, Home, from 17:10, on the map" })).toHaveLength(1);
   });
 
   test("DayPanel_still_opens_the_place_from_the_name_of_home", async () => {

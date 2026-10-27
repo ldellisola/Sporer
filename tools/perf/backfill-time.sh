@@ -19,6 +19,7 @@ poll=${4:-1}
 base=${ASPNETCORE_URLS:-http://127.0.0.1:5100}
 
 command -v jq > /dev/null || { echo "backfill-time.sh needs jq: install it" >&2; exit 2; }
+command -v bc > /dev/null || { echo "backfill-time.sh needs bc: install it" >&2; exit 2; }
 
 psql_one() { docker exec "$container" psql -U postgres -d "$database" -X -tA -c "$1"; }
 

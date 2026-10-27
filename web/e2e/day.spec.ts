@@ -129,7 +129,8 @@ test("day_view_marks_home_with_a_house", async ({ page }) => {
   );
   await expect(rows(page).locator("svg")).toHaveCount(1);
 
-  // The buttons say which is home, each with the text that is on its row (the house is a picture: home is named, and told from another home row, by the times); the name of the place still opens the place.
+  // The buttons say which is home, each with the text that is on its row (the house is a picture: home is named, and told from another
+  // home row, by the times); the name of the place still opens the place.
   expect(
     await details(page)
       .getByRole("button", { name: /^Show (stop|home)/ })
