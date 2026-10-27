@@ -66,6 +66,9 @@ describe("TripsPanel", () => {
     expect(thumbnail).toHaveAttribute("viewBox", "0 0 72 48");
     expect(thumbnail.querySelector("path")).not.toBeNull();
     expect(thumbnail.querySelectorAll("circle")).toHaveLength(2);
+    // The ongoing trip has not come home: its line is home and New York, and New York, where it is now, has its dot. A finished one has none at home.
+    expect(items[0]!.querySelectorAll("svg circle")).toHaveLength(1);
+    expect(items[2]!.querySelectorAll("svg circle")).toHaveLength(1); // Copenhagen: home, Copenhagen, home
 
     fireEvent.click(within(lisbon).getByRole("button"));
 

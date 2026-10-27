@@ -39,10 +39,12 @@ function project(line: readonly LonLat[]): [x: number, y: number][] | null {
 
 /**
  * Where a trip went, drawn small for its card: its line, in the accent colour, with a dot at each point between the ends (where it slept).
- * A line that has one point, none, or only the one position over and over (a trip that is not known to have gone anywhere) is one dot
- * in the middle. It is a picture only: the card says what it is of.
+ * A trip that is `ongoing` has not come home, so its line stops at the place it is at now: that last point is somewhere it slept, not an
+ * end that is home again, and gets its dot too (a one-night trip so far is home and one dot). A line that has one point, none, or only the
+ * one position over and over (a trip that is not known to have gone anywhere) is one dot in the middle. It is a picture only: the card
+ * says what it is of.
  */
-export function TripThumbnail({ line }: { line: readonly LonLat[] }) {
+export function TripThumbnail({ line, ongoing = false }: { line: readonly LonLat[]; ongoing?: boolean }) {
   const points = project(line);
   return (
     <svg className={styles.thumbnail} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} width={WIDTH} height={HEIGHT} aria-hidden="true" focusable="false">
@@ -51,7 +53,7 @@ export function TripThumbnail({ line }: { line: readonly LonLat[] }) {
       ) : (
         <>
           <path className={styles.line} d={points.map(([x, y], i) => `${i === 0 ? "M" : "L"}${px(x)},${px(y)}`).join(" ")} />
-          {points.slice(1, -1).map(([x, y], i) => (
+          {(ongoing ? points.slice(1) : points.slice(1, -1)).map(([x, y], i) => (
             <circle key={i} className={styles.dot} cx={px(x)} cy={px(y)} r={DOT_RADIUS} />
           ))}
         </>

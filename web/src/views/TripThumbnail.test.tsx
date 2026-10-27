@@ -3,9 +3,9 @@ import { describe, expect, test } from "vitest";
 import type { LonLat } from "../api/types";
 import { TripThumbnail } from "./TripThumbnail";
 
-/** Draws `line` and hands back the svg, its path's `d` (null when there is none) and the centres of its dots. */
-function draw(line: LonLat[]) {
-  const { container } = render(<TripThumbnail line={line} />);
+/** Draws `line` (of a trip that is `ongoing` or has finished) and hands back the svg, its path's `d` (null when there is none) and the centres of its dots. */
+function draw(line: LonLat[], ongoing = false) {
+  const { container } = render(<TripThumbnail line={line} ongoing={ongoing} />);
   const svg = container.querySelector("svg")!;
   const dots = [...container.querySelectorAll("circle")].map((dot) => `${dot.getAttribute("cx")},${dot.getAttribute("cy")}`);
   return { svg, d: container.querySelector("path")?.getAttribute("d") ?? null, dots };
@@ -30,6 +30,28 @@ describe("TripThumbnail", () => {
 
     expect(d).toBe("M4,44 L36,24 L52,16 L68,4");
     expect(dots).toEqual(["36,24", "52,16"]);
+  });
+
+  test("TripThumbnail_leaves_the_last_point_of_a_finished_trip_without_a_dot_as_it_is_where_the_trip_began", () => {
+    const { dots } = draw([[0, -5], [8, 0], [12, 2], [16, 5]], false);
+
+    expect(dots).toEqual(["36,24", "52,16"]);
+  });
+
+  test("TripThumbnail_puts_a_dot_at_the_last_point_of_an_ongoing_trip_which_is_where_it_is_now", () => {
+    // The line does not come back home: its last point is the latest place, and it is not the end of a line that returned.
+    const { d, dots } = draw([[0, -5], [8, 0], [12, 2], [16, 5]], true);
+
+    expect(d).toBe("M4,44 L36,24 L52,16 L68,4");
+    expect(dots).toEqual(["36,24", "52,16", "68,4"]);
+  });
+
+  test("TripThumbnail_shows_the_one_place_of_a_one_night_ongoing_trip_as_a_dot", () => {
+    // Home and the place it slept at: nothing is between the ends, and the place is the last point.
+    const { d, dots } = draw([[0, -5], [16, 5]], true);
+
+    expect(d).toBe("M4,44 L68,4");
+    expect(dots).toEqual(["68,4"]);
   });
 
   test("TripThumbnail_keeps_the_shape_and_puts_it_in_the_middle_of_the_box_whichever_way_it_is_longer", () => {

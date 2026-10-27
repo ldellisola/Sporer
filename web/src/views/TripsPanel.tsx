@@ -31,7 +31,7 @@ function TripCard({ trip }: { trip: TripListItem }) {
         aria-label={`Open ${said.join(", ")}`}
         onClick={() => navigate({ view: "trip", id: trip.id })}
       >
-        <TripThumbnail line={trip.thumbnail} />
+        <TripThumbnail line={trip.thumbnail} ongoing={trip.ongoing} />
         <span className={styles.text}>
           <span className={styles.head}>
             <span className={styles.name}>{trip.name}</span>
