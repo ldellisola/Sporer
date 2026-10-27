@@ -156,8 +156,9 @@ its own. The web was not measured again: no web code changed, and the Day view d
 | **`/api/trips/{id}`**, 50 requests each | ≤ 400 ms | 25 nights: p50 11.6, p95 **18.7** ms; 6 nights: 10.0 / **15.7**; 2 nights: 8.9 / **13.7** | Met |
 | *Information:* a **list of 98 trips** (the what-if) | read against the same | p50 18.0 and 18.6 ms, p95 24.3 and 28.6 ms, max 30.0 and 33.4 ms in two runs of 50, 5,534 B Brotli and 51,576 B raw; one added trip p50 10.5 ms, p95 15.6 ms (before: 18.4 and 19.6, 26.6 and 25.3, 5,595 B and 51,504 B) | The same |
 
-The refresh script now sends its batches from the place of the night of the day it uses (the new house, place 53), as the person was
-there, and after each refresh the stored result is the same: 874 nights, 2 home periods, 3 trips. The other endpoints' queries and
+The refresh script is as it was: it always sent its batches from the place of the night of the day it uses, as the person was there.
+That place is now the new house (place 53, the home), and after each refresh the stored result is the same: 874 nights, 2 home
+periods, 3 trips. The other endpoints' queries and
 plans are those of the sections below: nothing in the fix touches a query but the day's (the home it reads now carries the place's
 position, which `LoadHomesAsync` already read).
 
@@ -210,8 +211,9 @@ after a start is the slow one**: 174 ms (a start of five rounds, no place named)
 second refresh of each: 50 to 62 ms). It is the JIT compiling the refresh's code (and Dapper building its readers) the first time, as Plan 2
 found for the first requests of a fresh process; it happens once per start, in the worker and not in a request, a minute or more after
 the batch that started it, and ingest does not wait on it. It is over 200 ms by 3 to 12 % in four of the six (217, 225, 206 and 216),
-which is why it is said here and is not in the percentiles (two more starts, at the head of Task 13, had 204 and 189 ms): nothing was done about it (a warm-up at the start, or ReadyToRun compilation
-of the image, is a change to the product for a job that runs behind a debounce of a minute).
+which is why it is said here and is not in the percentiles (two more starts, at the head of Task 13, had 204 and 189 ms): nothing was
+done about it (a warm-up at the start, or ReadyToRun compilation of the image, is a change to the product for a job that runs behind a
+debounce of a minute).
 
 One refresh, statement by statement (the database's log: 65 ms from the read of the window to the update that empties it, a window of two
 nights, 17 statements): the read of every night 2.5 ms, the read of every stay's position 7.8 ms, each of the others 0.02 to 0.4 ms, 12 ms
@@ -441,7 +443,8 @@ TSDB_CONNECTION_STRING="${TSDB_CONNECTION_STRING/perf_raw/perf_main}" \
   tools/perf/backfill-time.sh ../sporer-main/src/Sporer.Api/bin/Release/net10.0/Sporer.Api.dll sporer-perf-db perf_main   # about 3 minutes
 export TSDB_CONNECTION_STRING="${TSDB_CONNECTION_STRING/perf_raw/perf}"
 KEEP=1 tools/perf/backfill-time.sh $api sporer-perf-db perf                   # leaves the API running (stop it with pkill -f Sporer.Api.dll); drop and make the database again to repeat
-                                                                              # it ends with "nights 874, home periods 2, trips 3" on this history (one home period: the move is lost)
+# Its last lines give "nights 874, home periods 2, trips 3" on this history
+# (the code before Task 13 found one home period: the move was lost).
 
 # --- The server, no place named: latencies and sizes (the trips are the last of its output), and the plans ---
 tools/perf/api-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22         # about 2 minutes; the 10th argument is the trips' requests

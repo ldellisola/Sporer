@@ -73,8 +73,9 @@ public sealed record DetectionOptions
     /// <summary>
     /// Places within this distance of each other count as one home, because GPS drift can split a home into several places
     /// a hundred metres or so apart (a stay matches a place within <see cref="PlaceRadiusMeters"/> or makes its own). Two
-    /// homes closer than this are one home: a move next door is not detected. That is harmless, because it is far below
-    /// <see cref="TripMinDistanceKm"/>.
+    /// homes closer than this are one home, and so can two homes up to about twice this apart, when a place of the new one
+    /// lies within this distance of the old one: a move next door is not detected. That is harmless for trips, because it
+    /// is far below <see cref="TripMinDistanceKm"/>.
     /// </summary>
     public double HomeRadiusMeters { get; init; } = 250;
 

@@ -49,8 +49,9 @@ worked out again with it, so nothing here has to be entered or kept up to date b
   that stays below the bar, a month abroad or a winter with someone, never becomes home: it is a trip.
 - **Places near each other count as one home.** GPS drift can split one house into several places a hundred metres or so apart, so the
   nights at every place within **250 m** of a place count for it (`Detection__HomeRadiusMeters`). A place within that distance of your
-  current home never starts a new home, so the home does not flip between the fragments of one house. Two homes closer than that are one home: a move
-  next door is not noticed, which is harmless, as it is far below the 50 km of a trip.
+  current home never starts a new home, so the home does not flip between the fragments of one house. Two homes closer than that are one
+  home, and so can two homes up to about twice that apart, when a place of the new one lies within 250 m of the old one: a move next door
+  is not noticed. That is harmless for trips, as it is far below the 50 km of a trip, and a home override (planned) will cover it.
 - **Away** means sleeping at least **50 km** from the home you had that night. While there is no home, no night is away.
 - **A trip** is a run of away nights in a row. Unknown nights between two of them belong to it, and an unknown night never starts or ends
   one. It starts when you left (the end of the last stay within 50 km of home) and ends when you came back (the start of the first one).
@@ -183,7 +184,7 @@ start (see "First start" below).
 | `Detection__NightPointWindow` | `12:00:00` | When no stay covers a night's moment, the nearest raw point within this long of it locates the night; if there is none, the night is unknown. |
 | `Detection__HomeWindowNights` | `90` | A new home is judged over this many consecutive calendar nights. |
 | `Detection__HomeMinNights` | `60` | A place becomes home once it is where you slept on at least this many of the last `Detection__HomeWindowNights` nights; unknown nights count against it. Keep it above half the window, so that only one home can qualify at a time. |
-| `Detection__HomeRadiusMeters` | `250` | Places within this distance of each other count as one home, because GPS drift can split a home into several places a hundred metres or so apart: the nights at all of them count for the home, and a stay at any of them is shown at home on the Day view. Two homes closer than this are one home, so a move next door is not detected (harmless: far below the trip threshold). |
+| `Detection__HomeRadiusMeters` | `250` | Places within this distance of each other count as one home, because GPS drift can split a home into several places a hundred metres or so apart: the nights at all of them count for the home, and a stay at any of them is shown at home on the Day view. Two homes closer than this are one home, and so can two homes up to about twice this apart, when a place of the new one lies within this distance of the old one: a move next door is not detected (harmless for trips: far below the trip threshold). |
 | `Detection__TripMinDistanceKm` | `50` | A night is away, and part of a trip, when its place is at least this far from the home you had that night. |
 
 ## Overland

@@ -141,8 +141,8 @@ public class HomeDetectorTests
     [Fact]
     public void HomeDetector_counts_a_home_split_over_nearby_places_as_one_home()
     {
-        // A, A1 and A2 are about 100 m from each other: GPS drift, not three homes. They take turns, 30 nights each in 90, and none
-        // has 60 alone. All three count 60 together by night 60, and the one with the most nights of its own then is A1.
+        // A, A1 and A2 are about 100 m from each other: GPS drift, not three homes. They take turns for 90 nights (A1 36, A 30, A2 24),
+        // and none has 60 alone. All three count 60 together by night 60, when A1 has the most nights of its own (24, against 20 and 16).
         var positions = new Dictionary<long, GeoPoint> { [A] = Near(0, 0), [A1] = Near(0, 100), [A2] = Near(100, 50) };
         var nights = Nights((A1, 12), (A, 10), (A2, 8), (A1, 12), (A, 10), (A2, 8), (A1, 12), (A, 10), (A2, 8));
 
@@ -185,9 +185,10 @@ public class HomeDetectorTests
     [Fact]
     public void HomeDetector_finds_a_move_to_a_home_split_over_four_places()
     {
-        // The synthetic history in small: a move 17 km away, the new home split over four places 75 to 130 m apart. Each has 20 nights
-        // of 80, so none gets near 60 alone; together they have 60 of 90 on night 160. The two with most nights of their own are
-        // F1 and F2, and the lower id of them is the home, from the first night at the new home.
+        // The synthetic history in small: a move 17 km away, the new home split over four places. F2, F3 and F4 are 75, 130 and 85 m
+        // from F1, and up to 199 m from each other (F3 to F4). Each has 20 nights of 80, so none gets near 60 alone; together they have
+        // 60 of 90 on night 160. The two with most nights of their own are F1 and F2, and the lower id of them is the home, from the
+        // first night at the new home.
         var far = Geo.Offset(Spots.Home, 0, 17_000);
         var positions = new Dictionary<long, GeoPoint>
         {
@@ -202,6 +203,19 @@ public class HomeDetectorTests
         Assert.Equal([Home(A, 1, 100), Home(F1, 101)], HomeDetector.Detect(nights, positions, Defaults));
         // Counted by place alone, the move is never found.
         Assert.Equal([Home(A, 1)], HomeDetector.Detect(nights, NoPositions, Defaults));
+    }
+
+    [Fact]
+    public void HomeDetector_backdates_a_split_home_to_the_first_night_at_any_of_its_places()
+    {
+        // The new home is split over F1 and F2, 100 m apart, slept at by turns with F2 first (night 101) and F1 from night 111. Each
+        // has 30 nights of 60 when they reach the bar together on night 160, and F1 wins on the lower id. Its own first night in the
+        // window is 111, but the home is the group's, and the period begins at the group's first night: F2's, night 101.
+        var far = Geo.Offset(Spots.Home, 0, 17_000);
+        var positions = new Dictionary<long, GeoPoint> { [A] = Spots.Home, [F1] = far, [F2] = Geo.Offset(far, 0, 100) };
+        var nights = Nights((A, 100), (F2, 10), (F1, 10), (F2, 10), (F1, 10), (F2, 10), (F1, 10), (F2, 10), (F1, 10));
+
+        Assert.Equal([Home(A, 1, 100), Home(F1, 101)], HomeDetector.Detect(nights, positions, Defaults));
     }
 
     [Fact]

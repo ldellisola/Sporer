@@ -40,7 +40,11 @@ public static class HomeDetector
     /// A new period starts only when the best count is at least <see cref="DetectionOptions.HomeMinNights"/>, the best is
     /// not the current home, and it is farther than <see cref="DetectionOptions.HomeRadiusMeters"/> from the current home.
     /// A place near the current home is the same home and starts nothing, however many of the nights it has, so the home
-    /// does not flip between the fragments of one house. Two homes closer than the radius are one home.
+    /// does not flip between the fragments of one house. Two homes closer than the radius are one home. So can two homes up
+    /// to about twice the radius apart: when a fragment of the new home lies within the radius of the old one, its group
+    /// includes the old home and the rest of the new one, so it can be the best candidate every time and, being near the
+    /// current home, never starts a period: the move is not detected. Trips are unaffected (that is far below
+    /// <see cref="DetectionOptions.TripMinDistanceKm"/>), and a home override (planned) will cover it.
     /// </para>
     /// <para>
     /// The places near each other are worked out once, before the dates are walked, and not for each date.
