@@ -27,6 +27,12 @@ public static class TripNaming
     /// </summary>
     private const string Unnamed = "Trip";
 
+    /// <summary>What a day with nothing to say where the person was, but with a move in it, is called.</summary>
+    private const string Travelling = "Travelling";
+
+    /// <summary>What a day with no stay to describe it by, and no move, is called.</summary>
+    private const string NoData = "No data";
+
     /// <summary>
     /// The name of a trip from <paramref name="nights"/>, one entry per night whose position is known, in any order. The nights
     /// are grouped by city and country, the city with the most nights first and, between equals, the one that was slept in
@@ -59,27 +65,67 @@ public static class TripNaming
     public static string NightsLabel(int nights) => nights == 1 ? "1 night" : $"{nights} nights";
 
     /// <summary>
-    /// The cities of a trip: its known <paramref name="nights"/> grouped by the name they are drawn under and their country, in
-    /// the order a name is built in (most nights first, then the earlier first night). A night whose place has no city is
-    /// drawn under its country, and one with neither is left out: there is nothing to put on the map for it. The group is the
-    /// name as drawn, not the city field, so that a night with only the country "Singapore" and a night in the city of
-    /// Singapore (also in Singapore) are one entry, not two that look the same; the same name in another country is another.
+    /// The cities of a trip: its known <paramref name="nights"/> grouped by <see cref="CityKey"/>, in the order a name is built
+    /// in (most nights first, then the earlier first night). A night whose place has no city is drawn under its country, and
+    /// one with neither is left out: there is nothing to put on the map for it.
     /// </summary>
     public static IReadOnlyList<TripCity> Cities(IReadOnlyList<TripNight> nights)
     {
-        var named = nights
-            .Select(n => (Night: n, City: Clean(n.City), Country: Clean(n.Country)))
-            .Where(n => n.City is not null || n.Country is not null);
+        var named = new List<(TripNight Night, (string Name, string? Country) Key)>();
+        foreach (var night in nights)
+            if (CityKey(night.City, night.Country) is { } key)
+                named.Add((night, key));
 
         return
         [
-            .. Rank(named, n => (Name: n.City ?? n.Country!, n.Country), n => n.Night.Date).Select(g => new TripCity(
+            .. Rank(named, n => n.Key, n => n.Night.Date).Select(g => new TripCity(
                 g.Key.Name,
                 g.Key.Country,
                 g.Count(),
                 g.Average(n => n.Night.Position.Latitude),
                 g.Average(n => n.Night.Position.Longitude))),
         ];
+    }
+
+    /// <summary>
+    /// The city a place with this <paramref name="city"/> and <paramref name="country"/> counts as: the name it is drawn under
+    /// (the city, or the country when it has no city) and the country, or null for a place with neither. The name as drawn is
+    /// the key, not the city field, so that a place with only the country "Singapore" and a place in the city of Singapore (also
+    /// in Singapore) are one city, not two entries that look the same; the same name in another country is another city.
+    /// </summary>
+    internal static (string Name, string? Country)? CityKey(string? city, string? country)
+    {
+        var cleanCountry = Clean(country);
+        var name = Clean(city) ?? cleanCountry;
+        return name is null ? null : (name, cleanCountry);
+    }
+
+    /// <summary>
+    /// The line that describes a day of a trip from the stays that touch it, <paramref name="staysInOrder"/>, earliest first,
+    /// each as the city and the name of its place (null for what it has not got): the cities in the order they were stayed in,
+    /// joined by " → ", with a city that follows itself said once ("Oslo → Lisbon", and "Oslo → Lisbon → Oslo" for a return).
+    /// A stay with no city is passed over while another has one; when none has, the place names say it the same way. A day with
+    /// nothing to describe it by, whether it has no stay or only stays that no city or name belongs to (places the geocoder has
+    /// not reached), is "Travelling" if <paramref name="hasMoves"/> and "No data" if not.
+    /// </summary>
+    public static string DayLine(IReadOnlyList<(string? City, string? PlaceName)> staysInOrder, bool hasMoves)
+    {
+        var line = Collapse(staysInOrder.Select(s => Clean(s.City)));
+        if (line.Count == 0)
+            line = Collapse(staysInOrder.Select(s => Clean(s.PlaceName)));
+
+        return line.Count > 0 ? string.Join(" → ", line) : hasMoves ? Travelling : NoData;
+    }
+
+    /// <summary><paramref name="names"/> without the nulls, and with a name that follows itself said once.</summary>
+    private static List<string> Collapse(IEnumerable<string?> names)
+    {
+        var collapsed = new List<string>();
+        foreach (var name in names)
+            if (name is not null && (collapsed.Count == 0 || collapsed[^1] != name))
+                collapsed.Add(name);
+
+        return collapsed;
     }
 
     /// <summary>

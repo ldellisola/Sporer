@@ -2,6 +2,7 @@ using System.Data;
 using System.Globalization;
 using Dapper;
 using Npgsql;
+using Sporer.Api.Features.Range;
 using Sporer.Api.Features.Timeline;
 using Sporer.Timeline;
 
@@ -16,6 +17,34 @@ namespace Sporer.Api.Features.Trips;
 /// </summary>
 public sealed record StoredTrip(
     DetectedTrip Trip, IReadOnlyList<TripNight> Nights, GeoPoint? HomeAtStart, GeoPoint? HomeAtEnd);
+
+/// <summary>
+/// A stay inside a trip, as the trip's days are made from it: <paramref name="StartUtc"/> and <paramref name="EndUtc"/> are the
+/// stay's own (not clipped to the trip), and the local dates are the ones it was stored with. The place is the one that survives
+/// merges; <paramref name="PlaceId"/> is null for a stay that matched no place, or whose merges never end, and
+/// <paramref name="PlaceName"/> is the owner's name for the place, else OpenStreetMap's, else null.
+/// </summary>
+public sealed record TripStay(
+    DateTime StartUtc, DateTime EndUtc, DateOnly LocalStartDate, DateOnly LocalEndDate,
+    long? PlaceId, string? PlaceName, string? City, string? Country);
+
+/// <summary>
+/// A move inside a trip: <paramref name="Line"/> is the stored coarse line (empty for a move that has none), and
+/// <paramref name="Mode"/> is null for one whose mode could not be told. A move with no distance has none: 0.
+/// </summary>
+public sealed record TripMove(
+    long Id, string? Mode, DateOnly LocalStartDate, DateOnly LocalEndDate, double DistanceM, IReadOnlyList<GeoPoint> Line);
+
+/// <summary>
+/// One trip and what its detail is made from (see <see cref="TripStore.FindAsync"/>). <paramref name="SpanEndUtc"/> is where the
+/// trip's span ends: when it ended, or for an ongoing trip the end of the latest segment stored. <paramref name="Nights"/> are the
+/// nights of the trip that have a position, as in <see cref="StoredTrip"/>. <paramref name="SleepPlaces"/> says, for the nights
+/// from the one before the trip's first day to the one of its last, the surviving place each was spent at (a night that has
+/// none is not in it). <paramref name="Stays"/> and <paramref name="Moves"/> are those that overlap the span, earliest first.
+/// </summary>
+public sealed record TripDetail(
+    DetectedTrip Trip, DateTime SpanEndUtc, IReadOnlyList<TripNight> Nights, IReadOnlyDictionary<DateOnly, long> SleepPlaces,
+    IReadOnlyList<TripStay> Stays, IReadOnlyList<TripMove> Moves);
 
 /// <summary>
 /// The homes and trips (<c>home_period</c>, <c>trip</c>) and the window of the timeline that has been rebuilt since they were
@@ -141,6 +170,14 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
         }
     }
 
+    /// <summary>The columns of a trip row, as <see cref="TripRow"/> reads them.</summary>
+    private const string TripColumns =
+        """
+        to_char(id, 'YYYY-MM-DD') as FirstNight, to_char(last_night, 'YYYY-MM-DD') as LastNight, nights as Nights,
+        start_utc as StartUtc, end_utc as EndUtc, start_tz as StartZone, end_tz as EndZone,
+        to_char(local_start_date, 'YYYY-MM-DD') as LocalStartDate, to_char(local_end_date, 'YYYY-MM-DD') as LocalEndDate
+        """;
+
     /// <summary>
     /// Every trip, newest first, with its nights and the homes it began and ended at. Trips, nights and home periods are read
     /// in one snapshot, so that a refresh that lands in the middle (it replaces all three together) cannot leave a trip with the
@@ -166,14 +203,7 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
 
         var trips = await connection.QueryAsync<TripRow>(new CommandDefinition(
-            """
-            select to_char(id, 'YYYY-MM-DD') as FirstNight, to_char(last_night, 'YYYY-MM-DD') as LastNight, nights as Nights,
-                   start_utc as StartUtc, end_utc as EndUtc, start_tz as StartZone, end_tz as EndZone,
-                   to_char(local_start_date, 'YYYY-MM-DD') as LocalStartDate, to_char(local_end_date, 'YYYY-MM-DD') as LocalEndDate
-            from trip
-            order by id desc
-            """,
-            transaction: transaction, cancellationToken: ct));
+            $"select {TripColumns} from trip order by id desc", transaction: transaction, cancellationToken: ct));
 
         var nights = await connection.QueryAsync<TripNightRow>(new CommandDefinition(
             $"""
@@ -222,16 +252,7 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
         [
             .. trips.Select(t =>
             {
-                var trip = new DetectedTrip(
-                    ParseDate(t.FirstNight),
-                    ParseDate(t.LastNight),
-                    t.Nights,
-                    AsUtc(t.StartUtc),
-                    t.EndUtc is { } end ? AsUtc(end) : null,
-                    t.StartZone,
-                    t.EndZone,
-                    ParseDate(t.LocalStartDate),
-                    ParseDate(t.LocalEndDate));
+                var trip = ToTrip(t);
                 var known = nightsOf[t.FirstNight]
                     .Select(n => new TripNight(ParseDate(n.Date), n.City, n.Country, new GeoPoint(n.Latitude, n.Longitude)));
 
@@ -255,6 +276,129 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
 
         return null;
     }
+
+    /// <summary>
+    /// The trip whose id is <paramref name="id"/> (the date of its first night), with what its detail is made from, or null when
+    /// there is none. Read in one snapshot and in a constant number of queries, however long the trip: the trip, the latest
+    /// segment's end if the trip is ongoing, its nights, and its stays and moves. As in <see cref="ListAsync"/>, a refresh that
+    /// lands in the middle (it replaces nights and trips together) cannot leave the trip with the nights of another.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The span of the trip is from its start to its end. An ongoing trip has no end, and its span runs to the end of the latest
+    /// segment stored: all the timeline knows of it so far. A stay or move is in the trip when it overlaps the span, so the stays
+    /// at home on either side of it (which end at its start and begin at its end) are not, and one that begins before the start
+    /// or ends after the end is in as a whole. Gaps are not in it: a day with only a gap is a day with no data. A move or
+    /// stay keeps the local dates it was stored with.
+    /// </para>
+    /// <para>
+    /// The place of a stay and of a night is resolved to the place that survives merges, as in the list, and its name, city and
+    /// country are read now. <see cref="TripDetail.SleepPlaces"/> covers the nights from the one before the trip's first local
+    /// day to the one of its last: the days of the trip each look at the night before and the night of their date. A place
+    /// whose merges never end counts as no place.
+    /// </para>
+    /// </remarks>
+    public async Task<TripDetail?> FindAsync(DateOnly id, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
+
+        var row = await connection.QuerySingleOrDefaultAsync<TripRow>(new CommandDefinition(
+            $"select {TripColumns} from trip where id = @Id", new { Id = id }, transaction, cancellationToken: ct));
+        if (row is null)
+            return null;
+
+        var trip = ToTrip(row);
+
+        // Segments do not overlap, so the one that starts last ends last (as SegmentStore.FindLastEndAsync has it), here in the
+        // same snapshot as the rest. With nothing stored after the start, the span is empty.
+        var spanEnd = trip.EndUtc;
+        if (spanEnd is null)
+        {
+            var latest = await connection.QuerySingleOrDefaultAsync<DateTime?>(new CommandDefinition(
+                "select end_utc from segment order by start_utc desc limit 1", transaction: transaction, cancellationToken: ct));
+            spanEnd = latest is { } last && AsUtc(last) > trip.StartUtc ? AsUtc(last) : trip.StartUtc;
+        }
+
+        // The nights of the trip itself, and those the days around it look at: the night before its first day to the night of its last.
+        var before = trip.LocalStartDate.AddDays(-1);
+        var firstNight = before < trip.FirstNight ? before : trip.FirstNight;
+        var lastNight = trip.LocalEndDate > trip.LastNight ? trip.LocalEndDate : trip.LastNight;
+        var nights = await connection.QueryAsync<DetailNightRow>(new CommandDefinition(
+            $"""
+            with recursive
+            named as (
+                select place_id from night where date between @From and @To and place_id is not null
+            ),
+            {PlaceStore.Survivors}
+            select to_char(n.date, 'YYYY-MM-DD') as Date, p.id as PlaceId, p.city as City, p.country as Country,
+                   n.latitude as Latitude, n.longitude as Longitude
+            from night n
+            left join survivor on survivor.origin = n.place_id
+            left join place p on p.id = survivor.id
+            where n.date between @From and @To
+            order by n.date
+            """,
+            new { From = firstNight, To = lastNight }, transaction, cancellationToken: ct));
+
+        var segments = await connection.QueryAsync<DetailSegmentRow>(new CommandDefinition(
+            $"""
+            with recursive
+            spanned as (
+                select id, kind, start_utc, end_utc, local_start_date, local_end_date, place_id, mode, distance_m,
+                       case when kind = 'move' then geometry_coarse::text end as geometry
+                from segment
+                where kind in ('stay', 'move') and start_utc < @SpanEnd and end_utc > @SpanStart
+            ),
+            named as (
+                select place_id from spanned where place_id is not null
+            ),
+            {PlaceStore.Survivors}
+            select s.id as Id, s.kind as Kind, s.start_utc as StartUtc, s.end_utc as EndUtc,
+                   to_char(s.local_start_date, 'YYYY-MM-DD') as LocalStartDate, to_char(s.local_end_date, 'YYYY-MM-DD') as LocalEndDate,
+                   p.id as PlaceId, coalesce(p.user_name, p.osm_name) as PlaceName, p.city as City, p.country as Country,
+                   s.mode as Mode, s.distance_m as DistanceM, s.geometry as GeometryCoarseJson
+            from spanned s
+            left join survivor on survivor.origin = s.place_id
+            left join place p on p.id = survivor.id
+            order by s.start_utc, s.id
+            """,
+            new { SpanStart = AsUtc(trip.StartUtc), SpanEnd = spanEnd.Value }, transaction, cancellationToken: ct));
+
+        await transaction.CommitAsync(ct);
+
+        var nightList = nights.Select(n => (Row: n, Date: ParseDate(n.Date))).ToList();
+        return new TripDetail(
+            trip,
+            spanEnd.Value,
+            [
+                .. nightList
+                    .Where(n => n.Date >= trip.FirstNight && n.Date <= trip.LastNight && n.Row.Latitude is not null && n.Row.Longitude is not null)
+                    .Select(n => new TripNight(n.Date, n.Row.City, n.Row.Country, new GeoPoint(n.Row.Latitude!.Value, n.Row.Longitude!.Value))),
+            ],
+            nightList.Where(n => n.Row.PlaceId is not null).ToDictionary(n => n.Date, n => n.Row.PlaceId!.Value),
+            [
+                .. segments.Where(s => s.Kind == "stay").Select(s => new TripStay(
+                    AsUtc(s.StartUtc), AsUtc(s.EndUtc), ParseDate(s.LocalStartDate), ParseDate(s.LocalEndDate),
+                    s.PlaceId, s.PlaceName, s.City, s.Country)),
+            ],
+            [
+                .. segments.Where(s => s.Kind == "move").Select(s => new TripMove(
+                    s.Id, s.Mode, ParseDate(s.LocalStartDate), ParseDate(s.LocalEndDate), s.DistanceM ?? 0,
+                    RangeStore.ParseLine(s.GeometryCoarseJson))),
+            ]);
+    }
+
+    private static DetectedTrip ToTrip(TripRow row) => new(
+        ParseDate(row.FirstNight),
+        ParseDate(row.LastNight),
+        row.Nights,
+        AsUtc(row.StartUtc),
+        row.EndUtc is { } end ? AsUtc(end) : null,
+        row.StartZone,
+        row.EndZone,
+        ParseDate(row.LocalStartDate),
+        ParseDate(row.LocalEndDate));
 
     private static DateOnly ParseDate(string text) => DateOnly.ParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture);
 
@@ -294,6 +438,33 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
         public string? Country { get; set; }
         public double Latitude { get; set; }
         public double Longitude { get; set; }
+    }
+
+    private sealed class DetailNightRow
+    {
+        public string Date { get; set; } = string.Empty;
+        public long? PlaceId { get; set; }
+        public string? City { get; set; }
+        public string? Country { get; set; }
+        public double? Latitude { get; set; }
+        public double? Longitude { get; set; }
+    }
+
+    private sealed class DetailSegmentRow
+    {
+        public long Id { get; set; }
+        public string Kind { get; set; } = string.Empty;
+        public DateTime StartUtc { get; set; }
+        public DateTime EndUtc { get; set; }
+        public string LocalStartDate { get; set; } = string.Empty;
+        public string LocalEndDate { get; set; } = string.Empty;
+        public long? PlaceId { get; set; }
+        public string? PlaceName { get; set; }
+        public string? City { get; set; }
+        public string? Country { get; set; }
+        public string? Mode { get; set; }
+        public double? DistanceM { get; set; }
+        public string? GeometryCoarseJson { get; set; }
     }
 
     private sealed class HomeRow

@@ -196,8 +196,8 @@ public sealed class RangeStore(NpgsqlDataSource dataSource)
 
     private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
-    /// <summary>The stored <c>[[lon,lat],...]</c> as points. A move without a line has an empty one.</summary>
-    private static GeoPoint[] ParseLine(string? json)
+    /// <summary>The stored <c>[[lon,lat],...]</c> as points. A move without a line has an empty one. Shared with the trip view.</summary>
+    internal static GeoPoint[] ParseLine(string? json)
     {
         var pairs = string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize<double[][]>(json);
         return pairs is null ? [] : [.. pairs.Where(p => p.Length >= 2).Select(p => new GeoPoint(Latitude: p[1], Longitude: p[0]))];

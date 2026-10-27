@@ -1,9 +1,9 @@
 using System.Net;
 using System.Text.Json;
-using Microsoft.Extensions.DependencyInjection;
 using Sporer.Api.Features.Trips;
 using Sporer.Testing;
 using Sporer.Timeline;
+using static Sporer.Api.Tests.TripSeeder;
 
 namespace Sporer.Api.Tests;
 
@@ -17,41 +17,8 @@ public class TripsEndpointTests(DatabaseFixture db)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    private static DateTime Utc(int month, int day, int hour = 0, int minute = 0) => new(2026, month, day, hour, minute, 0, DateTimeKind.Utc);
-
-    private static DateOnly D(int month, int day) => new(2026, month, day);
-
     /// <summary>A synthetic Porto: some way from Lisbon.</summary>
     private static readonly GeoPoint Porto = new(41.15, -8.61);
-
-    /// <summary>A place of the stored timeline, at the given position and with the geocoder's city and country if it has any.</summary>
-    private static Task<long> PlaceAsync(string cs, GeoPoint at, string? city = null, string? country = null, long? mergedInto = null)
-        => TimelineSeeder.InsertPlaceAsync(cs, city: city, country: country, lat: at.Latitude, lon: at.Longitude, mergedInto: mergedInto);
-
-    private static DateTime InstantOf(DateOnly night) => new DateTime(night.Year, night.Month, night.Day, 2, 0, 0, DateTimeKind.Utc).AddDays(1);
-
-    /// <summary>A night located by a stay at a place, at the stay's own position.</summary>
-    private static (Night, string) Stay(DateOnly date, long place, GeoPoint at)
-        => (new Night(date, InstantOf(date), "Europe/Lisbon", place, at), "stay");
-
-    /// <summary>A night located by a point that matched no place.</summary>
-    private static (Night, string) Point(DateOnly date, GeoPoint at)
-        => (new Night(date, InstantOf(date), "Europe/Lisbon", null, at), "point");
-
-    /// <summary>A night with no position: nothing was near enough.</summary>
-    private static (Night, string) Unknown(DateOnly date)
-        => (new Night(date, InstantOf(date), "Europe/Lisbon", null, null), "none");
-
-    private static DetectedTrip Trip(DateOnly first, DateOnly last, DateTime start, DateTime? end, string startZone = "Europe/Oslo", string endZone = "Europe/Oslo")
-        => new(first, last, last.DayNumber - first.DayNumber + 1, start, end, startZone, endZone, LocalTime.LocalDate(start, startZone),
-            end is { } over ? LocalTime.LocalDate(over, endZone) : last.AddDays(1));
-
-    /// <summary>Writes nights, homes and trips together, as the refresh does.</summary>
-    private static Task StoreAsync(
-        ApiFactory api, IReadOnlyList<(Night, string)> nights, IReadOnlyList<HomePeriod> homes, params DetectedTrip[] trips)
-        => api.Services.GetRequiredService<TripStore>().ReplaceAllAsync(
-            nights.Count == 0 ? D(1, 1) : nights.Min(n => n.Item1.Date), nights.Count == 0 ? D(1, 1) : nights.Max(n => n.Item1.Date),
-            nights, homes, trips, Ct);
 
     private static async Task<HttpResponseMessage> GetAsync(HttpClient client, string? ifNoneMatch = null)
     {
