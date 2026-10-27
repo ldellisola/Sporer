@@ -53,7 +53,7 @@ const HOME = place(1, "Home", 10.0, 59.0);
 const CAFE = place(2, "Café", 10.1, 59.1);
 
 function stay(id: number, at: PlaceRef | null, when: Partial<StaySegment> = {}): StaySegment {
-  return { id, kind: "stay", ...WHEN, place: at, ...when };
+  return { id, kind: "stay", ...WHEN, place: at, home: false, ...when };
 }
 
 function move(id: number, mode: MoveSegment["mode"], geometry: LonLat[], when: Partial<MoveSegment> = {}): MoveSegment {

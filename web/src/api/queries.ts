@@ -1,6 +1,6 @@
 import { keepPreviousData, QueryClient, queryOptions, skipToken, useQuery } from "@tanstack/react-query";
 import { MAX_RANGE_DAYS, step, periodDays, periodRange, today } from "../time/dates";
-import type { Route } from "../app/router";
+import { isPeriodRoute, type Route } from "../app/router";
 import { ApiError, getJson, isNotFound } from "./client";
 import type {
   ConfigResponse,
@@ -9,6 +9,8 @@ import type {
   PlaceResponse,
   RangeResponse,
   StatusResponse,
+  TripResponse,
+  TripsResponse,
 } from "./types";
 
 /** How long an answer counts as fresh, how often a period that is still being processed is asked for again, and how often today is. */
@@ -85,6 +87,25 @@ export function placeQueryOptions(id: number | null) {
   });
 }
 
+/** The trips, newest first: what the trips list shows, and the order that ‹ and › on a trip step by. */
+export function tripsQueryOptions() {
+  return queryOptions({
+    queryKey: ["trips"] as const,
+    queryFn: ({ signal }) => getJson<TripsResponse>("/api/trips", signal),
+    staleTime: STALE_MS,
+  });
+}
+
+/** One trip, by the date of its first night. Nothing is asked for while `id` is null (the view on show is not a trip): the query is skipped, as for a place. */
+export function tripQueryOptions(id: string | null) {
+  return queryOptions({
+    queryKey: ["trip", id] as const,
+    queryFn: id === null ? skipToken : ({ signal }) => getJson<TripResponse>(`/api/trips/${id}`, signal),
+    staleTime: STALE_MS,
+    // No keepPreviousData: another trip's name and days under this trip's heading would be wrong, not just old.
+  });
+}
+
 export function statusQueryOptions() {
   return queryOptions({
     queryKey: ["status"] as const,
@@ -122,17 +143,34 @@ export function placeOf(query: { data?: PlaceResponse; error: Error | null }): {
   return { gone, shown: gone ? undefined : query.data };
 }
 
+export const useTrips = () => useQuery(tripsQueryOptions());
+
+export const useTrip = (id: string | null) => useQuery(tripQueryOptions(id));
+
+/**
+ * The trips either side of the trip `id` in `trips`, which is newest first: the older one is the next in the list and the newer one the
+ * one before it. A side that has none (the trip is the first or the last, or is not in the list at all, as one that is gone) is null.
+ */
+export function tripNeighbours(trips: readonly { id: string }[], id: string): { older: string | null; newer: string | null } {
+  const at = trips.findIndex((trip) => trip.id === id);
+  if (at < 0) return { older: null, newer: null };
+  return { older: trips[at + 1]?.id ?? null, newer: trips[at - 1]?.id ?? null };
+}
+
 export const useStatus = () => useQuery(statusQueryOptions());
 
 export const useConfig = () => useQuery(configQueryOptions());
 
 /**
- * Starts loading the period before and the one after `route`, so that ‹ and › find their data in the cache. Never throws and
- * never waits on a failure: a prefetch that fails is simply asked for again when the period is shown. A place has no
- * neighbours, and a period the API would refuse (more than 400 days) is not asked for.
+ * Starts loading what ‹ and › are going to ask for, so that they find it in the cache: the period before the one `route` shows and the
+ * one after it, or for a trip the trips either side of it in the list. The list is the one that is in the cache already (the top bar asks
+ * for it, and a prefetch has no business waiting on it): without it nothing is known of a trip's neighbours, and nothing is loaded.
+ * Never throws and never waits on a failure: a prefetch that fails is simply asked for again when the period or the trip is shown. A
+ * route with no neighbours (a place, the trips) loads nothing, and a period the API would refuse (more than 400 days) is not asked for.
  */
 export async function prefetchNeighbours(queryClient: QueryClient, route: Route): Promise<void> {
-  if (route.view === "place") return;
+  if (route.view === "trip") return prefetchTripNeighbours(queryClient, route.id);
+  if (!isPeriodRoute(route)) return;
   await Promise.all(
     ([-1, 1] as const).map((delta) => {
       const neighbour = step(route, delta);
@@ -142,6 +180,13 @@ export async function prefetchNeighbours(queryClient: QueryClient, route: Route)
       return queryClient.prefetchQuery(rangeQueryOptions(from, to));
     }),
   );
+}
+
+async function prefetchTripNeighbours(queryClient: QueryClient, id: string): Promise<void> {
+  const list = queryClient.getQueryData(tripsQueryOptions().queryKey);
+  if (list === undefined) return;
+  const { older, newer } = tripNeighbours(list.trips, id);
+  await Promise.all([older, newer].map((neighbour) => (neighbour === null ? undefined : queryClient.prefetchQuery(tripQueryOptions(neighbour)))));
 }
 
 function shouldRetry(failureCount: number, error: Error): boolean {

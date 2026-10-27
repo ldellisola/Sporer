@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { addDays, isDate, isMonth, MAX_RANGE_DAYS, periodDays, today as todayInBrowser, weekStart } from "../time/dates";
 
-// The URL is the only view state, and there are only six kinds of it, so this is all the router there is:
+// The URL is the only view state, and there are only eight kinds of it, so this is all the router there is:
 //   /day/2026-10-22   /week/2026-10-19   /month/2026-10   /year/2026   /range/2026-10-19..2026-10-25   /place/42
+//   /trips   /trip/2026-09-12
 // The server answers each of them with index.html (see Program.cs).
 
 export type Route =
@@ -11,10 +12,25 @@ export type Route =
   | { view: "month"; month: string }
   | { view: "year"; year: number }
   | { view: "range"; from: string; to: string }
-  | { view: "place"; id: number };
+  | { view: "place"; id: number }
+  | { view: "trips" }
+  /** A trip, by its id: the date of its first away night, which is what the API names it by. */
+  | { view: "trip"; id: string };
 
-/** A route that covers a stretch of time: every one but a place. */
-export type PeriodRoute = Exclude<Route, { view: "place" }>;
+/** A route that covers a stretch of time: the day, the week, the month, the year and the range. A place, the trips and a trip do not. */
+export type PeriodRoute = Extract<Route, { view: "day" | "week" | "month" | "year" | "range" }>;
+
+const PERIOD_VIEWS: ReadonlySet<string> = new Set<PeriodRoute["view"]>(["day", "week", "month", "year", "range"]);
+
+/**
+ * Whether a route covers a stretch of time, which is what everything made from dates (the range and heat requests, the neighbours to
+ * step to, the label of the period) is for. Where the code means "this route has no period" it asks this, and does not name the kinds of
+ * route that have none: a kind of route that is added later has no period until it is listed here, so it is never handed to what works
+ * out dates from one.
+ */
+export function isPeriodRoute(route: Route): route is PeriodRoute {
+  return PERIOD_VIEWS.has(route.view);
+}
 
 const YEAR_PATTERN = /^\d{4}$/;
 const ID_PATTERN = /^\d+$/;
@@ -31,6 +47,7 @@ export function parseRoute(pathname: string, today: string): Route | null {
 
   const trimmed = pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
   const segments = trimmed.split("/"); // "", view, argument
+  if (segments.length === 2) return segments[1] === "trips" ? { view: "trips" } : null; // the list is the one view that has no argument
   if (segments.length !== 3) return null;
   const [, view, arg] = segments as [string, string, string];
 
@@ -58,6 +75,8 @@ export function parseRoute(pathname: string, today: string): Route | null {
       const id = Number(arg);
       return ID_PATTERN.test(arg) && Number.isSafeInteger(id) && id >= 1 ? { view: "place", id } : null;
     }
+    case "trip":
+      return isDate(arg) ? { view: "trip", id: arg } : null;
     default:
       return null;
   }
@@ -83,6 +102,10 @@ export function formatRoute(route: Route): string {
       return `/range/${route.from}..${route.to}`;
     case "place":
       return `/place/${route.id}`;
+    case "trips":
+      return "/trips";
+    case "trip":
+      return `/trip/${route.id}`;
   }
 }
 

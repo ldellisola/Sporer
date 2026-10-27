@@ -50,10 +50,14 @@ export interface PlaceRef {
   lon: number;
 }
 
-/** Time spent in one place; `place` is null for a stay at a position that matched no place. */
+/**
+ * Time spent in one place; `place` is null for a stay at a position that matched no place. `home` is true when the place is the home in
+ * effect on the day served, and false for every other stay (one with no place too); the server always writes it.
+ */
 export interface StaySegment extends SegmentBase {
   kind: "stay";
   place: PlaceRef | null;
+  home: boolean;
 }
 
 /** Travel between two stays; `geometry` is the stored (detail) line. A mode the server could not tell is left out of the JSON, as null is. */
@@ -156,6 +160,83 @@ export interface PlaceVisit {
   date: string;
   /** The IANA zone the stay began in; show its times on that clock. */
   timeZone: string;
+}
+
+// --- GET /api/trips and GET /api/trips/{id} (Features/Trips/TripsResponse.cs, TripResponse.cs) ---
+
+/** The trips of the timeline, newest first; empty when there are none. */
+export interface TripsResponse {
+  trips: TripListItem[];
+}
+
+/**
+ * What a trip is described by wherever it is served: the list and the trip's own page both have it. `id` is the date of the first away
+ * night (`yyyy-MM-dd`), which is the same after every rebuild for as long as the trip starts the same night; `firstNight` and `lastNight`
+ * are the dates of the evenings of its first and last away night, and `nights` counts every night between, those with no known position too.
+ */
+export interface TripSummary {
+  id: string;
+  /** Made up when asked for: "Lisbon", "Lisbon & Porto", "Portugal & Spain"; "Trip" when nothing is known of where the nights were. */
+  name: string;
+  firstNight: string;
+  lastNight: string;
+  nights: number;
+  /** When the person left and came back; `end` is null while the trip is `ongoing`. */
+  start: string;
+  end: string | null;
+  startTimeZone: string;
+  endTimeZone: string;
+  /** The dates of `start` and `end` on the clocks of their zones; for an ongoing trip the end date is the day after its last night. */
+  localStartDate: string;
+  localEndDate: string;
+  ongoing: boolean;
+  cities: TripCity[];
+}
+
+/** A trip of the list: its summary and the line to draw for it, home, the places it slept at, home (an ongoing trip has not come back, so it stops at the last place). */
+export interface TripListItem extends TripSummary {
+  thumbnail: LonLat[];
+}
+
+/** A city a trip stayed in: its name (the country, for nights whose place has no city), its known nights, and the mean of their positions. */
+export interface TripCity {
+  name: string;
+  country: string | null;
+  nights: number;
+  lat: number;
+  lon: number;
+}
+
+/** One trip with all its page is drawn from: its summary (not the list's thumbnail), what it adds up to, its moves and its days. */
+export interface TripResponse extends TripSummary {
+  stats: TripStats;
+  moves: TripMove[];
+  days: TripDay[];
+}
+
+/** What the trip adds up to: flights, distinct cities and places, and the distance of the moves that are not flights. */
+export interface TripStats {
+  flights: number;
+  cities: number;
+  places: number;
+  groundDistanceMeters: number;
+}
+
+/** A move of the trip to draw; `geometry` is its coarse line. A mode that could not be told is written out as null. */
+export interface TripMove {
+  id: number;
+  mode: Mode | null;
+  distanceMeters: number;
+  geometry: LonLat[];
+}
+
+/** A local day of the trip: where it was spent ("Oslo → Lisbon"), up to three named places with the most time, and the day's moves. */
+export interface TripDay {
+  date: string;
+  description: string;
+  highlights: string[];
+  groundDistanceMeters: number;
+  flights: number;
 }
 
 // --- GET /api/status (Features/Status/StatusResponse.cs) ---

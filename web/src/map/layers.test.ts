@@ -33,7 +33,7 @@ function place(id: number, name: string | null, lon: number, lat: number, city: 
 }
 
 function stay(id: number, at: PlaceRef | null): StaySegment {
-  return { id, kind: "stay", ...WHEN, place: at };
+  return { id, kind: "stay", ...WHEN, place: at, home: false };
 }
 
 function move(id: number, mode: MoveSegment["mode"], geometry: LonLat[]): MoveSegment {

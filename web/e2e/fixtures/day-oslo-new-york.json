@@ -11,7 +11,8 @@
       "end": "2026-10-22T06:32:00Z",
       "startTimeZone": "Europe/Oslo",
       "endTimeZone": "Europe/Oslo",
-      "place": { "id": 1, "name": "Home", "city": "Oslo", "country": "Norway", "lat": 59.91, "lon": 10.75 }
+      "place": { "id": 1, "name": "Home", "city": "Oslo", "country": "Norway", "lat": 59.91, "lon": 10.75 },
+      "home": true
     },
     {
       "kind": "move",
@@ -31,7 +32,8 @@
       "end": "2026-10-22T07:10:00Z",
       "startTimeZone": "Europe/Oslo",
       "endTimeZone": "Europe/Oslo",
-      "place": { "id": 2, "name": "Café", "city": "Oslo", "country": "Norway", "lat": 59.914, "lon": 10.764 }
+      "place": { "id": 2, "name": "Café", "city": "Oslo", "country": "Norway", "lat": 59.914, "lon": 10.764 },
+      "home": false
     },
     {
       "kind": "move",
@@ -51,7 +53,8 @@
       "end": "2026-10-22T09:41:00Z",
       "startTimeZone": "Europe/Oslo",
       "endTimeZone": "Europe/Oslo",
-      "place": { "id": 3, "name": "Office", "city": "Oslo", "country": "Norway", "lat": 59.923, "lon": 10.78 }
+      "place": { "id": 3, "name": "Office", "city": "Oslo", "country": "Norway", "lat": 59.923, "lon": 10.78 },
+      "home": false
     },
     {
       "kind": "move",
@@ -71,7 +74,8 @@
       "end": "2026-10-22T10:50:00Z",
       "startTimeZone": "Europe/Oslo",
       "endTimeZone": "Europe/Oslo",
-      "place": { "id": 4, "name": null, "city": "Oslo", "country": "Norway", "lat": 60.198, "lon": 11.1 }
+      "place": { "id": 4, "name": null, "city": "Oslo", "country": "Norway", "lat": 60.198, "lon": 11.1 },
+      "home": false
     },
     {
       "kind": "move",
@@ -101,7 +105,8 @@
       "end": "2026-10-23T13:00:00Z",
       "startTimeZone": "America/New_York",
       "endTimeZone": "America/New_York",
-      "place": { "id": 5, "name": "Hotel Midtown", "city": "New York", "country": "United States", "lat": 40.755, "lon": -73.986 }
+      "place": { "id": 5, "name": "Hotel Midtown", "city": "New York", "country": "United States", "lat": 40.755, "lon": -73.986 },
+      "home": false
     }
   ]
 }

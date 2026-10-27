@@ -34,6 +34,8 @@ const WEEK_19: Route = { view: "week", start: "2026-10-19" };
 const WEEK_26: Route = { view: "week", start: "2026-10-26" };
 const MONTH: Route = { view: "month", month: "2026-10" };
 const PLACE_2: Route = { view: "place", id: 2 };
+const TRIPS: Route = { view: "trips" };
+const TRIP: Route = { view: "trip", id: "2026-09-12" };
 
 const emptyDay = (date: string, state: DayResponse["state"] = "done"): DayResponse => ({
   date,
@@ -900,6 +902,51 @@ const HEAT_WEEK_19 = heatOf(36_000);
 const HEAT_WEEK_26 = heatOf(18_000);
 
 const heatPaths = (paths: string[]): string[] => paths.filter((path) => path.startsWith("/api/heat"));
+
+// Trips have no map of their own yet: the views draw nothing, and have no period to ask a range or a heat for (`periodRange` would be
+// handed a route it has no dates for).
+describe("useViewMap trips", () => {
+  test("useViewMap_draws_nothing_for_the_trips_and_a_trip_and_asks_for_nothing_whatever_the_heat", async () => {
+    const { paths } = stubApi({});
+
+    for (const route of [TRIPS, TRIP]) {
+      const { result, unmount } = setup(route, true);
+      await act(async () => undefined);
+
+      expect(result.current.data.routes.features, route.view).toEqual([]);
+      expect(result.current.data.stops, route.view).toBeUndefined();
+      expect(result.current.data.places, route.view).toBeUndefined();
+      expect(result.current.data.heat, route.view).toBeUndefined();
+      expect(result.current.fitTo, route.view).toBeNull();
+      expect(result.current.home, route.view).toBeNull();
+      expect(result.current.heat, route.view).toMatchObject({ available: false, failed: false }); // no button for the heat of a period that is not there
+      unmount();
+    }
+
+    expect(paths).toEqual([]); // no day, no range, no heat
+  });
+
+  test("useViewMap_does_not_draw_the_day_or_the_period_that_was_left_for_trips_and_fits_them_again_on_return", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY, "2026-10-19..2026-10-25": WEEK_19_RANGE });
+    const { result, go } = setup(DAY_22);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+
+    go(TRIPS);
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.stops).toBeUndefined();
+    expect(result.current.fitTo).toBeNull();
+
+    go(WEEK_19);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    go(TRIP);
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.places).toBeUndefined();
+    expect(result.current.fitTo).toBeNull();
+
+    go(DAY_22); // the day is on show again, with nothing of what was drawn in between: fitted afresh
+    await waitFor(() => expect(result.current.fitTo).toEqual(featuresOf(OSLO_DAY)));
+  });
+});
 
 describe("useViewMap heat", () => {
   test("useViewMap_asks_for_no_heat_and_draws_none_while_heat_is_off", async () => {

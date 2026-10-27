@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { formatRoute, goBack, navigate, parseRoute, reachedInApp, resolveRoute, useRoute, type Route } from "./router";
+import { formatRoute, goBack, isPeriodRoute, navigate, parseRoute, reachedInApp, resolveRoute, useRoute, type Route } from "./router";
 
 const TODAY = "2026-10-24";
 const TODAY_ROUTE: Route = { view: "day", date: TODAY };
@@ -88,6 +88,55 @@ describe("parseRoute and formatRoute", () => {
     expect(resolveRoute("/place/7", TODAY)).toEqual({ view: "place", id: 7 });
   });
 
+  test("parseRoute_reads_trips_and_trip_and_rejects_a_bad_trip_id", () => {
+    const routes: [Route, string][] = [
+      [{ view: "trips" }, "/trips"],
+      [{ view: "trip", id: "2026-09-12" }, "/trip/2026-09-12"],
+      [{ view: "trip", id: "2028-02-29" }, "/trip/2028-02-29"],
+    ];
+    for (const [route, path] of routes) {
+      expect(formatRoute(route)).toBe(path);
+      expect(parseRoute(path, TODAY)).toEqual(route);
+      expect(parseRoute(formatRoute(route), TODAY)).toEqual(route);
+    }
+    expect(parseRoute("/trips/", TODAY)).toEqual({ view: "trips" }); // one trailing slash is ignored, as for every view
+    expect(parseRoute("/trip/2026-09-12/", TODAY)).toEqual({ view: "trip", id: "2026-09-12" });
+
+    // A trip is named by the date of its first night, and a date that does not exist names none: the API would answer 404 for it.
+    for (const path of [
+      "/trip/abc",
+      "/trip/2026-02-30",
+      "/trip/2026-13-01",
+      "/trip/2026-9-12", // not zero-padded
+      "/trip/12", // a place's kind of id
+      "/trip",
+      "/trip/",
+      "/trip/2026-09-12/extra",
+      "/trip/2026-09-12..2026-09-13",
+      "/trips/2026-09-12", // the list has no argument
+      "/trips/abc",
+      "/trips//",
+      "/Trips",
+    ]) {
+      expect(parseRoute(path, TODAY), path).toBeNull();
+      expect(resolveRoute(path, TODAY), path).toEqual(TODAY_ROUTE);
+    }
+  });
+
+  test("isPeriodRoute_is_false_for_place_trips_and_trip", () => {
+    const periods: Route[] = [
+      { view: "day", date: "2026-10-22" },
+      { view: "week", start: "2026-10-19" },
+      { view: "month", month: "2026-10" },
+      { view: "year", year: 2026 },
+      { view: "range", from: "2026-09-12", to: "2026-09-19" },
+    ];
+    const others: Route[] = [{ view: "place", id: 42 }, { view: "trips" }, { view: "trip", id: "2026-09-12" }];
+
+    for (const route of periods) expect(isPeriodRoute(route), route.view).toBe(true);
+    for (const route of others) expect(isPeriodRoute(route), route.view).toBe(false);
+  });
+
   test("parseRoute_accepts_leap_days_and_edges_of_the_calendar", () => {
     expect(parseRoute("/day/2028-02-29", TODAY)).toEqual({ view: "day", date: "2028-02-29" });
     expect(parseRoute("/day/2000-02-29", TODAY)).toEqual({ view: "day", date: "2000-02-29" });
@@ -166,6 +215,32 @@ describe("useRoute and navigate", () => {
       expect(window.history.length, `${path} must replace, not push`).toBe(lengthBefore);
       unmount();
     }
+  });
+
+  test("useRoute_reads_trips_and_a_trip_and_leaves_their_addresses_as_they_are", () => {
+    for (const [path, route] of [
+      ["/trips", { view: "trips" }],
+      ["/trip/2026-09-12", { view: "trip", id: "2026-09-12" }],
+    ] as const) {
+      window.history.replaceState(null, "", path);
+      const lengthBefore = window.history.length;
+
+      const { result, unmount } = renderHook(() => useRoute());
+
+      expect(result.current, path).toEqual(route);
+      expect(window.location.pathname, path).toBe(path);
+      expect(window.history.length, path).toBe(lengthBefore);
+      unmount();
+    }
+  });
+
+  test("useRoute_replaces_a_trip_that_has_no_date_with_today", () => {
+    window.history.replaceState(null, "", "/trip/abc");
+
+    const { result } = renderHook(() => useRoute());
+
+    expect(result.current).toEqual(TODAY_ROUTE);
+    expect(window.location.pathname).toBe("/day/2026-10-24");
   });
 
   test("useRoute_rewrites_a_week_to_its_monday_in_the_url", () => {

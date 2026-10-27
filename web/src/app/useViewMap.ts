@@ -5,7 +5,7 @@ import { dayGeoJson, heatGeoJson, placeGeoJson, rangeGeoJson, type FitFeatures, 
 import type { MapData } from "../map/MapView";
 import { periodRange } from "../time/dates";
 import { useKeptData } from "../views/useKeptData";
-import { formatRoute, type Route } from "./router";
+import { formatRoute, isPeriodRoute, type Route } from "./router";
 
 /** What a view that draws nothing (yet) hands the map. */
 const NO_DATA: MapData = { routes: { type: "FeatureCollection", features: [] } };
@@ -13,7 +13,7 @@ const NO_FEATURES: FitFeatures = [];
 
 /** The heat of the period on show, for the map's heat button and for the note that says it could not be had. */
 export interface HeatState {
-  /** Whether the view has a period to show the heat of (a place has none), so whether the map has a button for it. */
+  /** Whether the view has a period to show the heat of (a place, the trips and a trip have none), so whether the map has a button for it. */
   available: boolean;
   /**
    * Whether the heat of the period asked for could not be had, while it is asked for and the period has none to draw. The map is drawn
@@ -86,9 +86,9 @@ function useDayMap(route: Route): Drawn {
   return useDrawn(day.data, date !== null, drawDay, (response) => response.date === date);
 }
 
-/** The map of a week, a month, a year or a range. Nothing is asked for on a route that is not one of them. */
+/** The map of a week, a month, a year or a range. Nothing is asked for on a route that is not one of them: a day, a place or a trip. */
 function usePeriodMap(route: Route): Drawn {
-  const period = route.view === "day" || route.view === "place" ? null : periodRange(route);
+  const period = route.view === "day" || !isPeriodRoute(route) ? null : periodRange(route);
   const range = useRange(period?.from ?? null, period?.to ?? null, false);
   return useDrawn(range.data, period !== null, drawPeriod, (response) => response.from === period?.from && response.to === period.to);
 }
@@ -111,7 +111,7 @@ function usePlaceMap(route: Route): Drawn {
 }
 
 /**
- * The heat of the period of the route: a day is a period of its one date, and a place has none. Asked for only while the heat is `on`.
+ * The heat of the period of the route: a day is a period of its one date, and a place, the trips and a trip have none. Asked for only while the heat is `on`.
  * What is given to draw is the heat of the period that is asked for, and only while the routes drawn are that period's too (`ready`):
  * the glow of one day or period is never under the routes of another. That is why the query keeps no previous period's heat for the
  * one that loads (`keepPrevious` is false), and why the routes of the period before, which stay while the next loads, have none. While
@@ -119,7 +119,7 @@ function usePlaceMap(route: Route): Drawn {
  * period to show (`failed`): a poll or a refetch that fails over the heat the query has leaves what it has.
  */
 function useHeatMap(route: Route, on: boolean, ready: boolean): { heat: HeatCollection | undefined; state: HeatState } {
-  const period = route.view === "place" ? null : periodRange(route);
+  const period = isPeriodRoute(route) ? periodRange(route) : null;
   const asked = on && period !== null;
   const query = useHeat(period?.from ?? null, period?.to ?? null, asked, false);
   const collection = useMemo(() => (query.data === undefined ? undefined : heatGeoJson(query.data)), [query.data]);
@@ -140,7 +140,8 @@ interface Fit {
 
 /**
  * What the map of the shell shows for the route: the data of the view (the day's, or the period's of a week, a month, a year or a
- * range, or the pin of a place), the heat of its period when `heatOn` (see `useHeatMap`; a place has none), and where the map is brought to.
+ * range, or the pin of a place; the trips and a trip nothing yet), the heat of its period when `heatOn` (see `useHeatMap`; a place and
+ * the trips have none), and where the map is brought to.
  *
  * The map is brought to what is drawn once for each time a route is shown, at the first data of it that has anything to fit to: a
  * poll or a refetch of the same day or period never moves a map that the owner has panned, and a route that is shown again (stepped
@@ -153,7 +154,8 @@ export function useViewMap(route: Route, heatOn: boolean): ViewMap {
   const day = useDayMap(route);
   const period = usePeriodMap(route);
   const place = usePlaceMap(route);
-  const { data: routes, features, ready } = route.view === "day" ? day : route.view === "place" ? place : period;
+  // The trips have no map of their own yet: they draw nothing, which is what `NOTHING` is.
+  const { data: routes, features, ready } = route.view === "day" ? day : route.view === "place" ? place : isPeriodRoute(route) ? period : NOTHING;
   const { heat, state } = useHeatMap(route, heatOn, ready);
   const data = useMemo(() => (heat === undefined ? routes : { ...routes, heat }), [routes, heat]);
   const key = formatRoute(route);

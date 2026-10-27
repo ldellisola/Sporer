@@ -1,0 +1,55 @@
+{
+  "trips": [
+    {
+      "id": "2026-10-20",
+      "name": "Madrid",
+      "firstNight": "2026-10-20",
+      "lastNight": "2026-10-24",
+      "nights": 5,
+      "start": "2026-10-20T07:30:00Z",
+      "end": null,
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Madrid",
+      "localStartDate": "2026-10-20",
+      "localEndDate": "2026-10-25",
+      "ongoing": true,
+      "cities": [{ "name": "Madrid", "country": "Spain", "nights": 5, "lat": 40.42, "lon": -3.7 }],
+      "thumbnail": [[10.75, 59.91], [-3.7, 40.42]]
+    },
+    {
+      "id": "2026-09-12",
+      "name": "Lisbon & Sintra",
+      "firstNight": "2026-09-12",
+      "lastNight": "2026-09-15",
+      "nights": 4,
+      "start": "2026-09-12T07:20:00Z",
+      "end": "2026-09-16T18:40:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "localStartDate": "2026-09-12",
+      "localEndDate": "2026-09-16",
+      "ongoing": false,
+      "cities": [
+        { "name": "Lisbon", "country": "Portugal", "nights": 3, "lat": 38.72, "lon": -9.14 },
+        { "name": "Sintra", "country": "Portugal", "nights": 1, "lat": 38.8, "lon": -9.38 }
+      ],
+      "thumbnail": [[10.75, 59.91], [-9.14, 38.72], [-9.38, 38.8], [10.75, 59.91]]
+    },
+    {
+      "id": "2026-08-01",
+      "name": "Copenhagen",
+      "firstNight": "2026-08-01",
+      "lastNight": "2026-08-02",
+      "nights": 2,
+      "start": "2026-08-01T15:30:00Z",
+      "end": "2026-08-03T17:10:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "localStartDate": "2026-08-01",
+      "localEndDate": "2026-08-03",
+      "ongoing": false,
+      "cities": [{ "name": "Copenhagen", "country": "Denmark", "nights": 2, "lat": 55.68, "lon": 12.57 }],
+      "thumbnail": [[10.75, 59.91], [12.57, 55.68], [10.75, 59.91]]
+    }
+  ]
+}

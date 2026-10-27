@@ -1,0 +1,37 @@
+{
+  "id": "2026-09-12",
+  "name": "Lisbon & Sintra",
+  "firstNight": "2026-09-12",
+  "lastNight": "2026-09-15",
+  "nights": 4,
+  "start": "2026-09-12T07:20:00Z",
+  "end": "2026-09-16T18:40:00Z",
+  "startTimeZone": "Europe/Oslo",
+  "endTimeZone": "Europe/Oslo",
+  "localStartDate": "2026-09-12",
+  "localEndDate": "2026-09-16",
+  "ongoing": false,
+  "cities": [
+    { "name": "Lisbon", "country": "Portugal", "nights": 3, "lat": 38.72, "lon": -9.14 },
+    { "name": "Sintra", "country": "Portugal", "nights": 1, "lat": 38.8, "lon": -9.38 }
+  ],
+  "stats": { "flights": 2, "cities": 2, "places": 9, "groundDistanceMeters": 169300 },
+  "moves": [
+    { "id": 301, "mode": "drive", "distanceMeters": 48300, "geometry": [[10.75, 59.91], [10.86, 60.1], [11.08, 60.19]] },
+    { "id": 302, "mode": "flight", "distanceMeters": 2745000, "geometry": [[11.08, 60.19], [-9.13, 38.78]] },
+    { "id": 303, "mode": "drive", "distanceMeters": 7400, "geometry": [[-9.13, 38.78], [-9.15, 38.74], [-9.14, 38.72]] },
+    { "id": 304, "mode": "walk", "distanceMeters": 6800, "geometry": [[-9.14, 38.72], [-9.13, 38.71], [-9.15, 38.7]] },
+    { "id": 305, "mode": "walk", "distanceMeters": 9100, "geometry": [[-9.14, 38.72], [-9.2, 38.69], [-9.22, 38.69]] },
+    { "id": 306, "mode": "drive", "distanceMeters": 38500, "geometry": [[-9.14, 38.72], [-9.3, 38.78], [-9.38, 38.8]] },
+    { "id": 307, "mode": "drive", "distanceMeters": 11000, "geometry": [[-9.38, 38.8], [-9.25, 38.79], [-9.13, 38.78]] },
+    { "id": 308, "mode": "flight", "distanceMeters": 2745000, "geometry": [[-9.13, 38.78], [11.08, 60.19]] },
+    { "id": 309, "mode": "drive", "distanceMeters": 48200, "geometry": [[11.08, 60.19], [10.86, 60.1], [10.75, 59.91]] }
+  ],
+  "days": [
+    { "date": "2026-09-12", "description": "Oslo → Lisbon", "highlights": ["Oslo Airport", "Lisbon Airport"], "groundDistanceMeters": 55700, "flights": 1 },
+    { "date": "2026-09-13", "description": "Lisbon", "highlights": ["Alfama Viewpoint", "Time Out Market"], "groundDistanceMeters": 6800, "flights": 0 },
+    { "date": "2026-09-14", "description": "Lisbon", "highlights": ["Belém Tower", "LX Factory", "Pastéis de Belém"], "groundDistanceMeters": 9100, "flights": 0 },
+    { "date": "2026-09-15", "description": "Lisbon → Sintra", "highlights": ["Pena Palace", "Quinta da Regaleira"], "groundDistanceMeters": 38500, "flights": 0 },
+    { "date": "2026-09-16", "description": "Sintra → Oslo", "highlights": ["Lisbon Airport", "Oslo Airport"], "groundDistanceMeters": 59200, "flights": 1 }
+  ]
+}

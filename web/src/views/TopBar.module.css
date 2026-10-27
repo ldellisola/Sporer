@@ -10,8 +10,17 @@
   box-shadow: var(--shadow-card);
 }
 
+/* The views, and at the trailing edge the Trips button: one row. */
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .segments {
   display: flex;
+  flex: 1;
+  min-width: 0;
   padding: 2px;
   border-radius: var(--radius-segment);
   background: var(--segment-track);
@@ -39,10 +48,34 @@
 }
 
 .segment:focus-visible,
+.trips:focus-visible,
 .arrow:focus-visible,
 .field input:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
+}
+
+/* The way into the trips, which are not a view of time: a button of its own, as tall as the segmented control, filled when it is the one in use. */
+.trips {
+  display: grid;
+  flex: none;
+  place-items: center;
+  box-sizing: border-box;
+  width: 40px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-segment);
+  background: var(--segment-track);
+  color: var(--ink-soft);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.trips[aria-pressed="true"] {
+  background: var(--accent);
+  color: #ffffff;
 }
 
 .fields {
@@ -74,15 +107,41 @@
   font-size: 16px;
 }
 
-.dateRow {
+.dateRow,
+.titleRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding-top: 2px;
+}
+
+.dateRow {
   /* A swipe along the row is the app's (it steps the period); a drag down it is still the browser's. */
   touch-action: pan-y;
   user-select: none;
   -webkit-user-select: none;
+}
+
+/* The title of a view that is not a period (the trips, a trip) in the place of the date row; a title with no arrows stands in the middle. */
+.titleRow {
+  justify-content: center;
+  min-height: 32px;
+}
+
+.tripTitle {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+}
+
+.tripTitle .label {
+  overflow-wrap: anywhere;
+}
+
+.dates {
+  margin: 1px 0 0;
+  font-size: 12px;
+  color: var(--ink-muted);
 }
 
 .arrow {
@@ -98,6 +157,11 @@
   line-height: 1;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+}
+
+.arrow:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 .label {

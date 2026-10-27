@@ -1,13 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MapPadding, MapViewProps } from "../map/MapView";
-import type { DayResponse, PlaceResponse, RangeResponse, StatusResponse, StaySegment } from "../api/types";
+import type { DayResponse, HeatResponse, PlaceResponse, RangeResponse, StatusResponse, StaySegment, TripResponse, TripsResponse } from "../api/types";
 import { dayGeoJson, placeGeoJson, placePoint, rangeGeoJson } from "../map/layers";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
 import cafe from "../../e2e/fixtures/place-cafe.json";
 import october from "../../e2e/fixtures/range-october.json";
+import lisbonTrip from "../../e2e/fixtures/trip-2026-09-12.json";
+import tripsList from "../../e2e/fixtures/trips.json";
 import { periodDays, periodLabel, today } from "../time/dates";
 import { App } from "./App";
 import { navigate } from "./router";
@@ -101,10 +103,12 @@ function emptyPlace(path: string): PlaceResponse {
 
 type Answer = (path: string) => Response | Promise<Response>;
 
-/** Answers a day with a day, a period with a period and a place with a place, none of them with anything in it. */
+/** Answers a day with a day, a period with a period and a place with a place, none of them with anything in it; no trips, and no trip. */
 const answerEmpty: Answer = (path) => {
   if (path.startsWith("/api/range")) return Response.json(emptyRange(path));
   if (path.startsWith("/api/places/")) return Response.json(emptyPlace(path));
+  if (path === "/api/trips") return Response.json({ trips: [] } satisfies TripsResponse);
+  if (path.startsWith("/api/trips/")) return new Response("{}", { status: 404 });
   return Response.json(day(path.split("/").pop()!));
 };
 
@@ -596,6 +600,8 @@ describe("App day panel", () => {
       { view: "year", year: 2026 },
       { view: "range", from: "2026-10-01", to: "2026-10-05" },
       { view: "place", id: 3 },
+      { view: "trips" },
+      { view: "trip", id: "2026-09-12" },
     ] as const) {
       act(() => navigate(route));
       expect(screen.getByRole("region", { name: "Details" })).not.toBeEmptyDOMElement();
@@ -1101,5 +1107,125 @@ describe("App place", () => {
     expect(window.location.pathname).toBe(`/day/${today()}`);
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(periodLabel({ view: "day", date: today() })); // the day view of today, with its bar
     expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
+  });
+});
+
+describe("App trips", () => {
+  const TRIPS = tripsList as TripsResponse; // newest first: 2026-10-20 (Madrid, ongoing), 2026-09-12 (Lisbon & Sintra), 2026-08-01 (Copenhagen)
+  const LISBON = lisbonTrip as TripResponse;
+  /** The list and the trips of the fixtures; a trip that is not in it is a 404, as the server says; anything else is as empty as `answerEmpty` has it. */
+  const answerWithTrips: Answer = (path) => {
+    if (path.startsWith("/api/heat")) return Response.json({ maxSeconds: 0, cells: [] } satisfies HeatResponse);
+    if (path === "/api/trips") return Response.json(TRIPS);
+    if (path === "/api/trips/2026-09-12") return Response.json(LISBON);
+    const listed = TRIPS.trips.find((trip) => path === `/api/trips/${trip.id}`);
+    if (listed !== undefined) {
+      const { thumbnail: _thumbnail, ...summary } = listed;
+      return Response.json({ ...LISBON, ...summary } satisfies TripResponse);
+    }
+    return answerEmpty(path);
+  };
+  const details = () => screen.getByRole("region", { name: "Details" });
+  /** What the app asks for that is a period: a day, a range, a heat. */
+  const periodRequests = (paths: string[]) => paths.filter((path) => /^\/api\/(day|range|heat)/.test(path));
+
+  // A trips route has no period: nothing that is made from the dates of a period (a range, a heat, a day, a step) may be asked of it, and the
+  // heat that was turned on for the views that have a period stays turned on and is not asked for here.
+  beforeEach(() => {
+    window.localStorage.setItem("heat", "true");
+  });
+  afterEach(() => {
+    window.localStorage.removeItem("heat");
+  });
+
+  test("App_shows_the_trips_route_with_a_title_a_panel_and_no_request_for_a_period_or_its_heat", async () => {
+    window.history.replaceState(null, "", "/trips");
+    const paths = stubApi(answerWithTrips);
+
+    renderApp();
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Trips"); // the bar's title row
+    expect(within(details()).getByRole("heading", { name: "Trips" })).toBeInTheDocument(); // and the panel, until the list is
+    await waitFor(() => expect(within(details()).queryByText("Loading…")).not.toBeInTheDocument()); // the real list was asked for and came
+    expect(paths).toContain("/api/trips");
+    expect(periodRequests(paths)).toEqual([]);
+    expect(mapProps().heatToggle).toBeUndefined(); // there is no period to show the heat of
+    expect(mapProps().data.routes.features).toEqual([]);
+    expect(mapProps().fitTo).toBeNull();
+    expect(mapProps().home).toBeNull();
+  });
+
+  test("App_shows_a_trip_with_its_name_in_the_bar_a_panel_and_no_request_for_a_period_or_its_heat", async () => {
+    window.history.replaceState(null, "", "/trip/2026-09-12");
+    const paths = stubApi(answerWithTrips);
+
+    renderApp();
+
+    expect(within(details()).getByRole("heading", { name: "Trip" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Lisbon & Sintra" })).toBeInTheDocument();
+    expect(screen.getByText("12 Sep – 16 Sep 2026")).toBeInTheDocument();
+    await waitFor(() => expect(within(details()).queryByText("Loading…")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Older trip" })).toBeEnabled()); // the list came as well
+    expect(new Set(paths.filter((path) => path !== "/api/status"))).toEqual(new Set(["/api/trips", "/api/trips/2026-09-12"]));
+    expect(mapProps().heatToggle).toBeUndefined(); // for now: the heat of a trip is not offered yet
+    expect(mapProps().data.routes.features).toEqual([]);
+    expect(mapProps().fitTo).toBeNull();
+  });
+
+  test("App_goes_to_the_trips_with_the_button_of_the_bar_and_back_to_the_day_that_was_shown_asking_for_no_period_on_the_way", async () => {
+    const paths = stubApi(answerWithTrips);
+    renderApp();
+    await screen.findByText("No data for this day");
+    await waitFor(() => expect(paths).toContain("/api/heat?from=2026-10-22&to=2026-10-22")); // the heat is on for a day
+    const before = periodRequests(paths).length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Trips" }));
+
+    expect(window.location.pathname).toBe("/trips");
+    expect(screen.getByRole("button", { name: "Trips", pressed: true })).toBeInTheDocument();
+    await waitFor(() => expect(within(details()).queryByText("Loading…")).not.toBeInTheDocument());
+    expect(periodRequests(paths)).toHaveLength(before);
+    expect(mapProps().heatToggle).toBeUndefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Week" })); // a view that has a period again, at the day that was last shown
+    expect(window.location.pathname).toBe("/week/2026-10-19");
+    expect(mapProps().heatToggle).toBeDefined();
+    await screen.findByText("No data for this period");
+  });
+
+  test("App_goes_from_one_trip_to_the_next_and_has_the_neighbours_of_the_trip_it_is_at_ready", async () => {
+    window.history.replaceState(null, "", "/trip/2026-10-20");
+    const paths = stubApi(answerWithTrips);
+    const { client } = renderApp();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Older trip" })).toBeEnabled()); // the list is known now
+    expect(screen.getByRole("button", { name: "Newer trip" })).toBeDisabled(); // the newest
+    expect(client.getQueryData(["trip", "2026-08-01"])).toBeUndefined(); // the neighbours of a trip that was opened as a page are not known before the list is
+
+    fireEvent.click(screen.getByRole("button", { name: "Older trip" }));
+
+    expect(window.location.pathname).toBe("/trip/2026-09-12");
+    expect(await screen.findByRole("heading", { level: 1, name: "Lisbon & Sintra" })).toBeInTheDocument();
+    await waitFor(() => expect(client.getQueryData(["trip", "2026-08-01"])).toBeDefined()); // the trip after this one, which nothing has asked for
+    expect(paths.filter((path) => path === "/api/trips/2026-08-01")).toHaveLength(1);
+    expect(periodRequests(paths)).toEqual([]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Older trip" }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Copenhagen" })).toBeInTheDocument(); // from the cache: the prefetch's one request
+    expect(paths.filter((path) => path === "/api/trips/2026-08-01")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Older trip" })).toBeDisabled();
+  });
+
+  test("App_leaves_a_trip_that_the_server_does_not_have_as_Trip_with_no_period_asked_for", async () => {
+    window.history.replaceState(null, "", "/trip/2026-01-01");
+    const paths = stubApi(answerWithTrips);
+
+    renderApp();
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Trip" })).toBeInTheDocument();
+    await waitFor(() => expect(paths).toContain("/api/trips"));
+    await act(async () => undefined);
+    expect(periodRequests(paths)).toEqual([]);
+    expect(screen.getByRole("button", { name: "Older trip" })).toBeDisabled();
   });
 });
