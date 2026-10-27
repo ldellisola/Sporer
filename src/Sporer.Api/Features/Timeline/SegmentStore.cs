@@ -1,5 +1,6 @@
 using Dapper;
 using Npgsql;
+using Sporer.Timeline;
 
 namespace Sporer.Api.Features.Timeline;
 
@@ -49,6 +50,12 @@ public sealed record DayPlace(long Id, string? Name, string? City, string? Count
 /// <summary>Reads and rewrites the derived timeline in <c>segment</c>.</summary>
 public sealed class SegmentStore(NpgsqlDataSource dataSource)
 {
+    /// <summary>
+    /// How far beyond a window <see cref="FindCoveringAsync"/> reaches, which is as far as a night's time zone is looked for
+    /// from the segments around it: a night with no segment of its own takes the zone of the nearest one within this long.
+    /// </summary>
+    public static readonly TimeSpan CoveringMargin = TimeSpan.FromHours(36);
+
     /// <summary>
     /// The edges of the range that has to be rebuilt to reprocess <paramref name="fromUtc"/> to <paramref name="toUtc"/>.
     /// Stays are fixed points of the timeline (they start at a logged point and are found greedily from it), so the
@@ -107,6 +114,57 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
         var end = await connection.QuerySingleOrDefaultAsync<DateTime?>(new CommandDefinition(
             "select end_utc from segment order by start_utc desc limit 1", cancellationToken: ct));
         return end is { } value ? AsUtc(value) : null;
+    }
+
+    /// <summary>
+    /// The segments that overlap the window from <paramref name="fromUtc"/> to <paramref name="toUtc"/> widened by
+    /// <see cref="CoveringMargin"/> on both sides, in time order. A segment that only touches an edge is not in it. They come
+    /// without their geometry, which is most of a segment and is of no use to a night: the times, zones, dates, place and
+    /// centre are the stored ones.
+    /// </summary>
+    /// <remarks>
+    /// Segments do not overlap (see <see cref="FindLastEndAsync"/>), so the only one that can overlap the window and start
+    /// before it is the last one that starts at or before its edge: the lookup starts there, on <c>ix_segment_start</c>, and
+    /// does not read the history behind it. A stay of three weeks that began long before the window is found that way.
+    /// </remarks>
+    public async Task<IReadOnlyList<StoredSegment>> FindCoveringAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var rows = await connection.QueryAsync<CoveringRow>(new CommandDefinition(
+            """
+            select kind as Kind, start_utc as StartUtc, end_utc as EndUtc, start_tz as StartTz, end_tz as EndTz,
+                   to_char(local_start_date, 'YYYY-MM-DD') as LocalStartDate, to_char(local_end_date, 'YYYY-MM-DD') as LocalEndDate,
+                   place_id as PlaceId, latitude as Latitude, longitude as Longitude, mode as Mode, distance_m as DistanceM,
+                   point_count as PointCount
+            from segment
+            where start_utc < @To and end_utc > @From
+              and start_utc >= coalesce((select max(start_utc) from segment where start_utc <= @From), @From)
+            order by start_utc, id
+            """,
+            new { From = fromUtc - CoveringMargin, To = toUtc + CoveringMargin }, cancellationToken: ct));
+
+        return rows.Select(r => new StoredSegment(
+            r.Kind, AsUtc(r.StartUtc), AsUtc(r.EndUtc), r.StartTz, r.EndTz, ParseDate(r.LocalStartDate), ParseDate(r.LocalEndDate),
+            r.PlaceId, r.Latitude, r.Longitude, r.Mode, r.DistanceM, GeometryDetailJson: null, GeometryCoarseJson: null, r.PointCount))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Every stay that has a position, in time order: when it began and ended and where it was. Trip detection searches these
+    /// for the stays near home on either side of a trip, so it needs all of them. Uses <c>ix_segment_stays</c>.
+    /// </summary>
+    public async Task<IReadOnlyList<StayPosition>> LoadStayPositionsAsync(CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var rows = await connection.QueryAsync<StayRow>(new CommandDefinition(
+            """
+            select start_utc as StartUtc, end_utc as EndUtc, latitude as Latitude, longitude as Longitude
+            from segment
+            where kind = 'stay' and latitude is not null and longitude is not null
+            order by start_utc, id
+            """,
+            cancellationToken: ct));
+        return rows.Select(r => new StayPosition(AsUtc(r.StartUtc), AsUtc(r.EndUtc), new GeoPoint(r.Latitude, r.Longitude))).ToList();
     }
 
     /// <summary>
@@ -194,7 +252,36 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
 
     private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
+    private static DateOnly ParseDate(string text)
+        => DateOnly.ParseExact(text, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+
     private sealed record AnchorRow(DateTime? T0, DateTime? T1);
+
+    // Classes with setters rather than records: Dapper matches a record's constructor by exact column types.
+    private sealed class CoveringRow
+    {
+        public string Kind { get; set; } = string.Empty;
+        public DateTime StartUtc { get; set; }
+        public DateTime EndUtc { get; set; }
+        public string StartTz { get; set; } = string.Empty;
+        public string EndTz { get; set; } = string.Empty;
+        public string LocalStartDate { get; set; } = string.Empty;
+        public string LocalEndDate { get; set; } = string.Empty;
+        public long? PlaceId { get; set; }
+        public double? Latitude { get; set; }
+        public double? Longitude { get; set; }
+        public string? Mode { get; set; }
+        public double? DistanceM { get; set; }
+        public int PointCount { get; set; }
+    }
+
+    private sealed class StayRow
+    {
+        public DateTime StartUtc { get; set; }
+        public DateTime EndUtc { get; set; }
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+    }
 
     private sealed record DayRow(
         long Id, string Kind, DateTime StartUtc, DateTime EndUtc, string StartTz, string EndTz,
