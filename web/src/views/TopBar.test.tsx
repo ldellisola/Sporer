@@ -24,6 +24,7 @@ const pathname = () => window.location.pathname;
 const press = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
 const label = () => screen.getByRole("heading").textContent;
 const field = (name: "From" | "To") => screen.getByLabelText(name) as HTMLInputElement;
+/** Presses a key: false when something called `preventDefault` on it (the bar took the key), true when the page keeps it. */
 const key = (name: string, init: KeyboardEventInit = {}, target: Element | Window = document.body) =>
   fireEvent.keyDown(target, { key: name, ...init });
 
@@ -662,7 +663,7 @@ describe("TopBar", () => {
 
   // The trips are the API's: the bar asks for the list (the order of it is what ‹ and › step by) and for the trip it shows.
   describe("on a trip", () => {
-    const TRIPS = tripsFixture as TripsResponse; // newest first: 2026-10-20 (Madrid, ongoing), 2026-09-12 (Lisbon & Sintra), 2026-08-01 (Copenhagen)
+    const TRIPS = tripsFixture as TripsResponse; // newest first: 2026-10-22 (New York, ongoing), 2026-09-12 (Lisbon & Sintra), 2026-08-01 (Copenhagen)
 
     function detail(id: string): TripResponse | undefined {
       const listed = TRIPS.trips.find((t) => t.id === id);
@@ -711,7 +712,7 @@ describe("TopBar", () => {
       openTrip("/trip/2026-09-12");
 
       expect(await screen.findByRole("heading", { name: "Lisbon & Sintra" })).toBeInTheDocument();
-      expect(screen.getByText("12 Sep – 16 Sep 2026")).toBeInTheDocument(); // as the range view says its dates
+      expect(screen.getByText("12 – 16 Sep 2026")).toBeInTheDocument(); // the month said once, as the week view says its dates, and as the cards do
       expect(screen.getByRole("button", { name: "Trips", pressed: true })).toBeInTheDocument();
       for (const name of ["Day", "Week", "Month", "Year", "Range"]) {
         expect(screen.getByRole("button", { name, pressed: false })).toBeInTheDocument();
@@ -767,13 +768,13 @@ describe("TopBar", () => {
 
       press("Newer trip"); // ›
       press("Newer trip");
-      expect(pathname()).toBe("/trip/2026-10-20");
-      expect(await screen.findByRole("heading", { name: "Madrid" })).toBeInTheDocument();
+      expect(pathname()).toBe("/trip/2026-10-22");
+      expect(await screen.findByRole("heading", { name: "New York" })).toBeInTheDocument();
       expect(newer()).toBeDisabled(); // the newest
       expect(older()).toBeEnabled();
 
       press("Newer trip"); // a disabled arrow goes nowhere
-      expect(pathname()).toBe("/trip/2026-10-20");
+      expect(pathname()).toBe("/trip/2026-10-22");
     });
 
     test("TopBar_on_a_trip_steps_with_the_arrow_keys_and_stops_at_the_ends", async () => {
@@ -789,10 +790,37 @@ describe("TopBar", () => {
 
       key("ArrowRight");
       key("ArrowRight");
-      expect(pathname()).toBe("/trip/2026-10-20");
-      await screen.findByRole("heading", { name: "Madrid" });
+      expect(pathname()).toBe("/trip/2026-10-22");
+      await screen.findByRole("heading", { name: "New York" });
       key("ArrowRight"); // already the newest
-      expect(pathname()).toBe("/trip/2026-10-20");
+      expect(pathname()).toBe("/trip/2026-10-22");
+    });
+
+    test("TopBar_on_a_trip_with_nothing_to_step_to_does_not_take_the_arrow_keys_from_the_page", async () => {
+      let release: (response: Response) => void = () => undefined;
+      stubTrips({ list: () => new Promise<Response>((resolve) => (release = resolve)) });
+      openTrip("/trip/2026-09-12");
+      await screen.findByRole("heading", { name: "Lisbon & Sintra" }); // the list is not there: no trip is known to be older or newer
+
+      expect(key("ArrowLeft")).toBe(true); // not prevented: the page keeps its own use of the key
+      expect(key("ArrowRight")).toBe(true);
+
+      release(Response.json(TRIPS));
+      await listLoaded();
+      expect(key("ArrowLeft")).toBe(false); // with somewhere to go the bar takes the keys
+      expect(key("ArrowRight")).toBe(false);
+    });
+
+    test("TopBar_on_a_trip_that_is_not_in_the_list_does_not_take_the_arrow_keys_either", async () => {
+      stubTrips();
+      const { client } = openTrip("/trip/2026-01-01");
+      await screen.findByRole("heading", { name: "Trip" });
+      await waitFor(() => expect(client.getQueryState(["trips"])?.status).toBe("success"));
+      await act(async () => await new Promise((resolve) => setTimeout(resolve, 0))); // the bar has been told
+
+      expect(key("ArrowLeft")).toBe(true);
+      expect(key("ArrowRight")).toBe(true);
+      expect(pathname()).toBe("/trip/2026-01-01");
     });
 
     test("TopBar_on_a_trip_leaves_the_arrow_keys_to_a_field_the_map_and_the_browser", async () => {
@@ -812,8 +840,8 @@ describe("TopBar", () => {
 
       host.remove();
       key("ArrowRight"); // and with the focus elsewhere the page answers
-      expect(pathname()).toBe("/trip/2026-10-20");
-      await screen.findByRole("heading", { name: "Madrid" });
+      expect(pathname()).toBe("/trip/2026-10-22");
+      await screen.findByRole("heading", { name: "New York" });
     });
 
     test("TopBar_on_a_trip_has_its_arrows_disabled_and_its_keys_idle_until_the_list_is_there", async () => {
@@ -844,6 +872,55 @@ describe("TopBar", () => {
 
       expect(older()).toBeDisabled();
       expect(newer()).toBeDisabled();
+    });
+
+    describe("swipe", () => {
+      // A press and a release on the title of the trip, which bubble up to the row, as a finger along the row does.
+      function swipe(from: [number, number], to: [number, number]) {
+        const title = screen.getByRole("heading");
+        fireEvent.pointerDown(title, { pointerId: 1, isPrimary: true, pointerType: "touch", clientX: from[0], clientY: from[1] });
+        fireEvent.pointerUp(title, { pointerId: 1, isPrimary: true, pointerType: "touch", clientX: to[0], clientY: to[1] });
+      }
+
+      test("TopBar_a_swipe_along_the_row_of_a_trip_steps_to_the_older_and_newer_trip_as_it_does_for_a_period", async () => {
+        stubTrips();
+        openTrip("/trip/2026-09-12");
+        await listLoaded();
+
+        swipe([200, 40], [120, 44]); // 80 px to the left: on to the next, which is the newer trip (›)
+        expect(pathname()).toBe("/trip/2026-10-22");
+        swipe([200, 40], [100, 40]); // already the newest
+        expect(pathname()).toBe("/trip/2026-10-22");
+
+        swipe([100, 40], [190, 38]); // to the right: back, to the older trip (‹)
+        expect(pathname()).toBe("/trip/2026-09-12");
+        swipe([100, 40], [150, 40]); // exactly 50 px counts
+        expect(pathname()).toBe("/trip/2026-08-01");
+        swipe([100, 40], [190, 38]); // already the oldest
+        expect(pathname()).toBe("/trip/2026-08-01");
+      });
+
+      test("TopBar_a_swipe_along_the_row_of_a_trip_needs_50px_and_a_mostly_horizontal_move_and_a_list_to_step_in", async () => {
+        let release: (response: Response) => void = () => undefined;
+        stubTrips({ list: () => new Promise<Response>((resolve) => (release = resolve)) });
+        openTrip("/trip/2026-09-12");
+        await screen.findByRole("heading", { name: "Lisbon & Sintra" });
+
+        swipe([200, 40], [100, 40]); // the list is not there: nothing to step to
+        expect(pathname()).toBe("/trip/2026-09-12");
+
+        release(Response.json(TRIPS));
+        await listLoaded();
+        swipe([200, 40], [160, 40]); // 40 px: a twitch
+        swipe([200, 40], [140, 150]); // 60 px across but 110 down: someone scrolling
+        swipe([200, 40], [200, 40]); // a tap
+        expect(pathname()).toBe("/trip/2026-09-12");
+
+        fireEvent.pointerDown(screen.getByRole("heading"), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 40 });
+        fireEvent.pointerCancel(screen.getByRole("heading"), { pointerId: 1, isPrimary: true }); // the browser took the gesture over
+        fireEvent.pointerUp(screen.getByRole("heading"), { pointerId: 1, isPrimary: true, clientX: 100, clientY: 40 });
+        expect(pathname()).toBe("/trip/2026-09-12");
+      });
     });
 
     test("TopBar_a_trip_goes_to_the_list_with_the_Trips_button_and_to_a_view_from_the_day_shown_last", async () => {

@@ -115,8 +115,9 @@
   padding-top: 2px;
 }
 
-.dateRow {
-  /* A swipe along the row is the app's (it steps the period); a drag down it is still the browser's. */
+/* The rows that step with a swipe (the date row, and a trip's): a swipe along the row is the app's; a drag down it is still the browser's. */
+.dateRow,
+.swipe {
   touch-action: pan-y;
   user-select: none;
   -webkit-user-select: none;

@@ -153,7 +153,12 @@ export function dateLabel(date: string): string {
   return format(parse(date), "EEE d MMM yyyy");
 }
 
-function dateRangeLabel(from: string, to: string, collapseMonth: boolean): string {
+/**
+ * Two dates as one span: "12 – 18 Sep 2026", and "28 Sep – 4 Oct 2026" over a month end, "29 Dec 2025 – 4 Jan 2026" over a year end, and
+ * "12 Sep 2026" for one date. A span within one month says the month once, unless `collapseMonth` is false ("12 Sep – 18 Sep 2026", how
+ * the range view writes the two dates that the owner picked). The weeks, the trip's row and the trips' cards write theirs the short way.
+ */
+export function dateRangeLabel(from: string, to: string, collapseMonth = true): string {
   const start = parse(from);
   const end = parse(to);
   if (from === to) return format(start, "d MMM yyyy");

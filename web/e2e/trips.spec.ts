@@ -53,13 +53,13 @@ test("trips_button_opens_the_trips_list", async ({ page }) => {
 test("trip_bar_names_the_trip_and_steps_to_the_older_and_newer_trip", async ({ page }) => {
   await fixToday(page);
   await mockApi(page);
-  await page.goto("/trip/2026-09-12"); // the list is newest first: Madrid (still going), Lisbon & Sintra, Copenhagen
+  await page.goto("/trip/2026-09-12"); // the list is newest first: New York (still going), Lisbon & Sintra, Copenhagen
   await expect(map(page)).toHaveAttribute("data-map-state", "ready");
   const title = page.getByRole("heading", { level: 1 });
   const older = page.getByRole("button", { name: "Older trip" });
   const newer = page.getByRole("button", { name: "Newer trip" });
   await expect(title).toHaveText("Lisbon & Sintra");
-  await expect(page.getByText("12 Sep – 16 Sep 2026")).toBeVisible();
+  await expect(page.getByText("12 – 16 Sep 2026")).toBeVisible();
   await expect(tripsButton(page)).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: "Heat map" })).toHaveCount(0); // the heat of a trip is not offered yet
   await expect(older).toBeEnabled(); // once the list has come
@@ -75,13 +75,13 @@ test("trip_bar_names_the_trip_and_steps_to_the_older_and_newer_trip", async ({ p
   await page.keyboard.press("ArrowRight"); // the keys do what the arrows do
   await expect(page).toHaveURL(/\/trip\/2026-09-12$/);
   await page.keyboard.press("ArrowRight");
-  await expect(page).toHaveURL(/\/trip\/2026-10-20$/);
-  await expect(title).toHaveText("Madrid");
-  await expect(page.getByText("20 Oct – 25 Oct 2026")).toBeVisible(); // an ongoing trip ends the day after its last night
+  await expect(page).toHaveURL(/\/trip\/2026-10-22$/);
+  await expect(title).toHaveText("New York");
+  await expect(page.getByText("22 – 24 Oct 2026")).toBeVisible(); // an ongoing trip ends the day after its last night
   await expect(newer).toBeDisabled(); // the newest trip
 
   await page.keyboard.press("ArrowRight"); // nowhere to go
-  await expect(page).toHaveURL(/\/trip\/2026-10-20$/);
+  await expect(page).toHaveURL(/\/trip\/2026-10-22$/);
   await page.keyboard.press("ArrowLeft");
   await expect(page).toHaveURL(/\/trip\/2026-09-12$/);
   await expect(title).toHaveText("Lisbon & Sintra");

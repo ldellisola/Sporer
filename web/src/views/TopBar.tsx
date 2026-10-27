@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, type PointerEvent } from "react";
-import { isNotFound } from "../api/client";
-import { tripNeighbours, useTrip, useTrips } from "../api/queries";
-import type { TripSummary } from "../api/types";
+import { useEffect, useMemo, useRef } from "react";
 import { isPeriodRoute, navigate, type PeriodRoute, type Route } from "../app/router";
 import { addDays, isDate, MAX_RANGE_DAYS, monthOf, periodDays, periodLabel, periodRange, step, today, weekStart } from "../time/dates";
 import styles from "./TopBar.module.css";
+import { TripRow } from "./TripRow";
+import { useArrowKeys, useSwipe } from "./useStepping";
 
 type View = PeriodRoute["view"];
 type RangeRoute = Extract<PeriodRoute, { view: "range" }>;
@@ -16,9 +15,6 @@ const SEGMENTS: readonly { view: View; label: string }[] = [
   { view: "year", label: "Year" },
   { view: "range", label: "Range" },
 ];
-
-/** A swipe along the date row steps the period when it is at least this far, and goes mostly sideways. */
-const SWIPE_MIN_PX = 50;
 
 /** How long a date left in a range field, with the focus still in it, waits for another edit before it is taken. */
 const COMMIT_AFTER_MS = 600;
@@ -86,31 +82,6 @@ function editRange(route: RangeRoute, edge: "from" | "to", value: string): Range
 function isPlainEdit(route: RangeRoute, edge: "from" | "to", typed: string): boolean {
   const next = editRange(route, edge, typed);
   return next !== null && (edge === "from" ? next.to === route.to : next.from === route.from);
-}
-
-// Where the arrow keys are not the bar's: fields that are typed into, and the map, which pans with them when it has the focus.
-const OWNS_ARROWS = 'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="region"][aria-label="Map view"]';
-
-/** Whether a key press is meant for something that has the arrow keys for itself. */
-const ownsArrows = (target: EventTarget | null): boolean => target instanceof Element && target.closest(OWNS_ARROWS) !== null;
-
-/**
- * Calls `onStep` with -1 for ← and 1 for →, unless the focus is in a field or on the map (see `OWNS_ARROWS`). Nothing is listened for
- * while `onStep` is null: a bar that has nothing to step does not take the keys from the page.
- */
-function useArrowKeys(onStep: ((delta: -1 | 1) => void) | null): void {
-  useEffect(() => {
-    if (onStep === null) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      // Alt and ⌘ with an arrow are the browser's (back, forward); a held key would ask for a day every few milliseconds.
-      if (event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || ownsArrows(event.target)) return;
-      event.preventDefault();
-      onStep(event.key === "ArrowLeft" ? -1 : 1);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onStep]);
 }
 
 interface DateFieldProps {
@@ -187,15 +158,6 @@ function DateField({ label, value, other, onCommit, isPlain }: DateFieldProps) {
   );
 }
 
-/** What the title row says of a trip while its page is on the way, and a trip is not there to name: neutral, and not a name that is not known. */
-const TRIP_LOADING = "Loading trip…";
-
-/** What the title row calls a trip that has no name to show: one that is gone (a 404), and one whose page could not be had. */
-const TRIP_UNNAMED = "Trip";
-
-/** The list of trips as long as there is none to read: one array, so that nothing made from it is made again for each render. */
-const NO_TRIPS: readonly TripSummary[] = [];
-
 /** The suitcase of the Trips button, drawn in place: it takes the colour of the button's text. */
 function Suitcase() {
   return (
@@ -219,46 +181,6 @@ function Suitcase() {
 }
 
 /**
- * The row of a trip, in place of the date row: ‹ the older trip, the trip's name and dates, the newer trip ›. The trips are in the order of
- * the API's list, newest first, so the older one is the next in it, and the arrows have nowhere to go while the list is not there (loading,
- * or it could not be had) or the trip is not in it, and at the ends of it. The keys do the same as the arrows. The name is the one of the
- * trip's page, which the panel asks for as well (one request): while that is on the way the row says so, and for a trip that is gone it
- * is just "Trip", as it is for one whose page could not be had.
- */
-function TripRow({ id }: { id: string }) {
-  const trips = useTrips();
-  const trip = useTrip(id);
-  const list = trips.data?.trips ?? NO_TRIPS;
-  const { older, newer } = useMemo(() => tripNeighbours(list, id), [list, id]);
-  const stepTrip = useCallback(
-    (delta: -1 | 1) => {
-      const to = delta < 0 ? older : newer;
-      if (to !== null) navigate({ view: "trip", id: to });
-    },
-    [older, newer],
-  );
-  useArrowKeys(stepTrip);
-
-  // A trip that the server no longer has is not shown under what the query still holds of it from before.
-  const shown = isNotFound(trip.error) ? undefined : trip.data;
-  const name = shown !== undefined ? shown.name : trip.isError ? TRIP_UNNAMED : TRIP_LOADING;
-  return (
-    <div className={styles.titleRow}>
-      <button type="button" className={styles.arrow} aria-label="Older trip" disabled={older === null} onClick={() => stepTrip(-1)}>
-        ‹
-      </button>
-      <div className={styles.tripTitle} aria-live="polite">
-        <h1 className={styles.label}>{name}</h1>
-        {shown !== undefined && <p className={styles.dates}>{periodLabel({ view: "range", from: shown.localStartDate, to: shown.localEndDate })}</p>}
-      </div>
-      <button type="button" className={styles.arrow} aria-label="Newer trip" disabled={newer === null} onClick={() => stepTrip(1)}>
-        ›
-      </button>
-    </div>
-  );
-}
-
-/**
  * The card that floats at the top of the map: the views as a segmented control with the Trips button after it, for a range its two
  * dates, and the period with ‹ › to step it. Switching view keeps the date (see `anchorOf`; `lastDay` is the day shown last). Stepping is
  * also a swipe along the period, or ← and → on the keyboard unless the focus is in a field or on the map. A place has no period to step: its
@@ -267,10 +189,10 @@ function TripRow({ id }: { id: string }) {
  */
 export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: string | null }) {
   const period = isPeriodRoute(route) ? route : null;
-  const swipeStart = useRef<{ x: number; y: number } | null>(null);
 
   const stepPeriod = useMemo(() => (period === null ? null : (delta: -1 | 1) => navigate(step(period, delta))), [period]);
   useArrowKeys(stepPeriod);
+  const swipe = useSwipe(stepPeriod);
 
   const stepBy = (delta: -1 | 1) => stepPeriod?.(delta);
   /** Takes a date typed into one end of the range; whether it was one to take. */
@@ -279,18 +201,6 @@ export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: stri
     if (next === null) return false;
     navigate(next);
     return true;
-  };
-
-  const onPointerDown = (event: PointerEvent) => {
-    if (event.isPrimary) swipeStart.current = { x: event.clientX, y: event.clientY };
-  };
-  const onPointerUp = (event: PointerEvent) => {
-    const start = swipeStart.current;
-    swipeStart.current = null;
-    if (start === null) return;
-    const across = event.clientX - start.x;
-    const down = event.clientY - start.y;
-    if (Math.abs(across) >= SWIPE_MIN_PX && Math.abs(across) > 2 * Math.abs(down)) stepBy(across < 0 ? 1 : -1); // a finger to the left brings the next
   };
 
   return (
@@ -338,12 +248,7 @@ export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: stri
         </div>
       )}
       {period !== null && (
-        <div
-          className={styles.dateRow}
-          onPointerDown={onPointerDown}
-          onPointerUp={onPointerUp}
-          onPointerCancel={() => (swipeStart.current = null)}
-        >
+        <div className={styles.dateRow} {...swipe}>
           <button type="button" className={styles.arrow} aria-label={`Previous ${period.view}`} onClick={() => stepBy(-1)}>
             ‹
           </button>

@@ -1111,7 +1111,7 @@ describe("App place", () => {
 });
 
 describe("App trips", () => {
-  const TRIPS = tripsList as TripsResponse; // newest first: 2026-10-20 (Madrid, ongoing), 2026-09-12 (Lisbon & Sintra), 2026-08-01 (Copenhagen)
+  const TRIPS = tripsList as TripsResponse; // newest first: 2026-10-22 (New York, ongoing), 2026-09-12 (Lisbon & Sintra), 2026-08-01 (Copenhagen)
   const LISBON = lisbonTrip as TripResponse;
   /** The list and the trips of the fixtures; a trip that is not in it is a 404, as the server says; anything else is as empty as `answerEmpty` has it. */
   const answerWithTrips: Answer = (path) => {
@@ -1163,7 +1163,7 @@ describe("App trips", () => {
 
     expect(within(details()).getByRole("heading", { name: "Trip" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { level: 1, name: "Lisbon & Sintra" })).toBeInTheDocument();
-    expect(screen.getByText("12 Sep – 16 Sep 2026")).toBeInTheDocument();
+    expect(screen.getByText("12 – 16 Sep 2026")).toBeInTheDocument();
     await waitFor(() => expect(within(details()).queryByText("Loading…")).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByRole("button", { name: "Older trip" })).toBeEnabled()); // the list came as well
     expect(new Set(paths.filter((path) => path !== "/api/status"))).toEqual(new Set(["/api/trips", "/api/trips/2026-09-12"]));
@@ -1194,7 +1194,7 @@ describe("App trips", () => {
   });
 
   test("App_goes_from_one_trip_to_the_next_and_has_the_neighbours_of_the_trip_it_is_at_ready", async () => {
-    window.history.replaceState(null, "", "/trip/2026-10-20");
+    window.history.replaceState(null, "", "/trip/2026-10-22");
     const paths = stubApi(answerWithTrips);
     const { client } = renderApp();
     await waitFor(() => expect(screen.getByRole("button", { name: "Older trip" })).toBeEnabled()); // the list is known now
@@ -1220,12 +1220,14 @@ describe("App trips", () => {
     window.history.replaceState(null, "", "/trip/2026-01-01");
     const paths = stubApi(answerWithTrips);
 
-    renderApp();
+    const { client } = renderApp();
 
     expect(await screen.findByRole("heading", { level: 1, name: "Trip" })).toBeInTheDocument();
-    await waitFor(() => expect(paths).toContain("/api/trips"));
-    await act(async () => undefined);
+    await waitFor(() => expect(client.getQueryState(["trips"])?.status).toBe("success")); // the list is there...
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0))); // ...and the bar has been told so
+    expect(paths).toContain("/api/trips");
     expect(periodRequests(paths)).toEqual([]);
-    expect(screen.getByRole("button", { name: "Older trip" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Older trip" })).toBeDisabled(); // the trip is not in it: no trip is older or newer than it
+    expect(screen.getByRole("button", { name: "Newer trip" })).toBeDisabled();
   });
 });
