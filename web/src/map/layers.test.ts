@@ -9,6 +9,9 @@ import type {
   RangePlace,
   RangeResponse,
   StaySegment,
+  TripCity,
+  TripListItem,
+  TripsResponse,
 } from "../api/types";
 import {
   dayGeoJson,
@@ -23,6 +26,8 @@ import {
   routeOpacity,
   SOURCE_IDS,
   stopOrders,
+  tripsGeoJson,
+  type RouteView,
 } from "./layers";
 
 const SUMMARY = { places: 0, distanceMeters: 0, movingSeconds: 0 };
@@ -301,6 +306,118 @@ describe("rangeGeoJson", () => {
   });
 });
 
+describe("tripsGeoJson", () => {
+  const city = (name: string, country: string | null, nights: number, lat: number, lon: number): TripCity => ({ name, country, nights, lat, lon });
+
+  /** A trip of the list with these cities; everything else about it is of no matter to the map. */
+  function trip(id: string, ...cities: TripCity[]): TripListItem {
+    return {
+      id,
+      name: "Trip",
+      firstNight: id,
+      lastNight: id,
+      nights: cities.reduce((sum, c) => sum + c.nights, 0),
+      start: WHEN.start,
+      end: WHEN.end,
+      startTimeZone: "Europe/Oslo",
+      endTimeZone: "Europe/Oslo",
+      localStartDate: id,
+      localEndDate: id,
+      ongoing: false,
+      cities,
+      thumbnail: [],
+    };
+  }
+  const trips = (...list: TripListItem[]): TripsResponse => ({ trips: list });
+
+  /** Two trips, the newer one first: Lisbon is slept in on both. */
+  const TWO_TRIPS = trips(
+    trip("2026-09-12", city("Lisbon", "Portugal", 5, 38.72, -9.14), city("Porto", "Portugal", 1, 41.15, -8.61), city("Madrid", "Spain", 2, 40.42, -3.7)),
+    trip(
+      "2026-03-02",
+      city("Lisbon", "Portugal", 4, 38.72, -9.14),
+      city("Paris", "France", 3, 48.86, 2.35),
+      city("Rome", "Italy", 1, 41.9, 12.5),
+      city("Vienna", "Austria", 1, 48.21, 16.37),
+      city("Iceland", "Iceland", 1, 64.9, -18.6),
+    ),
+  );
+  const byLabel = (dots: ReturnType<typeof tripsGeoJson>["places"]) =>
+    new Map(dots.features.filter((feature) => feature.properties.label !== undefined).map((feature) => [feature.properties.label, feature]));
+
+  test("tripsGeoJson_sums_nights_per_city_and_labels_the_top_five", () => {
+    const { routes, places } = tripsGeoJson(TWO_TRIPS);
+
+    expect(routes).toEqual({ type: "FeatureCollection", features: [] }); // the cities and no line between them
+    // One dot for each city, in the order each was first met (the newest trip first), Lisbon's nights summed: 5 and 4.
+    expect(places.features).toHaveLength(7);
+    const where = [[-9.14, 38.72], [-8.61, 41.15], [-3.7, 40.42], [2.35, 48.86], [12.5, 41.9], [16.37, 48.21], [-18.6, 64.9]]; // longitude first
+    for (const [index, feature] of places.features.entries()) {
+      expect(feature.geometry.type).toBe("Point");
+      expect(feature.geometry.coordinates[0], `${index}`).toBeCloseTo(where[index]![0]!, 10);
+      expect(feature.geometry.coordinates[1], `${index}`).toBeCloseTo(where[index]![1]!, 10);
+    }
+    // The five with the most nights carry the label of the trips' wording, "Lisbon · 9 nights" and "Porto · 1 night"; of those that tie at one
+    // night the ones met first are labelled, and the rest have none.
+    expect(places.features.map((feature) => feature.properties.label)).toEqual([
+      "Lisbon · 9 nights",
+      "Porto · 1 night",
+      "Madrid · 2 nights",
+      "Paris · 3 nights",
+      "Rome · 1 night",
+      undefined,
+      undefined,
+    ]);
+    expect(places.features[5]?.properties).not.toHaveProperty("label");
+    // radius = 4 + 12 * sqrt(nights / max) with the most nights in any city, as the dots of a period have it: Lisbon's 9 are 16 px.
+    const radius = (index: number) => places.features[index]!.properties.radius;
+    expect(radius(0)).toBeCloseTo(16, 10);
+    expect(radius(3)).toBeCloseTo(4 + 12 * Math.sqrt(3 / 9), 10);
+    expect(radius(2)).toBeCloseTo(4 + 12 * Math.sqrt(2 / 9), 10);
+    expect(radius(1)).toBeCloseTo(4 + 12 * Math.sqrt(1 / 9), 10);
+  });
+
+  test("tripsGeoJson_makes_dots_that_are_no_place_so_that_a_tap_on_one_opens_nothing", () => {
+    const { places } = tripsGeoJson(TWO_TRIPS);
+
+    expect(places.features.map((feature) => feature.properties.id)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+  });
+
+  test("tripsGeoJson_keeps_apart_cities_that_share_a_name_in_other_countries_and_joins_those_that_share_both", () => {
+    const { places } = tripsGeoJson(
+      trips(
+        trip("2026-09-12", city("Valencia", "Spain", 2, 39.47, -0.38), city("Valencia", "Venezuela", 1, 10.18, -68)),
+        trip("2026-03-02", city("Valencia", "Spain", 1, 39.47, -0.38), city("Singapore", null, 1, 1.35, 103.82)),
+      ),
+    );
+
+    expect([...byLabel(places).keys()]).toEqual(["Valencia · 3 nights", "Valencia · 1 night", "Singapore · 1 night"]);
+  });
+
+  test("tripsGeoJson_puts_a_city_that_was_slept_in_on_several_trips_at_the_mean_of_where_they_put_it_by_nights", () => {
+    const { places } = tripsGeoJson(
+      trips(
+        trip("2026-09-12", city("Lisbon", "Portugal", 3, 38.7, -9.1)),
+        trip("2026-03-02", city("Lisbon", "Portugal", 1, 38.9, -9.5)),
+      ),
+    );
+
+    expect(places.features).toHaveLength(1);
+    const [lon, lat] = places.features[0]!.geometry.coordinates;
+    expect(lon).toBeCloseTo((3 * -9.1 + 1 * -9.5) / 4, 10);
+    expect(lat).toBeCloseTo((3 * 38.7 + 1 * 38.9) / 4, 10);
+  });
+
+  test("tripsGeoJson_of_no_trips_or_trips_with_no_cities_is_two_empty_collections_and_of_no_nights_the_smallest_dot", () => {
+    expect(tripsGeoJson(trips())).toEqual({
+      routes: { type: "FeatureCollection", features: [] },
+      places: { type: "FeatureCollection", features: [] },
+    });
+    expect(tripsGeoJson(trips(trip("2026-09-12"))).places.features).toEqual([]);
+    expect(tripsGeoJson(trips(trip("2026-09-12", city("Lisbon", "Portugal", 0, 38.72, -9.14)))).places.features[0]?.properties.radius).toBe(4);
+  });
+});
+
 describe("heatGeoJson", () => {
   test("heatGeoJson_normalises_weights", () => {
     const heat: HeatResponse = {
@@ -355,7 +472,7 @@ function evaluate(expression: unknown, properties: Record<string, unknown>): unk
 }
 
 describe("layerSpecs", () => {
-  const find = (view: "day" | "range", id: string, dark = false) => {
+  const find = (view: RouteView, id: string, dark = false) => {
     const spec = layerSpecs(view, dark).find((candidate) => candidate.id === id);
     if (spec === undefined) throw new Error(`no layer ${id}`);
     return spec;
@@ -427,6 +544,42 @@ describe("layerSpecs", () => {
     for (const id of [LAYER_IDS.rangeRoute, LAYER_IDS.rangeFlight]) {
       expect(visibility(day, id), id).toBe("none");
       expect(visibility(range, id), id).toBe("visible");
+    }
+  });
+
+  test("layerSpecs_trips_shows_the_dots_and_their_labels_and_no_route_layers", () => {
+    const specs = layerSpecs("trips", false);
+    const visibility = (id: string) => layout(specs.find((spec) => spec.id === id) ?? {})["visibility"] ?? "visible"; // a layer that says none is shown
+
+    for (const id of ROUTE_LAYERS) expect(visibility(id), id).toBe("none"); // the list of trips draws no line between its cities
+    for (const id of [LAYER_IDS.places, LAYER_IDS.placeLabels]) expect(visibility(id), id).toBe("visible");
+  });
+
+  test("layerSpecs_trip_draws_the_day_routes_and_the_dots_and_their_labels_and_hides_the_range_routes", () => {
+    const specs = layerSpecs("trip", false);
+    const visibility = (id: string) => layout(specs.find((spec) => spec.id === id) ?? {})["visibility"] ?? "visible";
+
+    for (const id of [LAYER_IDS.routeCasing, LAYER_IDS.dayRoute, LAYER_IDS.dayFlight]) expect(visibility(id), id).toBe("visible"); // bold, as a day's
+    for (const id of [LAYER_IDS.rangeRoute, LAYER_IDS.rangeFlight]) expect(visibility(id), id).toBe("none");
+    for (const id of [LAYER_IDS.places, LAYER_IDS.placeLabels]) expect(visibility(id), id).toBe("visible");
+    // The bold routes of a trip are the day's, to the layer: the same width, casing and dashes.
+    expect(paint(find("trip", LAYER_IDS.dayRoute))["line-width"]).toBe(4);
+    expect(paint(find("trip", LAYER_IDS.routeCasing))["line-color"]).toBe("#FFFFFF");
+    expect(paint(find("trip", LAYER_IDS.dayFlight))["line-dasharray"]).toEqual([2, 2]);
+  });
+
+  test("layerSpecs_show_each_route_layer_in_the_views_that_draw_it_and_in_no_other", () => {
+    const drawnIn: Record<string, RouteView[]> = {
+      [LAYER_IDS.routeCasing]: ["day", "trip"],
+      [LAYER_IDS.dayRoute]: ["day", "trip"],
+      [LAYER_IDS.dayFlight]: ["day", "trip"],
+      [LAYER_IDS.rangeRoute]: ["range"],
+      [LAYER_IDS.rangeFlight]: ["range"],
+    };
+    for (const view of ["day", "range", "trips", "trip"] as const) {
+      for (const [id, views] of Object.entries(drawnIn)) {
+        expect(layout(find(view, id))["visibility"], `${view} ${id}`).toBe(views.includes(view) ? "visible" : "none");
+      }
     }
   });
 
@@ -526,7 +679,7 @@ describe("routeOpacity", () => {
   });
 
   test("routeOpacity_is_what_the_layers_are_drawn_at_when_nothing_is_under_them", () => {
-    for (const view of ["day", "range"] as const) {
+    for (const view of ["day", "range", "trips", "trip"] as const) {
       for (const spec of layerSpecs(view, false)) {
         if (!ROUTE_LAYERS.includes(spec.id)) continue;
         const own = (spec.paint as { "line-opacity"?: number } | undefined)?.["line-opacity"] ?? 1; // none given is full

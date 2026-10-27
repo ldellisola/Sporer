@@ -4,7 +4,7 @@ import { StrictMode, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MapPadding, MapViewProps } from "../map/MapView";
 import type { DayResponse, HeatResponse, PlaceResponse, RangeResponse, StatusResponse, StaySegment, TripResponse, TripsResponse } from "../api/types";
-import { dayGeoJson, placeGeoJson, placePoint, rangeGeoJson } from "../map/layers";
+import { dayGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripsGeoJson } from "../map/layers";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
 import cafe from "../../e2e/fixtures/place-cafe.json";
 import october from "../../e2e/fixtures/range-october.json";
@@ -1138,7 +1138,7 @@ describe("App trips", () => {
     window.localStorage.removeItem("heat");
   });
 
-  test("App_shows_the_trips_route_with_a_title_a_panel_and_no_request_for_a_period_or_its_heat", async () => {
+  test("App_shows_the_trips_route_with_a_title_the_cards_the_map_of_their_cities_and_no_request_for_a_period_or_its_heat", async () => {
     window.history.replaceState(null, "", "/trips");
     const paths = stubApi(answerWithTrips);
 
@@ -1146,13 +1146,32 @@ describe("App trips", () => {
 
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Trips"); // the bar's title row
     expect(within(details()).getByRole("heading", { name: "Trips" })).toBeInTheDocument(); // and the panel, until the list is
-    await waitFor(() => expect(within(details()).queryByText("Loading…")).not.toBeInTheDocument()); // the real list was asked for and came
-    expect(paths).toContain("/api/trips");
+    expect(mapProps().data.places).toBeUndefined(); // the map has nothing either while the list is on its way
+    expect(mapProps().fitTo).toBeNull();
+    expect(await within(details()).findByRole("list", { name: "Trips" })).toBeInTheDocument(); // the real list was asked for and came
+    expect(within(details()).queryByText("Loading…")).not.toBeInTheDocument();
+    expect(new Set(paths.filter((path) => path !== "/api/status"))).toEqual(new Set(["/api/trips"])); // one request, for the panel and the map
     expect(periodRequests(paths)).toEqual([]);
     expect(mapProps().heatToggle).toBeUndefined(); // there is no period to show the heat of
-    expect(mapProps().data.routes.features).toEqual([]);
+    // What the panel lists is what the map draws: a dot for each city, no routes, and the map brought to all of them.
+    expect(mapProps().data).toEqual({ ...tripsGeoJson(TRIPS), view: "trips" });
+    expect(mapProps().data.places?.features).toHaveLength(4);
+    expect(mapProps().fitTo).toEqual(tripsGeoJson(TRIPS).places.features);
+    expect(mapProps().home).toEqual(tripsGeoJson(TRIPS).places.features);
+  });
+
+  test("App_opens_a_trip_from_its_card_and_draws_nothing_of_the_trips_on_it", async () => {
+    window.history.replaceState(null, "", "/trips");
+    stubApi(answerWithTrips);
+    renderApp();
+    const list = await within(details()).findByRole("list", { name: "Trips" });
+
+    fireEvent.click(within(list).getByRole("button", { name: /^Open Lisbon & Sintra/ }));
+
+    expect(window.location.pathname).toBe("/trip/2026-09-12");
+    expect(await screen.findByRole("heading", { level: 1, name: "Lisbon & Sintra" })).toBeInTheDocument();
+    expect(mapProps().data.places).toBeUndefined(); // the cities of all the trips are for the list
     expect(mapProps().fitTo).toBeNull();
-    expect(mapProps().home).toBeNull();
   });
 
   test("App_shows_a_trip_with_its_name_in_the_bar_a_panel_and_no_request_for_a_period_or_its_heat", async () => {

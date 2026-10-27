@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
-import { placeOf, useDay, useHeat, usePlace, useRange } from "../api/queries";
-import type { DayResponse, PlaceResponse, RangeResponse } from "../api/types";
-import { dayGeoJson, heatGeoJson, placeGeoJson, rangeGeoJson, type FitFeatures, type HeatCollection } from "../map/layers";
+import { placeOf, useDay, useHeat, usePlace, useRange, useTrips } from "../api/queries";
+import type { DayResponse, PlaceResponse, RangeResponse, TripsResponse } from "../api/types";
+import { dayGeoJson, heatGeoJson, placeGeoJson, rangeGeoJson, tripsGeoJson, type FitFeatures, type HeatCollection } from "../map/layers";
 import type { MapData } from "../map/MapView";
 import { periodRange } from "../time/dates";
 import { useKeptData } from "../views/useKeptData";
@@ -110,6 +110,23 @@ function usePlaceMap(route: Route): Drawn {
   return useMemo(() => (found === undefined ? NOTHING : { ...drawPlace(found), ready: true }), [found]);
 }
 
+/** The trips: a dot for each city that was slept in, drawn with the trips' own layers (no routes), all of which the map is brought to. */
+function drawTrips(trips: TripsResponse): Drawing {
+  const { routes, places } = tripsGeoJson(trips);
+  return { data: { routes, places, view: "trips" }, features: places.features };
+}
+
+/**
+ * The map of the trips: the cities of all of them, from the list that the panel of the trips asks for as well (one request). Nothing is
+ * asked for on a route that is not the trips; it is the list that is drawn as soon as it is there, and what was drawn stays under an error,
+ * as the panel keeps its list, and goes with the view (see `useDrawn`).
+ */
+function useTripsMap(route: Route): Drawn {
+  const active = route.view === "trips";
+  const trips = useTrips(active);
+  return useDrawn(trips.data, active, drawTrips, () => true); // there is one list: what is kept is the list asked for
+}
+
 /**
  * The heat of the period of the route: a day is a period of its one date, and a place, the trips and a trip have none. Asked for only while the heat is `on`.
  * What is given to draw is the heat of the period that is asked for, and only while the routes drawn are that period's too (`ready`):
@@ -140,8 +157,8 @@ interface Fit {
 
 /**
  * What the map of the shell shows for the route: the data of the view (the day's, or the period's of a week, a month, a year or a
- * range, or the pin of a place; the trips and a trip nothing yet), the heat of its period when `heatOn` (see `useHeatMap`; a place and
- * the trips have none), and where the map is brought to.
+ * range, or the pin of a place, or the cities of the trips; a trip nothing yet), the heat of its period when `heatOn` (see `useHeatMap`;
+ * a place, the trips and a trip have none), and where the map is brought to.
  *
  * The map is brought to what is drawn once for each time a route is shown, at the first data of it that has anything to fit to: a
  * poll or a refetch of the same day or period never moves a map that the owner has panned, and a route that is shown again (stepped
@@ -154,8 +171,10 @@ export function useViewMap(route: Route, heatOn: boolean): ViewMap {
   const day = useDayMap(route);
   const period = usePeriodMap(route);
   const place = usePlaceMap(route);
-  // The trips have no map of their own yet: they draw nothing, which is what `NOTHING` is.
-  const { data: routes, features, ready } = route.view === "day" ? day : route.view === "place" ? place : isPeriodRoute(route) ? period : NOTHING;
+  const trips = useTripsMap(route);
+  // A trip has no map of its own yet: it draws nothing, which is what `NOTHING` is.
+  const { data: routes, features, ready } =
+    route.view === "day" ? day : route.view === "place" ? place : route.view === "trips" ? trips : isPeriodRoute(route) ? period : NOTHING;
   const { heat, state } = useHeatMap(route, heatOn, ready);
   const data = useMemo(() => (heat === undefined ? routes : { ...routes, heat }), [routes, heat]);
   const key = formatRoute(route);

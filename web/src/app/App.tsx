@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { prefetchNeighbours, useTrip, useTrips } from "../api/queries";
+import { prefetchNeighbours, useTrip } from "../api/queries";
 import type { FitFeatures } from "../map/layers";
 import { MapView, type MapPadding, type MapViewHandle } from "../map/MapView";
 import { BottomSheet, SHEET_PEEK, SHEET_TOP_CLEARANCE, sheetHalfHeight, type BottomSheetHandle } from "../sheet/BottomSheet";
@@ -14,6 +14,7 @@ import rows from "../views/Rows.module.css";
 import { ErrorState, Loading } from "../views/States";
 import { StatusBanner } from "../views/StatusBanner";
 import { TopBar } from "../views/TopBar";
+import { TripsPanel } from "../views/TripsPanel";
 import styles from "./App.module.css";
 import { navigate, useRoute, type Route } from "./router";
 import { useBottomEdge } from "./useBottomEdge";
@@ -32,20 +33,10 @@ const DESKTOP_QUERY = "(min-width: 900px)";
 const AIR = 16;
 
 /**
- * What the panel of the trips says until it is built: its name, and whether the list is on its way or could not be had. It asks for the
- * list itself (the one request that the bar's ‹ › and the map are to share), so that what the owner sees is the real thing loading.
+ * What the panel of a trip says until it is built: its name, and whether the trip is on its way or could not be had. It asks for the trip
+ * itself (the one request that the bar's title shares), so that what the owner sees is the real thing loading. A panel of one trip, made again
+ * for another (`key`).
  */
-function TripsPlaceholder() {
-  const trips = useTrips();
-  return (
-    <>
-      <h2 className={rows.heading}>Trips</h2>
-      {trips.isError ? <ErrorState error={trips.error} onRetry={() => void trips.refetch()} /> : trips.data === undefined && <Loading />}
-    </>
-  );
-}
-
-/** What the panel of a trip says until it is built, as `TripsPlaceholder` does: a panel of one trip, made again for another (`key`). */
 function TripPlaceholder({ id }: { id: string }) {
   const trip = useTrip(id);
   return (
@@ -65,7 +56,7 @@ function TripPlaceholder({ id }: { id: string }) {
 function Panel({ route, onFocus }: { route: Route; onFocus: (features: FitFeatures) => void }) {
   if (route.view === "day") return <DayPanel date={route.date} onFocus={onFocus} />;
   if (route.view === "place") return <PlacePanel key={route.id} id={route.id} />;
-  if (route.view === "trips") return <TripsPlaceholder />;
+  if (route.view === "trips") return <TripsPanel />;
   if (route.view === "trip") return <TripPlaceholder key={route.id} id={route.id} />;
   const { from, to } = periodRange(route);
   return <RangePanel from={from} to={to} />;

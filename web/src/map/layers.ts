@@ -5,7 +5,9 @@ import type {
   Mode,
   PlaceRef,
   RangeResponse,
+  TripsResponse,
 } from "../api/types";
+import { formatCount } from "../time/format";
 import type { StyleSpecification } from "./style";
 
 // --- GeoJSON ---
@@ -30,7 +32,10 @@ export type RouteProperties = { id: number; mode: RouteMode };
  * it is not `id`, which is a stay's, and one place for a pin that merges several stays.
  */
 export type StopProperties = { order: number; label: string; name: string | null; id: number; placeId: number };
-/** `id` is the place, which a tap on its dot opens; `radius` is in pixels; `label` is only there for the places that are named on the map. */
+/**
+ * `id` is the place, which a tap on its dot opens (0 for a dot that is no place, the city of a trip: a tap on it opens nothing); `radius` is
+ * in pixels; `label` is only there for the places that are named on the map.
+ */
 export type PlaceProperties = { id: number; radius: number; label?: string };
 export type HeatProperties = { weight: number };
 
@@ -128,6 +133,9 @@ const LABELLED_PLACES = 5;
 const MIN_DOT_RADIUS = 4;
 const DOT_RADIUS_RANGE = 12;
 
+/** The radius in pixels of the dot of a place that has `amount` of whatever the dots are sized by, where `max` is the most that any has: its area follows it. */
+const dotRadius = (amount: number, max: number): number => (max > 0 ? MIN_DOT_RADIUS + DOT_RADIUS_RANGE * Math.sqrt(amount / max) : MIN_DOT_RADIUS);
+
 /**
  * The routes of a period, and a dot for each place whose radius grows with the time spent there: `4 + 12 * sqrt(seconds / max)`
  * pixels (so that the area follows the time), where `max` is the most time spent in any place. The five places with the most
@@ -147,12 +155,58 @@ export function rangeGeoJson(range: RangeResponse): { routes: RouteCollection; p
   const places: PlaceCollection = {
     type: "FeatureCollection",
     features: range.places.map((place) => {
-      const radius = max > 0 ? MIN_DOT_RADIUS + DOT_RADIUS_RANGE * Math.sqrt(place.seconds / max) : MIN_DOT_RADIUS;
+      const radius = dotRadius(place.seconds, max);
       const label = labelled.has(place) ? (place.name ?? place.city ?? undefined) : undefined;
       return point(place.lon, place.lat, label === undefined ? { id: place.id, radius } : { id: place.id, radius, label });
     }),
   };
   return { routes, places };
+}
+
+/** A city of the trips: the nights slept in it over all of them, and the sums that its position is the mean of, by nights. */
+interface CityTotal {
+  name: string;
+  nights: number;
+  lonSum: number;
+  latSum: number;
+  /** Where the first of its stays put it, for a city that has no nights to weigh them by. */
+  first: [lon: number, lat: number];
+}
+
+/**
+ * The map of all the trips: no routes, and a dot for each city that was slept in, a (name, country) pair counted once however many trips
+ * it is in, with its nights over all of them. The radius is that of a period's dots (`4 + 12 * sqrt(nights / max)`), where `max` is the most
+ * nights in any city, and the five cities with the most nights carry the label of a trip's cities, "Lisbon · 9 nights". A city is where the
+ * trips that were in it put it, the mean of their positions weighed by their nights. The dots come in the order the cities are first met,
+ * newest trip first, which is also the order that cities with as many nights are labelled in.
+ *
+ * Every dot has the `id` 0: a city is no place, and a tap on its dot opens nothing (the map passes over what has no place's id).
+ */
+export function tripsGeoJson(trips: TripsResponse): { routes: RouteCollection; places: PlaceCollection } {
+  const totals = new Map<string, CityTotal>();
+  for (const trip of trips.trips) {
+    for (const city of trip.cities) {
+      const key = `${city.name}\u0000${city.country ?? ""}`;
+      const total = totals.get(key) ?? { name: city.name, nights: 0, lonSum: 0, latSum: 0, first: [city.lon, city.lat] };
+      total.nights += city.nights;
+      total.lonSum += city.lon * city.nights;
+      total.latSum += city.lat * city.nights;
+      totals.set(key, total);
+    }
+  }
+
+  const cities = [...totals.values()];
+  const max = cities.reduce((most, city) => Math.max(most, city.nights), 0);
+  const labelled = new Set([...cities].sort((a, b) => b.nights - a.nights).slice(0, LABELLED_PLACES)); // stable, as a period's
+  const places: PlaceCollection = {
+    type: "FeatureCollection",
+    features: cities.map((city) => {
+      const [lon, lat] = city.nights > 0 ? [city.lonSum / city.nights, city.latSum / city.nights] : city.first;
+      const radius = dotRadius(city.nights, max);
+      return point(lon!, lat!, labelled.has(city) ? { id: 0, radius, label: `${city.name} · ${formatCount(city.nights, "night")}` } : { id: 0, radius });
+    }),
+  };
+  return { routes: { type: "FeatureCollection", features: [] }, places };
 }
 
 /** A point for each cell of the heat, weighing what share of the most time spent in any cell its time is (0 to 1). */
@@ -189,8 +243,11 @@ export const LAYER_IDS = {
   stopNumbers: "sporer-stop-numbers",
 } as const;
 
-/** A day is drawn bold, with pins; a period (week, month, year, range) is drawn faint, with dots. */
-export type RouteView = "day" | "range";
+/**
+ * A day is drawn bold, with pins; a period (week, month, year, range) is drawn faint, with dots; the trips are the dots of their cities,
+ * with no routes; a trip is drawn bold as a day is, with the dots of its cities.
+ */
+export type RouteView = "day" | "range" | "trips" | "trip";
 
 export type LayerSpecification = StyleSpecification["layers"][number];
 type LineLayer = Extract<LayerSpecification, { type: "line" }>;
@@ -257,11 +314,13 @@ const PIN_RADIUS: CircleRadius = ["max", 12, ["+", 6, ["*", 2.2, ["length", ["to
 
 /**
  * Every layer the map draws, from the bottom up: the heat, the routes, the place dots with their labels, the stop pins with their
- * numbers and names. Layers of the routes of the other view are there but hidden, so that going from a day to a month, or back,
- * only changes their visibility. `dark` is for the text on the map, which is dark on a light map and light on a dark one.
+ * numbers and names. Layers of the routes of the other views are there but hidden, so that going from a day to a month, or back,
+ * only changes their visibility: a day's routes (bold, over a casing) are shown for a day and for a trip, a period's (faint) for a period,
+ * and the list of trips shows no routes at all. The dots, their labels and the pins are not hidden by any view; the source of the ones that
+ * a view does not draw is empty. `dark` is for the text on the map, which is dark on a light map and light on a dark one.
  */
 export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[] {
-  const shown = (shownIn: RouteView): "visible" | "none" => (view === shownIn ? "visible" : "none");
+  const shown = (...shownIn: RouteView[]): "visible" | "none" => (shownIn.includes(view) ? "visible" : "none");
   const ink = dark ? "#F2F2F7" : "#1C1C1E";
   const halo = dark ? "#1C1C1E" : WHITE;
   const labelPaint = { "text-color": ink, "text-halo-color": halo, "text-halo-width": 2 };
@@ -291,7 +350,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       type: "line",
       source: SOURCE_IDS.routes,
       filter: IS_NOT_FLIGHT, // a solid casing under a dashed line would fill its gaps
-      layout: { "line-cap": "round", "line-join": "round", visibility: shown("day") },
+      layout: { "line-cap": "round", "line-join": "round", visibility: shown("day", "trip") },
       paint: { "line-color": WHITE, "line-width": CASING_WIDTH },
     },
     {
@@ -299,7 +358,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       type: "line",
       source: SOURCE_IDS.routes,
       filter: IS_NOT_FLIGHT,
-      layout: { "line-cap": "round", "line-join": "round", visibility: shown("day") },
+      layout: { "line-cap": "round", "line-join": "round", visibility: shown("day", "trip") },
       paint: { "line-color": MODE_COLOR, "line-width": DAY_ROUTE_WIDTH },
     },
     {
@@ -307,7 +366,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       type: "line",
       source: SOURCE_IDS.routes,
       filter: IS_FLIGHT,
-      layout: { "line-cap": "butt", "line-join": "round", visibility: shown("day") }, // round caps would close the gaps
+      layout: { "line-cap": "butt", "line-join": "round", visibility: shown("day", "trip") }, // round caps would close the gaps
       paint: { "line-color": MODE_COLORS.flight, "line-width": DAY_ROUTE_WIDTH, "line-dasharray": FLIGHT_DASH },
     },
     {

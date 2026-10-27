@@ -1,0 +1,43 @@
+/* The cards stand a little apart: each is a button that reaches past its text, and the pointer shows the whole of it. */
+.cards > li + li {
+  margin-top: 4px;
+}
+
+/* The picture and what is said beside it. The rest of the card (the gap, the padding, how it shows under a finger) is the rows'. */
+.card {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* The name, and the chip of a trip that is still going on after it. */
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.name {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.cities {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}

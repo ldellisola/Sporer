@@ -597,6 +597,37 @@ describe("MapView", () => {
     expect(map.visibilityCalls).toHaveLength(calls);
   });
 
+  test("MapView_draws_the_cities_of_the_trips_with_no_route_layers_and_one_trip_with_the_bold_ones", async () => {
+    goodStyle();
+    const { rerender } = render(view());
+    await styleApplied();
+    const map = theMap();
+    map.emit("style.load");
+    const visibility = (id: string) => map.layers.get(id)?.layout?.visibility ?? "visible"; // a layer that says nothing is shown
+    const day = [LAYER_IDS.routeCasing, LAYER_IDS.dayRoute, LAYER_IDS.dayFlight];
+    const range = [LAYER_IDS.rangeRoute, LAYER_IDS.rangeFlight];
+    const dots = { type: "FeatureCollection" as const, features: [{ type: "Feature" as const, properties: { id: 0, radius: 9, label: "Lisbon · 9 nights" }, geometry: { type: "Point" as const, coordinates: [-9.14, 38.72] as [number, number] } }] };
+
+    // Dots with no stops are a period's, as they were: the faint routes.
+    rerender(view({ data: { routes: EMPTY_ROUTES, places: dots } }));
+    expect([...range, ...day].map(visibility)).toEqual(["visible", "visible", "none", "none", "none"]);
+
+    // The trips say what they are, and the list draws no routes at all (it has none, and what is left of the range's must not show).
+    rerender(view({ data: { routes: EMPTY_ROUTES, places: dots, view: "trips" } }));
+    expect([...range, ...day].map(visibility)).toEqual(["none", "none", "none", "none", "none"]);
+    expect([LAYER_IDS.places, LAYER_IDS.placeLabels].map(visibility)).toEqual(["visible", "visible"]);
+    expect(map.sources.get(SOURCE_IDS.places)?.data).toBe(dots);
+
+    // A trip is drawn bold, as a day is, with its cities as dots.
+    rerender(view({ data: { routes: routes(4), places: dots, view: "trip" } }));
+    expect([...range, ...day].map(visibility)).toEqual(["none", "none", "visible", "visible", "visible"]);
+    expect([LAYER_IDS.places, LAYER_IDS.placeLabels].map(visibility)).toEqual(["visible", "visible"]);
+
+    // And a day is a day again without the data having to say so.
+    rerender(view({ data: { routes: EMPTY_ROUTES, stops: stops() } }));
+    expect([...range, ...day].map(visibility)).toEqual(["none", "none", "visible", "visible", "visible"]);
+  });
+
   test("MapView_stays_off_the_map_between_a_lost_WebGL_context_and_its_restored_style", async () => {
     goodStyle();
     const { rerender } = render(view());
@@ -1330,6 +1361,49 @@ describe("MapView", () => {
       map.drawn.splice(1, 1);
       map.pointer("click", 201, 300);
       expect(onPlaceTap).toHaveBeenCalledTimes(1); // and with none in reach there is nothing to open
+    });
+
+    // The dots of the trips' map are cities, which are no places: they are `id: 0`, and a tap on one opens nothing (and shows no pointer).
+    const CITY: Thing = { layer: LAYER_IDS.places, properties: { id: 0, radius: 12, label: "Lisbon · 9 nights" }, place: 0 };
+
+    test("MapView_city_dots_are_not_tappable", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { map } = await drawn([[CITY, [200, 300]]], { onPlaceTap });
+
+      map.pointer("click", 200, 300); // right on it
+      map.pointer("click", 208, 306); // and where a finger would have meant it
+
+      expect(onPlaceTap).not.toHaveBeenCalled();
+      map.pointer("mousemove", 200, 300);
+      expect(map.canvas.style.cursor).toBe(""); // the ordinary cursor: a click here would do nothing
+    });
+
+    test("MapView_takes_no_dot_for_a_place_whose_id_is_below_1", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { map } = await drawn([[{ ...CITY, properties: { ...CITY.properties, id: -1 } }, [200, 300]]], { onPlaceTap });
+
+      map.pointer("click", 200, 300);
+      map.pointer("mousemove", 200, 300);
+
+      expect(onPlaceTap).not.toHaveBeenCalled();
+      expect(map.canvas.style.cursor).toBe("");
+    });
+
+    test("MapView_taps_the_place_next_to_a_city_dot_and_not_the_city", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { map } = await drawn([[CITY, [200, 300]], [DOT, [208, 300]]], { onPlaceTap }); // the city is the nearer one
+
+      map.pointer("click", 201, 300);
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+      expect(onPlaceTap).toHaveBeenCalledWith(7);
+      map.pointer("mousemove", 201, 300);
+      expect(map.canvas.style.cursor).toBe("pointer"); // for the place in reach, and for that one only
+
+      map.drawn.splice(1, 1); // only the city is left in reach
+      map.pointer("click", 201, 300);
+      map.pointer("mousemove", 201, 300);
+      expect(onPlaceTap).toHaveBeenCalledTimes(1);
+      expect(map.canvas.style.cursor).toBe("");
     });
 
     test("MapView_does_nothing_for_a_click_where_there_is_nothing_in_the_box_or_only_other_layers", async () => {

@@ -143,7 +143,11 @@ export function placeOf(query: { data?: PlaceResponse; error: Error | null }): {
   return { gone, shown: gone ? undefined : query.data };
 }
 
-export const useTrips = () => useQuery(tripsQueryOptions());
+/**
+ * The trips. `enabled` is false for a caller that has no use for them on the view on show (the map of the shell, which draws them on the
+ * list of trips only): nothing is asked for on its account, and what the query holds is still what the callers that do want it are given.
+ */
+export const useTrips = (enabled = true) => useQuery({ ...tripsQueryOptions(), enabled });
 
 export const useTrip = (id: string | null) => useQuery(tripQueryOptions(id));
 
