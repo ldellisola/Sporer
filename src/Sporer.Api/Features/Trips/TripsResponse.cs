@@ -1,0 +1,44 @@
+using System.Text.Json.Serialization;
+
+namespace Sporer.Api.Features.Trips;
+
+/// <summary>The trips of the timeline, newest first, as served by <c>GET /api/trips</c>. Empty when there are none.</summary>
+public sealed record TripsResponse(IReadOnlyList<TripDto> Trips);
+
+/// <summary>
+/// A trip. <paramref name="Id"/> is its first night (<c>yyyy-MM-dd</c>), which is the same after every rebuild as long as the
+/// trip starts the same night; <paramref name="FirstNight"/> and <paramref name="LastNight"/> are the dates of the evenings of
+/// its first and last away night, and <paramref name="Nights"/> counts every night between, those with no known position
+/// too. <paramref name="Start"/> and <paramref name="End"/> are when the person left and came back (ISO-8601 UTC, <c>Z</c>);
+/// <paramref name="End"/> is always there, and null while the trip is <paramref name="Ongoing"/>. The local dates are those
+/// of the start and end in <paramref name="StartTimeZone"/> and <paramref name="EndTimeZone"/>, the IANA zones they were in
+/// (for an ongoing trip the end date is the day after its last night). <paramref name="Name"/> is made up when asked for
+/// (see <see cref="TripNaming"/>), as are <paramref name="Cities"/>, and <paramref name="Thumbnail"/> is the line to draw
+/// for the trip, <c>[[lon,lat],...]</c>: home, the places it slept at, home (see <see cref="TripThumbnail"/>).
+/// </summary>
+public sealed record TripDto(
+    string Id,
+    string Name,
+    string FirstNight,
+    string LastNight,
+    int Nights,
+    DateTime Start,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] DateTime? End,
+    string StartTimeZone,
+    string EndTimeZone,
+    string LocalStartDate,
+    string LocalEndDate,
+    bool Ongoing,
+    IReadOnlyList<TripCityDto> Cities,
+    double[][] Thumbnail);
+
+/// <summary>
+/// A city a trip stayed in: its <paramref name="Name"/> (the country, for nights whose place has no city), the number of its
+/// known <paramref name="Nights"/> and the mean of their positions. <paramref name="Country"/> is null when the place has none.
+/// </summary>
+public sealed record TripCityDto(
+    string Name,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? Country,
+    int Nights,
+    double Lat,
+    double Lon);
