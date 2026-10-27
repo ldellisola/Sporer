@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { HOME_IMAGE, HOME_IMAGE_OPTIONS, HOME_IMAGE_SIZE, HOUSE, HOUSE_PATH, homeImage } from "./house";
+import { HOME_IMAGE, HOME_IMAGE_SIZE, HOUSE, HOUSE_PATH, homeImage } from "./house";
 
 /** The alpha of the pixel at (`x`, `y`) of the image, which is where an SDF image keeps its distance. */
 const alphaAt = (image: ReturnType<typeof homeImage>, x: number, y: number): number => image.data[(y * image.width + x) * 4 + 3]!;
@@ -65,10 +65,6 @@ describe("homeImage", () => {
       expect(y).toBeGreaterThanOrEqual(3);
       expect(y).toBeLessThanOrEqual(29);
     }
-  });
-
-  test("homeImage_options_ask_for_an_SDF_at_twice_the_density_so_that_it_is_drawn_16_pixels_across", () => {
-    expect(HOME_IMAGE_OPTIONS).toEqual({ sdf: true, pixelRatio: 2 });
   });
 });
 

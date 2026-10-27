@@ -127,21 +127,21 @@ test("day_view_marks_home_with_a_house", async ({ page }) => {
     ["1 Café 08:46 – 09:10 24m", "2 Office 09:23 – 11:41 2h 18m", "3 Unnamed place 12:22 – 12:50 28m", "4 Hotel Midtown from 15:40 17h 20m"],
     { useInnerText: true },
   );
-  await expect(details(page).locator("svg")).toHaveCount(1);
+  await expect(rows(page).locator("svg")).toHaveCount(1);
 
-  // The buttons say which is home, each with the text that is on its row (the house is a picture); the name of the place still opens the place.
+  // The buttons say which is home, each with the text that is on its row (the house is a picture: home is named, and told from another home row, by the times); the name of the place still opens the place.
   expect(
     await details(page)
       .getByRole("button", { name: /^Show (stop|home)/ })
       .evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label"))),
   ).toEqual([
-    "Show home, Home, on the map",
+    "Show home, Home, until 08:32, on the map",
     "Show stop 1, Café, on the map",
     "Show stop 2, Office, on the map",
     "Show stop 3, unnamed place, on the map",
     "Show stop 4, Hotel Midtown, on the map",
   ]);
-  await expect(home.getByRole("button", { name: "Show home, Home, on the map" })).toHaveCount(1);
+  await expect(home.getByRole("button", { name: "Show home, Home, until 08:32, on the map" })).toHaveCount(1);
   await expect(home.getByRole("button", { name: "Home", exact: true })).toBeVisible();
 });
 
@@ -237,7 +237,7 @@ test.describe("the map after a row tap", () => {
     await openTimeline(page);
     const { height } = page.viewportSize()!;
 
-    await details(page).getByRole("button", { name: "Show home, Home, on the map" }).click();
+    await details(page).getByRole("button", { name: "Show home, Home, until 08:32, on the map" }).click();
 
     if (!isWide(page)) await expect.poll(() => visibleSheetHeight(page)).toBe(height / 2);
     const free = await map.evaluate((element) => {

@@ -1290,16 +1290,15 @@ describe("useViewMap a trip", () => {
 // The heat of a trip is the heat of its dates, from the day it left to the day it came back, for the trip that is on screen: the glow of another
 // trip (or of a day, or of the dates that the trip had before it was loaded) is never under its routes.
 describe("useViewMap the heat of a trip", () => {
-  const HEAT_TRIP = HEAT_LISBON_TRIP;
   const HEAT_COPENHAGEN = heatOf(9000);
 
   test("useViewMap_asks_for_the_heat_of_the_dates_of_the_trip_and_draws_it_with_the_routes_once_heat_is_on", async () => {
-    const { paths } = stubApi({ [tripKey("2026-09-12")]: LISBON, [heatKey("2026-09-12", "2026-09-16")]: HEAT_TRIP });
+    const { paths } = stubApi({ [tripKey("2026-09-12")]: LISBON, [heatKey("2026-09-12", "2026-09-16")]: HEAT_LISBON_TRIP });
 
     const { result } = setup(TRIP, true);
 
     await waitFor(() => expect(result.current.data.heat).toBeDefined());
-    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_TRIP));
+    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_LISBON_TRIP));
     expect(result.current.data.routes).toEqual(tripGeoJson(LISBON).routes); // in addition to the routes and the dots, not instead
     expect(result.current.data.places).toEqual(tripGeoJson(LISBON).places);
     expect(result.current.data.view).toBe("trip");
@@ -1311,7 +1310,7 @@ describe("useViewMap the heat of a trip", () => {
     let release: (response: Response) => void = () => undefined;
     const { paths } = stubApi({
       [tripKey("2026-09-12")]: () => new Promise<Response>((resolve) => (release = resolve)),
-      [heatKey("2026-09-12", "2026-09-16")]: HEAT_TRIP,
+      [heatKey("2026-09-12", "2026-09-16")]: HEAT_LISBON_TRIP,
     });
     const { result, setHeat } = setup(TRIP);
     expect(result.current.heat.available).toBe(true); // a trip is a view that has a heat, with its dates not yet known
@@ -1332,7 +1331,7 @@ describe("useViewMap the heat of a trip", () => {
     let release: (response: Response) => void = () => undefined;
     const { paths } = stubApi({
       [tripKey("2026-09-12")]: () => new Promise<Response>((resolve) => (release = resolve)),
-      [heatKey("2026-09-12", "2026-09-16")]: HEAT_TRIP,
+      [heatKey("2026-09-12", "2026-09-16")]: HEAT_LISBON_TRIP,
     });
     const { result } = setup(TRIP, true); // heat is on from the start
     await act(async () => undefined);
@@ -1341,13 +1340,13 @@ describe("useViewMap the heat of a trip", () => {
     expect(result.current.data.heat).toBeUndefined();
 
     release(Response.json(LISBON));
-    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_TRIP)));
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_LISBON_TRIP)));
     expect(heatPaths(paths)).toEqual(["/api/heat?from=2026-09-12&to=2026-09-16"]);
   });
 
   test("useViewMap_asks_for_the_heat_of_an_ongoing_trip_up_to_the_day_after_its_last_night", async () => {
     const ongoing: TripResponse = { ...LISBON, ongoing: true, end: null, localEndDate: "2026-09-17" };
-    const { paths } = stubApi({ [tripKey("2026-09-12")]: ongoing, [heatKey("2026-09-12", "2026-09-17")]: HEAT_TRIP });
+    const { paths } = stubApi({ [tripKey("2026-09-12")]: ongoing, [heatKey("2026-09-12", "2026-09-17")]: HEAT_LISBON_TRIP });
 
     const { result } = setup(TRIP, true);
 
@@ -1358,7 +1357,7 @@ describe("useViewMap the heat of a trip", () => {
   test("useViewMap_asks_for_the_heat_of_the_first_400_days_of_a_trip_that_is_longer_which_the_API_answers_for", async () => {
     // A heat of more than 400 days is refused with a 400, and no Retry would ever bring it: the dates are cut as a range's are.
     const long: TripResponse = { ...LISBON, id: "2025-01-01", localStartDate: "2025-01-01", localEndDate: "2026-12-31" };
-    const { paths } = stubApi({ [tripKey("2025-01-01")]: long, [heatKey("2025-01-01", "2026-02-04")]: HEAT_TRIP });
+    const { paths } = stubApi({ [tripKey("2025-01-01")]: long, [heatKey("2025-01-01", "2026-02-04")]: HEAT_LISBON_TRIP });
 
     const { result } = setup({ view: "trip", id: "2025-01-01" }, true);
 
@@ -1373,11 +1372,11 @@ describe("useViewMap the heat of a trip", () => {
     stubApi({
       [tripKey("2026-09-12")]: LISBON,
       [tripKey("2026-08-01")]: () => new Promise<Response>((resolve) => (releaseTrip = resolve)),
-      [heatKey("2026-09-12", "2026-09-16")]: HEAT_TRIP,
+      [heatKey("2026-09-12", "2026-09-16")]: HEAT_LISBON_TRIP,
       [heatKey("2026-08-01", "2026-08-03")]: HEAT_COPENHAGEN,
     });
     const { result, go, client } = setup(TRIP, true);
-    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_TRIP)));
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_LISBON_TRIP)));
     await client.prefetchQuery({ queryKey: ["heat", "2026-08-01", "2026-08-03"], queryFn: async () => HEAT_COPENHAGEN });
 
     go(OTHER_TRIP);
@@ -1394,7 +1393,7 @@ describe("useViewMap the heat of a trip", () => {
       [tripKey("2026-09-12")]: LISBON,
       trips: TRIPS_LIST,
       "2026-10-22": OSLO_DAY,
-      [heatKey("2026-09-12", "2026-09-16")]: HEAT_TRIP,
+      [heatKey("2026-09-12", "2026-09-16")]: HEAT_LISBON_TRIP,
       [heatKey("2026-10-22")]: HEAT_22,
     });
     const { result, go, client } = setup(TRIP, true);
@@ -1410,7 +1409,7 @@ describe("useViewMap the heat of a trip", () => {
     expect(result.current.data.routes).toEqual(dayGeoJson(OSLO_DAY).routes);
 
     go(TRIP);
-    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_TRIP)); // the trip's, from the cache, at once
+    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_LISBON_TRIP)); // the trip's, from the cache, at once
 
     answers[tripKey("2026-09-12")] = () => new Response("{}", { status: 404 }); // and then it is gone: nothing is drawn, glow included
     await act(async () => {
@@ -1426,7 +1425,7 @@ describe("useViewMap the heat of a trip", () => {
     let failing = true;
     const { paths } = stubApi({
       [tripKey("2026-09-12")]: LISBON,
-      [heatKey("2026-09-12", "2026-09-16")]: () => (failing ? new Response("{}", { status: 500 }) : Response.json(HEAT_TRIP)),
+      [heatKey("2026-09-12", "2026-09-16")]: () => (failing ? new Response("{}", { status: 500 }) : Response.json(HEAT_LISBON_TRIP)),
     });
     const { result } = setup(TRIP, true);
 
@@ -1437,7 +1436,7 @@ describe("useViewMap the heat of a trip", () => {
     failing = false;
     act(() => result.current.heat.retry());
 
-    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_TRIP)));
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_LISBON_TRIP)));
     expect(result.current.heat.failed).toBe(false);
     expect(heatPaths(paths)).toHaveLength(2);
   });

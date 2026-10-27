@@ -631,12 +631,12 @@ describe("App day on the map", () => {
     const auto = mapProps().fitTo;
     const home = placePoint((OSLO_DAY.segments[0] as StaySegment).place!);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show home, Home, on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show home, Home, until 08:32, on the map" }));
     const first = mapProps().fitTo;
     expect(first).toEqual([home]);
     expect(first).not.toBe(auto);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show home, Home, on the map" })); // the same row again: another array, so the map moves again
+    fireEvent.click(screen.getByRole("button", { name: "Show home, Home, until 08:32, on the map" })); // the same row again: another array, so the map moves again
     expect(mapProps().fitTo).toEqual([home]);
     expect(mapProps().fitTo).not.toBe(first);
   });

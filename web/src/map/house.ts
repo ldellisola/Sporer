@@ -40,8 +40,12 @@ export const HOUSE: readonly (readonly [x: number, y: number])[] = [
 /** The outline as the `d` of an SVG path, for the house in the list. */
 export const HOUSE_PATH = `M${HOUSE.map(([x, y]) => `${x} ${y}`).join("L")}Z`;
 
-/** How far out of the shape, in pixels, the field reaches (it is 0 from there on), and the share of that reach that lies inside the shape: 0.75 is the edge. */
-const FIELD_REACH = 4;
+/**
+ * The field is a ramp from full to nothing across `FIELD_SPAN` pixels, and `FIELD_INSIDE` of the ramp lies inside the shape, which puts the edge
+ * at 0.75: alpha = 255 · (0.75 − distance / `FIELD_SPAN`). So it is 0 at 3 pixels out of the shape (the room round it that `HOUSE` leaves), and
+ * full at 1 pixel inside it.
+ */
+const FIELD_SPAN = 4;
 const FIELD_INSIDE = 0.25;
 
 /** The distance in pixels from (`x`, `y`) to the outline of the house: negative inside it. */
@@ -65,7 +69,7 @@ export function homeImage(): { width: number; height: number; data: Uint8Array }
   for (let y = 0; y < HOME_IMAGE_SIZE; y += 1) {
     for (let x = 0; x < HOME_IMAGE_SIZE; x += 1) {
       const distance = distanceToHouse(x + 0.5, y + 0.5); // from the middle of the pixel
-      const alpha = 255 - 255 * (distance / FIELD_REACH + FIELD_INSIDE);
+      const alpha = 255 - 255 * (distance / FIELD_SPAN + FIELD_INSIDE);
       data[(y * HOME_IMAGE_SIZE + x) * 4 + 3] = Math.max(0, Math.min(255, Math.round(alpha)));
     }
   }

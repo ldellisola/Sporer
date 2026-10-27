@@ -291,6 +291,9 @@ describe("DayPanel numbers", () => {
 
 describe("DayPanel home", () => {
   const AT_HOME = { home: true };
+  // Oslo is UTC+2 that day: the morning at home is "until 08:32" and the evening "from 17:10", on the rows as in the names of their buttons.
+  const HOME_MORNING = { home: true, start: "2026-10-21T20:00:00Z", end: "2026-10-22T06:32:00Z" };
+  const HOME_EVENING = { home: true, start: "2026-10-22T15:10:00Z", end: "2026-10-22T22:00:00Z" };
 
   test("DayPanel_home_row_shows_the_house_and_no_number", async () => {
     // The day starts and ends at home, with a café between: the house is where the number goes, and the others are counted from 1 (as the pins are).
@@ -316,21 +319,21 @@ describe("DayPanel home", () => {
   });
 
   test("DayPanel_names_the_button_of_a_home_row_home_and_takes_the_map_to_the_place", async () => {
-    stubApi({ "2026-10-22": day([stay(1, HOME, AT_HOME), stay(2, CAFE), stay(3, HOME, AT_HOME)]) });
+    stubApi({ "2026-10-22": day([stay(1, HOME, HOME_MORNING), stay(2, CAFE), stay(3, HOME, HOME_EVENING)]) });
     const { onFocus } = mount("2026-10-22");
     await screen.findByRole("list");
 
     const buttons = screen.getAllByRole("button", { name: /^Show .* on the map$/ }).map((button) => button.getAttribute("aria-label"));
-    // Both stays at home do the same, and say the same: there is no number to tell them by.
-    expect(buttons).toEqual(["Show home, Home, on the map", "Show stop 1, Café, on the map", "Show home, Home, on the map"]);
+    // Both stays at home are the same place, so the times of their rows are what tells their buttons apart: there is no number.
+    expect(buttons).toEqual(["Show home, Home, until 08:32, on the map", "Show stop 1, Café, on the map", "Show home, Home, from 17:10, on the map"]);
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Show home, Home, on the map" })[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Show home, Home, from 17:10, on the map" }));
     expect(onFocus).toHaveBeenCalledWith([placePoint(HOME)]);
     expect(onFocus.mock.lastCall![0]).toEqual([{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [10, 59] } }]);
   });
 
   test("DayPanel_names_a_home_row_by_a_name_that_holds_what_the_row_says_of_the_place", async () => {
-    // Label in name: the row says "Home" and the button says "Show home, Home, on the map"; a home with no name says "Unnamed place" and is named so.
+    // Label in name: the row says "Home" and "10:00 – 11:00", and the button says both; a home with no name says "Unnamed place" and is named so.
     const nameless = place(7, null, 10.5, 59.5);
     stubApi({ "2026-10-22": day([stay(1, HOME, AT_HOME), stay(2, nameless, AT_HOME)]) });
     mount("2026-10-22");
@@ -338,13 +341,36 @@ describe("DayPanel home", () => {
 
     for (const row of rows()) {
       const button = within(row).getByRole("button", { name: /^Show home, .* on the map$/ });
-      const says = parts(row)[0]!; // the name of the place, which is the first text of the row
-      expect(button.getAttribute("aria-label")!.toLowerCase()).toContain(says.toLowerCase());
+      const [name, when] = parts(row); // the name of the place and the times of the stay: the texts of the row
+      expect(button.getAttribute("aria-label")!.toLowerCase()).toContain(name!.toLowerCase());
+      expect(button.getAttribute("aria-label")).toContain(when);
     }
     expect(screen.getAllByRole("button", { name: /^Show home, .* on the map$/ }).map((button) => button.getAttribute("aria-label"))).toEqual([
-      "Show home, Home, on the map",
-      "Show home, unnamed place, on the map",
+      "Show home, Home, 10:00 – 11:00, on the map",
+      "Show home, unnamed place, 10:00 – 11:00, on the map",
     ]);
+  });
+
+  test("DayPanel_gives_two_home_rows_of_one_day_buttons_of_their_own_by_the_times_on_the_rows", async () => {
+    // Away to the café and back: the same place twice, with nothing but the times to tell the rows by (the one that began the day before, the one that goes on after it).
+    stubApi({ "2026-10-22": day([stay(1, HOME, HOME_MORNING), stay(2, CAFE), stay(3, HOME, HOME_EVENING)]) });
+    mount("2026-10-22");
+    await screen.findByRole("list");
+
+    const [morning, , evening] = [rows()[0]!, rows()[1]!, rows()[2]!];
+    expect(parts(morning)).toEqual(["Home", "until 08:32", "10h 32m"]);
+    expect(parts(evening)).toEqual(["Home", "from 17:10", "6h 50m"]);
+    const names = [morning, evening].map((row) => within(row).getByRole("button", { name: /^Show home, / }).getAttribute("aria-label")!);
+    expect(names).toEqual(["Show home, Home, until 08:32, on the map", "Show home, Home, from 17:10, on the map"]);
+    expect(new Set(names).size).toBe(2);
+    // Each holds what its own row says (WCAG 2.5.3), and each one is found by it.
+    for (const [row, name] of [[morning, names[0]!], [evening, names[1]!]] as const) {
+      const [place, when] = parts(row);
+      expect(name).toContain(place);
+      expect(name).toContain(when);
+      expect(within(row).getByRole("button", { name })).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("button", { name: "Show home, Home, from 17:10, on the map" })).toHaveLength(1);
   });
 
   test("DayPanel_still_opens_the_place_from_the_name_of_home", async () => {
@@ -524,9 +550,9 @@ describe("DayPanel taps", () => {
 
     const names = screen.getAllByRole("button", { name: /^Show .* on the map$/ }).map((button) => button.getAttribute("aria-label"));
 
-    // A stay by its number (home, which has none, by the word), a move by the time it began on its own clock; none the same as another.
+    // A stay by its number (home, which has none, by the word and the times of its row), a move by the time it began on its own clock; none the same as another.
     expect(names).toEqual([
-      "Show home, Home, on the map",
+      "Show home, Home, until 08:32, on the map",
       "Show Walk · 1.1 km at 08:32 on the map",
       "Show stop 1, Café, on the map",
       "Show Cycle · 3.4 km at 09:10 on the map",
@@ -549,12 +575,12 @@ describe("DayPanel taps", () => {
       const button = within(row).queryAllByRole("button").find((one) => /^Show .* on the map$/.test(one.getAttribute("aria-label") ?? ""));
       if (button === undefined) return []; // a gap has none
       const [first, second] = parts(row);
-      const numbered = row.querySelector(".bar") === null && /^\d+$/.test(first!);
-      const says = numbered ? [first, second] : [first]; // the number and the name of a stop, the name of home (a house is no text), "Walk · 1.1 km"
+      const stay = row.querySelector(".bar") === null; // a stay, not a move
+      const says = stay ? [first, second] : [first]; // the number and the name of a stop, the name and the times of home (a house is no text), "Walk · 1.1 km"
       return says.map((text) => ({ name: button.getAttribute("aria-label")!.toLowerCase(), text: text!.toLowerCase() }));
     });
 
-    expect(checked).toHaveLength(13); // 4 numbered stops with two texts, home with one, 4 moves with one
+    expect(checked).toHaveLength(14); // 4 numbered stops with two texts, home with two, 4 moves with one
     for (const { name, text } of checked) expect(name).toContain(text);
   });
 

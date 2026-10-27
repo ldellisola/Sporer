@@ -45,8 +45,9 @@ function stayTimes(stay: StaySegment, day: DayResponse, ongoing: boolean): strin
  * A row of the timeline that takes the map to its segment. The row is a button of its own, laid over the whole row (see the style
  * sheet), and is not the parent of what else in the row can be tapped: a button inside a button is not HTML, and a tap on the name
  * of a place would be a tap on the row too. Its `label` is its only name, so each row's is its own: a stop by its number, a move by
- * when it began. It holds what the row says of itself (the number and the name of a stop, "home" and the name of home, which has a house and
- * no number, the mode and the distance of a move), so that whoever names a row by what they read on it names its button.
+ * when it began, home, which has a house and no number, by the times the row gives. It holds what the row says of itself (the number and
+ * the name of a stop, "home" and the name and the times of home, the mode and the distance of a move), so that whoever names a row by what
+ * they read on it names its button.
  */
 function FitButton({ label, onClick }: { label: string; onClick: () => void }) {
   return <button type="button" className={`${rows.tap} ${styles.fit}`} aria-label={label} onClick={onClick} />;
@@ -81,7 +82,7 @@ function StayRow({ stay, order, when, onFocus }: { stay: StaySegment; order: num
       <span className={rows.duration}>{formatDuration(secondsOf(stay))}</span>
       {place !== null && (home || order !== undefined) && (
         <FitButton
-          label={`Show ${home ? "home" : `stop ${order}`}, ${place.name ?? "unnamed place"}, on the map`}
+          label={home ? `Show home, ${place.name ?? "unnamed place"}, ${when}, on the map` : `Show stop ${order}, ${place.name ?? "unnamed place"}, on the map`}
           onClick={() => onFocus([placePoint(place)])}
         />
       )}
