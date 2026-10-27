@@ -105,13 +105,22 @@ public class MigrationTests(DatabaseFixture db)
     [Fact]
     public async Task Migration_0005_creates_the_trip_tables_and_leaves_locationLog_alone()
     {
+        // A database as the owner has it before any migration, with rows in it: the snapshot is taken from that table, as
+        // Migrates_existing_database_keeping_rows does, and not from one that 0005 has already been through once.
         var cs = await db.CreateDatabaseAsync(Ct);
-        await using (var first = new ApiFactory(cs))
-            _ = first.Services;
-        await Sql.ExecAsync(cs, "insert into locationlog (time, longitude, latitude, device, speed, altitude) values ('2026-01-01T08:00:00Z', 10.1, 59.1, 'phone', 1, 11)", ct: Ct);
+        await Sql.ExecAsync(cs, OldCreateTableScript, ct: Ct);
+        await Sql.ExecAsync(cs, """
+            insert into locationlog (time, longitude, latitude, device, speed, altitude) values
+              ('2026-01-01T08:00:00Z', 10.10, 59.10, 'phone-a', 1.5, 11),
+              ('2026-02-03T09:00:00Z', 10.30, 59.30, 'phone-b', 0, 13)
+            """, ct: Ct);
         var columnsBefore = await Columns(cs, "locationlog");
         var indexesBefore = await Indexes(cs, "locationlog");
         var rowsBefore = await Rows(cs);
+        Assert.Equal(2, rowsBefore.Count);
+
+        await using (var first = new ApiFactory(cs))
+            _ = first.Services;
 
         // Take 0005 back out, as it is on a database that has not seen it yet, and let the app apply it to one that has data.
         await Sql.ExecAsync(cs, "drop table night_refresh, trip, home_period, night", ct: Ct);
@@ -120,19 +129,36 @@ public class MigrationTests(DatabaseFixture db)
         _ = api.Services;
 
         Assert.Equal(
-            new[] { "date", "instant_utc", "zone", "source", "place_id", "latitude", "longitude" },
-            await ColumnNames(cs, "night"));
+            new[]
+            {
+                ("date", "date", "NO"), ("instant_utc", "timestamp with time zone", "NO"), ("zone", "text", "NO"), ("source", "text", "NO"),
+                ("place_id", "bigint", "YES"), ("latitude", "double precision", "YES"), ("longitude", "double precision", "YES"),
+            },
+            await Columns(cs, "night"));
         Assert.Equal(
-            new[] { "id", "place_id", "from_date", "to_date", "source" },
-            await ColumnNames(cs, "home_period"));
+            new[]
+            {
+                ("id", "bigint", "NO"), ("place_id", "bigint", "NO"), ("from_date", "date", "NO"), ("to_date", "date", "YES"),
+                ("source", "text", "NO"),
+            },
+            await Columns(cs, "home_period"));
         Assert.Equal(
-            new[] { "id", "last_night", "nights", "start_utc", "end_utc", "start_tz", "end_tz", "local_start_date", "local_end_date" },
-            await ColumnNames(cs, "trip"));
-        Assert.Equal(new[] { "id", "from_utc", "to_utc" }, await ColumnNames(cs, "night_refresh"));
+            new[]
+            {
+                ("id", "date", "NO"), ("last_night", "date", "NO"), ("nights", "integer", "NO"),
+                ("start_utc", "timestamp with time zone", "NO"), ("end_utc", "timestamp with time zone", "YES"),
+                ("start_tz", "text", "NO"), ("end_tz", "text", "NO"), ("local_start_date", "date", "NO"), ("local_end_date", "date", "NO"),
+            },
+            await Columns(cs, "trip"));
+        Assert.Equal(
+            new[] { ("id", "integer", "NO"), ("from_utc", "timestamp with time zone", "YES"), ("to_utc", "timestamp with time zone", "YES") },
+            await Columns(cs, "night_refresh"));
         Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from night_refresh where id = 1 and from_utc is null and to_utc is null", ct: Ct));
         Assert.Contains("ix_home_period_dates", (await Indexes(cs, "home_period")).Select(i => i.Name));
 
-        Assert.Equal(columnsBefore, await Columns(cs, "locationlog"));
+        Assert.Equal(
+            columnsBefore.Concat(new[] { ("horizontal_accuracy", "double precision", "YES"), ("motion", "ARRAY", "YES") }),
+            await Columns(cs, "locationlog")); // the two columns of 0002, and nothing from 0005
         Assert.Equal(indexesBefore, await Indexes(cs, "locationlog"));
         Assert.Equal(rowsBefore, await Rows(cs));
         Assert.Empty(Warnings(api).Items);

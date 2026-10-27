@@ -241,7 +241,7 @@ public class NightBuilderTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task NightBuilder_reads_a_night_between_stays_in_the_zone_of_the_nearer_one_within_36_hours()
+    public async Task NightBuilder_reads_a_night_after_a_stay_in_its_zone_and_one_far_from_it_in_the_zone_of_the_stay_after()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
@@ -263,6 +263,77 @@ public class NightBuilderTests(DatabaseFixture db)
                 (D(6, 14), "Asia/Tokyo", "stay"),
             ],
             built.Nights.Select(n => (n.Night.Date, n.Night.Zone, n.Source)));
+    }
+
+    // The next four tests read the night of 10 June in zones that both sit at UTC+0 all year, so it is read at 03:00Z on the
+    // 11th whichever zone is chosen, and what a test pins is the zone rule itself, not the two-step reading of NightClock.
+    private const string Before = "Atlantic/Reykjavik";
+    private const string After = "Africa/Abidjan";
+
+    [Fact]
+    public async Task NightBuilder_prefers_the_zone_of_the_stay_before_the_night_to_the_one_after_it_when_both_are_within_36_hours()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var builder = api.Services.GetRequiredService<NightBuilder>();
+        var instant = Utc(6, 11, 3);
+        await StayAsync(cs, instant.AddHours(-32), instant.AddHours(-30), StayCentre, zone: Before); // ended 30 hours before it
+        await StayAsync(cs, instant.AddHours(2), instant.AddHours(3), StayCentre, zone: After);      // starts 2 hours after it
+
+        var built = await builder.BuildAsync(Utc(6, 10, 12), Utc(6, 10, 20), Ct);
+
+        var (night, source) = NightOf(built, D(6, 10));
+        Assert.Equal("none", source);
+        Assert.Equal(new Night(D(6, 10), instant, Before, null, null), night);
+    }
+
+    [Theory]
+    [InlineData(0, true)]   // the stay before ended exactly 36 hours earlier: within
+    [InlineData(1, false)]  // a second more: no zone
+    public async Task NightBuilder_takes_the_zone_of_a_stay_that_ended_up_to_36_hours_before_the_night(int extraSeconds, bool inside)
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var builder = api.Services.GetRequiredService<NightBuilder>();
+        var instant = Utc(6, 11, 3);
+        var ended = instant.AddHours(-36).AddSeconds(-extraSeconds);
+        await StayAsync(cs, ended.AddHours(-2), ended, StayCentre, zone: Before);
+        await StayAsync(cs, instant.AddHours(40), instant.AddHours(41), StayCentre, zone: After); // too far after to give the zone: it makes the night happen
+
+        var built = await builder.BuildAsync(Utc(6, 10, 12), Utc(6, 10, 20), Ct);
+
+        AssertZone(built, inside ? Before : null);
+    }
+
+    [Theory]
+    [InlineData(0, true)]   // the stay after starts exactly 36 hours later: within
+    [InlineData(1, false)]  // a second more: no zone
+    public async Task NightBuilder_takes_the_zone_of_a_stay_that_starts_up_to_36_hours_after_the_night(int extraSeconds, bool inside)
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var builder = api.Services.GetRequiredService<NightBuilder>();
+        var instant = Utc(6, 11, 3);
+        var starts = instant.AddHours(36).AddSeconds(extraSeconds);
+        await StayAsync(cs, instant.AddHours(-41), instant.AddHours(-40), StayCentre, zone: Before); // too far before to give the zone
+        await StayAsync(cs, starts, starts.AddHours(1), StayCentre, zone: After);
+
+        var built = await builder.BuildAsync(Utc(6, 10, 12), Utc(6, 10, 20), Ct);
+
+        AssertZone(built, inside ? After : null);
+    }
+
+    /// <summary>The night of 10 June is there and in <paramref name="zone"/>, or, for null, it has no row.</summary>
+    private static void AssertZone((DateOnly From, DateOnly To, IReadOnlyList<(Night Night, string Source)> Nights) built, string? zone)
+    {
+        if (zone is null)
+        {
+            Assert.DoesNotContain(built.Nights, n => n.Night.Date == D(6, 10));
+            return;
+        }
+
+        var night = NightOf(built, D(6, 10)).Night;
+        Assert.Equal((zone, Utc(6, 11, 3)), (night.Zone, night.InstantUtc));
     }
 
     [Fact]
@@ -294,6 +365,71 @@ public class NightBuilderTests(DatabaseFixture db)
 
         var (night, source) = NightOf(built, D(6, 10));
         Assert.Equal(("none", null), (source, night.Position));
+    }
+
+    // The night of 10 June in Oslo is read at 01:00Z on the 11th. A stay covers the instants from its start up to, but not
+    // including, its end.
+
+    [Fact]
+    public async Task NightBuilder_does_not_take_a_stay_that_ends_exactly_at_the_instant()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var builder = api.Services.GetRequiredService<NightBuilder>();
+        var place = await TimelineSeeder.InsertPlaceAsync(cs, lat: Spots.Home.Latitude, lon: Spots.Home.Longitude);
+        await StayAsync(cs, Utc(6, 10, 18), Utc(6, 11, 1), StayCentre, place);
+        await GapAsync(cs, Utc(6, 11, 2), Utc(6, 11, 8)); // nothing starts at 01:00 to take the instant from the stay
+        var elsewhere = Geo.Offset(Spots.Home, 5_000, 0);
+        await PointAsync(cs, Utc(6, 11, 0, 50), elsewhere);
+
+        var built = await builder.BuildAsync(Utc(6, 10, 12), Utc(6, 11, 12), Ct);
+
+        var (night, source) = NightOf(built, D(6, 10));
+        Assert.Equal("point", source); // the stay is over at 01:00: the night is where the nearest point says
+        Assert.Equal(new Night(D(6, 10), Utc(6, 11, 1), "Europe/Oslo", null, elsewhere), night);
+    }
+
+    [Fact]
+    public async Task NightBuilder_takes_a_stay_that_starts_exactly_at_the_instant()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var builder = api.Services.GetRequiredService<NightBuilder>();
+        var place = await TimelineSeeder.InsertPlaceAsync(cs, lat: Spots.Home.Latitude, lon: Spots.Home.Longitude);
+        await GapAsync(cs, Utc(6, 10, 18), Utc(6, 11, 1));
+        await StayAsync(cs, Utc(6, 11, 1), Utc(6, 11, 8), StayCentre, place);
+        await PointAsync(cs, Utc(6, 11, 0, 50), Geo.Offset(Spots.Home, 5_000, 0));
+
+        var built = await builder.BuildAsync(Utc(6, 10, 12), Utc(6, 11, 12), Ct);
+
+        var (night, source) = NightOf(built, D(6, 10));
+        Assert.Equal("stay", source);
+        Assert.Equal(new Night(D(6, 10), Utc(6, 11, 1), "Europe/Oslo", place, StayCentre), night);
+    }
+
+    [Theory]
+    [InlineData(0, true)]   // the last segment ends exactly at the instant: the night has happened
+    [InlineData(1, false)]  // a second short of it: it has not
+    public async Task NightBuilder_includes_a_night_whose_instant_is_the_end_of_the_last_segment(int secondsShort, bool included)
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var builder = api.Services.GetRequiredService<NightBuilder>();
+        await GapAsync(cs, Utc(6, 10, 18), Utc(6, 11, 1).AddSeconds(-secondsShort));
+
+        var built = await builder.BuildAsync(Utc(6, 10, 12), Utc(6, 11, 12), Ct);
+
+        Assert.Equal(included, built.Nights.Any(n => n.Night.Date == D(6, 10)));
+    }
+
+    [Fact]
+    public async Task NightBuilder_rejects_a_window_that_ends_before_it_starts()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var builder = api.Services.GetRequiredService<NightBuilder>();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => builder.BuildAsync(Utc(6, 11, 12), Utc(6, 10, 12), Ct));
     }
 
     [Fact]
@@ -443,5 +579,24 @@ public class NightBuilderTests(DatabaseFixture db)
             store.ReplaceAsync(D(6, 1), D(6, 2), [(noSuchPlace, "stay")], Ct));
 
         Assert.Equal([old], await store.LoadAllAsync(Ct)); // the delete went with it
+    }
+
+    [Theory]
+    [InlineData(-1)] // the night before the range: 31 May
+    [InlineData(3)]  // the night after it: 4 June
+    public async Task NightStore_rejects_a_night_outside_the_range_and_leaves_the_stored_ones(int daysFromFirst)
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var store = api.Services.GetRequiredService<NightStore>();
+        var old = new Night(D(6, 2), Utc(6, 3, 1), "Europe/Oslo", null, StayCentre);
+        await store.ReplaceAsync(D(6, 1), D(6, 3), [(old, "stay")], Ct);
+        var first = new Night(D(6, 1), Utc(6, 2, 1), "Europe/Oslo", null, StayCentre); // the ends of the range are in it
+        var outside = new Night(D(6, 1).AddDays(daysFromFirst), Utc(6, 2, 1), "Europe/Oslo", null, StayCentre);
+
+        // Such a night would be written and then never deleted by a replace of the range it belongs to.
+        await Assert.ThrowsAsync<ArgumentException>(() => store.ReplaceAsync(D(6, 1), D(6, 3), [(first, "stay"), (outside, "stay")], Ct));
+
+        Assert.Equal([old], await store.LoadAllAsync(Ct)); // nothing was deleted or written
     }
 }

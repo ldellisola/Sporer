@@ -13,14 +13,22 @@ public sealed class NightStore(NpgsqlDataSource dataSource)
 {
     /// <summary>
     /// Replaces the nights dated <paramref name="from"/> to <paramref name="to"/> (both included) by
-    /// <paramref name="nights"/>, which is the shape <see cref="NightBuilder.BuildAsync"/> returns and must lie within that
-    /// range. Every date of the range is deleted first, so one the builder left out (a night that has not happened, or has no
-    /// time zone to be read in) loses its stored row. One transaction: readers see the old rows or the new ones, and a failure
-    /// leaves the old ones.
+    /// <paramref name="nights"/>, which is the shape <see cref="NightBuilder.BuildAsync"/> returns. Every date of the range is
+    /// deleted first, so one the builder left out (a night that has not happened, or has no time zone to be read in) loses its
+    /// stored row. A night outside the range is an <see cref="ArgumentException"/>, thrown before anything is touched: the
+    /// delete would not make room for it, and a later replace of its own range would find it already there. One transaction:
+    /// readers see the old rows or the new ones, and a failure leaves the old ones.
     /// </summary>
     public async Task ReplaceAsync(
         DateOnly from, DateOnly to, IReadOnlyList<(Night Night, string Source)> nights, CancellationToken ct = default)
     {
+        foreach (var (night, _) in nights)
+        {
+            if (night.Date < from || night.Date > to)
+                throw new ArgumentException(
+                    $"The night of {night.Date:yyyy-MM-dd} is outside the range {from:yyyy-MM-dd} to {to:yyyy-MM-dd}.", nameof(nights));
+        }
+
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 

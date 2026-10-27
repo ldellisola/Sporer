@@ -24,7 +24,8 @@ public sealed class NightBuilder(PointStore points, SegmentStore segments, Place
     /// the stay that covers that instant (its place and its centre), else the nearest raw point within
     /// <see cref="DetectionOptions.NightPointWindow"/> (the nearest active place within
     /// <see cref="DetectionOptions.PlaceRadiusMeters"/>, or none), else the night is unknown and has no position. The place of
-    /// a stay is the one the stay has, merged into another or not; a night's place is resolved to its survivor when they are read.
+    /// a stay is the one the stay has, merged into another or not: the night keeps it as it is, and its reader
+    /// (<c>TripRefresher</c>) resolves it to the survivor through <see cref="PlaceStore.LoadSurvivorsAsync"/>.
     /// <para>
     /// A night is left out when it cannot be built: when it has not happened yet (its instant is after the end of the last
     /// stored segment, so nothing is known about it), and when no segment is near enough to say which zone the person was in,
@@ -56,10 +57,11 @@ public sealed class NightBuilder(PointStore points, SegmentStore segments, Place
             lastDate.AddDays(3).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc), ct);
         var matcher = new PlaceMatcher(await places.LoadActiveAsync(ct), options.PlaceRadiusMeters);
 
+        Func<DateTime, string?> zoneAt = at => ZoneAt(covering, at);
         var nights = new List<(Night Night, string Source)>();
         for (var date = firstDate; date <= lastDate; date = date.AddDays(1))
         {
-            if (NightClock.InstantOf(date, at => ZoneAt(covering, at), options.NightHour) is not { } read)
+            if (NightClock.InstantOf(date, zoneAt, options.NightHour) is not { } read)
                 continue;
             var (instant, zone) = read;
             if (instant > happenedUntil)
