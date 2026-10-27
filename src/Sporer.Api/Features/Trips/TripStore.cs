@@ -224,29 +224,11 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
             """,
             transaction: transaction, cancellationToken: ct));
 
-        var homes = await connection.QueryAsync<HomeRow>(new CommandDefinition(
-            $"""
-            with recursive
-            named as (
-                select place_id from home_period
-            ),
-            {PlaceStore.Survivors}
-            select to_char(h.from_date, 'YYYY-MM-DD') as FromDate, to_char(h.to_date, 'YYYY-MM-DD') as ToDate,
-                   p.latitude as Latitude, p.longitude as Longitude
-            from home_period h
-            join survivor on survivor.origin = h.place_id
-            join place p on p.id = survivor.id
-            order by (h.source = 'user') desc, h.from_date desc, h.id desc
-            """,
-            transaction: transaction, cancellationToken: ct));
+        var homeList = await LoadHomesAsync(connection, transaction, ct);
 
         await transaction.CommitAsync(ct);
 
         var nightsOf = nights.ToLookup(n => n.TripId);
-        var homeList = homes
-            .Select(h => new HomeAt(
-                ParseDate(h.FromDate), h.ToDate is null ? null : ParseDate(h.ToDate), new GeoPoint(h.Latitude, h.Longitude)))
-            .ToList();
 
         return
         [
@@ -256,25 +238,71 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
                 var known = nightsOf[t.FirstNight]
                     .Select(n => new TripNight(ParseDate(n.Date), n.City, n.Country, new GeoPoint(n.Latitude, n.Longitude)));
 
-                return new StoredTrip(trip, [.. known], HomeOn(trip.FirstNight, homeList), HomeOn(trip.LastNight, homeList));
+                return new StoredTrip(trip, [.. known], HomeOn(trip.FirstNight, homeList)?.Position, HomeOn(trip.LastNight, homeList)?.Position);
             }),
         ];
     }
 
-    /// <summary>A home period with the position of its surviving place, both ends included; a null end is open.</summary>
-    private sealed record HomeAt(DateOnly From, DateOnly? To, GeoPoint Position);
+    /// <summary>
+    /// A home period with the surviving place it is of (<paramref name="PlaceId"/>) and that place's position, both ends of the
+    /// period included; a null end is open.
+    /// </summary>
+    private sealed record HomeAt(DateOnly From, DateOnly? To, long PlaceId, GeoPoint Position);
 
     /// <summary>
-    /// The position of the first of <paramref name="homes"/> (they are in order of precedence) that covers <paramref name="date"/>,
-    /// or null.
+    /// Every home period, resolved to its surviving place, in order of precedence: the owner's (<c>user</c>) before a detected
+    /// one, then the one that began later, then the later row. Where periods overlap the first that covers a date is the home on
+    /// it, which <see cref="HomeOn"/> picks; the trips list and the day view both read their homes this way, so that they cannot
+    /// disagree. A period whose place's merges never end has no survivor and is not in it. There are only a few periods (a home
+    /// is lived in for months), so all of them are read.
     /// </summary>
-    private static GeoPoint? HomeOn(DateOnly date, IReadOnlyList<HomeAt> homes)
+    private static async Task<IReadOnlyList<HomeAt>> LoadHomesAsync(
+        NpgsqlConnection connection, NpgsqlTransaction? transaction, CancellationToken ct)
+    {
+        var homes = await connection.QueryAsync<HomeRow>(new CommandDefinition(
+            $"""
+            with recursive
+            named as (
+                select place_id from home_period
+            ),
+            {PlaceStore.Survivors}
+            select to_char(h.from_date, 'YYYY-MM-DD') as FromDate, to_char(h.to_date, 'YYYY-MM-DD') as ToDate,
+                   p.id as PlaceId, p.latitude as Latitude, p.longitude as Longitude
+            from home_period h
+            join survivor on survivor.origin = h.place_id
+            join place p on p.id = survivor.id
+            order by (h.source = 'user') desc, h.from_date desc, h.id desc
+            """,
+            transaction: transaction, cancellationToken: ct));
+
+        return
+        [
+            .. homes.Select(h => new HomeAt(
+                ParseDate(h.FromDate), h.ToDate is null ? null : ParseDate(h.ToDate), h.PlaceId, new GeoPoint(h.Latitude, h.Longitude))),
+        ];
+    }
+
+    /// <summary>The first of <paramref name="homes"/> (they are in order of precedence) that covers <paramref name="date"/>, or null.</summary>
+    private static HomeAt? HomeOn(DateOnly date, IReadOnlyList<HomeAt> homes)
     {
         foreach (var home in homes)
             if (home.From <= date && (home.To is null || date <= home.To))
-                return home.Position;
+                return home;
 
         return null;
+    }
+
+    /// <summary>
+    /// The place that was home on <paramref name="date"/>, the one that survives merges (the id the day and range views give a
+    /// stay at it), or null when no home period covers the date. Both ends of a period are days it covers. Where periods
+    /// overlap, the one the trips list would take for the date is taken (see <see cref="LoadHomesAsync"/>): the home in effect
+    /// is the one of the day looked at, not of today.
+    /// </summary>
+    public async Task<long?> FindHomeOnAsync(DateOnly date, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+
+        return HomeOn(date, await LoadHomesAsync(connection, null, ct))?.PlaceId;
     }
 
     /// <summary>
@@ -478,6 +506,7 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     {
         public string FromDate { get; set; } = string.Empty;
         public string? ToDate { get; set; }
+        public long PlaceId { get; set; }
         public double Latitude { get; set; }
         public double Longitude { get; set; }
     }

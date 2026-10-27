@@ -31,10 +31,16 @@ public sealed record DaySummary(int Places, double DistanceMeters, long MovingSe
 [JsonDerivedType(typeof(GapDto), "gap")]
 public abstract record DaySegmentDto(long Id, DateTime Start, DateTime End, string StartTimeZone, string EndTimeZone);
 
-/// <summary>Time spent in one place; <paramref name="Place"/> is null for a stay at a position that matched no place.</summary>
+/// <summary>
+/// Time spent in one place; <paramref name="Place"/> is null for a stay at a position that matched no place.
+/// <paramref name="Home"/> is true when the place is the home in effect on the day served (the home period that covers the
+/// date, see <see cref="Trips.TripStore.FindHomeOnAsync"/>), and false for every other stay, one with no place too. It is
+/// always written, so that the client reads a boolean and never the lack of one.
+/// </summary>
 public sealed record StayDto(
     long Id, DateTime Start, DateTime End, string StartTimeZone, string EndTimeZone,
-    [property: JsonPropertyOrder(1), JsonIgnore(Condition = JsonIgnoreCondition.Never)] PlaceDto? Place)
+    [property: JsonPropertyOrder(1), JsonIgnore(Condition = JsonIgnoreCondition.Never)] PlaceDto? Place,
+    [property: JsonPropertyOrder(2)] bool Home)
     : DaySegmentDto(Id, Start, End, StartTimeZone, EndTimeZone);
 
 /// <summary>

@@ -2,15 +2,17 @@ using System.Globalization;
 using System.Text.Json;
 using FastEndpoints;
 using Sporer.Api.Features.Timeline;
+using Sporer.Api.Features.Trips;
 
 namespace Sporer.Api.Features.Day;
 
 /// <summary>
 /// <c>GET /api/day/{date}</c>: one local day of the stored timeline. A day is the local calendar date of the segments
-/// (see <see cref="SegmentStore.FindDayAsync"/>), so a stay that crosses midnight is on both days. Reads only: nothing
-/// here waits for or triggers processing; <c>state</c> says whether more is on its way.
+/// (see <see cref="SegmentStore.FindDayAsync"/>), so a stay that crosses midnight is on both days. A stay at the home in
+/// effect on that day is marked <c>home</c> (see <see cref="TripStore.FindHomeOnAsync"/>). Reads only: nothing here waits for
+/// or triggers processing; <c>state</c> says whether more is on its way.
 /// </summary>
-internal sealed class GetDayEndpoint(SegmentStore segments, ProcessingQueue queue) : EndpointWithoutRequest<DayResponse>
+internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, ProcessingQueue queue) : EndpointWithoutRequest<DayResponse>
 {
     private const string UnknownZone = "UTC";
 
@@ -46,12 +48,15 @@ internal sealed class GetDayEndpoint(SegmentStore segments, ProcessingQueue queu
 
         var pending = await queue.HasPendingWorkAsync(fromUtc, toUtc, ct);
 
+        // One lookup for the day, not one per stay: the home is that of the day viewed, so a day before a move shows the old home.
+        var home = await trips.FindHomeOnAsync(date, ct);
+
         await Send.OkAsync(new DayResponse(
             date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             zone ?? UnknownZone,
             pending ? "pending" : "done",
             Summarize(stored),
-            [.. stored.Select(Map)]), ct);
+            [.. stored.Select(s => Map(s, home))]), ct);
     }
 
     private static DateTime Min(DateTime a, DateTime b) => a <= b ? a : b;
@@ -67,10 +72,15 @@ internal sealed class GetDayEndpoint(SegmentStore segments, ProcessingQueue queu
         return new DaySummary(places, moves.Sum(m => m.DistanceM ?? 0), (long)Math.Round(moving.TotalSeconds));
     }
 
-    private static DaySegmentDto Map(DaySegment s) => s.Kind switch
+    /// <summary>
+    /// A stay is at home when its place (the surviving one, as the home is) is <paramref name="homePlaceId"/>; a stay with no
+    /// place, and every stay of a day with no home in effect (<paramref name="homePlaceId"/> null), is not.
+    /// </summary>
+    private static DaySegmentDto Map(DaySegment s, long? homePlaceId) => s.Kind switch
     {
         "stay" => new StayDto(s.Id, s.StartUtc, s.EndUtc, s.StartTz, s.EndTz,
-            s.Place is { } p ? new PlaceDto(p.Id, p.Name, p.City, p.Country, p.Latitude, p.Longitude) : null),
+            s.Place is { } p ? new PlaceDto(p.Id, p.Name, p.City, p.Country, p.Latitude, p.Longitude) : null,
+            Home: homePlaceId is { } home && s.Place?.Id == home),
         "move" => new MoveDto(s.Id, s.StartUtc, s.EndUtc, s.StartTz, s.EndTz, s.Mode, s.DistanceM ?? 0, Line(s.GeometryDetailJson)),
         "gap" => MapGap(s),
         _ => throw new InvalidOperationException($"Segment {s.Id} has the unknown kind '{s.Kind}'."),
