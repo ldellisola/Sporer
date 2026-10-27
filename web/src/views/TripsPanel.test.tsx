@@ -53,14 +53,13 @@ describe("TripsPanel", () => {
     expect(items).toHaveLength(3);
     // Newest first, as the API has them: each card has the name, the dates the way a week's are written, the nights and the cities.
     expect(items.map((card) => within(card).getByRole("button").getAttribute("aria-label"))).toEqual([
-      "Open New York, Ongoing, 22 – 24 Oct 2026, 2 nights, New York",
-      "Open Lisbon & Sintra, 12 – 16 Sep 2026, 4 nights, Lisbon · Sintra",
-      "Open Copenhagen, 1 – 3 Aug 2026, 2 nights, Copenhagen",
+      "Open New York, Ongoing, 22 – 24 Oct 2026 · 2 nights, New York",
+      "Open Lisbon & Sintra, 12 – 16 Sep 2026 · 4 nights, Lisbon · Sintra",
+      "Open Copenhagen, 1 – 3 Aug 2026 · 2 nights, Copenhagen",
     ]);
     const lisbon = items[1]!;
     expect(within(lisbon).getByText("Lisbon & Sintra")).toBeInTheDocument();
-    expect(within(lisbon).getByText("12 – 16 Sep 2026")).toBeInTheDocument();
-    expect(within(lisbon).getByText("4 nights")).toBeInTheDocument();
+    expect(within(lisbon).getByText("12 – 16 Sep 2026 · 4 nights")).toBeInTheDocument(); // the dates and the nights, one line
     expect(within(lisbon).getByText("Lisbon · Sintra")).toBeInTheDocument();
     // The picture of where the trip went: its line, with a dot at each place it slept (home, Lisbon, Sintra, home).
     const thumbnail = lisbon.querySelector("svg")!;
@@ -74,7 +73,7 @@ describe("TripsPanel", () => {
   });
 
   test("TripsPanel_gives_every_card_a_name_that_holds_the_text_it_shows", async () => {
-    // Label in name: someone who says what they read ("Lisbon & Sintra", "12 – 16 Sep 2026") reaches the button that has it.
+    // Label in name: someone who says what they read ("Lisbon & Sintra", "12 – 16 Sep 2026 · 4 nights") reaches the button that has it.
     stubApi(TRIPS);
     mount();
 
@@ -84,10 +83,23 @@ describe("TripsPanel", () => {
     for (const [index, button] of buttons.entries()) {
       const name = button.getAttribute("aria-label")!;
       const trip = TRIPS.trips[index]!;
-      expect(textsOf(button).length, trip.id).toBeGreaterThanOrEqual(4); // the name, the dates, the nights, the cities (and the chip)
+      expect(textsOf(button).length, trip.id).toBeGreaterThanOrEqual(3); // the name, the dates and the nights, the cities (and the chip)
       expect(textsOf(button), trip.id).toContain(trip.name);
       for (const text of textsOf(button)) expect(name, `${trip.id}: ${text}`).toContain(text);
     }
+  });
+
+  test("TripsPanel_names_every_card_with_its_dates_and_nights_exactly_as_they_are_shown", async () => {
+    // The line is "12 – 16 Sep 2026 · 4 nights", one string: a name that joined the two with a comma would hold neither the line nor what is read of it.
+    stubApi(TRIPS);
+    mount();
+
+    const buttons = cards(await list()).map((card) => within(card).getByRole("button"));
+
+    // The line is the first element whose whole text is the dates, a dot and the nights (however many spans it is made of).
+    const lines = buttons.map((button) => [...button.querySelectorAll("span")].find((span) => /^\d.* · \d+ nights?$/.test(span.textContent ?? ""))?.textContent);
+    expect(lines).toEqual(["22 – 24 Oct 2026 · 2 nights", "12 – 16 Sep 2026 · 4 nights", "1 – 3 Aug 2026 · 2 nights"]);
+    for (const [index, button] of buttons.entries()) expect(button.getAttribute("aria-label"), TRIPS.trips[index]!.id).toContain(lines[index]!);
   });
 
   test("TripsPanel_shows_an_ongoing_trip", async () => {
@@ -120,8 +132,8 @@ describe("TripsPanel", () => {
 
     const [card] = cards(await list());
 
-    expect(within(card!).getByText("1 night")).toBeInTheDocument();
-    expect(within(card!).getByRole("button")).toHaveAccessibleName("Open Trip, 4 – 5 Jul 2026, 1 night");
+    expect(within(card!).getByText("4 – 5 Jul 2026 · 1 night")).toBeInTheDocument();
+    expect(within(card!).getByRole("button")).toHaveAccessibleName("Open Trip, 4 – 5 Jul 2026 · 1 night");
     expect(card!.querySelector("svg circle")).not.toBeNull(); // a trip with no line is a dot, and still has its picture
   });
 });

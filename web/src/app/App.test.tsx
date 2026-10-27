@@ -159,17 +159,17 @@ function stubDesktop(matches: boolean) {
   );
 }
 
-function renderApp(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
-  return {
-    client,
-    ...render(
-      <StrictMode>
-        <QueryClientProvider client={client}>
-          <App />
-        </QueryClientProvider>
-      </StrictMode>,
-    ),
-  };
+/**
+ * The app on a client of its own. `strict` is false for a test that counts the requests for one query: StrictMode mounts what it shows twice,
+ * so that what was asked for is asked for again, and a count of them could not tell the panel and the map sharing one request from each asking.
+ */
+function renderApp(client = new QueryClient({ defaultOptions: { queries: { retry: false } } }), { strict = true } = {}) {
+  const app = (
+    <QueryClientProvider client={client}>
+      <App />
+    </QueryClientProvider>
+  );
+  return { client, ...render(strict ? <StrictMode>{app}</StrictMode> : app) };
 }
 
 beforeEach(() => {
@@ -1142,7 +1142,7 @@ describe("App trips", () => {
     window.history.replaceState(null, "", "/trips");
     const paths = stubApi(answerWithTrips);
 
-    renderApp();
+    renderApp(undefined, { strict: false }); // the requests are counted below
 
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Trips"); // the bar's title row
     expect(within(details()).getByRole("heading", { name: "Trips" })).toBeInTheDocument(); // and the panel, until the list is
@@ -1150,7 +1150,8 @@ describe("App trips", () => {
     expect(mapProps().fitTo).toBeNull();
     expect(await within(details()).findByRole("list", { name: "Trips" })).toBeInTheDocument(); // the real list was asked for and came
     expect(within(details()).queryByText("Loading…")).not.toBeInTheDocument();
-    expect(new Set(paths.filter((path) => path !== "/api/status"))).toEqual(new Set(["/api/trips"])); // one request, for the panel and the map
+    expect(paths.filter((path) => path === "/api/trips")).toHaveLength(1); // one request, for the panel and the map (counted, not collapsed into a set)
+    expect(paths.filter((path) => path !== "/api/status" && path !== "/api/trips")).toEqual([]); // and nothing else
     expect(periodRequests(paths)).toEqual([]);
     expect(mapProps().heatToggle).toBeUndefined(); // there is no period to show the heat of
     // What the panel lists is what the map draws: a dot for each city, no routes, and the map brought to all of them.

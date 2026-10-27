@@ -104,6 +104,10 @@ export interface MapViewProps {
    * often as its data changes; null (or no position in it) says there is nothing to go back to, and disables the button.
    */
   home?: readonly Feature<Geometry, unknown>[] | null;
+  /**
+   * What covers the map. The controls are set in by it, and what is fitted is fitted into the rest, with more air at the left and at the
+   * right while a dot of the drawing has a label (see `LABEL_AIR_PX`): the air is for the camera and is not added to the controls' insets.
+   */
   padding?: MapPadding;
   /** The heat button, a button of the map's own like Recenter. Given only where there is a period to show the heat of: without it there is no button. */
   heatToggle?: HeatToggle;
@@ -260,8 +264,26 @@ function paddingVariables(padding: MapPadding): CSSProperties {
   } as CSSProperties;
 }
 
-function fit(map: MapLibreMap, bounds: Bounds, padding: MapPadding): void {
-  map.fitBounds(bounds, { padding, maxZoom: FIT_MAX_ZOOM, duration: FIT_DURATION_MS });
+/**
+ * The air a fit leaves at the left and at the right for the labels of the dots, in pixels: about the width of "Lisbon · 4 nights" at the
+ * size of a label, less what the label's own offset takes. MapLibre puts a label that does not fit at one side of its dot at another, but
+ * it never moves one back inside the screen, so the dot that the fit puts at an edge would lose its name off the screen.
+ */
+const LABEL_AIR_PX = 72;
+
+/** Whether any dot of the drawing carries a label (the places that the period's, the trips' and a trip's dots name). */
+const hasLabels = (data: MapData): boolean => data.places?.features.some((dot) => dot.properties.label !== undefined) ?? false;
+
+/**
+ * The padding that a fit is made with: what covers the map, and for a drawing with labelled dots some air at each side for them. The
+ * air is for the camera alone: the controls are set in by the padding that covers the map (`paddingVariables`), which does not change.
+ */
+function fitPadding(padding: MapPadding, data: MapData): MapPadding {
+  return hasLabels(data) ? { ...padding, left: padding.left + LABEL_AIR_PX, right: padding.right + LABEL_AIR_PX } : padding;
+}
+
+function fit(map: MapLibreMap, bounds: Bounds, padding: MapPadding, data: MapData): void {
+  map.fitBounds(bounds, { padding: fitPadding(padding, data), maxZoom: FIT_MAX_ZOOM, duration: FIT_DURATION_MS });
 }
 
 /**
@@ -567,12 +589,12 @@ function MapSurface({
   // A map that was not there yet when `fitTo` was given is brought to it, with the padding of now, the moment it is there.
   useEffect(() => {
     const target = latest.current.bounds;
-    if (map !== null && target !== null) fit(map, target, latest.current.padding);
+    if (map !== null && target !== null) fit(map, target, latest.current.padding, latest.current.data);
   }, [map, fitTo, latest]); // each new `fitTo` moves the map, whether or not its box is the one it is already at; padding does not
 
   const recenter = (): void => {
     const target = latest.current.homeBounds;
-    if (map !== null && target !== null) fit(map, target, latest.current.padding);
+    if (map !== null && target !== null) fit(map, target, latest.current.padding, latest.current.data);
   };
 
   return (

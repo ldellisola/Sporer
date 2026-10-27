@@ -115,24 +115,63 @@ const worldOf = ([lon, lat]: [number, number]) => ({
 });
 
 /**
- * Where on the page `at` is once the map has been brought to all of `positions`, as the map is when it is fitted: what the bar and the panel
- * leave free (it is padded for them) is filled by the box of the positions on the side that it is longer, and the box is in the middle of it.
+ * The air that the fit leaves at the left and at the right of what is free while a dot has a label, so that the outermost dots' names stay on
+ * the screen (`LABEL_AIR_PX` of MapView). The cities of the trips are all named, so their fit has it; the padding that the controls are set in
+ * (`--map-padding-*`) has not.
  */
-async function whereOnThePage(page: Page, positions: [number, number][], at: [number, number]): Promise<{ x: number; y: number }> {
-  const free = await map(page).evaluate((element) => {
+const LABEL_AIR = 72;
+
+/**
+ * Where on the page `at` is once the map has been brought to all of `positions`, as the map is when it is fitted: what the bar and the panel
+ * leave free (it is padded for them), less `sideAir` at the left and at the right, is filled by the box of the positions on the side that it
+ * is longer, and the box is in the middle of it. A map that has been fitted to dots that carry no label has no `sideAir`. This is also the
+ * check that the fit leaves the room for the labels: the dots of the easternmost and the westernmost city are drawn where the air puts them.
+ *
+ * A map is kept inside the world, which is as high as it is wide and ends at ±85° of latitude: the middle of the map is never nearer to the
+ * top or to the bottom of it than half the map's height. A box that is wide and a free width that is narrow (a phone, with the air) fit at
+ * a zoom at which the world is hardly higher than the map, and then the middle of the box is not where the middle of what is free is.
+ */
+async function whereOnThePage(page: Page, positions: [number, number][], at: [number, number], sideAir = 0): Promise<{ x: number; y: number }> {
+  const free = await map(page).evaluate((element, air) => {
     const read = (side: string) => parseFloat(element.style.getPropertyValue(`--map-padding-${side}`));
     const box = element.getBoundingClientRect();
-    return { left: box.left + read("left"), top: box.top + read("top"), width: box.width - read("left") - read("right"), height: box.height - read("top") - read("bottom") };
-  });
+    return {
+      left: box.left + read("left") + air,
+      top: box.top + read("top"),
+      width: box.width - read("left") - read("right") - 2 * air,
+      height: box.height - read("top") - read("bottom"),
+      mapMiddle: box.top + box.height / 2,
+      mapHeight: box.height,
+    };
+  }, sideAir);
   const world = positions.map(worldOf);
   const [west, east] = [Math.min(...world.map((p) => p.x)), Math.max(...world.map((p) => p.x))];
   const [north, south] = [Math.min(...world.map((p) => p.y)), Math.max(...world.map((p) => p.y))];
   const scale = Math.min(free.width / (east - west), free.height / (south - north)); // pixels for the width of the world
   const target = worldOf(at);
+  const half = free.mapHeight / 2 / scale; // half the height of the map, as a share of the world's
+  const middleOfMap = (north + south) / 2 + (free.mapMiddle - (free.top + free.height / 2)) / scale; // where the map's middle is, if it is not kept in
+  const kept = Math.min(Math.max(middleOfMap, half), 1 - half);
   return {
     x: Math.round(free.left + free.width / 2 + (target.x - (west + east) / 2) * scale),
-    y: Math.round(free.top + free.height / 2 + (target.y - (north + south) / 2) * scale),
+    y: Math.round(free.mapMiddle + (target.y - kept) * scale),
   };
+}
+
+/**
+ * Waits until the camera has come to rest at (`x`, `y`) rather than for as long as its flight takes (600 ms of `FIT_DURATION_MS`, and the
+ * frames of a busy runner): the picture round the point is the same on two reads in a row, which a map still moving does not give.
+ */
+async function cameraAtRest(page: Page, x: number, y: number): Promise<void> {
+  let last = "";
+  await expect
+    .poll(async () => {
+      const now = (await page.screenshot({ clip: { x: x - 24, y: y - 24, width: 48, height: 48 } })).toString("base64");
+      const still = now === last;
+      last = now;
+      return still;
+    }, PIXEL_POLL)
+    .toBe(true);
 }
 
 // The test reads pixels, which is cheaper to ask for at one to a CSS pixel than at the phone's three (see PIXEL_POLL).
@@ -152,11 +191,11 @@ test.describe("the trips list", () => {
     const list = details(page).getByRole("list", { name: "Trips" });
     await expect(list.getByRole("listitem")).toHaveCount(3);
 
-    // The cards, newest first, each named by what it says: the trip, its dates, its nights and its cities.
+    // The cards, newest first, each named by what it says: the trip, its dates and nights (one line, as it is shown) and its cities.
     expect(await list.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label")))).toEqual([
-      "Open New York, Ongoing, 22 – 24 Oct 2026, 2 nights, New York",
-      "Open Lisbon & Sintra, 12 – 16 Sep 2026, 4 nights, Lisbon · Sintra",
-      "Open Copenhagen, 1 – 3 Aug 2026, 2 nights, Copenhagen",
+      "Open New York, Ongoing, 22 – 24 Oct 2026 · 2 nights, New York",
+      "Open Lisbon & Sintra, 12 – 16 Sep 2026 · 4 nights, Lisbon · Sintra",
+      "Open Copenhagen, 1 – 3 Aug 2026 · 2 nights, Copenhagen",
     ]);
     const lisbon = list.getByRole("button", { name: /^Open Lisbon & Sintra/ });
     await expect(lisbon).toContainText("Lisbon & Sintra");
@@ -175,14 +214,14 @@ test.describe("the trips list", () => {
 
     // The map: a dot for each city, where it is once the map has been brought to all of them, from New York to Copenhagen.
     const dotAt = async (at: [number, number]) => {
-      const { x, y } = await whereOnThePage(page, CITIES, at);
+      const { x, y } = await whereOnThePage(page, CITIES, at, LABEL_AIR);
       return sameColour(await pixelAt(page, x, y), PIN, 30);
     };
     await expect.poll(() => dotAt(NEW_YORK), PIXEL_POLL).toBe(true);
     await expect.poll(() => dotAt(COPENHAGEN), PIXEL_POLL).toBe(true);
     await expect.poll(() => dotAt(LISBON), PIXEL_POLL).toBe(true);
     // Between New York and Lisbon there is nothing: the map shows the cities, and no line from one to the next.
-    const between = await whereOnThePage(page, CITIES, [(NEW_YORK[0] + LISBON[0]) / 2, (NEW_YORK[1] + LISBON[1]) / 2]);
+    const between = await whereOnThePage(page, CITIES, [(NEW_YORK[0] + LISBON[0]) / 2, (NEW_YORK[1] + LISBON[1]) / 2], LABEL_AIR);
     expect(sameColour(await pixelAt(page, between.x, between.y), BACKGROUND)).toBe(true);
 
     // A card opens its trip, and Back is to the list.
@@ -203,18 +242,21 @@ test.describe("the trips list", () => {
     await page.goto("/trips");
     await expect(map(page)).toHaveAttribute("data-map-state", "ready");
     await expect(details(page).getByRole("list", { name: "Trips" }).getByRole("listitem")).toHaveCount(3);
-    const { x, y } = await whereOnThePage(page, CITIES, COPENHAGEN); // the most to the east: well clear of the sheet, the bar and the sidebar
+    const { x, y } = await whereOnThePage(page, CITIES, COPENHAGEN, LABEL_AIR); // the most to the east: well clear of the sheet, the bar and the sidebar
     await expect.poll(async () => sameColour(await pixelAt(page, x, y), PIN, 30), PIXEL_POLL).toBe(true);
-    await page.evaluate((ms) => new Promise((resolve) => setTimeout(resolve, ms)), 900); // the camera has come to rest
+    await cameraAtRest(page, x, y);
 
     await page.mouse.move(x - 2, y - 2);
     await page.mouse.move(x, y);
     await expect(map(page).locator("canvas.maplibregl-canvas")).not.toHaveCSS("cursor", "pointer");
     if (isWide(page)) await page.mouse.click(x, y);
     else await page.touchscreen.tap(x, y); // the finger, on a phone
-    await page.evaluate((ms) => new Promise((resolve) => setTimeout(resolve, ms)), 500); // a place would be on its way by now
 
-    await expect(page).toHaveURL(/\/trips$/);
+    // That nothing opened is no matter of how long to wait. A tap on a place navigates in the click's own handler, so it had done so by the
+    // time the click returned (the browser answers an input event once the page has handled it); a frame or two later is only to be sure
+    // that nothing the page had queued is still to run, and then the address is the one it was.
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page).toHaveURL(/\/trips$/, { timeout: 1000 });
     expect(sameColour(await pixelAt(page, x, y), PIN, 30)).toBe(true); // and the dot is still there, under the finger
   });
 });

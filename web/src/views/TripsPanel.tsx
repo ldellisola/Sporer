@@ -18,15 +18,14 @@ const ONGOING = "Ongoing";
 const citiesOf = (trip: TripListItem): string => trip.cities.map((city) => city.name).join(" · ");
 
 /**
- * A card opens its trip. The button is named by what the card says, in the order it says it: "Open Lisbon & Sintra, 12 – 16 Sep 2026, 4 nights,
- * Lisbon · Sintra", so that the name holds all the text that is on it, and no two trips have the same (the name and the dates are the trip's).
- * The picture is no part of the name.
+ * A card opens its trip. The button is named by what the card says, in the order it says it: "Open Lisbon & Sintra, 12 – 16 Sep 2026 · 4 nights,
+ * Lisbon · Sintra", so that the name holds all the text that is on it, each line as it is written (the dates and the nights are one line, with the
+ * dot between them), and no two trips have the same (the name and the dates are the trip's). The picture is no part of the name.
  */
 function TripCard({ trip }: { trip: TripListItem }) {
-  const dates = dateRangeLabel(trip.localStartDate, trip.localEndDate);
-  const nights = formatCount(trip.nights, "night");
+  const meta = `${dateRangeLabel(trip.localStartDate, trip.localEndDate)} · ${formatCount(trip.nights, "night")}`;
   const cities = citiesOf(trip);
-  const said = [trip.name, trip.ongoing ? ONGOING : "", dates, nights, cities].filter((part) => part !== "");
+  const said = [trip.name, trip.ongoing ? ONGOING : "", meta, cities].filter((part) => part !== "");
   return (
     <li>
       <button
@@ -41,11 +40,7 @@ function TripCard({ trip }: { trip: TripListItem }) {
             <span className={styles.name}>{trip.name}</span>
             {trip.ongoing && <Chip>{ONGOING}</Chip>}
           </span>
-          <span className={styles.meta}>
-            <span>{dates}</span>
-            {" · "}
-            <span>{nights}</span>
-          </span>
+          <span className={styles.meta}>{meta}</span>
           {cities !== "" && <span className={styles.cities}>{cities}</span>}
         </span>
       </button>

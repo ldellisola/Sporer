@@ -7,7 +7,7 @@ import { boundsOf } from "./bounds";
 import { LAYER_IDS, ROUTE_LAYERS, routeOpacity, SOURCE_IDS } from "./layers";
 import type { Feature, FeatureCollection, HeatCollection, LineString, Point, StopCollection } from "./layers";
 import type { MapLibreLoader, MapLibreModule } from "./maplibre";
-import { MapView, type MapViewHandle, type MapViewProps } from "./MapView";
+import { MapView, type MapData, type MapViewHandle, type MapViewProps } from "./MapView";
 
 // jsdom has no WebGL, so `maplibre-gl` is replaced by a map that records what it is asked to do and fires the events a
 // real one fires, when the test says so (`emit`). It is as strict as the real one is helpful: adding a source twice, or a
@@ -626,6 +626,27 @@ describe("MapView", () => {
     // And a day is a day again without the data having to say so.
     rerender(view({ data: { routes: EMPTY_ROUTES, stops: stops() } }));
     expect([...range, ...day].map(visibility)).toEqual(["none", "none", "visible", "visible", "visible"]);
+  });
+
+  test("MapView_keeps_the_route_layers_hidden_when_the_style_reloads_under_the_trips", async () => {
+    // A theme switch (or a context that comes back) loads a style that has none of the layers: they are added again from the specs of the
+    // view on show, and the list of trips, which draws no routes, must not find the range's faint ones drawn over it by that.
+    goodStyle();
+    const dots = { type: "FeatureCollection" as const, features: [{ type: "Feature" as const, properties: { id: 0, radius: 9, label: "Lisbon · 9 nights" }, geometry: { type: "Point" as const, coordinates: [-9.14, 38.72] as [number, number] } }] };
+    render(view({ data: { routes: EMPTY_ROUTES, places: dots, view: "trips" } }));
+    await styleApplied();
+    const map = theMap();
+    map.emit("style.load");
+    const visibility = (id: string) => map.layers.get(id)?.layout?.visibility ?? "visible"; // a layer that says nothing is shown
+    expect(ROUTE_LAYERS.map(visibility)).toEqual(["none", "none", "none", "none", "none"]);
+
+    map.setStyle({ version: 8, sources: {}, layers: [] }, { diff: false }); // the style of the other colour scheme: no source, no layer
+    expect(map.layers.size).toBe(0);
+    map.emit("style.load");
+
+    expect(ROUTE_LAYERS.map(visibility)).toEqual(["none", "none", "none", "none", "none"]); // added as the trips have them, not as the specs of a period
+    expect([LAYER_IDS.places, LAYER_IDS.placeLabels].map(visibility)).toEqual(["visible", "visible"]);
+    expect(map.sources.get(SOURCE_IDS.places)?.data).toBe(dots);
   });
 
   test("MapView_stays_off_the_map_between_a_lost_WebGL_context_and_its_restored_style", async () => {
@@ -1666,6 +1687,66 @@ describe("MapView", () => {
       rerender(view({ fitTo: [elsewhere], padding: { ...PADDING, bottom: 500 } }));
       expect(map.fitCalls).toHaveLength(3);
       expect(map.fitCalls[2]?.bounds).toEqual([[-0.1, 51.5], [-0.1, 51.5]]);
+    });
+
+    // A label that does not fit beside its dot is put on the other side of it, but MapLibre never moves one back inside the screen, so the
+    // dots at the edges of the fit would have their names cut off. The fit leaves some air at the sides for them (and for no other reason:
+    // the controls are set in by the padding itself, which does not change).
+    describe("room for the labels", () => {
+      const LABEL_AIR = 72;
+      const dot = (label: string | undefined, lon: number): Feature<Point, object> => ({
+        type: "Feature",
+        properties: label === undefined ? { id: 1, radius: 8 } : { id: 1, radius: 8, label },
+        geometry: { type: "Point", coordinates: [lon, 59.9] },
+      });
+      const dots = (...features: Feature<Point, object>[]) => ({ type: "FeatureCollection" as const, features }) as unknown as MapData["places"];
+      const labelled = dots(dot("Lisbon · 4 nights", -9.14), dot(undefined, 12.57));
+      const AIRY = { ...PADDING, left: PADDING.left + LABEL_AIR, right: PADDING.right + LABEL_AIR };
+
+      test("MapView_fits_with_air_at_the_sides_when_a_dot_has_a_label", async () => {
+        goodStyle();
+        const places = labelled;
+
+        render(view({ data: { routes: EMPTY_ROUTES, places, view: "trips" }, fitTo: places!.features, padding: PADDING }));
+
+        const map = await mapUp();
+        expect(map.fitCalls).toHaveLength(1);
+        expect(map.fitCalls[0]?.options["padding"]).toEqual(AIRY); // the sides only: the top and the bottom are what the bar and the sheet cover
+      });
+
+      test("MapView_recenter_leaves_the_same_air_for_the_labels", async () => {
+        goodStyle();
+        const places = labelled;
+        render(view({ data: { routes: EMPTY_ROUTES, places, view: "trip" }, fitTo: places!.features, home: places!.features, padding: PADDING }));
+        const map = await mapUp();
+
+        fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+
+        expect(map.fitCalls).toHaveLength(2);
+        expect(map.fitCalls[1]?.options["padding"]).toEqual(AIRY);
+      });
+
+      test("MapView_fits_without_the_air_when_no_dot_has_a_label_or_there_are_no_dots", async () => {
+        goodStyle();
+        const places = dots(dot(undefined, -9.14), dot(undefined, 12.57)); // a period whose places have no name or city to show
+        const { rerender } = render(view({ data: { routes: EMPTY_ROUTES, places }, fitTo: places!.features, padding: PADDING }));
+        const map = await mapUp();
+        expect(map.fitCalls[0]?.options["padding"]).toEqual(PADDING);
+
+        rerender(view({ data: { routes: EMPTY_ROUTES, stops: stops() }, fitTo: [flight], padding: PADDING })); // a day: pins, no dots
+        expect(map.fitCalls[1]?.options["padding"]).toEqual(PADDING);
+      });
+
+      test("MapView_gives_the_controls_the_padding_without_the_air", async () => {
+        goodStyle();
+        const places = labelled;
+
+        render(view({ data: { routes: EMPTY_ROUTES, places, view: "trips" }, fitTo: places!.features, padding: PADDING }));
+        await mapUp();
+
+        // The buttons and the credit sit by the padding that the shell gives, which is what covers the map: the air is for the fit alone.
+        expect(["top", "right", "bottom", "left"].map((side) => region().style.getPropertyValue(`--map-padding-${side}`))).toEqual(["120px", "20px", "300px", "340px"]);
+      });
     });
 
     test("MapView_does_not_fit_to_nothing", async () => {
