@@ -50,8 +50,10 @@ worked out again with it, so nothing here has to be entered or kept up to date b
 - **Places near each other count as one home.** GPS drift can split one house into several places a hundred metres or so apart, so the
   nights at every place within **250 m** of a place count for it (`Detection__HomeRadiusMeters`). A place within that distance of your
   current home never starts a new home, so the home does not flip between the fragments of one house. Two homes closer than that are one
-  home, and so can two homes up to about twice that apart, when a place of the new one lies within 250 m of the old one: a move next door
-  is not noticed. That is harmless for trips, as it is far below the 50 km of a trip, and a home override (planned) will cover it.
+  home, and so can two homes up to about twice that apart (about 500 m), when a place of the new one lies within 250 m of the old one: a
+  move that small may not be noticed as a move. That is harmless for trips, as it is far below the 50 km of a trip. On the Day view the
+  stays at the new home's places more than 250 m from the old home then show numbers, not a house, until a home override (planned for
+  Plan 4) covers it.
 - **Away** means sleeping at least **50 km** from the home you had that night. While there is no home, no night is away.
 - **A trip** is a run of away nights in a row. Unknown nights between two of them belong to it, and an unknown night never starts or ends
   one. It starts when you left (the end of the last stay within 50 km of home) and ends when you came back (the start of the first one).
@@ -61,11 +63,13 @@ worked out again with it, so nothing here has to be entered or kept up to date b
   `Lisbon & Porto`, or the countries when it was three cities or more, and `Trip` until the places have been named (see "Place naming").
   The list says how long it was as `Lisbon · 4 nights` (`1 night`).
 
-On the Day view a stay at the home of that day, or at a place within 250 m of it, is drawn with a house instead of a number, on the map and
-in the list, and the numbers count the other stays that have a place. (A day with stays at two places of the same home shows two houses
-near each other.) The thresholds are the `Detection__*` settings below: `Detection__TripMinDistanceKm`, `Detection__HomeMinNights`,
-`Detection__HomeWindowNights`, `Detection__HomeRadiusMeters`, `Detection__NightHour` and `Detection__NightPointWindow`. Changing one
-rebuilds the whole timeline, as changing any of them does.
+On the Day view a stay is at home, and is drawn with a house instead of a number on the map and in the list, when its place is the home of
+that day, or when it lies within 250 m of it and was where you slept on at least one night of that home period: the other places of the
+same house. A café, a shop or a gym next door is never where you slept, however close it is, so it keeps its number. The numbers count the
+other stays that have a place. (A day with stays at two places of the same home shows two houses near each other.) The thresholds are the
+`Detection__*` settings below: `Detection__TripMinDistanceKm`, `Detection__HomeMinNights`, `Detection__HomeWindowNights`,
+`Detection__HomeRadiusMeters`, `Detection__NightHour` and `Detection__NightPointWindow`. Changing one rebuilds the whole timeline, as
+changing any of them does.
 
 ## Running it
 
@@ -233,7 +237,9 @@ range (retried later with a growing delay) and the backfill goes on after it; a 
 set aside the same way. Later processing does not reach back into a set-aside range, so one bad stretch of history does not
 hold up the rest, live data included. The failed range of a backfill step also covers the step after it, which is rebuilt
 together with it when the retry goes through (until then those days show as `pending`). The same backfill runs again
-whenever the detection thresholds or the detection code change, and starts without any failed ranges.
+whenever the detection thresholds or the detection code change, and starts without any failed ranges. The first start of
+the version that added trips and home is one of those (the algorithm version changed): it rebuilds the whole timeline
+once, and the home periods and trips appear when it has finished.
 
 ## Owner's checklist: trips and home
 
@@ -248,11 +254,15 @@ the phone, over the VPN, and check:
   four places, is found that way. A home that is still not found would show as **no trips at all** (with no home, no night is away), or,
   after a move that was not noticed, as **one long trip** that does not end. If you see either, say so, and with where
   the home is. (The periods are in the `home_period` table: `select * from home_period order by from_date`.)
+- [ ] **A short move may not show as a move.** A move of less than about twice the home radius (about 500 m) may not show as a new home.
+  When it does not, the stays at the new home's places that are more than 250 m from the old home show numbers, not a house. Trips are
+  unaffected. Plan 4's home override will cover it; say if you moved that little and it bothers you.
 - [ ] **Each trip you remember is listed**, at `/trips`, with sensible dates, a name and a number of nights. Look for a trip that is missing
   (it was nearer than 50 km) and for one that is not a trip.
 - [ ] **A long stay is not mistaken for a move.** A month or two away from home is one trip, and when you are back the house is still at
   your own place. (A stay of 60 nights or more out of 90 at one place is a move, by design.)
-- [ ] **Home stops show a house** on the Day view, on the map and in the list, and no stop that is not home does.
+- [ ] **Home stops show a house** on the Day view, on the map and in the list, and no stop that is not home does: a café, shop or gym
+  next door, which you never slept at, keeps its number, and the places of your own house, where GPS drift put a night, show a house.
 - [ ] **The day lines of a trip read well**: open a trip and read each day's line (`Oslo → Lisbon`, its highlights, its distance and its
   flights). Say if a line reads wrong for a day you remember.
 - [ ] **Time the trips list and a trip on the phone**, opened from the home screen, over the VPN. On the synthetic history the cards and
