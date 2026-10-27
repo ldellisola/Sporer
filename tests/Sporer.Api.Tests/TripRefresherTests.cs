@@ -291,6 +291,7 @@ public class TripRefresherTests(DatabaseFixture db)
         Assert.Equal([new HomeRow(place, "2026-01-01", null, "detected")], await HomesAsync(cs)); // the deletes went with it
         Assert.Equal(["2026-05-03"], (await TripsAsync(cs)).Select(t => t.Id));
     }
+
     [Fact]
     public async Task TripStore_replace_all_leaves_the_nights_homes_and_trips_as_they_were_when_a_write_fails()
     {

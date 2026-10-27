@@ -806,8 +806,12 @@ public class TimelineWorkerTests(DatabaseFixture db)
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
 
         var pass = h.Worker.RunOnceAsync(cts.Token);
-        // The cursor is saved before the pause, so once it has moved the pass is waiting out the hour.
-        await WaitForAsync(async () => (await StateAsync(cs)).BackfillCursor > T(7, 0), "the first backfill step");
+        // The pass saves the cursor, then refreshes the trips, then pauses, so a moved cursor alone only shows that the refresh
+        // is next. The step added its window to the pending refresh before the cursor was saved, and the refresh empties the
+        // window when it is done: with the cursor moved and nothing pending the pass is waiting out the hour. The cursor is read
+        // first, because once it has moved the window is either pending or already empty.
+        await WaitForAsync(async () => (await StateAsync(cs)).BackfillCursor > T(7, 0) && await PendingAsync(cs) == (null, null),
+            "the first backfill step and its refresh");
         cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pass.WaitAsync(TimeSpan.FromSeconds(10), Ct));

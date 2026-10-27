@@ -55,9 +55,10 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     /// <summary>
     /// Replaces every detected home period and every trip by <paramref name="homes"/> and <paramref name="trips"/>. The home
     /// periods the owner set (<c>user</c>) are not touched. One transaction: readers see the old rows or the new ones, and a
-    /// failure leaves the old ones.
+    /// failure leaves the old ones. Internal: the app writes them only together with the nights (<see cref="ReplaceAllAsync"/>);
+    /// this is for the tests, which pin what the homes and trips tables hold without building nights first.
     /// </summary>
-    public async Task ReplaceDetectedAsync(
+    internal async Task ReplaceDetectedAsync(
         IReadOnlyList<HomePeriod> homes, IReadOnlyList<DetectedTrip> trips, CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
@@ -71,10 +72,10 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     /// <summary>
     /// Replaces the nights dated <paramref name="from"/> to <paramref name="to"/> by <paramref name="nights"/> (as
     /// <see cref="NightStore"/> does) and every detected home period and trip by <paramref name="homes"/> and
-    /// <paramref name="trips"/>, all in one
-    /// transaction. The homes and trips are worked out from the nights, so a reader must never find new nights with the old
-    /// trips, which two transactions would allow for as long as it took the second to run or, after a failure between them,
-    /// for good: a failure leaves all of it as it was.
+    /// <paramref name="trips"/>, all in one transaction. The homes and trips are worked out from the nights, so a reader must
+    /// never find new nights with the old trips, which two transactions would allow for as long as it took the second to run
+    /// or, after a failure between them, for good: a failure leaves all of it as it was. This is the only way the app writes
+    /// them.
     /// </summary>
     public async Task ReplaceAllAsync(
         DateOnly from, DateOnly to, IReadOnlyList<(Night Night, string Source)> nights,

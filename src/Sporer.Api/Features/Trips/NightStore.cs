@@ -17,9 +17,11 @@ public sealed class NightStore(NpgsqlDataSource dataSource)
     /// deleted first, so one the builder left out (a night that has not happened, or has no time zone to be read in) loses its
     /// stored row. A night outside the range is an <see cref="ArgumentException"/>, thrown before anything is touched: the
     /// delete would not make room for it, and a later replace of its own range would find it already there. One transaction:
-    /// readers see the old rows or the new ones, and a failure leaves the old ones.
+    /// readers see the old rows or the new ones, and a failure leaves the old ones. Internal: the app writes the nights only
+    /// together with the homes and trips that are worked out from them (<see cref="TripStore.ReplaceAllAsync"/>); this is for
+    /// the tests, which pin what the nights table holds on its own.
     /// </summary>
-    public async Task ReplaceAsync(
+    internal async Task ReplaceAsync(
         DateOnly from, DateOnly to, IReadOnlyList<(Night Night, string Source)> nights, CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
