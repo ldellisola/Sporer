@@ -2,6 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./base";
 import { mockApi } from "./mockApi";
 import { inkIn, PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
+import { sheetAtRest } from "./sheet";
 import { fixTime } from "./today";
 import lisbonTrip from "./fixtures/trip-2026-09-12.json" with { type: "json" };
 import tripsFixture from "./fixtures/trips.json" with { type: "json" };
@@ -91,25 +92,6 @@ test("trip_bar_names_the_trip_and_steps_to_the_older_and_newer_trip", async ({ p
 });
 
 const grip = (page: Page): Locator => page.getByRole("button", { name: "Resize panel" });
-
-/**
- * Waits for the sheet to come to rest: the transition that moves it (a few hundred milliseconds) has finished. A card that is tapped while the
- * sheet is on its way is found too far down, and the page, which is as tall as the sheet before it is moved up, is scrolled to bring it up: the map
- * and the bar are then not where the shell has measured them. (The shell is `overflow: clip` now, which no script can scroll; the wait stays so that
- * a click is made where the card is going to be.)
- *
- * A transition that is cancelled, or is restarted by another move of the sheet, rejects its `finished`: that is the sheet moving on and not a
- * failure, so each rejection is let go and what is left is looked at again, until the sheet has no animation on it. A frame between the looks keeps
- * the loop from spinning on an animation that has finished and is still listed.
- */
-async function sheetAtRest(page: Page): Promise<void> {
-  await details(page).evaluate(async (sheet) => {
-    while (sheet.getAnimations().length > 0) {
-      await Promise.all(sheet.getAnimations().map((animation) => animation.finished.catch(() => undefined)));
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-    }
-  });
-}
 
 /** On a phone the sheet starts at its peek, which shows no card: bring it up to full, where the list can be read and its cards tapped. */
 async function openSheet(page: Page): Promise<void> {

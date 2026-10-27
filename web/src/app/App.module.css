@@ -7,6 +7,8 @@
 .shell {
   position: fixed;
   inset: 0;
+  /* A browser that drops `clip` keeps the `hidden` before it and still clips (the build's targets all know `clip`, so the bundle has only that). */
+  overflow: hidden;
   overflow: clip;
   background: var(--surface);
   color: var(--ink);
