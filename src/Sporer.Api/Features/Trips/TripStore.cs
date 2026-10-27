@@ -19,6 +19,12 @@ public sealed record StoredTrip(
     DetectedTrip Trip, IReadOnlyList<TripNight> Nights, GeoPoint? HomeAtStart, GeoPoint? HomeAtEnd);
 
 /// <summary>
+/// The home in effect on a date: the place that survives merges (the id the day and range views give a stay at it) and that
+/// place's position.
+/// </summary>
+public sealed record HomeInEffect(long PlaceId, GeoPoint Position);
+
+/// <summary>
 /// A stay inside a trip, as the trip's days are made from it: <paramref name="StartUtc"/> and <paramref name="EndUtc"/> are the
 /// stay's own (not clipped to the trip), and the local dates are the ones it was stored with. The place is the one that survives
 /// merges; <paramref name="PlaceId"/> is null for a stay that matched no place, or whose merges never end, and
@@ -294,15 +300,15 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
 
     /// <summary>
     /// The place that was home on <paramref name="date"/>, the one that survives merges (the id the day and range views give a
-    /// stay at it), or null when no home period covers the date. Both ends of a period are days it covers. Where periods
-    /// overlap, the one the trips list would take for the date is taken (see <see cref="LoadHomesAsync"/>): the home in effect
-    /// is the one of the day looked at, not of today.
+    /// stay at it), with its position, or null when no home period covers the date. Both ends of a period are days it covers.
+    /// Where periods overlap, the one the trips list would take for the date is taken (see <see cref="LoadHomesAsync"/>): the
+    /// home in effect is the one of the day looked at, not of today.
     /// </summary>
-    public async Task<long?> FindHomeOnAsync(DateOnly date, CancellationToken ct = default)
+    public async Task<HomeInEffect?> FindHomeOnAsync(DateOnly date, CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
 
-        return HomeOn(date, await LoadHomesAsync(connection, null, ct))?.PlaceId;
+        return HomeOn(date, await LoadHomesAsync(connection, null, ct)) is { } home ? new HomeInEffect(home.PlaceId, home.Position) : null;
     }
 
     /// <summary>

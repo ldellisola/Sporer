@@ -64,11 +64,19 @@ public sealed record DetectionOptions
     public int HomeWindowNights { get; init; } = 90;
 
     /// <summary>
-    /// A place becomes home once it is the night location on at least this many of the last
-    /// <see cref="HomeWindowNights"/> nights; unknown nights count against it. Keep it above half the window, so that
-    /// only one place can qualify at a time.
+    /// A place becomes home once it, with the places within <see cref="HomeRadiusMeters"/> of it, is the night location on at
+    /// least this many of the last <see cref="HomeWindowNights"/> nights; unknown nights count against it. Keep it above half
+    /// the window, so that only one home can qualify at a time.
     /// </summary>
     public int HomeMinNights { get; init; } = 60;
+
+    /// <summary>
+    /// Places within this distance of each other count as one home, because GPS drift can split a home into several places
+    /// a hundred metres or so apart (a stay matches a place within <see cref="PlaceRadiusMeters"/> or makes its own). Two
+    /// homes closer than this are one home: a move next door is not detected. That is harmless, because it is far below
+    /// <see cref="TripMinDistanceKm"/>.
+    /// </summary>
+    public double HomeRadiusMeters { get; init; } = 250;
 
     /// <summary>A night is away when its location is at least this far from the home in effect that night.</summary>
     public double TripMinDistanceKm { get; init; } = 50;

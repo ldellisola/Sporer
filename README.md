@@ -11,7 +11,7 @@ The server is a .NET 10 API, and it also serves the web app that shows the timel
 | Endpoint | What it does |
 | --- | --- |
 | `POST /api/overland` | Receives Overland batches. Answers `{"result":"ok"}` once the points are stored. |
-| `GET /api/day/{yyyy-MM-dd}` | One local day of the timeline. A stay at the home in effect on that day (see "Trips and home") has `"home": true`. `state` is `pending` while work that affects that day is still waiting. |
+| `GET /api/day/{yyyy-MM-dd}` | One local day of the timeline. A stay at the home in effect on that day, or at a place within `Detection__HomeRadiusMeters` of it (see "Trips and home"), has `"home": true`. `state` is `pending` while work that affects that day is still waiting. |
 | `GET /api/range?from=yyyy-MM-dd&to=yyyy-MM-dd` | A stretch of local days (at most 400, both ends counted) in one answer: every move with its line (simplified further if there would be more than 50 000 vertices), the places with the time spent there inside the range, and a list of the days. `state` is `pending` while work that affects the range is still waiting. |
 | `GET /api/heat?from=yyyy-MM-dd&to=yyyy-MM-dd` | Where the time of a range (the same dates, the same limit as `/api/range`) was spent, for a heat layer: `cells` are `[lon, lat, seconds]`, the most seconds first, one per cell of a grid of 0.001 degrees (about 111 m of latitude; a degree of longitude is shorter the further you are from the equator, so a cell is narrower than it is tall), weighted by the time of the stays in it, not by points; `maxSeconds` is the first one's weight (0 when there are none). |
 | `GET /api/places/{id}` | A place and the time spent at it: name, address, centre, total seconds, number of visits, first and last visit, and the latest 50 stays (`start`, `end`, local `date`, `timeZone`), newest first. A place merged into another is served as the one it was merged into, with the time of both. `404` for an id that is no place of the timeline (unknown, or no stay names the place it leads to or any place merged into it), `400` for one that is not a positive whole number. |
@@ -47,6 +47,10 @@ worked out again with it, so nothing here has to be entered or kept up to date b
 - **Home** is a place that was where you slept on **at least 60 of 90 nights in a row** (a night that is unknown counts against it). A place
   that reaches that bar is home from the first of those nights, and the first home of the history from the first night there is. A long stay
   that stays below the bar, a month abroad or a winter with someone, never becomes home: it is a trip.
+- **Places near each other count as one home.** GPS drift can split one house into several places a hundred metres or so apart, so the
+  nights at every place within **250 m** of a place count for it (`Detection__HomeRadiusMeters`). A place within that distance of your
+  current home never starts a new home, so the home does not flip between the fragments of one house. Two homes closer than that are one home: a move
+  next door is not noticed, which is harmless, as it is far below the 50 km of a trip.
 - **Away** means sleeping at least **50 km** from the home you had that night. While there is no home, no night is away.
 - **A trip** is a run of away nights in a row. Unknown nights between two of them belong to it, and an unknown night never starts or ends
   one. It starts when you left (the end of the last stay within 50 km of home) and ends when you came back (the start of the first one).
@@ -56,10 +60,11 @@ worked out again with it, so nothing here has to be entered or kept up to date b
   `Lisbon & Porto`, or the countries when it was three cities or more, and `Trip` until the places have been named (see "Place naming").
   The list says how long it was as `Lisbon · 4 nights` (`1 night`).
 
-On the Day view a stay at the home of that day is drawn with a house instead of a number, on the map and in the list, and the numbers count
-the other stays that have a place. The thresholds are the `Detection__*` settings below: `Detection__TripMinDistanceKm`,
-`Detection__HomeMinNights`, `Detection__HomeWindowNights`, `Detection__NightHour` and `Detection__NightPointWindow`. Changing one rebuilds the
-whole timeline, as changing any of them does.
+On the Day view a stay at the home of that day, or at a place within 250 m of it, is drawn with a house instead of a number, on the map and
+in the list, and the numbers count the other stays that have a place. (A day with stays at two places of the same home shows two houses
+near each other.) The thresholds are the `Detection__*` settings below: `Detection__TripMinDistanceKm`, `Detection__HomeMinNights`,
+`Detection__HomeWindowNights`, `Detection__HomeRadiusMeters`, `Detection__NightHour` and `Detection__NightPointWindow`. Changing one
+rebuilds the whole timeline, as changing any of them does.
 
 ## Running it
 
@@ -177,7 +182,8 @@ start (see "First start" below).
 | `Detection__NightHour` | `3` | The hour of local time (24-hour clock) a night is located at: the night of an evening is placed at this hour on the next day, in the zone you were in then. |
 | `Detection__NightPointWindow` | `12:00:00` | When no stay covers a night's moment, the nearest raw point within this long of it locates the night; if there is none, the night is unknown. |
 | `Detection__HomeWindowNights` | `90` | A new home is judged over this many consecutive calendar nights. |
-| `Detection__HomeMinNights` | `60` | A place becomes home once it is where you slept on at least this many of the last `Detection__HomeWindowNights` nights; unknown nights count against it. Keep it above half the window, so that only one place can qualify at a time. |
+| `Detection__HomeMinNights` | `60` | A place becomes home once it is where you slept on at least this many of the last `Detection__HomeWindowNights` nights; unknown nights count against it. Keep it above half the window, so that only one home can qualify at a time. |
+| `Detection__HomeRadiusMeters` | `250` | Places within this distance of each other count as one home, because GPS drift can split a home into several places a hundred metres or so apart: the nights at all of them count for the home, and a stay at any of them is shown at home on the Day view. Two homes closer than this are one home, so a move next door is not detected (harmless: far below the trip threshold). |
 | `Detection__TripMinDistanceKm` | `50` | A night is away, and part of a trip, when its place is at least this far from the home you had that night. |
 
 ## Overland
@@ -235,10 +241,12 @@ the phone, over the VPN, and check:
 
 - [ ] **The home periods look right, including any move.** There is no screen for the periods yet: open a day well before and a day well
   after a move you remember, and look for the house on the stays at home (it is where the number would be). It should be at the old place
-  before the move and the new one after it. A move is noticed once the new place has 60 nights of the last 90, but it is dated from the
-  first of them. If a move you made is not there at all, say so: a new home whose nights are spread over several places close to each
-  other (a stay matches a place within 75 m, or makes its own) can fail the 60-of-90 bar, as the synthetic history's move does. (The
-  periods are in the `home_period` table: `select * from home_period order by from_date`.)
+  before the move and the new one after it. A move is noticed once the new home has 60 nights of the last 90, but it is dated from the
+  first of them. Places within 250 m of each other count as one home (`Detection__HomeRadiusMeters`), so a home that GPS drift split
+  over several places is still one, and a day at two of them shows two houses close together; the synthetic history's move, split over
+  four places, is found that way. A home that is still not found would show as **no trips at all** (with no home, no night is away), or,
+  after a move that was not noticed, as **one long trip** that does not end. If you see either, say so, and with where
+  the home is. (The periods are in the `home_period` table: `select * from home_period order by from_date`.)
 - [ ] **Each trip you remember is listed**, at `/trips`, with sensible dates, a name and a number of nights. Look for a trip that is missing
   (it was nearer than 50 km) and for one that is not a trip.
 - [ ] **A long stay is not mistaken for a move.** A month or two away from home is one trip, and when you are back the house is still at
@@ -251,9 +259,9 @@ the phone, over the VPN, and check:
   the network. Say how long they take on the real device; the first load of the app also fetches half a megabyte of JavaScript. The
   measurements and how to repeat them are in `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md`.
 
-If a trip is missing or wrongly there, or a home is wrong, the settings are `Detection__TripMinDistanceKm`, `Detection__HomeMinNights` and
-`Detection__HomeWindowNights` (see "Detection thresholds"); changing one rebuilds the timeline, which takes a few minutes for years of
-history.
+If a trip is missing or wrongly there, or a home is wrong, the settings are `Detection__TripMinDistanceKm`, `Detection__HomeMinNights`,
+`Detection__HomeWindowNights` and `Detection__HomeRadiusMeters` (see "Detection thresholds"); changing one rebuilds the timeline, which
+takes a few minutes for years of history.
 
 ## Releases
 

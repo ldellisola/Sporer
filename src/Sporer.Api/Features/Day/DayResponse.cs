@@ -34,8 +34,9 @@ public abstract record DaySegmentDto(long Id, DateTime Start, DateTime End, stri
 /// <summary>
 /// Time spent in one place; <paramref name="Place"/> is null for a stay at a position that matched no place.
 /// <paramref name="Home"/> is true when the place is the home in effect on the day served (the home period that covers the
-/// date, see <see cref="Trips.TripStore.FindHomeOnAsync"/>), and false for every other stay, one with no place too. It is
-/// always written, so that the client reads a boolean and never the lack of one.
+/// date, see <see cref="Trips.TripStore.FindHomeOnAsync"/>) or is within <c>Detection:HomeRadiusMeters</c> of it (GPS drift can
+/// split one home into several places, and a stay at any of them is at home), and false for every other stay, one with no
+/// place too. It is always written, so that the client reads a boolean and never the lack of one.
 /// </summary>
 public sealed record StayDto(
     long Id, DateTime Start, DateTime End, string StartTimeZone, string EndTimeZone,

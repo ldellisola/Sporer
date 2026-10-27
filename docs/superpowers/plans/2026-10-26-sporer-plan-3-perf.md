@@ -8,9 +8,13 @@ the iPhone over the VPN, after the first backfill: the README's "Owner's checkli
 Plan 3 built (the nights, the homes and the trips: their share of the backfill, the live refresh, the two trips endpoints and their query
 plans, and the web timings of the trips list and of a trip) and says what it did to what was there before.
 
-**One pass.** Every target was met, so nothing in the server or the web app was changed for this check. What it adds is the measuring: the
-scripts for the backfill, the refresh and the trips (`tools/perf/`), the trips in the web run's recording and scenarios, and this
-document. Where nothing changed, this document says so and refers to Plan 2's.
+**One pass, and one finding.** Every target was met, so nothing in the server or the web app was changed for performance. What the check
+adds is the measuring: the scripts for the backfill, the refresh and the trips (`tools/perf/`), the trips in the web run's recording and
+scenarios, and this document. Where nothing changed, this document says so and refers to Plan 2's. The check did find one thing that was
+not a speed: the history's house move was not detected (see "The house move"). Task 13 fixed home detection, and "After the home fix"
+gives the backfill, the refresh, the day and the trips endpoints measured again at that head, with every target still met. The tables
+below are the measurements of Plan 3's head before the fix, which stay the record of the rest (the web, the plans), none of which the fix
+touched.
 
 ## Result
 
@@ -65,7 +69,8 @@ Decisions that shaped how it was measured, so that the numbers are read with the
   other. (The backfill, the refresh and the plans are of the first, which they do not depend on.) Nothing else was different. (The
   typical day and month are chosen by the size of their answers, which the names change, so they are other days and months in the two
   runs: 2025-12-05 and 2025-05 without the names, 2026-01-12 and 2024-10 with them.)
-- **No fix.** Nothing missed, so nothing was changed in the server or the app, no migration was added, and no detection result was touched.
+- **No fix for performance.** Nothing missed, so nothing was changed in the server or the app for it and no migration was added. (The
+  house move that the history showed was not detected was a different matter, and was fixed in Task 13: see "The house move".)
 
 ## Machine and setup
 
@@ -92,21 +97,69 @@ The same generator, options and seed as Plan 1 and 2 (`tools/Sporer.SyntheticDat
 | `locationlog` | 126 chunks, 1,371 MB the database (the raw history, before the timeline) |
 | Backfill | 189.8 s and 180.8 s from the start of the API to 100 % and the last refresh done, `failedRanges` empty, `pendingRanges` 0 (`main`: 174.6-181.2 s) |
 | Timeline | 7,607 segments on 816 days, 87 places: the same as Plan 1's and Plan 2's |
-| Nights, homes, trips | 874 nights, **1 home period**, **3 trips** |
+| Nights, homes, trips | 874 nights, **1 home period**, **3 trips** (before Task 13; **2 home periods** after it, see "The house move") |
 
 The three trips are the generator's: 2024-12-12 (2 nights, "north", Tromsø), 2025-05-16 (6 nights, Lisbon) and 2026-02-20 (25 nights,
 Tokyo: 24 nights at the hotel, and a flight that lands the next day makes the night of the flight an away night too).
 
-**The house move is not found.** The history holds a move (the generator's, on 2025-10-18, about 17 km), and the detector finds one home
-only: place 1, from the first night (2024-05-31) to now. The new house's nights are spread over four places (162, 81, 61 and 39 nights
-at places 53, 52, 61 and 58, 75 to 130 m apart: a stay is matched to a place within 75 m or makes its own), and no single place has 60 of
-any 90 nights (the best window has 50), so none becomes home. No false trip comes of it (the new house is within 50
-km of the old home), but the house of the Day view is on the old place only, for the whole history. The old house does not split the
-same way: its first place has 425 of the 505 nights before the move. This is what the detection gives for the generator's wander at
-500 ms; it was not changed here (the unit test of a synthetic year, at 60 s between points, finds two homes). It is one reason the
-owner's checklist asks to look at a move.
+**The house move was not found, at first** (see "The house move"): the history holds a move (the generator's, on 2025-10-18, about
+17 km) and, until Task 13, the detector found one home only.
 
 What a real history will look like is not known; see the caveats.
+
+## The house move
+
+**What the check found.** The history holds a move (the generator's, on 2025-10-18, about 17 km), and the detector of Plan 3's head found
+one home only: place 1, from the first night (2024-05-31) to now. The new house's nights are spread over four places (162, 81, 61 and 39
+nights at places 53, 52, 61 and 58, 77 to 151 m apart pairwise: a stay is matched to a place within 75 m or makes its own, and the
+generator's wander drifts as an iPhone's does), and no single place has 60 of any 90 nights (the best window has 50, place 53's), so
+none became home. The old house does not split the same way: its first place has 425 of the 505 nights before the move. No false trip
+came of it (the new house is within 50 km of the old home), but the house of the Day view was on the old place only, for the whole
+history. The same split can happen to the owner's real home, and then it is worse than a house on the wrong place: with no home found
+there is no trip at all, because a night with no home in effect is never away.
+
+**What changed (Task 13).** Home detection counts a place's nights by place and by the places near it: the nights of every place within
+`Detection__HomeRadiusMeters` (250 m, new) of a candidate count for the candidate. The best candidate has the most counted nights, then
+the most nights of its own, then the lower id. A new period starts only if that count reaches 60 of 90, the candidate is not the
+current home, and it is farther than the radius from it: a place near the home never starts a period, so the home does not flip between
+the fragments of one house. A period is backdated as before, from the earliest counted night. The day view marks a stay as home when
+its place is the home or within the same radius of it (two fragments in one day show two house pins; Plan 4's place merge tidies
+that). The refresh reads the positions of the places of the nights once, for both the homes and the trips. The places near each other
+are worked out once per refresh (a sweep by latitude over the places of the nights), not for each of the 874 dates. The stays, places
+and nights are as they were, and the algorithm version is the same.
+
+**What it gives on this history** (the same rows and checksum, backfilled at that head; the numbers of "After the home fix" are of the
+same runs):
+
+- **Two home periods**: place 1 from 2024-05-31 to 2025-10-17, and place 53 from 2025-10-18 (the move day, backdated from the night on
+  which the four places together first had 60 of the last 90 nights, 2025-12-16), still open. Together the four places have up to 90
+  of 90 nights in a window; place 53 alone, at most 50.
+- **Three trips, the same first nights and nights** as before: 2024-12-12 (2 nights), 2025-05-16 (6) and 2026-02-20 (25). The two before
+  the move are the same in every field. The 25-night trip leaves at 11:06 UTC on 2026-02-20 (it was 07:29) and returns at 14:35 UTC on
+  2026-03-17 (it was 16:40): the stays near home that it leaves from and returns to are now those near the new house, which is the
+  home it had. Its detail answer is smaller for that (30,166 B raw and 852 vertices, against 32,533 B and 953).
+- **The day**: on 2025-10-22 the stays at places 53, 52 and 58 are all `home: true`; on the days before the move the old place is.
+
+## After the home fix
+
+The same machine, history (10,726,341 rows, checksum `0690878d1283b1fd`), scripts and settings as above, at the head of Task 13, and the
+steps of "Repeat it" in their order (the server with no place named, then the refresh, then the places named). The backfill is one run
+on a copy of the raw history, with the code before the fix (`7c5bccc`, a `git worktree` built in Release) timed just before on a copy of
+its own. The web was not measured again: no web code changed, and the Day view draws a house on whatever stays the day says are home.
+
+| What | Target | Measured | Verdict |
+| --- | --- | --- | --- |
+| **Backfill**, to 100 % with nothing pending | ≤ +20 % over `main`'s mean (178.3 s) | **175.2 s**: **−1.7 %** against `main`'s mean (the code before the fix, on a copy of the same history just before: 182.2 s; 189.8 and 180.8 s in the table above). 7,607 segments, 874 nights, **2 home periods**, 3 trips, `failedRanges` empty | Met, 21.7 points under |
+| **Refresh**, 30 in a running process | ≤ 200 ms | p50 **33.0 ms**, p95 **42.0 ms**, p99 55.0, max 55 (the database's statements, p50 18.8 ms). 30 in a process started 10 s before: p50 32.0, p95 50.0, max 189 (the first refresh after the start; a start of five rounds had 204 ms for its first) | Met, 4.8 times under at p95. The first refresh after a start is 189 to 204 ms: the JIT again, see "Refresh" |
+| **`/api/day`**, 200 dates | ≤ 200 ms | p50 **8.3 ms**, p95 12.7, max 24.7 (no place named); named: 9.2 / 14.7 / 27.4. Before the fix 8.6-9.5 / 12.9-16.6 and, named, 8.6-11.5 / 13.4-19.7 | Met; the radius check on each stay is not to be seen in the spread |
+| **`/api/trips`**, 50 requests | ≤ 200 ms | p50 7.7 ms, p95 **13.7** ms, max 28.6 (no place named) | Met |
+| **`/api/trips/{id}`**, 50 requests each | ≤ 400 ms | 25 nights: p50 11.6, p95 **18.7** ms; 6 nights: 10.0 / **15.7**; 2 nights: 8.9 / **13.7** | Met |
+| *Information:* a **list of 98 trips** (the what-if) | read against the same | p50 18.0 and 18.6 ms, p95 24.3 and 28.6 ms, max 30.0 and 33.4 ms in two runs of 50, 5,534 B Brotli and 51,576 B raw; one added trip p50 10.5 ms, p95 15.6 ms (before: 18.4 and 19.6, 26.6 and 25.3, 5,595 B and 51,504 B) | The same |
+
+The refresh script now sends its batches from the place of the night of the day it uses (the new house, place 53), as the person was
+there, and after each refresh the stored result is the same: 874 nights, 2 home periods, 3 trips. The other endpoints' queries and
+plans are those of the sections below: nothing in the fix touches a query but the day's (the home it reads now carries the place's
+position, which `LoadHomesAsync` already read).
 
 ## Server
 
@@ -157,7 +210,7 @@ after a start is the slow one**: 174 ms (a start of five rounds, no place named)
 second refresh of each: 50 to 62 ms). It is the JIT compiling the refresh's code (and Dapper building its readers) the first time, as Plan 2
 found for the first requests of a fresh process; it happens once per start, in the worker and not in a request, a minute or more after
 the batch that started it, and ingest does not wait on it. It is over 200 ms by 3 to 12 % in four of the six (217, 225, 206 and 216),
-which is why it is said here and is not in the percentiles: nothing was done about it (a warm-up at the start, or ReadyToRun compilation
+which is why it is said here and is not in the percentiles (two more starts, at the head of Task 13, had 204 and 189 ms): nothing was done about it (a warm-up at the start, or ReadyToRun compilation
 of the image, is a change to the product for a job that runs behind a debounce of a minute).
 
 One refresh, statement by statement (the database's log: 65 ms from the read of the window to the update that empties it, a window of two
@@ -346,12 +399,13 @@ an iPhone and a worker the throttle hardly reaches (probe in this run: the page'
 phone-sized viewport and the light scheme; run-to-run spread of ±10 % on this shared machine; server timings on loopback that exclude the
 VPN, Traefik and Authentik. Also:
 
-- **The history has three trips and one home.** A real history has more of both: dozens of trips in a few years, and the owner's own
+- **The history has three trips and two homes.** A real history has more of both: dozens of trips in a few years, and the owner's own
   move or two. The list's cost is a few queries and a loop over the trips; the detail's is its span and does not depend on how many
   trips there are. What is measured is the endpoint at three trips and a trip of up to 25 nights (see the what-if for a long list);
   a trip of months, or a year of long drives, would carry more moves, and `VertexBudget` is what caps their lines.
-- **The house move is not found** (see "The data"), so no number here is for a history with two homes: the refresh does the same work
-  (the homes are a few rows), but the Day view's house would be at both places.
+- **The tables above were measured before the home fix** (see "The house move"), on a history with one home: the backfill, the refresh
+  and the endpoints were measured again with two homes ("After the home fix"), the web and the plans were not. The recorded day answers
+  of the web runs mark the stays at the old house only; the Day view draws a house for each stay an answer marks, as it did.
 - **The places are named by a script**, not by Nominatim: a real trip's cities, highlights and day lines are what Nominatim says of the
   places, in English, and may be longer or fewer than "Place 12".
 - **The refresh was timed with a debounce of 0** and with batches that add five points inside a stay: the rebuilt window is the day's,
@@ -387,6 +441,7 @@ TSDB_CONNECTION_STRING="${TSDB_CONNECTION_STRING/perf_raw/perf_main}" \
   tools/perf/backfill-time.sh ../sporer-main/src/Sporer.Api/bin/Release/net10.0/Sporer.Api.dll sporer-perf-db perf_main   # about 3 minutes
 export TSDB_CONNECTION_STRING="${TSDB_CONNECTION_STRING/perf_raw/perf}"
 KEEP=1 tools/perf/backfill-time.sh $api sporer-perf-db perf                   # leaves the API running (stop it with pkill -f Sporer.Api.dll); drop and make the database again to repeat
+                                                                              # it ends with "nights 874, home periods 2, trips 3" on this history (one home period: the move is lost)
 
 # --- The server, no place named: latencies and sizes (the trips are the last of its output), and the plans ---
 tools/perf/api-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22         # about 2 minutes; the 10th argument is the trips' requests
@@ -400,10 +455,13 @@ tools/perf/refresh-latency.sh http://127.0.0.1:5100 sporer-perf-db perf 30    # 
 docker exec -i sporer-perf-db psql -U postgres -d perf -X < tools/perf/name-places.sql    # what the owner's places will look like
 tools/perf/api-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22
 
-# --- The long list of trips, on a copy. Stop the API first: a template database must have no other session ("source database
-#     is being accessed by other users"). The API over the copy has the worker off, so that it does not work the trips out again ---
+# --- The long list of trips, on a copy. A template database must have no other session ("source database is being accessed by
+#     other users"): stop the API first, and end the TimescaleDB scheduler's session in the same session that copies (it comes back
+#     at once, so the two statements go in one psql run; run it again if it still loses the race). The API over the copy has the
+#     worker off, so that it does not work the trips out again ---
 pkill -f Sporer.Api.dll; sleep 2
-docker exec sporer-perf-db psql -U postgres -c "create database perf_scale template perf strategy file_copy"
+printf "select pg_terminate_backend(pid) from pg_stat_activity where datname = 'perf' and pid <> pg_backend_pid();\ncreate database perf_scale template perf strategy file_copy;\n" |
+  docker exec -i sporer-perf-db psql -U postgres
 docker exec -i sporer-perf-db psql -U postgres -d perf_scale -X < tools/perf/scale-trips.sql
 TSDB_CONNECTION_STRING="${TSDB_CONNECTION_STRING%perf}perf_scale" Processing__Enabled=false dotnet $api & sleep 8
 for path in /api/trips /api/trips /api/trips/2024-07-01; do     # the list twice, then the first of the added trips: 20 to warm up, 50 measured

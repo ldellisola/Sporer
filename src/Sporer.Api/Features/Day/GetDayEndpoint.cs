@@ -3,16 +3,19 @@ using System.Text.Json;
 using FastEndpoints;
 using Sporer.Api.Features.Timeline;
 using Sporer.Api.Features.Trips;
+using Sporer.Timeline;
 
 namespace Sporer.Api.Features.Day;
 
 /// <summary>
 /// <c>GET /api/day/{date}</c>: one local day of the stored timeline. A day is the local calendar date of the segments
 /// (see <see cref="SegmentStore.FindDayAsync"/>), so a stay that crosses midnight is on both days. A stay at the home in
-/// effect on that day is marked <c>home</c> (see <see cref="TripStore.FindHomeOnAsync"/>). Reads only: nothing here waits for
-/// or triggers processing; <c>state</c> says whether more is on its way.
+/// effect on that day is marked <c>home</c> (see <see cref="TripStore.FindHomeOnAsync"/>): one at the home place, or at a place
+/// within <see cref="DetectionOptions.HomeRadiusMeters"/> of it, which is the same home that GPS drift made another place of.
+/// Reads only: nothing here waits for or triggers processing; <c>state</c> says whether more is on its way.
 /// </summary>
-internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, ProcessingQueue queue) : EndpointWithoutRequest<DayResponse>
+internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, ProcessingQueue queue, DetectionOptions options)
+    : EndpointWithoutRequest<DayResponse>
 {
     private const string UnknownZone = "UTC";
 
@@ -56,7 +59,7 @@ internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, Pro
             zone ?? UnknownZone,
             pending ? "pending" : "done",
             Summarize(stored),
-            [.. stored.Select(s => Map(s, home))]), ct);
+            [.. stored.Select(s => Map(s, home, options.HomeRadiusMeters))]), ct);
     }
 
     private static DateTime Min(DateTime a, DateTime b) => a <= b ? a : b;
@@ -73,18 +76,24 @@ internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, Pro
     }
 
     /// <summary>
-    /// A stay is at home when its place (the surviving one, as the home is) is <paramref name="homePlaceId"/>; a stay with no
-    /// place, and every stay of a day with no home in effect (<paramref name="homePlaceId"/> null), is not.
+    /// A stay is at home when its place (the surviving one, as the home is) is the <paramref name="home"/> place, or is within
+    /// <paramref name="radiusMeters"/> of the home's position: GPS drift can split one home into several places. A stay with no
+    /// place, and every stay of a day with no home in effect (<paramref name="home"/> null), is not.
     /// </summary>
-    private static DaySegmentDto Map(DaySegment s, long? homePlaceId) => s.Kind switch
+    private static DaySegmentDto Map(DaySegment s, HomeInEffect? home, double radiusMeters) => s.Kind switch
     {
         "stay" => new StayDto(s.Id, s.StartUtc, s.EndUtc, s.StartTz, s.EndTz,
             s.Place is { } p ? new PlaceDto(p.Id, p.Name, p.City, p.Country, p.Latitude, p.Longitude) : null,
-            Home: homePlaceId is { } home && s.Place?.Id == home),
+            Home: IsHome(s.Place, home, radiusMeters)),
         "move" => new MoveDto(s.Id, s.StartUtc, s.EndUtc, s.StartTz, s.EndTz, s.Mode, s.DistanceM ?? 0, Line(s.GeometryDetailJson)),
         "gap" => MapGap(s),
         _ => throw new InvalidOperationException($"Segment {s.Id} has the unknown kind '{s.Kind}'."),
     };
+
+    private static bool IsHome(DayPlace? place, HomeInEffect? home, double radiusMeters)
+        => place is not null && home is not null
+            && (place.Id == home.PlaceId
+                || Geo.DistanceMeters(new GeoPoint(place.Latitude, place.Longitude), home.Position) <= radiusMeters);
 
     /// <summary>A gap stores the positions either side of it as a two-point line: the first is where it starts, the last where it ends.</summary>
     private static GapDto MapGap(DaySegment s)

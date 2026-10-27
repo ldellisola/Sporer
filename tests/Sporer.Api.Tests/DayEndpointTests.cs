@@ -703,6 +703,75 @@ public class DayEndpointTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task Day_marks_a_stay_at_a_place_near_the_home_as_home_and_one_farther_away_not()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var home = await InsertPlaceAsync(cs, userName: "Home", city: "Oslo", country: "Norway");
+        // GPS drift made two more places of the one home, 120 m and 240 m from it, and a neighbour's is 300 m away: past the 250 m radius.
+        var fragment = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway", lat: Spots.Home.Latitude, lon: Geo.Offset(Spots.Home, 0, 120).Longitude);
+        var edge = await InsertPlaceAsync(cs, osmName: "Storgata 7", city: "Oslo", country: "Norway", lat: Geo.Offset(Spots.Home, 240, 0).Latitude, lon: Spots.Home.Longitude);
+        var neighbour = await InsertPlaceAsync(cs, osmName: "Cafe Nord", city: "Oslo", country: "Norway", lat: Spots.Home.Latitude, lon: Geo.Offset(Spots.Home, 0, 300).Longitude);
+        await InsertHomePeriodAsync(cs, home, D(1, 1), null);
+        var hour = 6;
+        foreach (var place in new[] { home, fragment, edge, neighbour })
+            await InsertSegmentAsync(cs, "stay", Utc(10, 22, hour), Utc(10, 22, ++hour), D(10, 22), D(10, 22), placeId: place);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, hour + 1), Utc(10, 22, hour + 2), D(10, 22), D(10, 22), placeId: null); // matched no place
+
+        using var body = await GetDayAsync(client, "2026-10-22");
+
+        Assert.Equal([(home, true), (fragment, true), (edge, true), (neighbour, false), (null, false)], HomesOf(body));
+    }
+
+    [Fact]
+    public async Task Day_takes_a_place_near_the_home_of_the_day_viewed_and_not_one_near_an_earlier_home()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var oldHome = await InsertPlaceAsync(cs, userName: "Old flat", city: "Oslo", country: "Norway");
+        var nearOld = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway", lat: Spots.Home.Latitude, lon: Geo.Offset(Spots.Home, 0, 120).Longitude);
+        var newHome = await InsertPlaceAsync(cs, userName: "New flat", city: "Bergen", country: "Norway", lat: 60.39, lon: 5.32);
+        var nearNew = await InsertPlaceAsync(cs, osmName: "Strandgaten 2", city: "Bergen", country: "Norway", lat: 60.39, lon: 5.3205);
+        await InsertHomePeriodAsync(cs, oldHome, D(1, 1), D(9, 30));
+        await InsertHomePeriodAsync(cs, newHome, D(10, 1), null);
+        foreach (var day in new[] { D(9, 30), D(10, 1) })
+        {
+            var noon = new DateTime(2026, day.Month, day.Day, 10, 0, 0, DateTimeKind.Utc);
+            var at = 0;
+            foreach (var place in new[] { nearOld, nearNew })
+                await InsertSegmentAsync(cs, "stay", noon.AddHours(at), noon.AddHours(at++).AddMinutes(30), day, day, placeId: place);
+        }
+
+        using var lastDayOfOld = await GetDayAsync(client, "2026-09-30");
+        using var firstDayOfNew = await GetDayAsync(client, "2026-10-01");
+
+        Assert.Equal([(nearOld, true), (nearNew, false)], HomesOf(lastDayOfOld));
+        Assert.Equal([(nearOld, false), (nearNew, true)], HomesOf(firstDayOfNew));
+    }
+
+    [Fact]
+    public async Task Day_reads_the_radius_around_the_home_from_the_options()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var narrow = new ApiFactory(cs, new Dictionary<string, string?> { ["Detection:HomeRadiusMeters"] = "100" });
+        var narrowClient = narrow.CreateClient(); // starting the host creates the schema
+        var home = await InsertPlaceAsync(cs, userName: "Home", city: "Oslo", country: "Norway");
+        var fragment = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway", lat: Spots.Home.Latitude, lon: Geo.Offset(Spots.Home, 0, 120).Longitude);
+        await InsertHomePeriodAsync(cs, home, D(1, 1), null);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 6), Utc(10, 22, 7), D(10, 22), D(10, 22), placeId: home);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 8), Utc(10, 22, 9), D(10, 22), D(10, 22), placeId: fragment);
+
+        using (var body = await GetDayAsync(narrowClient, "2026-10-22"))
+            Assert.Equal([(home, true), (fragment, false)], HomesOf(body)); // 120 m is outside 100 m
+
+        await using var wide = new ApiFactory(cs, new Dictionary<string, string?> { ["Detection:HomeRadiusMeters"] = "130" });
+        using (var body = await GetDayAsync(wide.CreateClient(), "2026-10-22"))
+            Assert.Equal([(home, true), (fragment, true)], HomesOf(body)); // and inside 130 m
+    }
+
+    [Fact]
     public async Task Day_without_a_home_marks_nothing()
     {
         var cs = await db.CreateDatabaseAsync(Ct);

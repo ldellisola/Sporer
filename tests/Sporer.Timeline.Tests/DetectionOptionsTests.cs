@@ -30,6 +30,7 @@ public class DetectionOptionsTests
         Assert.Equal(TimeSpan.FromHours(12), o.NightPointWindow);
         Assert.Equal(90, o.HomeWindowNights);
         Assert.Equal(60, o.HomeMinNights);
+        Assert.Equal(250, o.HomeRadiusMeters);
         Assert.Equal(50, o.TripMinDistanceKm);
     }
 

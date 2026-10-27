@@ -44,9 +44,12 @@ public sealed class TripRefresher(
             .Select(n => n.PlaceId is { } id && survivors.TryGetValue(id, out var survivor) ? n with { PlaceId = survivor } : n)
             .ToList();
 
-        var homes = HomeDetector.Detect(all, options);
-        var homePositions = await places.LoadPositionsAsync(homes.Select(h => h.PlaceId), ct);
-        var detected = TripDetector.Detect(all, homes, homePositions, await segments.LoadStayPositionsAsync(ct), options);
+        // The position of every place the nights are at, read once: home detection groups the places that are near each other, and trip
+        // detection measures the nights from the homes' positions, which are among them (a home is a place of the nights).
+        var positions = await places.LoadPositionsAsync(all.Where(n => n.PlaceId is not null).Select(n => n.PlaceId!.Value), ct);
+
+        var homes = HomeDetector.Detect(all, positions, options);
+        var detected = TripDetector.Detect(all, homes, positions, await segments.LoadStayPositionsAsync(ct), options);
 
         await trips.ReplaceAllAsync(from, to, built, homes, detected, ct);
     }

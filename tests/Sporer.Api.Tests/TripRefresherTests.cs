@@ -149,6 +149,30 @@ public class TripRefresherTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task TripRefresher_counts_places_near_each_other_as_one_home()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var refresher = api.Services.GetRequiredService<ITripRefresher>();
+        // One house that GPS drift made two places 120 m apart, slept at by turns in blocks of 20 nights, 100 nights in all: the first
+        // place for 60 of them, the second for 40, and no 90 nights have more than 50 at either. Neither is home on its own; together
+        // they have 60 of 90 on night 60. The first place stored, which has more of them by then, is the home from the first night,
+        // and nothing is a trip, because the two are the same home.
+        var first = await PlaceAsync(cs, Spots.Home);
+        var second = await PlaceAsync(cs, Geo.Offset(Spots.Home, 0, 120));
+        await StayAsync(cs, Utc(3, 31, 12), Utc(4, 20, 7), first, Spots.Home);
+        await StayAsync(cs, Utc(4, 20, 12), Utc(5, 10, 7), second, Geo.Offset(Spots.Home, 0, 120));
+        await StayAsync(cs, Utc(5, 10, 12), Utc(5, 30, 7), first, Spots.Home);
+        await StayAsync(cs, Utc(5, 30, 12), Utc(6, 19, 7), second, Geo.Offset(Spots.Home, 0, 120));
+        await StayAsync(cs, Utc(6, 19, 12), Utc(7, 9, 7), first, Spots.Home);
+
+        await refresher.RefreshAsync(Utc(4, 1), Utc(7, 9, 7), Ct);
+
+        Assert.Equal([new HomeRow(first, "2026-03-31", null, "detected")], await HomesAsync(cs));
+        Assert.Empty(await TripsAsync(cs));
+    }
+
+    [Fact]
     public async Task TripRefresher_leaves_the_old_nights_homes_and_trips_when_writing_the_new_ones_fails()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
