@@ -57,6 +57,17 @@ public class HomeDetectorTests
     }
 
     [Fact]
+    public void HomeDetector_backdates_a_new_home_to_its_first_night_in_the_window_even_when_that_night_is_isolated()
+    {
+        // B is the night location on night 101 alone, then from night 112. It first has 60 of the last 90 nights on night
+        // 170 (night 101 plus the 59 nights 112-170), and night 101 is still inside that window [81, 170]. The period
+        // starts there, not at night 112 where the final run of B begins.
+        var homes = HomeDetector.Detect(Nights((A, 100), (B, 1), (A, 10), (B, 70)), Defaults);
+
+        Assert.Equal([Home(A, 1, 100), Home(B, 101)], homes);
+    }
+
+    [Fact]
     public void HomeDetector_keeps_home_through_a_long_stay_below_the_bar()
     {
         // 45 nights away never reach 60 of 90, so the stay stays a trip.

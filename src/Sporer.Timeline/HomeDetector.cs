@@ -9,13 +9,13 @@ public static class HomeDetector
 {
     /// <summary>
     /// The home periods over <paramref name="nights"/>, in date order, one night per date. Each period is backdated to
-    /// the first night of the run that earned it, so moving house is noticed late but recorded from the right night;
+    /// its first night in the window that earned it, so moving house is noticed late but recorded from the right night;
     /// the first home ever starts at the first night of the history, and the last period stays open.
     /// </summary>
     /// <remarks>
-    /// Nights are counted by calendar date: a date with no night, a night without a position and a night whose position
-    /// is at no place are all unknown nights, and count for no place. The window is counted afresh for every date,
-    /// which is plenty for a few thousand nights.
+    /// Nights are counted by calendar date: a date with no night and a night without a position are unknown nights. A
+    /// night whose position is at no place is known, but it counts for no place here; trip detection treats it by its
+    /// distance from home. The window is counted afresh for every date, which is plenty for a few thousand nights.
     /// </remarks>
     public static IReadOnlyList<HomePeriod> Detect(IReadOnlyList<Night> nights, DetectionOptions options)
     {
