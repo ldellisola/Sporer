@@ -2,12 +2,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { DayResponse, HeatResponse, PlaceResponse, RangeResponse, StaySegment, TripsResponse } from "../api/types";
-import { dayGeoJson, heatGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripsGeoJson } from "../map/layers";
+import type { DayResponse, HeatResponse, PlaceResponse, RangeResponse, StaySegment, TripResponse, TripsResponse } from "../api/types";
+import { dayGeoJson, heatGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripGeoJson, tripsGeoJson } from "../map/layers";
 import newYorkDay from "../../e2e/fixtures/day-new-york.json";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
 import cafe from "../../e2e/fixtures/place-cafe.json";
 import october from "../../e2e/fixtures/range-october.json";
+import lisbonTrip from "../../e2e/fixtures/trip-2026-09-12.json";
 import tripsList from "../../e2e/fixtures/trips.json";
 import type { Route } from "./router";
 import { useViewMap } from "./useViewMap";
@@ -17,6 +18,7 @@ const NEW_YORK_DAY = newYorkDay as DayResponse; // 2026-10-23
 const OCTOBER = october as RangeResponse; // 2026-10-01 to 2026-10-31: 9 moves and 6 places
 const CAFE = cafe as PlaceResponse; // place 2, the Café of the 22nd
 const TRIPS_LIST = tripsList as TripsResponse; // New York (ongoing), Lisbon & Sintra, Copenhagen: four cities
+const LISBON = lisbonTrip as TripResponse; // trip 2026-09-12 (12 to 16 September): 9 moves and 2 cities
 
 /** Two weeks of the month, each with some of its moves and places, so that one is told from the other by what is drawn. */
 const weekOf = (from: string, to: string, moves: number[], places: number[], over: Partial<RangeResponse> = {}): RangeResponse => ({
@@ -38,6 +40,7 @@ const MONTH: Route = { view: "month", month: "2026-10" };
 const PLACE_2: Route = { view: "place", id: 2 };
 const TRIPS: Route = { view: "trips" };
 const TRIP: Route = { view: "trip", id: "2026-09-12" };
+const OTHER_TRIP: Route = { view: "trip", id: "2026-08-01" };
 
 const emptyDay = (date: string, state: DayResponse["state"] = "done"): DayResponse => ({
   date,
@@ -47,11 +50,12 @@ const emptyDay = (date: string, state: DayResponse["state"] = "done"): DayRespon
   segments: [],
 });
 
-type Answer = DayResponse | RangeResponse | HeatResponse | PlaceResponse | TripsResponse | Response | (() => Response | Promise<Response>);
+type Answer = DayResponse | RangeResponse | HeatResponse | PlaceResponse | TripsResponse | TripResponse | Response | (() => Response | Promise<Response>);
 
-/** What a request is answered by: the date of a day (`2026-10-22`), the dates of a range (`2026-10-19..2026-10-25`), `heatKey` of a heat, `placeKey` of a place, `trips` of the list of trips. */
+/** What a request is answered by: the date of a day (`2026-10-22`), the dates of a range (`2026-10-19..2026-10-25`), `heatKey` of a heat, `placeKey` of a place, `tripKey` of a trip, `trips` of the list of trips. */
 function keyOf(path: string): string {
   if (path.startsWith("/api/places/")) return placeKey(Number(path.split("/").pop()));
+  if (path.startsWith("/api/trips/")) return tripKey(path.split("/").pop()!);
   if (!path.startsWith("/api/range") && !path.startsWith("/api/heat")) return path.split("/").pop()!;
   const query = new URLSearchParams(path.split("?")[1]);
   const dates = `${query.get("from")}..${query.get("to")}`;
@@ -60,6 +64,9 @@ function keyOf(path: string): string {
 
 /** The key that a place is answered by. */
 const placeKey = (id: number): string => `place:${id}`;
+
+/** The key that a trip is answered by: its id is a date, which a day is answered by as well. */
+const tripKey = (id: string): string => `trip:${id}`;
 
 /** The key that a heat of these dates is answered by. */
 const heatKey = (from: string, to = from): string => `heat:${from}..${to}`;
@@ -915,8 +922,8 @@ const heatPaths = (paths: string[]): string[] => paths.filter((path) => path.sta
 
 const tripsFeaturesOf = (list: TripsResponse) => tripsGeoJson(list).places.features;
 
-// The trips draw a dot for each city they slept in, from the list that the panel asks for as well; a trip has no map of its own yet: it
-// draws nothing, and has no period to ask a range or a heat for (`periodRange` would be handed a route it has no dates for).
+// The trips draw a dot for each city they slept in, from the list that the panel asks for as well; they have no period to ask a range or a
+// heat for (`periodRange` would be handed a route it has no dates for).
 describe("useViewMap trips", () => {
   test("useViewMap_draws_the_cities_of_the_trips_as_dots_and_asks_for_the_list_and_nothing_else", async () => {
     const { paths } = stubApi({ trips: TRIPS_LIST });
@@ -932,22 +939,6 @@ describe("useViewMap trips", () => {
     expect(result.current.data.heat).toBeUndefined();
     expect(result.current.heat).toMatchObject({ available: false, failed: false }); // no button for the heat of a period that is not there
     expect(paths).toEqual(["/api/trips"]); // no day, no range, no heat
-  });
-
-  test("useViewMap_draws_nothing_for_a_trip_and_asks_for_nothing_whatever_the_heat", async () => {
-    const { paths } = stubApi({});
-
-    const { result } = setup(TRIP, true);
-    await act(async () => undefined);
-
-    expect(result.current.data.routes.features).toEqual([]);
-    expect(result.current.data.stops).toBeUndefined();
-    expect(result.current.data.places).toBeUndefined();
-    expect(result.current.data.heat).toBeUndefined();
-    expect(result.current.fitTo).toBeNull();
-    expect(result.current.home).toBeNull();
-    expect(result.current.heat).toMatchObject({ available: false, failed: false });
-    expect(paths).toEqual([]);
   });
 
   test("useViewMap_keeps_the_collections_it_gave_while_the_list_of_trips_is_the_same", async () => {
@@ -1035,8 +1026,8 @@ describe("useViewMap trips", () => {
     expect(result.current.fitTo).toBe(fitted);
   });
 
-  test("useViewMap_draws_none_of_the_trips_on_a_day_that_loads_or_on_a_trip_and_all_of_them_from_the_cache_on_return", async () => {
-    stubApi({ trips: TRIPS_LIST, "2026-10-22": OSLO_DAY, "2026-10-23": () => new Promise<Response>(() => undefined) }); // the 23rd never comes
+  test("useViewMap_draws_none_of_the_trips_on_a_day_that_loads_or_on_a_trip_that_loads_and_all_of_them_from_the_cache_on_return", async () => {
+    stubApi({ trips: TRIPS_LIST, "2026-10-22": OSLO_DAY, "2026-10-23": () => new Promise<Response>(() => undefined), [tripKey("2026-09-12")]: () => new Promise<Response>(() => undefined) }); // the 23rd and the trip never come
     const { result, go } = setup(TRIPS);
     await waitFor(() => expect(result.current.fitTo).not.toBeNull());
 
@@ -1047,7 +1038,7 @@ describe("useViewMap trips", () => {
     expect(result.current.fitTo).toBeNull();
     expect(result.current.home).toBeNull();
 
-    go(TRIP); // nor is a trip, which has no map yet
+    go(TRIP); // nor is a trip that is loading (the cities of the trips are for the list; a trip draws its own)
     expect(result.current.data.places).toBeUndefined();
     expect(result.current.fitTo).toBeNull();
 
@@ -1083,6 +1074,382 @@ describe("useViewMap trips", () => {
     go(DAY_22); // and the day is on show again, with nothing of what was drawn in between: fitted afresh
     await waitFor(() => expect(result.current.fitTo).toEqual(featuresOf(OSLO_DAY)));
     expect(result.current.data.places).toBeUndefined();
+  });
+});
+
+const tripFeaturesOf = (trip: TripResponse) => {
+  const { routes, places } = tripGeoJson(trip);
+  return [...routes.features, ...places.features];
+};
+
+/** The trip of 1 August, which the list has and the fixture's trip is not: Copenhagen, one night, no moves. */
+const COPENHAGEN: TripResponse = {
+  ...LISBON,
+  id: "2026-08-01",
+  name: "Copenhagen",
+  localStartDate: "2026-08-01",
+  localEndDate: "2026-08-03",
+  cities: [{ name: "Copenhagen", country: "Denmark", nights: 2, lat: 55.68, lon: 12.57 }],
+  moves: [{ id: 401, mode: "drive", distanceMeters: 9000, geometry: [[12.5, 55.6], [12.57, 55.68]] }],
+  days: [],
+};
+
+// A trip is drawn as the day is (bold routes) with the dots of its cities, from the query that its panel and its bar ask as well (one request).
+describe("useViewMap a trip", () => {
+  test("useViewMap_draws_a_trip_as_bold_routes_and_the_dots_of_its_cities_and_asks_for_that_trip_only", async () => {
+    const { paths } = stubApi({ [tripKey("2026-09-12")]: LISBON });
+
+    const { result } = setup(TRIP);
+
+    expect(result.current.data.routes.features).toEqual([]); // nothing yet: the map is waiting for the trip
+    expect(result.current.data.places).toBeUndefined();
+    await waitFor(() => expect(result.current.data.places).toBeDefined());
+    expect(result.current.data).toEqual({ ...tripGeoJson(LISBON), view: "trip" });
+    expect(result.current.data.routes.features).toHaveLength(9);
+    expect(result.current.data.places?.features).toHaveLength(2); // Lisbon and Sintra
+    expect(result.current.data.stops).toBeUndefined();
+    expect(paths).toEqual(["/api/trips/2026-09-12"]); // no list, no day, no range, no heat
+  });
+
+  test("useViewMap_brings_the_map_to_every_route_and_dot_of_the_trip_once_and_has_them_as_home", async () => {
+    const { answers } = stubApi({ [tripKey("2026-09-12")]: LISBON, "2026-10-22": OSLO_DAY });
+    const { result, go, client } = setup(TRIP);
+    expect(result.current.fitTo).toBeNull(); // nothing to fit to until the trip is there
+    expect(result.current.home).toBeNull();
+    await waitFor(() => expect(result.current.fitTo).toEqual(tripFeaturesOf(LISBON)));
+    const fitted = result.current.fitTo;
+    expect(result.current.home).toEqual(tripFeaturesOf(LISBON));
+
+    // A row tapped moves the map and never Recenter's target.
+    act(() => result.current.onFocus([result.current.data.places!.features[1]!]));
+    expect(result.current.fitTo).toHaveLength(1);
+    expect(result.current.home).toEqual(tripFeaturesOf(LISBON));
+
+    // A refetch of the same trip (it was edited: a move is gone) never moves a map that the owner has panned...
+    act(() => result.current.onFocus(fitted!));
+    const refetched = { ...LISBON, moves: LISBON.moves.slice(0, 3) };
+    answers[tripKey("2026-09-12")] = refetched;
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["trip", "2026-09-12"] });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(result.current.data.routes.features).toHaveLength(3); // ...the routes are the new ones...
+    expect(result.current.fitTo).toEqual(fitted); // ...and the map was not brought to them again
+
+    // Another view and back is another visit: fitted again, in the render that shows the trip when it is in the cache.
+    go(DAY_22);
+    await waitFor(() => expect(result.current.fitTo).toEqual(featuresOf(OSLO_DAY)));
+    go(TRIP);
+    expect(result.current.fitTo).toEqual(tripFeaturesOf(refetched));
+    expect(result.current.fitTo).not.toBe(fitted);
+  });
+
+  test("useViewMap_keeps_the_collections_it_gave_while_the_trip_is_the_same", async () => {
+    stubApi({ [tripKey("2026-09-12")]: LISBON });
+    const { result, again } = setup(TRIP);
+    await waitFor(() => expect(result.current.data.places).toBeDefined());
+    const before = result.current.data;
+
+    again(); // rendered again for another reason: the map is not sent the same data again
+
+    expect(result.current.data).toBe(before);
+  });
+
+  test("useViewMap_has_no_home_and_nothing_to_fit_for_a_trip_with_no_move_and_no_city", async () => {
+    stubApi({ [tripKey("2026-09-12")]: { ...LISBON, moves: [], cities: [] } });
+    const { result, client } = setup(TRIP);
+    await waitFor(() => expect(client.getQueryState(["trip", "2026-09-12"])?.status).toBe("success"));
+    await act(async () => undefined);
+
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.places?.features).toEqual([]);
+    expect(result.current.fitTo).toBeNull();
+    expect(result.current.home).toBeNull();
+  });
+
+  test("useViewMap_draws_a_trip_and_never_a_stale_one", async () => {
+    // Trip A is drawn; the list of trips is shown; trip B has not been asked for before and has not come: nothing is drawn of A, nor of the
+    // trips, for B, as its panel has nothing of them. When B comes, B is drawn, and the map is brought to it and not to A.
+    let release: (response: Response) => void = () => undefined;
+    stubApi({
+      [tripKey("2026-09-12")]: LISBON,
+      [tripKey("2026-08-01")]: () => new Promise<Response>((resolve) => (release = resolve)),
+      trips: TRIPS_LIST,
+    });
+    const { result, go } = setup(TRIP);
+    await waitFor(() => expect(result.current.fitTo).toEqual(tripFeaturesOf(LISBON)));
+
+    go(TRIPS);
+    await waitFor(() => expect(result.current.data.view).toBe("trips"));
+    go(OTHER_TRIP);
+
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.places).toBeUndefined();
+    expect(result.current.data.view).toBeUndefined();
+    expect(result.current.fitTo).toBeNull();
+    expect(result.current.home).toBeNull();
+
+    release(Response.json(COPENHAGEN));
+    await waitFor(() => expect(result.current.data.places).toBeDefined());
+    expect(result.current.data).toEqual({ ...tripGeoJson(COPENHAGEN), view: "trip" });
+    expect(result.current.fitTo).toEqual(tripFeaturesOf(COPENHAGEN));
+    expect(result.current.home).toEqual(tripFeaturesOf(COPENHAGEN));
+  });
+
+  test("useViewMap_does_not_draw_the_trip_that_was_left_for_the_next_trip_that_loads", async () => {
+    // Stepping from a trip to the next with ‹ and ›: the panel is made again for the trip (the bar says "Loading trip…" and the panel "Loading…"),
+    // and the map draws nothing, where a day that loads leaves the day before on the map as its panel leaves the rows.
+    stubApi({ [tripKey("2026-09-12")]: LISBON, [tripKey("2026-08-01")]: () => new Promise<Response>(() => undefined) });
+    const { result, go } = setup(TRIP);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+
+    go(OTHER_TRIP);
+
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.places).toBeUndefined();
+    expect(result.current.fitTo).toBeNull();
+    expect(result.current.home).toBeNull();
+  });
+
+  test("useViewMap_draws_a_trip_that_is_in_the_cache_at_once_when_it_is_stepped_to_and_fits_it", async () => {
+    stubApi({ [tripKey("2026-09-12")]: LISBON, [tripKey("2026-08-01")]: COPENHAGEN });
+    const { result, go, client } = setup(TRIP);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    await client.prefetchQuery({ queryKey: ["trip", "2026-08-01"], queryFn: async () => COPENHAGEN });
+
+    go(OTHER_TRIP);
+
+    expect(result.current.data).toEqual({ ...tripGeoJson(COPENHAGEN), view: "trip" }); // in the render that shows it: no wait
+    expect(result.current.fitTo).toEqual(tripFeaturesOf(COPENHAGEN));
+  });
+
+  test("useViewMap_draws_nothing_for_a_trip_that_no_longer_exists", async () => {
+    const { paths } = stubApi({}); // a 404 for every trip
+
+    const { result, client } = setup({ view: "trip", id: "2026-01-01" });
+    await waitFor(() => expect(client.getQueryState(["trip", "2026-01-01"])?.status).toBe("error"));
+    await act(async () => undefined);
+
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.places).toBeUndefined();
+    expect(result.current.fitTo).toBeNull();
+    expect(result.current.home).toBeNull();
+    expect(paths).toEqual(["/api/trips/2026-01-01"]);
+  });
+
+  test("useViewMap_stops_drawing_a_trip_that_turns_out_to_be_gone_when_it_is_asked_for_again", async () => {
+    const { answers } = stubApi({ [tripKey("2026-09-12")]: LISBON });
+    const { result, client } = setup(TRIP);
+    await waitFor(() => expect(result.current.data.places).toBeDefined());
+
+    answers[tripKey("2026-09-12")] = () => new Response("{}", { status: 404 }); // deleted since: the panel says so in place of what it showed
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["trip", "2026-09-12"] });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.places).toBeUndefined();
+    expect(result.current.home).toBeNull();
+  });
+
+  test("useViewMap_keeps_drawing_the_trip_under_an_error_of_a_refetch_and_does_not_fit_it_again", async () => {
+    const { answers } = stubApi({ [tripKey("2026-09-12")]: LISBON });
+    const { result, client } = setup(TRIP);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    const fitted = result.current.fitTo;
+    const drawn = result.current.data;
+
+    answers[tripKey("2026-09-12")] = new Response("{}", { status: 500 });
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["trip", "2026-09-12"] });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(client.getQueryState(["trip", "2026-09-12"])?.status).toBe("error"); // the panel shows the trip under the error, and so does the map
+    expect(result.current.data).toBe(drawn);
+    expect(result.current.fitTo).toBe(fitted);
+  });
+
+  test("useViewMap_does_not_draw_the_trip_that_was_left_on_a_day_that_loads", async () => {
+    stubApi({ [tripKey("2026-09-12")]: LISBON, "2026-10-23": () => new Promise<Response>(() => undefined) });
+    const { result, go } = setup(TRIP);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+
+    go(DAY_23);
+
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.places).toBeUndefined();
+    expect(result.current.data.view).toBeUndefined();
+    expect(result.current.fitTo).toBeNull();
+    expect(result.current.home).toBeNull();
+  });
+});
+
+// The heat of a trip is the heat of its dates, from the day it left to the day it came back, for the trip that is on screen: the glow of another
+// trip (or of a day, or of the dates that the trip had before it was loaded) is never under its routes.
+describe("useViewMap the heat of a trip", () => {
+  const HEAT_TRIP = heatOf(50_000);
+  const HEAT_COPENHAGEN = heatOf(9000);
+
+  test("useViewMap_asks_for_the_heat_of_the_dates_of_the_trip_and_draws_it_with_the_routes_once_heat_is_on", async () => {
+    const { paths } = stubApi({ [tripKey("2026-09-12")]: LISBON, [heatKey("2026-09-12", "2026-09-16")]: HEAT_TRIP });
+
+    const { result } = setup(TRIP, true);
+
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_TRIP));
+    expect(result.current.data.routes).toEqual(tripGeoJson(LISBON).routes); // in addition to the routes and the dots, not instead
+    expect(result.current.data.places).toEqual(tripGeoJson(LISBON).places);
+    expect(result.current.data.view).toBe("trip");
+    expect(heatPaths(paths)).toEqual(["/api/heat?from=2026-09-12&to=2026-09-16"]); // localStartDate to localEndDate
+    expect(result.current.heat).toMatchObject({ available: true, failed: false });
+  });
+
+  test("useViewMap_asks_for_no_heat_of_a_trip_while_heat_is_off_and_has_the_button_to_turn_it_on_before_the_trip_has_come", async () => {
+    let release: (response: Response) => void = () => undefined;
+    const { paths } = stubApi({
+      [tripKey("2026-09-12")]: () => new Promise<Response>((resolve) => (release = resolve)),
+      [heatKey("2026-09-12", "2026-09-16")]: HEAT_TRIP,
+    });
+    const { result, setHeat } = setup(TRIP);
+    expect(result.current.heat.available).toBe(true); // a trip is a view that has a heat, with its dates not yet known
+
+    release(Response.json(LISBON));
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    await act(async () => undefined);
+    expect(heatPaths(paths)).toEqual([]);
+    expect(result.current.data.heat).toBeUndefined();
+
+    setHeat(true);
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+    expect(heatPaths(paths)).toEqual(["/api/heat?from=2026-09-12&to=2026-09-16"]);
+  });
+
+  test("useViewMap_asks_for_no_heat_of_a_trip_that_is_loading_and_for_the_dates_of_the_trip_that_comes", async () => {
+    // The dates are the trip's own, which are not known before it has come: nothing is asked for in their place.
+    let release: (response: Response) => void = () => undefined;
+    const { paths } = stubApi({
+      [tripKey("2026-09-12")]: () => new Promise<Response>((resolve) => (release = resolve)),
+      [heatKey("2026-09-12", "2026-09-16")]: HEAT_TRIP,
+    });
+    const { result } = setup(TRIP, true); // heat is on from the start
+    await act(async () => undefined);
+
+    expect(heatPaths(paths)).toEqual([]);
+    expect(result.current.data.heat).toBeUndefined();
+
+    release(Response.json(LISBON));
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_TRIP)));
+    expect(heatPaths(paths)).toEqual(["/api/heat?from=2026-09-12&to=2026-09-16"]);
+  });
+
+  test("useViewMap_asks_for_the_heat_of_an_ongoing_trip_up_to_the_day_after_its_last_night", async () => {
+    const ongoing: TripResponse = { ...LISBON, ongoing: true, end: null, localEndDate: "2026-09-17" };
+    const { paths } = stubApi({ [tripKey("2026-09-12")]: ongoing, [heatKey("2026-09-12", "2026-09-17")]: HEAT_TRIP });
+
+    const { result } = setup(TRIP, true);
+
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+    expect(heatPaths(paths)).toEqual(["/api/heat?from=2026-09-12&to=2026-09-17"]);
+  });
+
+  test("useViewMap_asks_for_the_heat_of_the_first_400_days_of_a_trip_that_is_longer_which_the_API_answers_for", async () => {
+    // A heat of more than 400 days is refused with a 400, and no Retry would ever bring it: the dates are cut as a range's are.
+    const long: TripResponse = { ...LISBON, id: "2025-01-01", localStartDate: "2025-01-01", localEndDate: "2026-12-31" };
+    const { paths } = stubApi({ [tripKey("2025-01-01")]: long, [heatKey("2025-01-01", "2026-02-04")]: HEAT_TRIP });
+
+    const { result } = setup({ view: "trip", id: "2025-01-01" }, true);
+
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+    expect(heatPaths(paths)).toEqual(["/api/heat?from=2025-01-01&to=2026-02-04"]);
+  });
+
+  test("useViewMap_does_not_draw_the_heat_of_a_trip_under_the_routes_of_another", async () => {
+    // Trip A with its heat; then trip B, whose heat is there before it is (a prefetch, or a quick answer), and then both: A's glow is never under
+    // B's routes, and B's is under them only once they are drawn.
+    let releaseTrip: (response: Response) => void = () => undefined;
+    stubApi({
+      [tripKey("2026-09-12")]: LISBON,
+      [tripKey("2026-08-01")]: () => new Promise<Response>((resolve) => (releaseTrip = resolve)),
+      [heatKey("2026-09-12", "2026-09-16")]: HEAT_TRIP,
+      [heatKey("2026-08-01", "2026-08-03")]: HEAT_COPENHAGEN,
+    });
+    const { result, go, client } = setup(TRIP, true);
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_TRIP)));
+    await client.prefetchQuery({ queryKey: ["heat", "2026-08-01", "2026-08-03"], queryFn: async () => HEAT_COPENHAGEN });
+
+    go(OTHER_TRIP);
+
+    expect(result.current.data.routes.features).toEqual([]); // nothing of A...
+    expect(result.current.data.heat).toBeUndefined(); // ...no glow of A, and not B's either, for routes that are not there
+    releaseTrip(Response.json(COPENHAGEN));
+    await waitFor(() => expect(result.current.data.routes).toEqual(tripGeoJson(COPENHAGEN).routes));
+    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_COPENHAGEN)); // B's routes and B's heat
+  });
+
+  test("useViewMap_does_not_draw_the_heat_of_a_trip_that_was_left_under_the_trips_a_day_or_a_gone_trip", async () => {
+    const { answers } = stubApi({
+      [tripKey("2026-09-12")]: LISBON,
+      trips: TRIPS_LIST,
+      "2026-10-22": OSLO_DAY,
+      [heatKey("2026-09-12", "2026-09-16")]: HEAT_TRIP,
+      [heatKey("2026-10-22")]: HEAT_22,
+    });
+    const { result, go, client } = setup(TRIP, true);
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+
+    go(TRIPS);
+    await waitFor(() => expect(result.current.data.places).toBeDefined());
+    expect(result.current.data.heat).toBeUndefined(); // the list of trips has no period: no heat, and no button for it
+    expect(result.current.heat.available).toBe(false);
+
+    go(DAY_22);
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_22))); // the day's heat, which is the day's and nobody else's
+    expect(result.current.data.routes).toEqual(dayGeoJson(OSLO_DAY).routes);
+
+    go(TRIP);
+    expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_TRIP)); // the trip's, from the cache, at once
+
+    answers[tripKey("2026-09-12")] = () => new Response("{}", { status: 404 }); // and then it is gone: nothing is drawn, glow included
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["trip", "2026-09-12"] });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(result.current.data.routes.features).toEqual([]);
+    expect(result.current.data.heat).toBeUndefined();
+  });
+
+  test("useViewMap_reports_a_heat_of_a_trip_that_could_not_be_had_and_asks_again_on_retry", async () => {
+    let failing = true;
+    const { paths } = stubApi({
+      [tripKey("2026-09-12")]: LISBON,
+      [heatKey("2026-09-12", "2026-09-16")]: () => (failing ? new Response("{}", { status: 500 }) : Response.json(HEAT_TRIP)),
+    });
+    const { result } = setup(TRIP, true);
+
+    await waitFor(() => expect(result.current.heat.failed).toBe(true));
+    expect(result.current.data.routes).toEqual(tripGeoJson(LISBON).routes); // the trip is drawn without it, routes and all
+    expect(result.current.data.heat).toBeUndefined();
+
+    failing = false;
+    act(() => result.current.heat.retry());
+
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_TRIP)));
+    expect(result.current.heat.failed).toBe(false);
+    expect(heatPaths(paths)).toHaveLength(2);
+  });
+
+  test("useViewMap_has_no_heat_for_a_trip_that_is_gone_and_asks_for_none", async () => {
+    const { paths } = stubApi({});
+
+    const { result, client } = setup({ view: "trip", id: "2026-01-01" }, true);
+    await waitFor(() => expect(client.getQueryState(["trip", "2026-01-01"])?.status).toBe("error"));
+    await act(async () => undefined);
+
+    expect(heatPaths(paths)).toEqual([]);
+    expect(result.current.data.heat).toBeUndefined();
+    expect(result.current.heat.failed).toBe(false);
   });
 });
 

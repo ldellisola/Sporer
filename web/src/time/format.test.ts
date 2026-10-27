@@ -90,4 +90,10 @@ describe("formatCount", () => {
     expect(formatCount(2, "place")).toBe("2 places");
     expect(formatCount(1234, "move")).toBe("1,234 moves"); // grouped, as the distances are
   });
+
+  test("formatCount_takes_the_plural_of_a_noun_that_does_not_add_an_s", () => {
+    expect(formatCount(1, "city", "cities")).toBe("1 city");
+    expect(formatCount(0, "city", "cities")).toBe("0 cities");
+    expect(formatCount(3, "city", "cities")).toBe("3 cities");
+  });
 });

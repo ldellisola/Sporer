@@ -1,9 +1,18 @@
 import { useCallback, useMemo, useState } from "react";
-import { placeOf, useDay, useHeat, usePlace, useRange, useTrips } from "../api/queries";
-import type { DayResponse, PlaceResponse, RangeResponse, TripsResponse } from "../api/types";
-import { dayGeoJson, heatGeoJson, placeGeoJson, rangeGeoJson, tripsGeoJson, type FitFeatures, type HeatCollection } from "../map/layers";
+import { placeOf, tripOf, useDay, useHeat, usePlace, useRange, useTrip, useTrips } from "../api/queries";
+import type { DayResponse, PlaceResponse, RangeResponse, TripResponse, TripsResponse } from "../api/types";
+import {
+  dayGeoJson,
+  heatGeoJson,
+  placeGeoJson,
+  rangeGeoJson,
+  tripGeoJson,
+  tripsGeoJson,
+  type FitFeatures,
+  type HeatCollection,
+} from "../map/layers";
 import type { MapData } from "../map/MapView";
-import { periodRange } from "../time/dates";
+import { addDays, MAX_RANGE_DAYS, periodRange } from "../time/dates";
 import { useKeptData } from "../views/useKeptData";
 import { formatRoute, isPeriodRoute, type Route } from "./router";
 
@@ -13,7 +22,7 @@ const NO_FEATURES: FitFeatures = [];
 
 /** The heat of the period on show, for the map's heat button and for the note that says it could not be had. */
 export interface HeatState {
-  /** Whether the view has a period to show the heat of (a place, the trips and a trip have none), so whether the map has a button for it. */
+  /** Whether the view has a period to show the heat of (a place and the trips have none), so whether the map has a button for it. */
   available: boolean;
   /**
    * Whether the heat of the period asked for could not be had, while it is asked for and the period has none to draw. The map is drawn
@@ -127,16 +136,58 @@ function useTripsMap(route: Route): Drawn {
   return useDrawn(trips.data, active, drawTrips, () => true); // there is one list: what is kept is the list asked for
 }
 
+/** A first and a last date, both counted: the dates that a heat is asked for. */
+interface Period {
+  from: string;
+  to: string;
+}
+
 /**
- * The heat of the period of the route: a day is a period of its one date, and a place, the trips and a trip have none. Asked for only while the heat is `on`.
+ * A trip: its routes by mode and the dots of its cities, all of which the map is brought to. A trip is drawn with the day's bold routes
+ * (`view: "trip"`), where the trips and a period are told from it.
+ */
+function drawTrip(trip: TripResponse): Drawing {
+  const { routes, places } = tripGeoJson(trip);
+  return { data: { routes, places, view: "trip" }, features: [...routes.features, ...places.features] };
+}
+
+/**
+ * The dates of a trip's heat: from the day it left to the day it came back (an ongoing trip's end date is the day after its last night), as
+ * the trip says them in the zones it was in. A trip of more days than the API answers for (`MAX_RANGE_DAYS`) has the heat of its first ones, as
+ * a range of that length is read: the whole of it would be refused, and no Retry would ever have it.
+ */
+function tripPeriod(trip: TripResponse): Period {
+  const last = addDays(trip.localStartDate, MAX_RANGE_DAYS - 1);
+  return { from: trip.localStartDate, to: trip.localEndDate < last ? trip.localEndDate : last };
+}
+
+/**
+ * The map of a trip, and the dates of its heat. Nothing is asked for on a route that is not a trip. The trip is drawn as soon as the query
+ * for its id has it, through the same kept path as the other views, with one difference: nothing is carried over from a trip to the next, as
+ * nothing is from a place. The panel of a trip is made again for each trip and the bar names the one that loads "Loading trip…", so the trip that
+ * the owner stepped away from is not under them on the map: nothing is drawn until the trip asked for is there (`ready`, which the trip
+ * that was kept under it is not). A trip that is gone (a 404) is drawn as nothing, as the panel says it no longer exists in place of what it
+ * showed; under any other failure the trip stays, as the panel keeps it. Its dates, and so its heat, are the dates of the trip that is shown.
+ */
+function useTripMap(route: Route): { drawn: Drawn; period: Period | null } {
+  const id = route.view === "trip" ? route.id : null;
+  const { gone, shown } = tripOf(useTrip(id));
+  const drawn = useDrawn(shown, id !== null && !gone, drawTrip, (trip) => trip.id === id);
+  const period = useMemo(() => (shown === undefined ? null : tripPeriod(shown)), [shown]);
+  return { drawn: drawn.ready ? drawn : NOTHING, period };
+}
+
+/**
+ * The heat of a period: a day is a period of its one date, a trip has the dates of its own (once it is there), and a place and the trips
+ * have none (`period` is null). Asked for only while the heat is `on`. `offered` is whether the view has a heat to turn on at all, which is
+ * so for a trip before its dates are known: the button is there as soon as the trip is asked for.
  * What is given to draw is the heat of the period that is asked for, and only while the routes drawn are that period's too (`ready`):
- * the glow of one day or period is never under the routes of another. That is why the query keeps no previous period's heat for the
+ * the glow of one day, period or trip is never under the routes of another. That is why the query keeps no previous period's heat for the
  * one that loads (`keepPrevious` is false), and why the routes of the period before, which stay while the next loads, have none. While
  * the heat of the period loads, or has failed, the routes are drawn without it. A failure is told only when there is no heat of the
  * period to show (`failed`): a poll or a refetch that fails over the heat the query has leaves what it has.
  */
-function useHeatMap(route: Route, on: boolean, ready: boolean): { heat: HeatCollection | undefined; state: HeatState } {
-  const period = isPeriodRoute(route) ? periodRange(route) : null;
+function useHeatMap(period: Period | null, offered: boolean, on: boolean, ready: boolean): { heat: HeatCollection | undefined; state: HeatState } {
   const asked = on && period !== null;
   const query = useHeat(period?.from ?? null, period?.to ?? null, asked, false);
   const collection = useMemo(() => (query.data === undefined ? undefined : heatGeoJson(query.data)), [query.data]);
@@ -144,7 +195,7 @@ function useHeatMap(route: Route, on: boolean, ready: boolean): { heat: HeatColl
   const retry = useCallback(() => void refetch(), [refetch]);
   return {
     heat: asked && ready ? collection : undefined, // a query that was turned off still has what it had: not to be drawn
-    state: { available: period !== null, failed: asked && query.isError && query.data === undefined, retry },
+    state: { available: offered, failed: asked && query.isError && query.data === undefined, retry },
   };
 }
 
@@ -157,8 +208,8 @@ interface Fit {
 
 /**
  * What the map of the shell shows for the route: the data of the view (the day's, or the period's of a week, a month, a year or a
- * range, or the pin of a place, or the cities of the trips; a trip nothing yet), the heat of its period when `heatOn` (see `useHeatMap`;
- * a place, the trips and a trip have none), and where the map is brought to.
+ * range, or the pin of a place, or the cities of the trips, or the routes and cities of a trip), the heat of its period when `heatOn`
+ * (see `useHeatMap`; a place and the trips have none, a trip has the heat of its own dates), and where the map is brought to.
  *
  * The map is brought to what is drawn once for each time a route is shown, at the first data of it that has anything to fit to: a
  * poll or a refetch of the same day or period never moves a map that the owner has panned, and a route that is shown again (stepped
@@ -172,10 +223,21 @@ export function useViewMap(route: Route, heatOn: boolean): ViewMap {
   const period = usePeriodMap(route);
   const place = usePlaceMap(route);
   const trips = useTripsMap(route);
-  // A trip has no map of its own yet: it draws nothing, which is what `NOTHING` is.
+  const trip = useTripMap(route);
   const { data: routes, features, ready } =
-    route.view === "day" ? day : route.view === "place" ? place : route.view === "trips" ? trips : isPeriodRoute(route) ? period : NOTHING;
-  const { heat, state } = useHeatMap(route, heatOn, ready);
+    route.view === "day"
+      ? day
+      : route.view === "place"
+        ? place
+        : route.view === "trips"
+          ? trips
+          : route.view === "trip"
+            ? trip.drawn
+            : isPeriodRoute(route)
+              ? period
+              : NOTHING;
+  const heatPeriod = route.view === "trip" ? trip.period : isPeriodRoute(route) ? periodRange(route) : null;
+  const { heat, state } = useHeatMap(heatPeriod, route.view === "trip" || isPeriodRoute(route), heatOn, ready);
   const data = useMemo(() => (heat === undefined ? routes : { ...routes, heat }), [routes, heat]);
   const key = formatRoute(route);
   const [fit, setFit] = useState<Fit>({ key, fitted: false, to: null });

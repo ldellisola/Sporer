@@ -11,6 +11,8 @@ import type {
   StaySegment,
   TripCity,
   TripListItem,
+  TripMove,
+  TripResponse,
   TripsResponse,
 } from "../api/types";
 import {
@@ -26,6 +28,7 @@ import {
   routeOpacity,
   SOURCE_IDS,
   stopOrders,
+  tripGeoJson,
   tripsGeoJson,
   type RouteView,
 } from "./layers";
@@ -418,6 +421,116 @@ describe("tripsGeoJson", () => {
   });
 });
 
+describe("tripGeoJson", () => {
+  const city = (name: string, nights: number, lon: number, lat: number): TripCity => ({ name, country: "Portugal", nights, lat, lon });
+  const move = (id: number, mode: TripMove["mode"], geometry: LonLat[]): TripMove => ({ id, mode, distanceMeters: 1000, geometry });
+
+  /** A trip with these moves and cities; everything else about it is of no matter to the map. */
+  function trip(moves: TripMove[], cities: TripCity[]): TripResponse {
+    return {
+      id: "2026-09-12",
+      name: "Lisbon & Sintra",
+      firstNight: "2026-09-12",
+      lastNight: "2026-09-15",
+      nights: 4,
+      start: WHEN.start,
+      end: WHEN.end,
+      startTimeZone: "Europe/Oslo",
+      endTimeZone: "Europe/Oslo",
+      localStartDate: "2026-09-12",
+      localEndDate: "2026-09-16",
+      ongoing: false,
+      cities,
+      stats: { flights: 0, cities: cities.length, places: 0, groundDistanceMeters: 0 },
+      moves,
+      days: [],
+    };
+  }
+
+  test("tripGeoJson_labels_every_city_with_its_nights", () => {
+    // More than the five that the list's map labels: a trip is a map of its own, and all of its cities are named on it.
+    const cities = [
+      city("Lisbon", 4, -9.14, 38.72),
+      city("Sintra", 1, -9.38, 38.8),
+      city("Porto", 2, -8.61, 41.15),
+      city("Évora", 1, -7.91, 38.57),
+      city("Faro", 1, -7.93, 37.02),
+      city("Coimbra", 1, -8.43, 40.2),
+      city("Braga", 3, -8.42, 41.55),
+    ];
+
+    const { places } = tripGeoJson(trip([], cities));
+
+    expect(places.features.map((feature) => feature.properties.label)).toEqual([
+      "Lisbon · 4 nights",
+      "Sintra · 1 night",
+      "Porto · 2 nights",
+      "Évora · 1 night",
+      "Faro · 1 night",
+      "Coimbra · 1 night",
+      "Braga · 3 nights",
+    ]);
+  });
+
+  test("tripGeoJson_words_a_city_as_the_map_of_the_trips_does", () => {
+    // The same words in both: a city that is on the list's map as "Lisbon · 4 nights" is that on its trip's.
+    const [lisbon] = [city("Lisbon", 4, -9.14, 38.72)];
+    const listed: TripListItem = { ...trip([], [lisbon!]), thumbnail: [] };
+
+    expect(tripGeoJson(trip([], [lisbon!])).places.features[0]?.properties.label).toBe(tripsGeoJson({ trips: [listed] }).places.features[0]?.properties.label);
+  });
+
+  test("tripGeoJson_makes_a_dot_for_each_city_where_it_is_sized_by_its_nights_and_no_place", () => {
+    const { places } = tripGeoJson(trip([], [city("Lisbon", 4, -9.14, 38.72), city("Sintra", 1, -9.38, 38.8)]));
+
+    expect(places.features).toHaveLength(2);
+    expect(places.features.map((feature) => feature.geometry)).toEqual([
+      { type: "Point", coordinates: [-9.14, 38.72] }, // longitude first
+      { type: "Point", coordinates: [-9.38, 38.8] },
+    ]);
+    // radius = 4 + 12 * sqrt(nights / max) with the most nights in any city, as the dots of a period and of the trips have it.
+    expect(places.features[0]?.properties.radius).toBeCloseTo(16, 10);
+    expect(places.features[1]?.properties.radius).toBeCloseTo(4 + 12 * Math.sqrt(1 / 4), 10);
+    expect(places.features.map((feature) => feature.properties.id)).toEqual([0, 0]); // a city is no place: a tap on its dot opens nothing
+  });
+
+  test("tripGeoJson_draws_each_move_with_its_mode_and_leaves_a_flight_for_the_dashed_layer", () => {
+    const { routes } = tripGeoJson(
+      trip(
+        [
+          move(301, "drive", [[10.75, 59.91], [11.08, 60.19]]),
+          move(302, "flight", [[11.08, 60.19], [-9.13, 38.78]]),
+          move(304, "walk", [[-9.14, 38.72], [-9.13, 38.71], [-9.15, 38.7]]),
+          move(305, "cycle", [[-9.14, 38.72], [-9.2, 38.69]]),
+          move(306, null, [[-9.2, 38.69], [-9.3, 38.78]]), // a move whose mode could not be told is written out as null
+          move(307, "drive", [[-9.3, 38.78]]), // a line of one position is none
+        ],
+        [],
+      ),
+    );
+
+    expect(routes.features.map((feature) => feature.properties)).toEqual([
+      { id: 301, mode: "drive" },
+      { id: 302, mode: "flight" }, // the layers draw it dashed (the layer of the flights, which `layerSpecs` pins) and the others solid
+      { id: 304, mode: "walk" },
+      { id: 305, mode: "cycle" },
+      { id: 306, mode: "unknown" },
+    ]);
+    expect(routes.features[1]?.geometry).toEqual({ type: "LineString", coordinates: [[11.08, 60.19], [-9.13, 38.78]] });
+  });
+
+  test("tripGeoJson_of_a_trip_with_no_move_or_city_is_two_empty_collections_and_of_no_nights_the_smallest_dot_that_is_still_named", () => {
+    expect(tripGeoJson(trip([], []))).toEqual({
+      routes: { type: "FeatureCollection", features: [] },
+      places: { type: "FeatureCollection", features: [] },
+    });
+
+    const { places } = tripGeoJson(trip([], [city("Lisbon", 0, -9.14, 38.72)]));
+
+    expect(places.features[0]?.properties).toEqual({ id: 0, radius: 4, label: "Lisbon · 0 nights" });
+  });
+});
+
 describe("heatGeoJson", () => {
   test("heatGeoJson_normalises_weights", () => {
     const heat: HeatResponse = {
@@ -555,7 +668,7 @@ describe("layerSpecs", () => {
     for (const id of [LAYER_IDS.places, LAYER_IDS.placeLabels]) expect(visibility(id), id).toBe("visible");
   });
 
-  test("layerSpecs_trip_draws_the_day_routes_and_the_dots_and_their_labels_and_hides_the_range_routes", () => {
+  test("layerSpecs_trip_shows_bold_routes_and_city_dots", () => {
     const specs = layerSpecs("trip", false);
     const visibility = (id: string) => layout(specs.find((spec) => spec.id === id) ?? {})["visibility"] ?? "visible";
 

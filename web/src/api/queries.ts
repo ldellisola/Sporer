@@ -144,6 +144,16 @@ export function placeOf(query: { data?: PlaceResponse; error: Error | null }): {
 }
 
 /**
+ * What a trip query shows, for the bar, the panel and the map alike so that they never disagree (as `placeOf` does for a place): `shown` is
+ * its trip, and `gone` says the trip no longer exists (a 404, which asking again cannot change). A trip that is gone is shown as none,
+ * whatever the query still holds of it from before; under any other failure the trip stays, and is what is shown under the error.
+ */
+export function tripOf(query: { data?: TripResponse; error: Error | null }): { gone: boolean; shown: TripResponse | undefined } {
+  const gone = isNotFound(query.error);
+  return { gone, shown: gone ? undefined : query.data };
+}
+
+/**
  * The trips. `enabled` is false for a caller that has no use for them on the view on show (the map of the shell, which draws them on the
  * list of trips only): nothing is asked for on its account, and what the query holds is still what the callers that do want it are given.
  */

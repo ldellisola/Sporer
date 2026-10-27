@@ -5,6 +5,7 @@ import type {
   Mode,
   PlaceRef,
   RangeResponse,
+  TripResponse,
   TripsResponse,
 } from "../api/types";
 import { formatCount } from "../time/format";
@@ -163,6 +164,9 @@ export function rangeGeoJson(range: RangeResponse): { routes: RouteCollection; p
   return { routes, places };
 }
 
+/** What a city's dot says on the map of the trips and of a trip, in the trips' wording ("Lisbon · 4 nights", "Lisbon · 1 night"). */
+const cityLabel = (name: string, nights: number): string => `${name} · ${formatCount(nights, "night")}`;
+
 /** A city of the trips: the nights slept in it over all of them, and the sums that its position is the mean of, by nights. */
 interface CityTotal {
   name: string;
@@ -203,10 +207,30 @@ export function tripsGeoJson(trips: TripsResponse): { routes: RouteCollection; p
     features: cities.map((city) => {
       const [lon, lat] = city.nights > 0 ? [city.lonSum / city.nights, city.latSum / city.nights] : city.first;
       const radius = dotRadius(city.nights, max);
-      return point(lon!, lat!, labelled.has(city) ? { id: 0, radius, label: `${city.name} · ${formatCount(city.nights, "night")}` } : { id: 0, radius });
+      return point(lon!, lat!, labelled.has(city) ? { id: 0, radius, label: cityLabel(city.name, city.nights) } : { id: 0, radius });
     }),
   };
   return { routes: { type: "FeatureCollection", features: [] }, places };
+}
+
+/**
+ * The map of one trip: its moves as routes (each with its mode, so that the layers colour them by it and draw the flights dashed), and a
+ * dot for each of its cities, where the city is, sized as the dots of the trips are (`4 + 12 * sqrt(nights / max)` pixels, where `max` is
+ * the most nights in any city of the trip). Unlike the trips' map, which names the five cities with the most nights, every city of a trip
+ * is named, in the same words ("Lisbon · 4 nights"): a trip has few of them, and what the map is for is to say where it went. The dots are
+ * `id: 0` like those: a city is no place, and a tap on its dot opens nothing.
+ */
+export function tripGeoJson(trip: TripResponse): { routes: RouteCollection; places: PlaceCollection } {
+  const routes: RouteCollection = {
+    type: "FeatureCollection",
+    features: trip.moves.flatMap((move) => route(move.id, move.mode, move.geometry)),
+  };
+  const max = trip.cities.reduce((most, city) => Math.max(most, city.nights), 0);
+  const places: PlaceCollection = {
+    type: "FeatureCollection",
+    features: trip.cities.map((city) => point(city.lon, city.lat, { id: 0, radius: dotRadius(city.nights, max), label: cityLabel(city.name, city.nights) })),
+  };
+  return { routes, places };
 }
 
 /** A point for each cell of the heat, weighing what share of the most time spent in any cell its time is (0 to 1). */

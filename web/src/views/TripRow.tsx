@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from "react";
-import { isNotFound } from "../api/client";
-import { tripNeighbours, useTrip, useTrips } from "../api/queries";
+import { tripNeighbours, tripOf, useTrip, useTrips } from "../api/queries";
 import type { TripSummary } from "../api/types";
 import { navigate } from "../app/router";
 import { dateRangeLabel } from "../time/dates";
@@ -40,7 +39,7 @@ export function TripRow({ id }: { id: string }) {
   const swipe = useSwipe(stepTrip);
 
   // A trip that the server no longer has is not shown under what the query still holds of it from before.
-  const shown = isNotFound(trip.error) ? undefined : trip.data;
+  const { shown } = tripOf(trip);
   const name = shown !== undefined ? shown.name : trip.isError ? TRIP_UNNAMED : TRIP_LOADING;
   return (
     <div className={`${styles.titleRow} ${styles.swipe}`} {...swipe}>

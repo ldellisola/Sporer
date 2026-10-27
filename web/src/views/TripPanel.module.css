@@ -1,0 +1,65 @@
+/*
+ * A day: its date, where it was spent with the places that it is known for under that, and at the right what it came to on the ground. The
+ * rest of the row (the gap, the padding, how it shows under a finger) is the rows'. The date is as wide as the range's rows have it, for
+ * "Wed 16 Sep".
+ */
+.day {
+  grid-template-columns: 82px minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.date {
+  font-size: 13.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.description {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.highlights {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+/* The distance, and under it the flights if there were any, at the right edge. */
+.figures {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.flights {
+  display: inline-flex;
+  gap: 3px;
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+/* The way out of a trip that is gone, in the accent colour that a button of this app has, made taller than its text to be a target for a finger. */
+.toTrips {
+  display: block;
+  min-height: 36px;
+  margin: 0 auto;
+  padding: 4px 12px;
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: 600;
+}

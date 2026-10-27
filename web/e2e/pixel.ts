@@ -21,6 +21,29 @@ export async function pixelAt(page: Page, x: number, y: number): Promise<Rgb> {
 }
 
 /**
+ * How many pixels of the page within `clip` (CSS pixels) are dark, as the ink of the map's text is on the light style of the test: every channel
+ * below `limit`. The glyphs themselves are of no use to a test (they are the map's font, at the size of a device); whether there is text where
+ * it is looked for is. Read in the page, as `pixelAt` does.
+ */
+export async function inkIn(page: Page, clip: { x: number; y: number; width: number; height: number }, limit = 110): Promise<number> {
+  const png = await page.screenshot({ clip });
+  return page.evaluate(
+    async ([base64, dark]): Promise<number> => {
+      const bytes = Uint8Array.from(atob(base64 as string), (char) => char.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d");
+      if (context === null) throw new Error("No 2D canvas to read the screenshot with.");
+      context.drawImage(bitmap, 0, 0);
+      const { data } = context.getImageData(0, 0, bitmap.width, bitmap.height);
+      let count = 0;
+      for (let i = 0; i < data.length; i += 4) if (data[i]! < (dark as number) && data[i + 1]! < (dark as number) && data[i + 2]! < (dark as number)) count += 1;
+      return count;
+    },
+    [png.toString("base64"), limit] as const,
+  );
+}
+
+/**
  * How long a poll of `pixelAt` may run (`expect.poll(..., PIXEL_POLL)`). One read is a screenshot, which waits for the page to be
  * painted, and a WebGL canvas is painted in software here. A read takes about 0.1 s, but it queues behind every frame that the GPU
  * process has still to draw: the first one after the map has come up waits for the map's first frames, which at the phone project's

@@ -44,9 +44,12 @@ export function formatInteger(count: number): string {
   return integer.format(count);
 }
 
-/** "1 place" or "5 places": the count (grouped, as the distances are) and the noun, with an s unless the count is one. */
-export function formatCount(count: number, noun: string): string {
-  return `${formatInteger(count)} ${count === 1 ? noun : `${noun}s`}`;
+/**
+ * "1 place" or "5 places": the count (grouped, as the distances are) and the noun, with an s unless the count is one. A noun that does
+ * not add an s to be many has its plural given: "1 city", "3 cities".
+ */
+export function formatCount(count: number, noun: string, plural = `${noun}s`): string {
+  return `${formatInteger(count)} ${count === 1 ? noun : plural}`;
 }
 
 /** "850 m", "1.1 km" (one decimal below 100 km) or "412 km". */

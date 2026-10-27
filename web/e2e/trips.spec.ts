@@ -1,8 +1,9 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./base";
 import { mockApi } from "./mockApi";
-import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
+import { inkIn, PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
 import { fixTime } from "./today";
+import lisbonTrip from "./fixtures/trip-2026-09-12.json" with { type: "json" };
 import tripsFixture from "./fixtures/trips.json" with { type: "json" };
 
 // The browser is in Oslo, so that "today" is a date that is the same wherever the test is run (see `fixToday`).
@@ -63,7 +64,7 @@ test("trip_bar_names_the_trip_and_steps_to_the_older_and_newer_trip", async ({ p
   await expect(title).toHaveText("Lisbon & Sintra");
   await expect(page.getByText("12 – 16 Sep 2026")).toBeVisible();
   await expect(tripsButton(page)).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByRole("button", { name: "Heat map" })).toHaveCount(0); // the heat of a trip is not offered yet
+  await expect(page.getByRole("button", { name: "Heat map" })).toBeVisible(); // a trip has a period to show the heat of, its own dates
   await expect(older).toBeEnabled(); // once the list has come
   await expect(newer).toBeEnabled();
 
@@ -91,12 +92,33 @@ test("trip_bar_names_the_trip_and_steps_to_the_older_and_newer_trip", async ({ p
 
 const grip = (page: Page): Locator => page.getByRole("button", { name: "Resize panel" });
 
+/**
+ * Waits for the sheet to come to rest: the transition that moves it (a few hundred milliseconds) has finished. A card that is tapped while the
+ * sheet is on its way is found too far down, and the page, which is as tall as the sheet before it is moved up, is scrolled to bring it up: the map
+ * and the bar are then not where the shell has measured them.
+ */
+async function sheetAtRest(page: Page): Promise<void> {
+  await details(page).evaluate((sheet) => Promise.all(sheet.getAnimations().map((animation) => animation.finished)).then(() => undefined));
+}
+
 /** On a phone the sheet starts at its peek, which shows no card: bring it up to full, where the list can be read and its cards tapped. */
 async function openSheet(page: Page): Promise<void> {
   if (isWide(page)) return;
   await grip(page).click(); // half
   await grip(page).click(); // full
+  await sheetAtRest(page);
   await expect(details(page).getByRole("heading", { name: "Trips" })).toBeInViewport();
+}
+
+/**
+ * On a phone the sheet starts at its peek, which shows no card: bring it up to half, where the list can be read and its cards tapped and the map
+ * above it is still in view (at full the sheet covers it, and the dots that the map draws there are under it, though the fit is made for half).
+ */
+async function halfSheet(page: Page): Promise<void> {
+  if (isWide(page)) return;
+  await grip(page).click();
+  await sheetAtRest(page);
+  await expect(details(page).getByRole("list", { name: "Trips" })).toBeInViewport({ ratio: 1 });
 }
 
 const PIN: Rgb = [0xff, 0x37, 0x5f];
@@ -147,6 +169,8 @@ async function whereOnThePage(page: Page, positions: [number, number][], at: [nu
   const world = positions.map(worldOf);
   const [west, east] = [Math.min(...world.map((p) => p.x)), Math.max(...world.map((p) => p.x))];
   const [north, south] = [Math.min(...world.map((p) => p.y)), Math.max(...world.map((p) => p.y))];
+  // One position is where the map is brought to as close as it goes (`FIT_MAX_ZOOM`), and it is the middle of what is free.
+  if (east === west && north === south) return { x: Math.round(free.left + free.width / 2), y: Math.round(free.top + free.height / 2) };
   const scale = Math.min(free.width / (east - west), free.height / (south - north)); // pixels for the width of the world
   const target = worldOf(at);
   const half = free.mapHeight / 2 / scale; // half the height of the map, as a share of the world's
@@ -182,8 +206,8 @@ test.describe("the trips list", () => {
   // where the most nights were, with the map brought to all of them. The cities are where the dots are only once the camera has come to
   // rest (600 ms), so what is read is polled.
   test("trips_list_shows_cards_and_the_map_of_all_trips", async ({ page }) => {
-    // Three polls of PIXEL_POLL run one after the other, which is more than the 30 s that Playwright gives a test (see PIXEL_POLL).
-    test.setTimeout(30_000 + 3 * PIXEL_POLL.timeout);
+    // Four polls of PIXEL_POLL run one after the other, which is more than the 30 s that Playwright gives a test (see PIXEL_POLL).
+    test.setTimeout(30_000 + 4 * PIXEL_POLL.timeout);
     await fixToday(page);
     const api = await mockApi(page);
     await page.goto("/trips");
@@ -220,6 +244,12 @@ test.describe("the trips list", () => {
     await expect.poll(() => dotAt(NEW_YORK), PIXEL_POLL).toBe(true);
     await expect.poll(() => dotAt(COPENHAGEN), PIXEL_POLL).toBe(true);
     await expect.poll(() => dotAt(LISBON), PIXEL_POLL).toBe(true);
+    // The label of the easternmost city is drawn: its ink is at the right of its dot, inside the screen. MapLibre does not move a label that
+    // is put beside a dot at the edge back inside the window, so a fit that left no room there (the air for the labels) would have it all off it.
+    const east = await whereOnThePage(page, CITIES, COPENHAGEN, LABEL_AIR);
+    const room = page.viewportSize()!.width - (east.x + 18); // from the dot's edge (it is 14 px across at the most) to the edge of the screen
+    const inkBeside = async () => (room < 4 ? 0 : inkIn(page, { x: east.x + 18, y: east.y - 16, width: Math.min(40, room), height: 32 }));
+    await expect.poll(async () => (await inkBeside()) > 20, PIXEL_POLL).toBe(true);
     // Between New York and Lisbon there is nothing: the map shows the cities, and no line from one to the next.
     const between = await whereOnThePage(page, CITIES, [(NEW_YORK[0] + LISBON[0]) / 2, (NEW_YORK[1] + LISBON[1]) / 2], LABEL_AIR);
     expect(sameColour(await pixelAt(page, between.x, between.y), BACKGROUND)).toBe(true);
@@ -258,5 +288,111 @@ test.describe("the trips list", () => {
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     await expect(page).toHaveURL(/\/trips$/, { timeout: 1000 });
     expect(sameColour(await pixelAt(page, x, y), PIN, 30)).toBe(true); // and the dot is still there, under the finger
+  });
+});
+
+/** Every position the Lisbon trip draws, longitude first: the points of its moves and its cities, which is what the map is brought to. */
+const LISBON_TRIP: [number, number][] = [
+  ...lisbonTrip.moves.flatMap((move) => move.geometry.map(([lon, lat]): [number, number] => [lon!, lat!])),
+  ...lisbonTrip.cities.map((city): [number, number] => [city.lon, city.lat]),
+];
+
+// Spec 9, opening a trip: the card opens the trip, the map is brought to all of it and the sheet lists its days, a day opens the Day view, and the
+// arrows step to the trips either side. The heat of a trip is the heat of its dates, and of no other trip.
+test.describe("a trip", () => {
+  test.use({ deviceScaleFactor: 1 });
+
+  test("opening_a_trip_from_the_list_shows_its_days_and_steps_to_the_next_trip", async ({ page }) => {
+    // Three polls of PIXEL_POLL run one after the other, which is more than the 30 s that Playwright gives a test (see PIXEL_POLL).
+    test.setTimeout(30_000 + 3 * PIXEL_POLL.timeout);
+    await fixToday(page);
+    const api = await mockApi(page);
+    await page.goto("/trips");
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    const list = details(page).getByRole("list", { name: "Trips" });
+    await expect(list.getByRole("listitem")).toHaveCount(3);
+
+    await halfSheet(page);
+    await list.getByRole("button", { name: /^Open Lisbon & Sintra/ }).click();
+
+    // The bar names the trip, and the panel has its figures and its days, one row for each.
+    await expect(page).toHaveURL(/\/trip\/2026-09-12$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Lisbon & Sintra" })).toBeVisible();
+    for (const chip of ["2 flights", "2 cities", "9 places", "169 km on the ground"]) await expect(details(page).getByText(chip, { exact: true })).toBeVisible();
+    await expect(details(page).getByText("Ongoing")).toHaveCount(0); // it came home
+    const days = details(page).getByRole("list", { name: "Day by day" });
+    await expect(days.getByRole("listitem")).toHaveCount(5);
+    expect(await days.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label")))).toEqual([
+      "Open Sat 12 Sep, Oslo → Lisbon, Oslo Airport, Lisbon Airport, 55.7 km, 1 flight",
+      "Open Sun 13 Sep, Lisbon, Alfama Viewpoint, Time Out Market, 6.8 km",
+      "Open Mon 14 Sep, Lisbon, Belém Tower, LX Factory, Pastéis de Belém, 9.1 km",
+      "Open Tue 15 Sep, Lisbon → Sintra, Pena Palace, Quinta da Regaleira, 38.5 km",
+      "Open Wed 16 Sep, Sintra → Oslo, Lisbon Airport, Oslo Airport, 59.2 km, 1 flight",
+    ]);
+    const monday = days.getByRole("button", { name: /^Open Mon 14 Sep/ });
+    await expect(monday).toContainText("Belém Tower, LX Factory, Pastéis de Belém");
+    await expect(days.getByRole("button", { name: /^Open Sat 12 Sep/ }).locator('[aria-hidden="true"]')).toHaveText("✈"); // a flight: the plane, which is no text
+    await expect(monday.locator('[aria-hidden="true"]')).toHaveCount(0); // and a day with none has no plane
+
+    // The map is brought to the whole trip, Oslo to Lisbon, which is where Lisbon's dot (the biggest: 3 of the 4 nights) is drawn.
+    await expect(page.getByRole("button", { name: "Heat map" })).toBeVisible();
+    const lisbonAt = async () => {
+      const { x, y } = await whereOnThePage(page, LISBON_TRIP, [-9.14, 38.72], LABEL_AIR);
+      return sameColour(await pixelAt(page, x, y), PIN, 30);
+    };
+    await expect.poll(lisbonAt, PIXEL_POLL).toBe(true);
+
+    // A day opens the Day view, and back is to the trip, which is brought to again.
+    await monday.click();
+    await expect(page).toHaveURL(/\/day\/2026-09-14$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Monday 14 September" })).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/\/trip\/2026-09-12$/);
+    await expect(days.getByRole("listitem")).toHaveCount(5);
+    await expect.poll(lisbonAt, PIXEL_POLL).toBe(true);
+
+    // ‹ steps to the next trip, the older one: its own name, its own figures (the mock has no day for it), and its one city is what the map shows,
+    // at the middle of what is free; nothing of the trip that was left.
+    await page.getByRole("button", { name: "Older trip" }).click();
+    await expect(page).toHaveURL(/\/trip\/2026-08-01$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Copenhagen" })).toBeVisible();
+    await expect(details(page).getByText("No days to show for this trip")).toBeVisible();
+    await expect(details(page).getByText("1 city", { exact: true })).toBeVisible();
+    await expect(details(page).getByText("2 flights")).toHaveCount(0); // none of the trip that was left
+    await expect(days).toHaveCount(0);
+    const copenhagen = await whereOnThePage(page, [COPENHAGEN], COPENHAGEN, LABEL_AIR);
+    await expect.poll(async () => sameColour(await pixelAt(page, copenhagen.x, copenhagen.y), PIN, 30), PIXEL_POLL).toBe(true);
+    const lisbon = await whereOnThePage(page, LISBON_TRIP, [-9.14, 38.72], LABEL_AIR);
+    await expect.poll(async () => sameColour(await pixelAt(page, lisbon.x, lisbon.y), BACKGROUND), PIXEL_POLL).toBe(true); // Lisbon's dot is far away now
+
+    // The heat is off, and a trip is no range: no heat and no range was asked for on the way (the day that was opened is asked for, as it is).
+    expect(api.requests.filter((request) => /^\/api\/(range|heat)/.test(request))).toEqual([]);
+  });
+
+  test("trip_heat_is_the_heat_of_the_trips_own_dates_and_of_no_other_trip", async ({ page }) => {
+    await fixToday(page);
+    const api = await mockApi(page);
+    await page.goto("/trip/2026-09-12");
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    const heat = page.getByRole("button", { name: "Heat map" });
+    await expect(heat).toHaveAttribute("aria-pressed", "false");
+    await expect(details(page).getByRole("list", { name: "Day by day" })).toBeVisible();
+    expect(api.requests.filter((request) => request.startsWith("/api/heat"))).toEqual([]); // off: not asked for
+
+    await heat.click();
+
+    await expect(heat).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(() => api.requests.filter((request) => request.startsWith("/api/heat"))).toEqual(["/api/heat?from=2026-09-12&to=2026-09-16"]); // localStartDate to localEndDate
+
+    // The heat stays on for the trip stepped to, and is the heat of that trip's dates: the glow of the one left is not asked for again.
+    await page.getByRole("button", { name: "Older trip" }).click();
+    await expect(page).toHaveURL(/\/trip\/2026-08-01$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Copenhagen" })).toBeVisible();
+    await expect(heat).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(() => api.requests.filter((request) => request.startsWith("/api/heat"))).toEqual([
+      "/api/heat?from=2026-09-12&to=2026-09-16",
+      "/api/heat?from=2026-08-01&to=2026-08-03",
+    ]);
+    await expect(page.getByRole("alert")).toHaveCount(0); // no "Couldn't load the heat map"
   });
 });
