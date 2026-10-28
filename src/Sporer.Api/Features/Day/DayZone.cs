@@ -12,12 +12,18 @@ internal static class DayZone
     public const string Unknown = "UTC";
 
     /// <summary>
-    /// The zone the day <paramref name="date"/> is shown in: where its first segment starts (<paramref name="stored"/> are the day's
-    /// segments, as <see cref="SegmentStore.FindDayAsync"/> gives them), else where the latest stay before the day was. Null when
-    /// there is neither: the day view then says <see cref="Unknown"/>.
+    /// The zone the day <paramref name="date"/> is shown in: where its first segment starts, else where the latest stay before the day was.
+    /// Null when there is neither: the day view then says <see cref="Unknown"/>. The first segment is that of
+    /// <paramref name="stored"/>, the day's segments as <see cref="SegmentStore.FindDayAsync"/> gives them, for a caller that has them
+    /// already; without them it is read alone (<see cref="SegmentStore.FindDayStartZoneAsync"/>, which finds the same segment), so that a
+    /// reader who wants no more than the zone does not load the day's geometry for it.
     /// </summary>
-    public static async Task<string?> FindAsync(SegmentStore segments, DateOnly date, IReadOnlyList<DaySegment> stored, CancellationToken ct)
-        => stored.Count > 0 ? stored[0].StartTz : await segments.FindZoneBeforeAsync(date, ct);
+    public static async Task<string?> FindAsync(
+        SegmentStore segments, DateOnly date, IReadOnlyList<DaySegment>? stored, CancellationToken ct)
+    {
+        var first = stored is null ? await segments.FindDayStartZoneAsync(date, ct) : stored.Count > 0 ? stored[0].StartTz : null;
+        return first ?? await segments.FindZoneBeforeAsync(date, ct);
+    }
 
     /// <summary>
     /// From local midnight to the next one of <paramref name="date"/>, as UTC (the end is exclusive): the stretch of raw points that the
@@ -25,9 +31,5 @@ internal static class DayZone
     /// widest span <see cref="DaySpan.Of"/> gives a day it knows no zone for, which is for telling whether a day is still open).
     /// </summary>
     public static async Task<(DateTime FromUtc, DateTime ToUtc)> FindPointSpanAsync(SegmentStore segments, DateOnly date, CancellationToken ct)
-    {
-        var stored = await segments.FindDayAsync(date, ct);
-        var zone = await FindAsync(segments, date, stored, ct);
-        return DaySpan.Of(date, zone ?? Unknown);
-    }
+        => DaySpan.Of(date, await FindAsync(segments, date, stored: null, ct) ?? Unknown);
 }

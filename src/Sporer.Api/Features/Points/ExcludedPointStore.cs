@@ -25,15 +25,15 @@ public sealed class ExcludedPointStore(NpgsqlDataSource dataSource, ProcessingQu
     /// Removes the points of <paramref name="points"/> that exist and are not removed already, as one batch, and asks for a rebuild of the
     /// stretch from the first to the last of them, due at once as of <paramref name="nowUtc"/>. Both happen or neither. A point that does
     /// not exist (no row of <c>locationlog</c> has its device and exact time) or that an earlier removal holds is left alone: it stays in
-    /// the batch it is in. Returns the batch, which is a new one whatever happens to the points, and how many were removed; none is no
-    /// batch to speak of (nothing is stored under it) and asks for no rebuild.
+    /// the batch it is in. Returns the batch and how many were removed. When none was, there is no batch (it is null: nothing is stored
+    /// under an id), and no rebuild is asked for.
     /// </summary>
-    public async Task<(Guid Batch, int Count)> RemoveAsync(IReadOnlyList<PointKey> points, DateTime nowUtc, CancellationToken ct = default)
+    public async Task<(Guid? Batch, int Count)> RemoveAsync(IReadOnlyList<PointKey> points, DateTime nowUtc, CancellationToken ct = default)
     {
-        var batch = Guid.NewGuid();
         if (points.Count == 0)
-            return (batch, 0);
+            return (null, 0);
 
+        var batch = Guid.NewGuid();
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
@@ -60,8 +60,10 @@ public sealed class ExcludedPointStore(NpgsqlDataSource dataSource, ProcessingQu
                 removed.Add(reader.GetDateTime(0));
         }
 
-        if (removed.Count > 0)
-            await queue.EnqueueNowAsync(connection, transaction, removed.Min(), removed.Max(), nowUtc, ct);
+        if (removed.Count == 0)
+            return (null, 0); // nothing was written: the transaction is rolled back as it is disposed
+
+        await queue.EnqueueNowAsync(connection, transaction, removed.Min(), removed.Max(), nowUtc, ct);
 
         await transaction.CommitAsync(ct);
         return (batch, removed.Count);

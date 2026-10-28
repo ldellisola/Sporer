@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
 using Sporer.Api.Configuration;
+using Sporer.Api.Features.Day;
 using Sporer.Api.Features.Timeline;
 using Sporer.Api.Features.Trips;
 using Sporer.Testing;
@@ -67,6 +68,15 @@ public class PointsTests(DatabaseFixture db)
         using var body = await JsonOf(await RemoveAsync(client, points));
         Assert.Equal(["batch", "count"], body.RootElement.EnumerateObject().Select(p => p.Name));
         return (body.RootElement.GetProperty("batch").GetGuid(), body.RootElement.GetProperty("count").GetInt32());
+    }
+
+    /// <summary>Removes the points, which remove nothing, and expects the answer for that: no batch, written as a null, and a count of none.</summary>
+    private static async Task RemoveNothingAsync(HttpClient client, params Pt[] points)
+    {
+        using var response = await RemoveAsync(client, points);
+        var text = await response.Content.ReadAsStringAsync(Ct);
+        Assert.True(response.StatusCode == HttpStatusCode.OK, $"POST /api/points/remove gave {(int)response.StatusCode}: {text}");
+        Assert.Equal("""{"batch":null,"count":0}""", text);
     }
 
     private sealed record DayPoints(string Date, string[] Devices, (long T, double Lon, double Lat, int Device)[] Points);
@@ -158,6 +168,65 @@ public class PointsTests(DatabaseFixture db)
             using var view = await JsonOf(await client.GetAsync($"/api/day/{date}", Ct));
             Assert.Equal(zone, view.RootElement.GetProperty("timeZone").GetString());
         }
+    }
+
+    /// <summary>
+    /// Two days that each have segments in two zones. On 20 October the segment that starts first (Oslo) has the higher id, so the order is by
+    /// start and not by id; on 21 October two segments start together (Tokyo's has the lower id), so the id settles it.
+    /// </summary>
+    private static async Task TwoZoneDaysAsync(string cs)
+    {
+        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, 20, 12), Utc(10, 20, 14), D(10, 20), D(10, 20), "Asia/Tokyo");
+        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, 20, 4), Utc(10, 20, 9), D(10, 20), D(10, 20), "Europe/Oslo");
+        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, 21, 5), Utc(10, 21, 6), D(10, 21), D(10, 21), "Asia/Tokyo");
+        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, 21, 5), Utc(10, 21, 8), D(10, 21), D(10, 21), "Europe/Oslo");
+    }
+
+    [Fact]
+    public async Task Points_of_a_day_with_two_zones_are_in_the_zone_of_its_first_segment()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await TwoZoneDaysAsync(cs);
+        await InsertAsync(cs,
+            // 20 October: Oslo (UTC+2) is 19 October 22:00 UTC to 20 October 22:00 UTC; Tokyo would be 19 October 15:00 to 20 October 15:00.
+            new Pt(Utc(10, 19, 16), Lon: 1), new Pt(Utc(10, 20, 20), Lon: 2),
+            // 21 October: Tokyo is 20 October 15:00 UTC to 21 October 15:00 UTC; Oslo would be 20 October 22:00 to 21 October 22:00.
+            new Pt(Utc(10, 20, 16), Lon: 3), new Pt(Utc(10, 21, 20), Lon: 4));
+
+        Assert.Equal([3d, 2d], (await DayPointsAsync(client, "2026-10-20")).Points.Select(p => p.Lon)); // not 1, which only Tokyo's 20 October holds
+        Assert.Equal([3d, 2d], (await DayPointsAsync(client, "2026-10-21")).Points.Select(p => p.Lon)); // not 4, which only Oslo's 21 October holds
+        foreach (var (date, zone) in new[] { ("2026-10-20", "Europe/Oslo"), ("2026-10-21", "Asia/Tokyo") })
+        {
+            using var view = await JsonOf(await client.GetAsync($"/api/day/{date}", Ct));
+            Assert.Equal(zone, view.RootElement.GetProperty("timeZone").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task Day_zone_is_the_same_with_the_days_segments_loaded_and_without()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        _ = api.CreateClient(); // starting the host runs the migrations
+        var segments = api.Services.GetRequiredService<SegmentStore>();
+        await TwoZoneDaysAsync(cs);
+        await StayInAsync(cs, "Pacific/Auckland", Utc(10, 23, 2), Utc(10, 23, 4));
+
+        // Days with segments in two zones (and one with a tie), one with a single zone, days with none after a stay, and days before every stay.
+        foreach (var date in new[] { D(10, 20), D(10, 21), D(10, 23), D(10, 24), D(10, 30), D(10, 1), D(1, 1) })
+        {
+            var light = await DayZone.FindAsync(segments, date, stored: null, Ct);
+            var loaded = await DayZone.FindAsync(segments, date, await segments.FindDayAsync(date, Ct), Ct);
+            Assert.Equal(loaded, light);
+        }
+
+        Assert.Equal("Europe/Oslo", await DayZone.FindAsync(segments, D(10, 20), stored: null, Ct));          // the first to start, though it has the higher id
+        Assert.Equal("Asia/Tokyo", await DayZone.FindAsync(segments, D(10, 21), stored: null, Ct));           // two start together: the lower id
+        Assert.Equal("Pacific/Auckland", await DayZone.FindAsync(segments, D(10, 23), stored: null, Ct));
+        Assert.Equal("Pacific/Auckland", await DayZone.FindAsync(segments, D(10, 30), stored: null, Ct));     // none of its own: where the latest stay was
+        Assert.Null(await DayZone.FindAsync(segments, D(10, 1), stored: null, Ct));                           // nothing before it either
     }
 
     [Fact]
@@ -326,20 +395,24 @@ public class PointsTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task Remove_nothing_is_a_batch_of_none_and_asks_for_no_rebuild()
+    public async Task Remove_of_nothing_answers_a_null_batch_and_queues_nothing()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
         var client = api.CreateClient();
+        await InsertAsync(cs, new Pt(Utc(10, 22, 6)), new Pt(Utc(10, 22, 7)));
 
-        var (batch, count) = await RemoveOkAsync(client);
-        var (_, ofNone) = await RemoveOkAsync(client, new Pt(Utc(10, 22, 6)));
-
-        Assert.Equal(0, count);
-        Assert.Equal(0, ofNone);
-        Assert.NotEqual(Guid.Empty, batch);
+        await RemoveNothingAsync(client);                                          // no points asked for
+        await RemoveNothingAsync(client, new Pt(Utc(10, 25, 6)), new Pt(Utc(10, 22, 6), "watch")); // none of them exists
         Assert.Equal(0, await CountAsync(cs, "excluded_point"));
         Assert.Equal(0, await CountAsync(cs, "dirty_range"));
+
+        // Every one is removed already: nothing more is removed, and nothing more is asked of the worker.
+        await RemoveOkAsync(client, new Pt(Utc(10, 22, 6)), new Pt(Utc(10, 22, 7)));
+        Assert.Equal(1, await CountAsync(cs, "dirty_range"));
+        await RemoveNothingAsync(client, new Pt(Utc(10, 22, 6)), new Pt(Utc(10, 22, 7)));
+        Assert.Equal(2, await CountAsync(cs, "excluded_point"));
+        Assert.Equal(1, await CountAsync(cs, "dirty_range"));
     }
 
     [Fact]
@@ -381,10 +454,10 @@ public class PointsTests(DatabaseFixture db)
         var (first, firstCount) = await RemoveOkAsync(client, new Pt(Utc(10, 22, 6)), new Pt(Utc(10, 22, 7)));
         var firstAt = await Sql.ScalarAsync<DateTime>(cs, "select min(excluded_at) from excluded_point", ct: Ct);
         var (second, secondCount) = await RemoveOkAsync(client, new Pt(Utc(10, 22, 7)), new Pt(Utc(10, 22, 8)));
-        var (third, thirdCount) = await RemoveOkAsync(client, new Pt(Utc(10, 22, 6)), new Pt(Utc(10, 22, 8)));
+        await RemoveNothingAsync(client, new Pt(Utc(10, 22, 6)), new Pt(Utc(10, 22, 8))); // both are in a batch already
 
-        Assert.Equal((2, 1, 0), (firstCount, secondCount, thirdCount)); // what is inserted, not what is asked
-        Assert.Equal(3, new[] { first, second, third }.Distinct().Count());
+        Assert.Equal((2, 1), (firstCount, secondCount)); // what is inserted, not what is asked
+        Assert.NotEqual(first, second);
         var rows = await Sql.QueryAsync<(DateTime Time, Guid Batch, DateTime At)>(cs,
             "select time as Time, batch_id as Batch, excluded_at as At from excluded_point order by time", ct: Ct);
         Assert.Equal([(Utc(10, 22, 6), first), (Utc(10, 22, 7), first), (Utc(10, 22, 8), second)], rows.Select(r => (r.Time, r.Batch))); // 07:00 stays in the first
@@ -418,8 +491,7 @@ public class PointsTests(DatabaseFixture db)
         // A time rounded to the millisecond is another time, and no point.
         using (var rounded = await client.PostAsJsonAsync("/api/points/remove",
                    new { points = new[] { new { device = "phone", t = told / 1000 * 1000 } } }, Ct))
-        using (var body = await JsonOf(rounded))
-            Assert.Equal(0, body.RootElement.GetProperty("count").GetInt32());
+            Assert.Equal("""{"batch":null,"count":0}""", await rounded.Content.ReadAsStringAsync(Ct));
 
         using (var exactly = await client.PostAsJsonAsync("/api/points/remove", new { points = new[] { new { device = "phone", t = told } } }, Ct))
         using (var body = await JsonOf(exactly))
