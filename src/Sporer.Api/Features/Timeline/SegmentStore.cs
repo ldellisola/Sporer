@@ -201,9 +201,6 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
     /// <summary>The segments that touch the local day <c>@Date</c>, as <c>s</c>: those that start on or before it and end on or after it (uses <c>ix_segment_local_dates</c>).</summary>
     private const string DayFilter = "s.local_start_date <= @Date and s.local_end_date >= @Date";
 
-    /// <summary>The order of a day's segments, which is what makes one of them its first.</summary>
-    private const string DayOrder = "order by s.start_utc, s.id";
-
     /// <summary>
     /// The segments that touch the local calendar day <paramref name="date"/> (the one the segment's own zone says), in
     /// time order: those that start on or before it and end on or after it, so a stay that crosses midnight is on both
@@ -233,7 +230,7 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
                 select * from chain where merged_into_id is null
             ) p on true
             where
-            """ + " " + DayFilter + " " + DayOrder,
+            """ + " " + DayFilter + " order by s.start_utc, s.id",
             new { Date = date }, cancellationToken: ct));
 
         return rows.Select(r => new DaySegment(
@@ -244,16 +241,18 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
     }
 
     /// <summary>
-    /// The zone the first segment of the local day <paramref name="date"/> starts in (the first as <see cref="FindDayAsync"/> orders them, and
-    /// of the same segments), or null when the day has none. One row and one column: the day's segments carry their geometry, and the zone
-    /// of the day (see <c>DayZone</c>) is all that some readers want of them.
+    /// The zones the segments of the local day <paramref name="date"/> (the same segments as <see cref="FindDayAsync"/>) start or end in, each
+    /// once, in no order; none when the day has no segments. A day shown in several zones (a flight crosses them) is that many local days
+    /// at once, which is what the raw points of the day are worked out from (see <c>DayZone</c>). Only the zones are read: the day's segments
+    /// carry their geometry, and a reader who wants no more than the zones does not load it.
     /// </summary>
-    public async Task<string?> FindDayStartZoneAsync(DateOnly date, CancellationToken ct = default)
+    public async Task<IReadOnlyList<string>> FindDayZonesAsync(DateOnly date, CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
-        return await connection.QuerySingleOrDefaultAsync<string?>(new CommandDefinition(
-            "select s.start_tz from segment s where " + DayFilter + " " + DayOrder + " limit 1",
+        var zones = await connection.QueryAsync<string>(new CommandDefinition(
+            "select s.start_tz from segment s where " + DayFilter + " union select s.end_tz from segment s where " + DayFilter,
             new { Date = date }, cancellationToken: ct));
+        return zones.AsList();
     }
 
     /// <summary>

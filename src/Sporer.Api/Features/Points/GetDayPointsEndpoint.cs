@@ -6,9 +6,10 @@ namespace Sporer.Api.Features.Points;
 
 /// <summary>
 /// <c>GET /api/day/{date}/points</c>: the raw points of a local day that are not removed (see <see cref="DayPointsResponse"/>), for the
-/// owner to pick the ones to remove from. The day is what the day view calls the day: from local midnight to the next in the zone
-/// <c>GET /api/day/{date}</c> shows it in (see <see cref="DayZone"/>), so the points and the day agree. A day with no points has an empty
-/// list. A date that is not written <c>yyyy-MM-dd</c> is a 400, as for the day. Reads only.
+/// owner to pick the ones to remove from. The day is what the day view calls the day, in every zone its segments are in (see
+/// <see cref="DayZone.FindPointSpanAsync"/>): from the earliest local midnight to the latest next one, so no point is on no day, and on a
+/// day of travel the points of the days next to it overlap. A day with no points has an empty list. A date that is not written
+/// <c>yyyy-MM-dd</c> is a 400, as for the day. Reads only.
 /// </summary>
 internal sealed class GetDayPointsEndpoint(SegmentStore segments, PointStore points) : EndpointWithoutRequest<DayPointsResponse>
 {

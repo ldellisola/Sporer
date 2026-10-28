@@ -170,34 +170,75 @@ public class PointsTests(DatabaseFixture db)
         }
     }
 
-    /// <summary>
-    /// Two days that each have segments in two zones. On 20 October the segment that starts first (Oslo) has the higher id, so the order is by
-    /// start and not by id; on 21 October two segments start together (Tokyo's has the lower id), so the id settles it.
-    /// </summary>
-    private static async Task TwoZoneDaysAsync(string cs)
+    /// <summary>A segment with the local dates its two ends are on, each in its own zone, as the timeline stores one.</summary>
+    private static Task SegmentAsync(string cs, string kind, DateTime start, DateTime end, string startZone, string? endZone = null)
     {
-        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, 20, 12), Utc(10, 20, 14), D(10, 20), D(10, 20), "Asia/Tokyo");
-        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, 20, 4), Utc(10, 20, 9), D(10, 20), D(10, 20), "Europe/Oslo");
-        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, 21, 5), Utc(10, 21, 6), D(10, 21), D(10, 21), "Asia/Tokyo");
-        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, 21, 5), Utc(10, 21, 8), D(10, 21), D(10, 21), "Europe/Oslo");
+        endZone ??= startZone;
+        return TimelineSeeder.InsertSegmentAsync(cs, kind, start, end, LocalTime.LocalDate(start, startZone), LocalTime.LocalDate(end, endZone), startZone, endZone);
     }
 
+    /// <summary>
+    /// A flight from Tokyo (UTC+9) to Oslo (UTC+2 until 25 October) on 20 October: 06:00 JST to 11:00 JST at the Tokyo end, 11:00 JST to
+    /// 16:00 in Oslo in the air, and Oslo from 16:00 to 08:00 on the 21st. Tokyo's 20 October is 19 October 15:00 UTC to 20 October 15:00 UTC;
+    /// Oslo's is 19 October 22:00 UTC to 20 October 22:00 UTC; Oslo's 21 October is 20 October 22:00 UTC to 21 October 22:00 UTC.
+    /// </summary>
+    private static async Task FlightWestAsync(string cs)
+    {
+        await SegmentAsync(cs, "stay", Utc(10, 19, 21), Utc(10, 20, 2), "Asia/Tokyo");
+        await SegmentAsync(cs, "move", Utc(10, 20, 2), Utc(10, 20, 14), "Asia/Tokyo", "Europe/Oslo");
+        await SegmentAsync(cs, "stay", Utc(10, 20, 14), Utc(10, 21, 6), "Europe/Oslo");
+    }
+
+    /// <summary>
+    /// A flight from Oslo to Tokyo on 20 October: Oslo from 06:00 to 08:00, in the air until 05:00 JST on the 21st, Tokyo from then until 19:00
+    /// that day. The move is on 20 and 21 October (it starts on the one in Oslo and ends on the other in Tokyo).
+    /// </summary>
+    private static async Task FlightEastAsync(string cs)
+    {
+        await SegmentAsync(cs, "stay", Utc(10, 20, 4), Utc(10, 20, 6), "Europe/Oslo");
+        await SegmentAsync(cs, "move", Utc(10, 20, 6), Utc(10, 20, 20), "Europe/Oslo", "Asia/Tokyo");
+        await SegmentAsync(cs, "stay", Utc(10, 20, 20), Utc(10, 21, 10), "Asia/Tokyo");
+    }
+
+    /// <summary>A point of the phone every hour from <paramref name="from"/> to <paramref name="to"/>, both included, its longitude the hour's number.</summary>
+    private static Pt[] Hourly(DateTime from, DateTime to)
+        => [.. Enumerable.Range(0, (int)(to - from).TotalHours + 1).Select(hour => new Pt(from.AddHours(hour), Lon: hour))];
+
+    /// <summary>The longitudes of the points that are from <paramref name="from"/> to <paramref name="to"/>, both included.</summary>
+    private static HashSet<double> LonsBetween(IEnumerable<Pt> points, DateTime from, DateTime to)
+        => [.. points.Where(p => p.Time >= from && p.Time <= to).Select(p => p.Lon)];
+
+    private static async Task<HashSet<double>> LonsOfAsync(HttpClient client, string date)
+        => [.. (await DayPointsAsync(client, date)).Points.Select(p => p.Lon)];
+
     [Fact]
-    public async Task Points_of_a_day_with_two_zones_are_in_the_zone_of_its_first_segment()
+    public async Task Points_of_a_day_flown_west_leave_no_point_on_no_day()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
         var client = api.CreateClient();
-        await TwoZoneDaysAsync(cs);
-        await InsertAsync(cs,
-            // 20 October: Oslo (UTC+2) is 19 October 22:00 UTC to 20 October 22:00 UTC; Tokyo would be 19 October 15:00 to 20 October 15:00.
-            new Pt(Utc(10, 19, 16), Lon: 1), new Pt(Utc(10, 20, 20), Lon: 2),
-            // 21 October: Tokyo is 20 October 15:00 UTC to 21 October 15:00 UTC; Oslo would be 20 October 22:00 to 21 October 22:00.
-            new Pt(Utc(10, 20, 16), Lon: 3), new Pt(Utc(10, 21, 20), Lon: 4));
+        await FlightWestAsync(cs);
+        var points = Hourly(Utc(10, 19, 15), Utc(10, 21, 21)); // from Tokyo's midnight to the last hour of Oslo's 21 October
+        await InsertAsync(cs, points);
 
-        Assert.Equal([3d, 2d], (await DayPointsAsync(client, "2026-10-20")).Points.Select(p => p.Lon)); // not 1, which only Tokyo's 20 October holds
-        Assert.Equal([3d, 2d], (await DayPointsAsync(client, "2026-10-21")).Points.Select(p => p.Lon)); // not 4, which only Oslo's 21 October holds
-        foreach (var (date, zone) in new[] { ("2026-10-20", "Europe/Oslo"), ("2026-10-21", "Asia/Tokyo") })
+        var twentieth = await DayPointsAsync(client, "2026-10-20");
+        var twentyFirst = await DayPointsAsync(client, "2026-10-21");
+
+        // 20 October is from the earliest midnight (Tokyo's) to the latest next one (Oslo's): the arrival evening is on it.
+        Assert.Equal((Micros(Utc(10, 19, 15)), Micros(Utc(10, 20, 21))), (twentieth.Points[0].T, twentieth.Points[^1].T));
+        Assert.Equal(31, twentieth.Points.Length);
+        // The arrival evening, 15:00 to 21:00 UTC, is in neither Tokyo's 20 October nor Oslo's 21st.
+        var arrival = LonsBetween(points, Utc(10, 20, 15), Utc(10, 20, 21));
+        Assert.Equal(7, arrival.Count);
+        Assert.Subset(await LonsOfAsync(client, "2026-10-20"), arrival);
+        // 21 October is Oslo's: it starts where the 20th ends.
+        Assert.Equal((Micros(Utc(10, 20, 22)), Micros(Utc(10, 21, 21))), (twentyFirst.Points[0].T, twentyFirst.Points[^1].T));
+        Assert.Equal(24, twentyFirst.Points.Length);
+        // Every point of the two days is on one of them.
+        Assert.Equal(points.Select(p => p.Lon).Order(), (await LonsOfAsync(client, "2026-10-20")).Union(await LonsOfAsync(client, "2026-10-21")).Order());
+
+        // The day view shows each day in the zone it always did.
+        foreach (var (date, zone) in new[] { ("2026-10-20", "Asia/Tokyo"), ("2026-10-21", "Europe/Oslo") })
         {
             using var view = await JsonOf(await client.GetAsync($"/api/day/{date}", Ct));
             Assert.Equal(zone, view.RootElement.GetProperty("timeZone").GetString());
@@ -205,28 +246,74 @@ public class PointsTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task Day_zone_is_the_same_with_the_days_segments_loaded_and_without()
+    public async Task Points_of_a_day_flown_east_overlap_the_next_day()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await FlightEastAsync(cs);
+        var points = Hourly(Utc(10, 19, 15), Utc(10, 21, 21));
+        await InsertAsync(cs, points);
+
+        var twentieth = await DayPointsAsync(client, "2026-10-20");
+        var twentyFirst = await DayPointsAsync(client, "2026-10-21");
+
+        // 20 October: Tokyo's midnight to Oslo's next one. 21 October: Tokyo's midnight (20 October 15:00 UTC) to Oslo's next one, because the
+        // flight that is on it started in Oslo.
+        Assert.Equal((Micros(Utc(10, 19, 15)), Micros(Utc(10, 20, 21))), (twentieth.Points[0].T, twentieth.Points[^1].T));
+        Assert.Equal((Micros(Utc(10, 20, 15)), Micros(Utc(10, 21, 21))), (twentyFirst.Points[0].T, twentyFirst.Points[^1].T));
+        // What is on both is where they overlap: 20 October 15:00 to 21:00 UTC.
+        var both = LonsBetween(points, Utc(10, 20, 15), Utc(10, 20, 21));
+        Assert.Equal(7, both.Count);
+        Assert.Equal(both.Order(), (await LonsOfAsync(client, "2026-10-20")).Intersect(await LonsOfAsync(client, "2026-10-21")).Order());
+        Assert.Equal(points.Select(p => p.Lon).Order(), (await LonsOfAsync(client, "2026-10-20")).Union(await LonsOfAsync(client, "2026-10-21")).Order());
+
+        // Both days are shown in the zone their first segment starts in, which is Oslo: the view is as it was.
+        foreach (var date in new[] { "2026-10-20", "2026-10-21" })
+        {
+            using var view = await JsonOf(await client.GetAsync($"/api/day/{date}", Ct));
+            Assert.Equal("Europe/Oslo", view.RootElement.GetProperty("timeZone").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task Point_span_of_a_day_is_from_the_earliest_midnight_to_the_latest_next_one()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
         _ = api.CreateClient(); // starting the host runs the migrations
         var segments = api.Services.GetRequiredService<SegmentStore>();
-        await TwoZoneDaysAsync(cs);
-        await StayInAsync(cs, "Pacific/Auckland", Utc(10, 23, 2), Utc(10, 23, 4));
+        await FlightWestAsync(cs);
 
-        // Days with segments in two zones (and one with a tie), one with a single zone, days with none after a stay, and days before every stay.
-        foreach (var date in new[] { D(10, 20), D(10, 21), D(10, 23), D(10, 24), D(10, 30), D(10, 1), D(1, 1) })
-        {
-            var light = await DayZone.FindAsync(segments, date, stored: null, Ct);
-            var loaded = await DayZone.FindAsync(segments, date, await segments.FindDayAsync(date, Ct), Ct);
-            Assert.Equal(loaded, light);
-        }
+        async Task<(DateTime, DateTime)> SpanAsync(DateOnly date) => await DayZone.FindPointSpanAsync(segments, date, Ct);
 
-        Assert.Equal("Europe/Oslo", await DayZone.FindAsync(segments, D(10, 20), stored: null, Ct));          // the first to start, though it has the higher id
-        Assert.Equal("Asia/Tokyo", await DayZone.FindAsync(segments, D(10, 21), stored: null, Ct));           // two start together: the lower id
-        Assert.Equal("Pacific/Auckland", await DayZone.FindAsync(segments, D(10, 23), stored: null, Ct));
-        Assert.Equal("Pacific/Auckland", await DayZone.FindAsync(segments, D(10, 30), stored: null, Ct));     // none of its own: where the latest stay was
-        Assert.Null(await DayZone.FindAsync(segments, D(10, 1), stored: null, Ct));                           // nothing before it either
+        Assert.Equal((Utc(10, 19, 15), Utc(10, 20, 22)), await SpanAsync(D(10, 20)));  // Tokyo's and Oslo's 20 October: both zones start or end a segment of it
+        Assert.Equal((Utc(10, 20, 22), Utc(10, 21, 22)), await SpanAsync(D(10, 21)));  // Oslo's: the only zone of the day
+        Assert.Equal((Utc(10, 21, 22), Utc(10, 22, 22)), await SpanAsync(D(10, 22)));  // no segments: the zone of the latest stay before it (Oslo)
+        Assert.Equal((Utc(10, 19), Utc(10, 20)), await SpanAsync(D(10, 19)));          // no segments and no stay before it: the UTC day
+    }
+
+    [Fact]
+    public async Task Removed_list_dates_of_a_day_of_travel_are_every_day_a_point_is_on()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await FlightEastAsync(cs);
+        var overlap = new Pt(Utc(10, 20, 16));  // on 20 October (up to 22:00 UTC) and on 21 October (from 15:00 UTC the day before)
+        var alone = new Pt(Utc(10, 21, 12));    // on 21 October only
+        await InsertAsync(cs, overlap, alone);
+        Assert.Equal([Micros(overlap.Time)], (await DayPointsAsync(client, "2026-10-20")).Points.Select(p => p.T));
+        Assert.Equal([Micros(overlap.Time), Micros(alone.Time)], (await DayPointsAsync(client, "2026-10-21")).Points.Select(p => p.T));
+        var (first, _) = await RemoveOkAsync(client, overlap);
+        var (second, _) = await RemoveOkAsync(client, alone);
+
+        using var list = await JsonOf(await client.GetAsync("/api/points/removed", Ct));
+
+        string[] DatesOf(Guid batch) => [.. list.RootElement.EnumerateArray().Single(b => b.GetProperty("batch").GetGuid() == batch)
+            .GetProperty("localDates").EnumerateArray().Select(d => d.GetString()!)];
+        Assert.Equal(["2026-10-20", "2026-10-21"], DatesOf(first));
+        Assert.Equal(["2026-10-21"], DatesOf(second));
     }
 
     [Fact]
@@ -501,6 +588,37 @@ public class PointsTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task Remove_matches_a_point_before_1970_by_its_negative_time()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var landing = new DateTime(1969, 7, 20, 20, 17, 40, DateTimeKind.Utc).AddTicks(1_234_570); // 20:17:40.123457, before the epoch
+        await InsertAsync(cs, new Pt(landing, Lon: 7), new Pt(landing.AddSeconds(1), Lon: 8));
+        Assert.Equal(landing, await Sql.ScalarAsync<DateTime>(cs, "select min(time) from locationlog", ct: Ct));
+
+        // What the day says is a negative number of microseconds, exact, and it is what removes the point.
+        var day = await DayPointsAsync(client, "1969-07-20");
+        Assert.Equal(2, day.Points.Length);
+        var told = day.Points[0].T;
+        Assert.True(told < 0);
+        Assert.Equal(Micros(landing), told);
+        Assert.Equal(-14_182_939_876_543, told); // 14 182 939.876543 s before the epoch
+
+        // A time rounded toward the epoch to the millisecond (what truncating a negative number does) is another time, and no point.
+        using (var rounded = await client.PostAsJsonAsync("/api/points/remove",
+                   new { points = new[] { new { device = "phone", t = told / 1000 * 1000 } } }, Ct))
+            Assert.Equal("""{"batch":null,"count":0}""", await rounded.Content.ReadAsStringAsync(Ct));
+
+        using var removed = await client.PostAsJsonAsync("/api/points/remove", new { points = new[] { new { device = "phone", t = told } } }, Ct);
+        using var body = await JsonOf(removed);
+
+        Assert.Equal(1, body.RootElement.GetProperty("count").GetInt32());
+        Assert.Equal([landing], await Sql.QueryAsync<DateTime>(cs, "select time from excluded_point", ct: Ct));
+        Assert.Equal([8d], (await DayPointsAsync(client, "1969-07-20")).Points.Select(p => p.Lon));
+    }
+
+    [Fact]
     public async Task Remove_over_limit_is_400()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
@@ -589,6 +707,9 @@ public class PointsTests(DatabaseFixture db)
         public FakeTimeProvider Clock { get; } = clock;
         public string Cs { get; } = cs;
 
+        /// <summary>How long a range recorded by ingest waits before the worker takes it.</summary>
+        public TimeSpan Debounce { get; } = api.Services.GetRequiredService<ProcessingOptions>().Debounce;
+
         /// <summary>The two bad fixes of the morning.</summary>
         public List<TrackPoint> Bad { get; } = bad;
 
@@ -669,6 +790,8 @@ public class PointsTests(DatabaseFixture db)
         // Due at once, over the span of what was restored.
         var range = await Sql.SingleAsync(cs, "select from_utc, to_utc, created_at from dirty_range", ct: Ct);
         Assert.Equal((bad[0].TimeUtc, bad[^1].TimeUtc), ((DateTime)range.from_utc, (DateTime)range.to_utc));
+        Assert.True(rig.Debounce > TimeSpan.Zero);
+        Assert.Equal(rig.Clock.GetUtcNow().UtcDateTime - rig.Debounce, (DateTime)range.created_at); // as if the debounce had run out already
         Assert.True(await rig.Worker.RunOnceAsync(Ct));
         await rig.FinishAsync();
         Assert.True(await EastwardReachOfMovesAsync(rig.Client, "2026-10-22") > SpikeReach, "the move goes through them again");

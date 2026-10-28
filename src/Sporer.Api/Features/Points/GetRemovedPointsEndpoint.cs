@@ -14,8 +14,8 @@ public sealed record RemovedBatchDto(
 
 /// <summary>
 /// <c>GET /api/points/removed</c>: the removals the owner has made and not restored, newest first, as an array of <see cref="RemovedBatchDto"/>.
-/// A point is on a date when it is among that day's points (<c>GET /api/day/{date}/points</c>, see <see cref="DayZone"/>), which is what the day
-/// is, so a removal is listed on the days it can be seen on. Reads only.
+/// A point is on every date whose points (<c>GET /api/day/{date}/points</c>, see <see cref="DayZone.FindPointSpanAsync"/>) include it, so a
+/// removal is listed on all the days it can be seen on: on a day of travel that can be two. Reads only.
 /// </summary>
 internal sealed class GetRemovedPointsEndpoint(ExcludedPointStore store, SegmentStore segments)
     : EndpointWithoutRequest<IReadOnlyList<RemovedBatchDto>>

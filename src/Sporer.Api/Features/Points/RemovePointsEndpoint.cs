@@ -29,8 +29,8 @@ internal sealed record RemovePointsResponse([property: JsonIgnore(Condition = Js
 /// <see cref="ExcludedPointStore.RemoveAsync"/>, which also says what is a point that is not removed: one that does not exist, or that was
 /// removed before, is ignored, and is not counted). The stretch they are in is asked to be rebuilt at once. Answers 200 with the
 /// <c>batch</c>, which <c>DELETE /api/points/removed/{batch}</c> undoes, and the <c>count</c> removed; when that is none, the batch is
-/// <c>null</c> and nothing is asked to be rebuilt. More than <see cref="MaxPoints"/> points
-/// is a 400, as is a body without <c>points</c>, a point without a <c>device</c> or a <c>t</c> that is a time no point has, and nothing is removed.
+/// <c>null</c> and nothing is asked to be rebuilt. More than <see cref="MaxPoints"/> points is a 400, as is a body without <c>points</c>, a
+/// point without a <c>device</c> or a <c>t</c> that is not a time (a point that does not exist is ignored, not a 400), and nothing is removed.
 /// </summary>
 internal sealed class RemovePointsEndpoint(ExcludedPointStore store, TimeProvider time) : Endpoint<RemovePointsRequest, RemovePointsResponse>
 {
