@@ -123,6 +123,9 @@
  */
 .root :global(.maplibregl-ctrl.maplibregl-ctrl-attrib) {
   background: rgba(255, 255, 255, 0.5);
+  /* Blurred behind, as the buttons are: labels and routes that lie under the small text are not read through it. */
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   font-size: 10px;
   line-height: 13px;
 }
@@ -136,7 +139,7 @@
 /* On a dark map the attribution is dark too, with the same credit and links. */
 @media (prefers-color-scheme: dark) {
   .root :global(.maplibregl-ctrl.maplibregl-ctrl-attrib) {
-    background: rgba(44, 44, 46, 0.5);
+    background: rgba(44, 44, 46, 0.65); /* fainter than before (0.8), but not so faint that light labels and routes show through the text */
     color: #e5e5ea;
   }
 

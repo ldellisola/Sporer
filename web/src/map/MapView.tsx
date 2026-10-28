@@ -157,9 +157,10 @@ const OSM_ATTRIBUTION =
  */
 const CREDIT_OPEN_MS = 5000;
 
-/** MapLibre's credit, and the class that has it open (in its compact form, which the map is made with). */
+/** MapLibre's credit, the class that has it open (in its compact form, which the map is made with), and its ⓘ button. */
 const CREDIT_SELECTOR = ".maplibregl-ctrl-attrib";
 const CREDIT_OPEN_CLASS = "maplibregl-compact-show";
+const CREDIT_BUTTON_SELECTOR = ".maplibregl-ctrl-attrib-button";
 
 /** What a map shows when its style cannot be had: nothing, so that the routes lie on the background of the page. */
 const FALLBACK_STYLE: StyleSpecification = { version: 8, sources: {}, layers: [] };
@@ -329,20 +330,32 @@ function placeAt(map: MapLibreMap, { x, y }: { x: number; y: number }): number |
   return nearest;
 }
 
+/** What `foldCreditEarly` gives back: `arm` for when the map first shows its real style, `stop` for when the map goes. */
+interface CreditFold {
+  arm: () => void;
+  stop: () => void;
+}
+
 /**
  * Folds the credit of `map` (whose element is `container`) sooner than MapLibre does, which does it only when the map is dragged: once,
- * five seconds after the map first has a style (that is when the credit appears: it is built from the style's sources) or at once when the
- * user first touches the map, whichever comes first. A touch is a tap (`click`) or a move that the user makes (`movestart` with the event
- * of the pointer, wheel or keyboard in it: a pinch, a wheel, a double tap, a drag); the app's own `fitBounds` has none and leaves it open.
+ * five seconds after `arm` is called or at once when the user first touches the map, whichever comes first. The caller arms it when the
+ * map first shows its real style, and not for the plain one that stands in for a style that could not be had: the credit is to be open
+ * when the map that it credits first appears, whatever was tapped on the blank map before, and MapLibre never opens a folded credit again
+ * by itself. A touch is a tap (`click`) or a move that the user makes (`movestart` with the event of the pointer, wheel or keyboard in
+ * it: a pinch, a wheel, a double tap, a drag); the app's own `fitBounds` has none and leaves it open. A tap on the ⓘ button ends it as
+ * well (it is not a tap on the map to MapLibre): whoever closes and opens the credit again is not to have it folded under their finger.
  * It folds as MapLibre's drag does, by taking away the class that has it open, so that its own ⓘ button still shows it again. This is done
- * once for a map: afterwards a credit that was opened with ⓘ is MapLibre's again, and folds on the next drag. Returns what undoes it all
- * (the timer, the listeners), for when the map is removed.
+ * once for a map: afterwards a credit that was opened with ⓘ is MapLibre's again, and folds on the next drag. `stop` undoes it all (the
+ * timer, the listeners), for when the map is removed, and keeps a later `arm` from starting anything.
  */
-function foldCreditEarly(map: MapLibreMap, container: HTMLElement): () => void {
+function foldCreditEarly(map: MapLibreMap, container: HTMLElement): CreditFold {
+  let state: "waiting" | "armed" | "done" = "waiting";
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let infoButton: Element | null = null;
   const stop = (): void => {
+    state = "done";
     clearTimeout(timer);
-    map.off("style.load", start);
+    infoButton?.removeEventListener("click", stop);
     map.off("movestart", onMove);
     map.off("click", fold);
   };
@@ -353,14 +366,16 @@ function foldCreditEarly(map: MapLibreMap, container: HTMLElement): () => void {
   const onMove = ({ originalEvent }: { originalEvent?: unknown }): void => {
     if (originalEvent !== undefined) fold();
   };
-  function start(): void {
-    map.off("style.load", start); // the first style only: the one of another colour scheme is no new map
+  const arm = (): void => {
+    if (state !== "waiting") return; // the first real style only: the one of another colour scheme is no new map
+    state = "armed";
     timer = setTimeout(fold, CREDIT_OPEN_MS);
+    infoButton = container.querySelector(CREDIT_BUTTON_SELECTOR);
+    infoButton?.addEventListener("click", stop);
     map.on("movestart", onMove);
     map.on("click", fold);
-  }
-  map.on("style.load", start);
-  return stop;
+  };
+  return { arm, stop };
 }
 
 // --- The map ---
@@ -399,6 +414,8 @@ function MapSurface({
   const pushedRef = useRef<Pushed>(newPushed());
   /** What has failed and is not being tried again yet; null while all is well, and while an attempt is on its way. */
   const failureRef = useRef<Failure | null>(null);
+  /** The fold of the credit of the map that there is (see `foldCreditEarly`): the style arms it once it shows the real map. */
+  const creditFoldRef = useRef<CreditFold | null>(null);
   /** The style the map can be drawn on: the last one that loaded, or else the plain one that it fell back to; null before it has any. */
   const shownRef = useRef<StyleSpecification | null>(null);
   // One count for each thing there is to try again. A change of either is what runs the effect again.
@@ -421,7 +438,6 @@ function MapSurface({
     if (container === null) return;
     let cancelled = false;
     let made: MapLibreMap | null = null;
-    let stopFolding: (() => void) | null = null;
     failureRef.current = null; // an attempt is on its way (the first, or one that was asked for)
     showState(rootRef.current, "loading");
     const unavailable = (error: unknown): void => {
@@ -445,7 +461,7 @@ function MapSurface({
             maxPitch: 0,
           });
           made.touchZoomRotate.disableRotation();
-          stopFolding = foldCreditEarly(made, container);
+          creditFoldRef.current = foldCreditEarly(made, container);
           // MapLibre drops its style when the context is lost, and sets it again when the context is back; until then it is not to be touched.
           made.on("webglcontextlost", () => {
             readyRef.current = false;
@@ -458,8 +474,8 @@ function MapSurface({
         } catch (error) {
           // Whatever fails in making the map, or in setting it up, is reported and not thrown: nobody is waiting on this promise to catch
           // it. A map that was made and could not be set up is given back (it holds a WebGL context) and not kept.
-          stopFolding?.();
-          stopFolding = null;
+          creditFoldRef.current?.stop();
+          creditFoldRef.current = null;
           try {
             made?.remove();
           } catch {
@@ -475,7 +491,8 @@ function MapSurface({
     );
     return () => {
       cancelled = true;
-      stopFolding?.(); // the timer and the listeners go with the map
+      creditFoldRef.current?.stop(); // the timer and the listeners go with the map
+      creditFoldRef.current = null;
       made?.remove();
       readyRef.current = false;
     };
@@ -530,6 +547,9 @@ function MapSurface({
         phase = "ready";
         shownRef.current = applying;
       }
+      // The credit's five seconds begin when the map first shows a style of its own, and not at the plain one that stands in for a style that
+      // could not be had (the credit is there on a blank map too, and a tap on it must not fold it for the map that Retry brings).
+      if (shownRef.current !== null && shownRef.current !== FALLBACK_STYLE) creditFoldRef.current?.arm();
       readyRef.current = true;
       showState(rootRef.current, phase === "failed" ? "unavailable" : "ready");
       pushedRef.current = newPushed();

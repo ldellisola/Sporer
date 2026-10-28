@@ -80,7 +80,7 @@ test("map_folds_its_credit_to_the_info_button_by_itself_and_the_button_shows_it_
 });
 
 test.describe("the credit when it is open", () => {
-  for (const [scheme, background] of [["light", "rgba(255, 255, 255, 0.5)"], ["dark", "rgba(44, 44, 46, 0.5)"]] as const) {
+  for (const [scheme, background] of [["light", "rgba(255, 255, 255, 0.5)"], ["dark", "rgba(44, 44, 46, 0.65)"]] as const) {
     test(`map_credit_is_small_and_faint_in_the_${scheme}_scheme`, async ({ page }) => {
       await mockApi(page);
       await page.emulateMedia({ colorScheme: scheme });
@@ -89,11 +89,14 @@ test.describe("the credit when it is open", () => {
       const credit = map(page).locator(".maplibregl-ctrl-attrib");
 
       await expect(credit).toHaveClass(/maplibregl-compact-show/);
+      await expect(map(page).getByRole("link", { name: "OpenStreetMap" })).toBeVisible(); // open, with its text: not the folded circle
       await expect(credit).toHaveCSS("font-size", "10px");
       await expect(credit).toHaveCSS("background-color", background);
+      await expect(credit).toHaveCSS("backdrop-filter", "blur(8px)"); // what is under the small text is blurred
       const box = (await credit.boundingBox())!;
       expect(box.height).toBeGreaterThanOrEqual(24); // not lower than its ⓘ button, which is at its corner
       expect(box.height).toBeLessThan(30); // one line, as the style of the tests credits only OpenStreetMap: a strip, not a box
+      expect(box.width).toBeGreaterThan(3 * box.height); // and a strip is wide: the folded button is a circle of 24px
       const button = (await credit.locator(".maplibregl-ctrl-attrib-button").boundingBox())!;
       expect(button.width).toBeGreaterThanOrEqual(24);
       expect(button.height).toBeGreaterThanOrEqual(24);
@@ -108,6 +111,7 @@ test("map_sets_attribution_and_buttons_inside_the_padding", async ({ page }) => 
   await mockApi(page);
   await page.goto("/day/2026-10-22");
   await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+  await openCredit(page); // the open credit is what is measured (it folds by itself five seconds after the map appears)
   const attribution = map(page).locator(".maplibregl-ctrl-attrib");
   const recenter = map(page).getByRole("button", { name: "Recenter map" });
   const area = (await map(page).boundingBox())!;
@@ -146,9 +150,7 @@ test("map_sets_attribution_and_buttons_inside_the_padding", async ({ page }) => 
   expect(padded.buttonTop - free.buttonTop).toBeCloseTo(120, 0);
   expect(padded.buttonRight - free.buttonRight).toBeCloseTo(40, 0);
   await expect(attribution).toBeInViewport(); // above the sheet, in view
-  await openCredit(page); // it may have folded while this measured: the corner is the same, and so is what it says once it is open
   await expect(map(page).getByRole("link", { name: "OpenStreetMap" })).toBeVisible();
-  await expect(attribution).toBeInViewport();
 });
 
 // The test is of the colour of the canvas and has no use for a canvas of 1170 × 2532 pixels, which the phone project paints in
@@ -268,11 +270,21 @@ test.describe("a style that cannot be had the first time", () => {
     await expect(map(page)).toHaveAttribute("data-map-state", "unavailable");
     expect(asked).toBe(1); // it does not try again by itself
 
+    // The credit is on the blank map too. A tap on it must not fold the credit for the map that Retry brings: it is open when that appears.
+    const credit = map(page).locator(".maplibregl-ctrl-attrib");
+    await expect(credit).toHaveClass(/maplibregl-compact-show/);
+    const [x, y] = await centre(page);
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(500); // a fold, if there were one, is made by the tap at once
+    await expect(credit).toHaveClass(/maplibregl-compact-show/);
+
     await note.getByRole("button", { name: "Retry" }).click();
 
     await expect(map(page)).toHaveAttribute("data-map-state", "ready");
     await expect(note).toHaveCount(0); // the note goes when the style has loaded
     expect(asked).toBe(2);
+    await expect(credit).toHaveClass(/maplibregl-compact-show/);
+    await expect(map(page).getByRole("link", { name: "OpenStreetMap" })).toBeVisible();
     await expect.poll(() => showsColour(page, LIGHT), PIXEL_POLL).toBe(true); // the style that came, and not the plain one it had meanwhile
   });
 });
@@ -314,6 +326,7 @@ test("map_keeps_its_buttons_and_credit_clear_of_the_side_the_device_keeps", asyn
   await mockApi(page);
   await page.goto("/day/2026-10-22");
   await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+  await openCredit(page); // the open credit is what is measured (it folds by itself five seconds after the map appears)
   const area = (await map(page).boundingBox())!;
   const recenter = map(page).getByRole("button", { name: "Recenter map" });
   const credit = map(page).locator(".maplibregl-ctrl-attrib");
@@ -332,7 +345,6 @@ test("map_keeps_its_buttons_and_credit_clear_of_the_side_the_device_keeps", asyn
   const after = await rightEdges();
   expect(after.button - before.button).toBeCloseTo(59, 0);
   expect(after.credit - before.credit).toBeCloseTo(59, 0);
-  await openCredit(page); // it may have folded while this measured: the corner is the same, and so is what it says once it is open
   await expect(map(page).getByRole("link", { name: "OpenStreetMap" })).toBeVisible();
   // The side that is the sidebar's on a wide window has the inset inside the sidebar's own width, and is not padded again.
   expect(await padding("left")).toBe(isWide(page) ? leftBefore : leftBefore + 44);
