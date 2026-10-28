@@ -53,7 +53,7 @@ const HOME = place(1, "Home", 10.0, 59.0);
 const CAFE = place(2, "Café", 10.1, 59.1);
 
 function stay(id: number, at: PlaceRef | null, when: Partial<StaySegment> = {}): StaySegment {
-  return { id, kind: "stay", ...WHEN, place: at, ...when };
+  return { id, kind: "stay", ...WHEN, place: at, home: false, ...when };
 }
 
 function move(id: number, mode: MoveSegment["mode"], geometry: LonLat[], when: Partial<MoveSegment> = {}): MoveSegment {
@@ -93,18 +93,19 @@ describe("DayPanel", () => {
     expect(screen.queryByText("Updating…")).not.toBeInTheDocument();
 
     // Stays and moves in the order of the day, every time on the clock of the zone it happened in: Oslo is UTC+2 that day and
-    // New York UTC-4, and the machine this runs on is neither. The unnamed place has a number, and the gap none.
+    // New York UTC-4, and the machine this runs on is neither. Home has a house where the number goes (see "DayPanel home"), and the numbers
+    // are those of the other stops, from 1. The unnamed place has a number, and the gap none.
     expect(rows().map(parts)).toEqual([
-      ["1", "Home", "until 08:32", "11h 22m"], // it began the evening before
+      ["Home", "until 08:32", "11h 22m"], // it began the evening before
       ["Walk · 1.1 km", "14m"],
-      ["2", "Café", "08:46 – 09:10", "24m"],
+      ["1", "Café", "08:46 – 09:10", "24m"],
       ["Cycle · 3.4 km", "13m"],
-      ["3", "Office", "09:23 – 11:41", "2h 18m"],
+      ["2", "Office", "09:23 – 11:41", "2h 18m"],
       ["Drive · 47.8 km", "41m"],
-      ["4", "Unnamed place", "12:22 – 12:50", "28m"],
+      ["3", "Unnamed place", "12:22 – 12:50", "28m"],
       ["Flight · 5,900 km", "8h 5m"],
       ["No data", "45m"],
-      ["5", "Hotel Midtown", "from 15:40", "17h 20m"], // 19:40Z in New York, and it runs on into the next day
+      ["4", "Hotel Midtown", "from 15:40", "17h 20m"], // 19:40Z in New York, and it runs on into the next day
     ]);
   });
 
@@ -288,6 +289,103 @@ describe("DayPanel numbers", () => {
   });
 });
 
+describe("DayPanel home", () => {
+  const AT_HOME = { home: true };
+  // Oslo is UTC+2 that day: the morning at home is "until 08:32" and the evening "from 17:10", on the rows as in the names of their buttons.
+  const HOME_MORNING = { home: true, start: "2026-10-21T20:00:00Z", end: "2026-10-22T06:32:00Z" };
+  const HOME_EVENING = { home: true, start: "2026-10-22T15:10:00Z", end: "2026-10-22T22:00:00Z" };
+
+  test("DayPanel_home_row_shows_the_house_and_no_number", async () => {
+    // The day starts and ends at home, with a café between: the house is where the number goes, and the others are counted from 1 (as the pins are).
+    stubApi({ "2026-10-22": day([stay(1, HOME, AT_HOME), move(2, "walk", [[10, 59], [10.1, 59.1]]), stay(3, CAFE), stay(4, HOME, AT_HOME)]) });
+
+    mount("2026-10-22");
+    await screen.findByRole("list");
+
+    const [first, , cafe, last] = rows();
+    for (const home of [first!, last!]) {
+      expect(parts(home)).toEqual(["Home", "10:00 – 11:00", "1h 0m"]); // the name is the text; no digit comes before it
+      const pin = home.querySelector(".pin");
+      expect(pin).not.toBeNull();
+      expect(pin!.textContent).toBe(""); // the house is a picture and not text
+      const house = pin!.querySelector("svg");
+      expect(house).not.toBeNull();
+      expect(house).toHaveAttribute("aria-hidden", "true"); // a picture of nothing a reader would miss: the button says "home"
+      expect(house).toHaveAttribute("focusable", "false");
+      expect(house!.querySelector("path")).toHaveAttribute("fill", "currentColor"); // in the colour of the pin's text, white
+    }
+    expect(parts(cafe!)).toEqual(["1", "Café", "10:00 – 11:00", "1h 0m"]); // the café is the first stop
+    expect(cafe!.querySelector("svg")).toBeNull(); // a number is not a house
+  });
+
+  test("DayPanel_names_the_buttons_of_two_home_rows_by_their_times_and_takes_the_map_to_the_place", async () => {
+    // Away to the café and back: the same place twice (the stay that began the day before, the one that goes on after it), with no number
+    // and nothing but the times to tell the rows and their buttons by.
+    stubApi({ "2026-10-22": day([stay(1, HOME, HOME_MORNING), stay(2, CAFE), stay(3, HOME, HOME_EVENING)]) });
+    const { onFocus } = mount("2026-10-22");
+    await screen.findByRole("list");
+
+    const [morning, , evening] = rows();
+    expect(parts(morning!)).toEqual(["Home", "until 08:32", "10h 32m"]);
+    expect(parts(evening!)).toEqual(["Home", "from 17:10", "6h 50m"]);
+    const buttons = screen.getAllByRole("button", { name: /^Show .* on the map$/ }).map((button) => button.getAttribute("aria-label")!);
+    expect(buttons).toEqual(["Show home, Home, until 08:32, on the map", "Show stop 1, Café, on the map", "Show home, Home, from 17:10, on the map"]);
+    expect(new Set(buttons).size).toBe(3);
+    // Each holds what its own row says (WCAG 2.5.3), and each one is found by it.
+    for (const [row, name] of [[morning!, buttons[0]!], [evening!, buttons[2]!]] as const) {
+      const [place, when] = parts(row);
+      expect(name).toContain(place);
+      expect(name).toContain(when);
+      expect(within(row).getByRole("button", { name })).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("button", { name: "Show home, Home, from 17:10, on the map" })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show home, Home, from 17:10, on the map" }));
+    expect(onFocus).toHaveBeenCalledWith([placePoint(HOME)]);
+    expect(onFocus.mock.lastCall![0]).toEqual([{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [10, 59] } }]);
+  });
+
+  test("DayPanel_names_a_home_row_by_a_name_that_holds_what_the_row_says_of_the_place", async () => {
+    // Label in name: the row says "Home" and "10:00 – 11:00", and the button says both; a home with no name says "Unnamed place" and is named so.
+    const nameless = place(7, null, 10.5, 59.5);
+    stubApi({ "2026-10-22": day([stay(1, HOME, AT_HOME), stay(2, nameless, AT_HOME)]) });
+    mount("2026-10-22");
+    await screen.findByRole("list");
+
+    for (const row of rows()) {
+      const button = within(row).getByRole("button", { name: /^Show home, .* on the map$/ });
+      const [name, when] = parts(row); // the name of the place and the times of the stay: the texts of the row
+      expect(button.getAttribute("aria-label")!.toLowerCase()).toContain(name!.toLowerCase());
+      expect(button.getAttribute("aria-label")).toContain(when);
+    }
+    expect(screen.getAllByRole("button", { name: /^Show home, .* on the map$/ }).map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Show home, Home, 10:00 – 11:00, on the map",
+      "Show home, unnamed place, 10:00 – 11:00, on the map",
+    ]);
+  });
+
+  test("DayPanel_still_opens_the_place_from_the_name_of_home", async () => {
+    stubApi({ "2026-10-22": day([stay(1, HOME, AT_HOME)]) });
+    mount("2026-10-22");
+    await screen.findByRole("list");
+
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+
+    expect(window.location.pathname).toBe("/place/1");
+  });
+
+  test("DayPanel_gives_a_stay_that_says_it_is_home_but_has_no_place_a_ring_and_no_house", async () => {
+    // Home is a place; a stay at no place cannot be it, whatever the flag says: it is a row with no number, as every such stay is.
+    stubApi({ "2026-10-22": day([stay(1, null, AT_HOME)]) });
+    mount("2026-10-22");
+    await screen.findByRole("list");
+
+    expect(rows()[0]!.querySelector("svg")).toBeNull();
+    expect(parts(rows()[0]!)).toEqual(["Unnamed place", "10:00 – 11:00", "1h 0m"]);
+    expect(within(rows()[0]!).queryByRole("button")).not.toBeInTheDocument();
+  });
+});
+
 describe("DayPanel times", () => {
   // 2026-10-22 in Oslo (UTC+2) runs from 2026-10-21T22:00Z up to 2026-10-22T22:00Z.
   const OSLO = { startTimeZone: "Europe/Oslo", endTimeZone: "Europe/Oslo" };
@@ -384,7 +482,7 @@ describe("DayPanel taps", () => {
     await screen.findByRole("list");
 
     // A stay: the map is taken to its place.
-    fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Café, on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Café, on the map" }));
     expect(onFocus).toHaveBeenCalledTimes(1);
     expect(onFocus).toHaveBeenLastCalledWith([placePoint(FLIGHT_STAY_CAFE.place!)]);
     expect(onFocus.mock.lastCall![0]).toEqual([
@@ -409,8 +507,8 @@ describe("DayPanel taps", () => {
     const { onFocus } = mount("2026-10-22");
     await screen.findByRole("list");
 
-    fireEvent.click(screen.getByRole("button", { name: "Show stop 3, Office, on the map" }));
-    fireEvent.click(screen.getByRole("button", { name: "Show stop 3, Office, on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Office, on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Office, on the map" }));
 
     expect(onFocus).toHaveBeenCalledTimes(2);
     expect(onFocus.mock.calls[1]![0]).toEqual(onFocus.mock.calls[0]![0]);
@@ -422,7 +520,7 @@ describe("DayPanel taps", () => {
     mount("2026-10-22");
     await screen.findByRole("list");
 
-    const row = screen.getByRole("button", { name: "Show stop 2, Café, on the map" });
+    const row = screen.getByRole("button", { name: "Show stop 1, Café, on the map" });
     const name = screen.getByRole("button", { name: "Café" });
 
     expect(row.tagName).toBe("BUTTON");
@@ -443,17 +541,17 @@ describe("DayPanel taps", () => {
 
     const names = screen.getAllByRole("button", { name: /^Show .* on the map$/ }).map((button) => button.getAttribute("aria-label"));
 
-    // A stay by its number, a move by the time it began on its own clock; none the same as another, though two stays can be at home.
+    // A stay by its number (home, which has none, by the word and the times of its row), a move by the time it began on its own clock; none the same as another.
     expect(names).toEqual([
-      "Show stop 1, Home, on the map",
+      "Show home, Home, until 08:32, on the map",
       "Show Walk · 1.1 km at 08:32 on the map",
-      "Show stop 2, Café, on the map",
+      "Show stop 1, Café, on the map",
       "Show Cycle · 3.4 km at 09:10 on the map",
-      "Show stop 3, Office, on the map",
+      "Show stop 2, Office, on the map",
       "Show Drive · 47.8 km at 11:41 on the map",
-      "Show stop 4, unnamed place, on the map",
+      "Show stop 3, unnamed place, on the map",
       "Show Flight · 5,900 km at 12:50 on the map",
-      "Show stop 5, Hotel Midtown, on the map",
+      "Show stop 4, Hotel Midtown, on the map",
     ]);
     expect(new Set(names).size).toBe(names.length);
   });
@@ -468,11 +566,12 @@ describe("DayPanel taps", () => {
       const button = within(row).queryAllByRole("button").find((one) => /^Show .* on the map$/.test(one.getAttribute("aria-label") ?? ""));
       if (button === undefined) return []; // a gap has none
       const [first, second] = parts(row);
-      const says = row.querySelector(".bar") === null ? [first, second] : [first]; // the number and the name of a stop; "Walk · 1.1 km"
+      const stay = row.querySelector(".bar") === null; // a stay, not a move
+      const says = stay ? [first, second] : [first]; // the number and the name of a stop, the name and the times of home (a house is no text), "Walk · 1.1 km"
       return says.map((text) => ({ name: button.getAttribute("aria-label")!.toLowerCase(), text: text!.toLowerCase() }));
     });
 
-    expect(checked).toHaveLength(14); // 5 stops with two texts, 4 moves with one
+    expect(checked).toHaveLength(14); // 4 numbered stops with two texts, home with two, 4 moves with one
     for (const { name, text } of checked) expect(name).toContain(text);
   });
 

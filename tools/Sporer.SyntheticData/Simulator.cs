@@ -64,6 +64,18 @@ public sealed class Simulator
         new Simulator(options, sink).Live();
     }
 
+    /// <summary>
+    /// What <see cref="Run"/> will do with <paramref name="options"/>, without writing a fix: the trips it lives through, in
+    /// date order, and the day of the house move. The plan is made when the simulator is built (a trip that does not fit in
+    /// the history is left out there), so this builds one and never lets it live.
+    /// </summary>
+    public static SimulatorPlan Describe(SimulatorOptions options)
+    {
+        options.Validate();
+        var simulator = new Simulator(options, _ => { });
+        return new SimulatorPlan([.. simulator._trips.OrderBy(t => t.Start).Select(t => (t.Name, t.Start, t.Nights))], simulator._moveDay);
+    }
+
     private Simulator(SimulatorOptions options, Action<Fix> sink)
     {
         _options = options;

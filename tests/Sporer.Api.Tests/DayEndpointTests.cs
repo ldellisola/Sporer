@@ -662,6 +662,322 @@ public class DayEndpointTests(DatabaseFixture db)
         Assert.Equal(0, body.RootElement.GetProperty("summary").GetProperty("places").GetInt32());
     }
 
+    // ---- home stays -----------------------------------------------------------------------------------------------------
+
+    private static Task InsertHomePeriodAsync(string cs, long placeId, DateOnly from, DateOnly? to, string source = "detected")
+        => Sql.ExecAsync(cs,
+            "insert into home_period (place_id, from_date, to_date, source) values (@placeId, @from, @to, @source)",
+            new { placeId, from, to, source }, Ct);
+
+    /// <summary>A night located at a place (03:00 on the day after <paramref name="date"/>, in Oslo), as home detection stores it.</summary>
+    private static Task InsertNightAsync(string cs, DateOnly date, long placeId) => Sql.ExecAsync(cs,
+        """
+        insert into night (date, instant_utc, zone, source, place_id, latitude, longitude)
+        select @date, (@date + 1)::timestamp at time zone 'Europe/Oslo' + interval '3 hours', 'Europe/Oslo', 'stay', id, latitude, longitude
+        from place where id = @placeId
+        """,
+        new { date, placeId }, Ct);
+
+    /// <summary>The stays of a day as (place id, home), in time order. <c>home</c> must be a boolean on every stay, so reading it fails if it is not.</summary>
+    private static List<(long? Place, bool Home)> HomesOf(JsonDocument day) => day.RootElement.GetProperty("segments").EnumerateArray()
+        .Where(s => s.GetProperty("kind").GetString() == "stay")
+        .Select(s => (s.GetProperty("place") is { ValueKind: JsonValueKind.Object } place ? place.GetProperty("id").GetInt64() : (long?)null,
+            s.GetProperty("home").GetBoolean()))
+        .ToList();
+
+    [Fact]
+    public async Task Day_marks_stays_at_the_home_in_effect()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var home = await InsertPlaceAsync(cs, userName: "Home", city: "Oslo", country: "Norway");
+        var cafe = await InsertPlaceAsync(cs, osmName: "Cafe Nord", city: "Oslo", country: "Norway", lat: 59.93, lon: 10.76);
+        await InsertHomePeriodAsync(cs, home, D(1, 1), null);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 6), Utc(10, 22, 7), D(10, 22), D(10, 22), placeId: home);
+        var move = await InsertSegmentAsync(cs, "move", Utc(10, 22, 7), Utc(10, 22, 8), D(10, 22), D(10, 22), mode: "walk", distance: 500, geometry: "[[10.75,59.92],[10.76,59.93]]");
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 8), Utc(10, 22, 9), D(10, 22), D(10, 22), placeId: cafe);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 10), Utc(10, 22, 11), D(10, 22), D(10, 22), placeId: null); // matched no place
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 12), Utc(10, 22, 13), D(10, 22), D(10, 22), placeId: home);
+
+        using var body = await GetDayAsync(client, "2026-10-22");
+
+        // The home is true and nothing else is: the café, and the stay with no place, say false rather than nothing.
+        Assert.Equal([(home, true), (cafe, false), (null, false), (home, true)], HomesOf(body));
+        // It comes right after the place in the stay, and only stays have it.
+        var segments = body.RootElement.GetProperty("segments").EnumerateArray().ToList();
+        Assert.Equal(["place", "home"], segments[0].EnumerateObject().Select(p => p.Name).TakeLast(2));
+        Assert.False(segments[1].TryGetProperty("home", out _));
+        Assert.Equal(move, segments[1].GetProperty("id").GetInt64());
+    }
+
+    [Fact]
+    public async Task Day_marks_a_stay_at_a_place_near_the_home_as_home_and_one_farther_away_not()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var home = await InsertPlaceAsync(cs, userName: "Home", city: "Oslo", country: "Norway");
+        // GPS drift made two more places of the one home, 120 m and 240 m from it, and a neighbour's is 300 m away: past the 250 m radius,
+        // whatever nights it had.
+        var fragment = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway", lat: Spots.Home.Latitude, lon: Geo.Offset(Spots.Home, 0, 120).Longitude);
+        var edge = await InsertPlaceAsync(cs, osmName: "Storgata 7", city: "Oslo", country: "Norway", lat: Geo.Offset(Spots.Home, 240, 0).Latitude, lon: Spots.Home.Longitude);
+        var neighbour = await InsertPlaceAsync(cs, osmName: "Cafe Nord", city: "Oslo", country: "Norway", lat: Spots.Home.Latitude, lon: Geo.Offset(Spots.Home, 0, 300).Longitude);
+        await InsertHomePeriodAsync(cs, home, D(1, 1), null);
+        // The fragments and the neighbour each were the night location on a night of the period: only the radius tells them apart.
+        var night = 1;
+        foreach (var place in new[] { home, fragment, edge, neighbour })
+            await InsertNightAsync(cs, D(10, night++), place);
+        var hour = 6;
+        foreach (var place in new[] { home, fragment, edge, neighbour })
+            await InsertSegmentAsync(cs, "stay", Utc(10, 22, hour), Utc(10, 22, ++hour), D(10, 22), D(10, 22), placeId: place);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, hour + 1), Utc(10, 22, hour + 2), D(10, 22), D(10, 22), placeId: null); // matched no place
+
+        using var body = await GetDayAsync(client, "2026-10-22");
+
+        Assert.Equal([(home, true), (fragment, true), (edge, true), (neighbour, false), (null, false)], HomesOf(body));
+    }
+
+    [Fact]
+    public async Task Day_takes_a_place_near_the_home_of_the_day_viewed_and_not_one_near_an_earlier_home()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var oldHome = await InsertPlaceAsync(cs, userName: "Old flat", city: "Oslo", country: "Norway");
+        var nearOld = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway", lat: Spots.Home.Latitude, lon: Geo.Offset(Spots.Home, 0, 120).Longitude);
+        var newHome = await InsertPlaceAsync(cs, userName: "New flat", city: "Bergen", country: "Norway", lat: 60.39, lon: 5.32);
+        var nearNew = await InsertPlaceAsync(cs, osmName: "Strandgaten 2", city: "Bergen", country: "Norway", lat: 60.39, lon: 5.3205);
+        await InsertHomePeriodAsync(cs, oldHome, D(1, 1), D(9, 30));
+        await InsertHomePeriodAsync(cs, newHome, D(10, 1), null);
+        await InsertNightAsync(cs, D(5, 1), nearOld);
+        await InsertNightAsync(cs, D(10, 5), nearNew);
+        foreach (var day in new[] { D(9, 30), D(10, 1) })
+        {
+            var noon = new DateTime(2026, day.Month, day.Day, 10, 0, 0, DateTimeKind.Utc);
+            var at = 0;
+            foreach (var place in new[] { nearOld, nearNew })
+                await InsertSegmentAsync(cs, "stay", noon.AddHours(at), noon.AddHours(at++).AddMinutes(30), day, day, placeId: place);
+        }
+
+        using var lastDayOfOld = await GetDayAsync(client, "2026-09-30");
+        using var firstDayOfNew = await GetDayAsync(client, "2026-10-01");
+
+        Assert.Equal([(nearOld, true), (nearNew, false)], HomesOf(lastDayOfOld));
+        Assert.Equal([(nearOld, false), (nearNew, true)], HomesOf(firstDayOfNew));
+    }
+
+    [Fact]
+    public async Task Day_reads_the_radius_around_the_home_from_the_options()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var narrow = new ApiFactory(cs, new Dictionary<string, string?> { ["Detection:HomeRadiusMeters"] = "100" });
+        var narrowClient = narrow.CreateClient(); // starting the host creates the schema
+        var home = await InsertPlaceAsync(cs, userName: "Home", city: "Oslo", country: "Norway");
+        var fragment = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway", lat: Spots.Home.Latitude, lon: Geo.Offset(Spots.Home, 0, 120).Longitude);
+        await InsertHomePeriodAsync(cs, home, D(1, 1), null);
+        await InsertNightAsync(cs, D(10, 1), fragment);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 6), Utc(10, 22, 7), D(10, 22), D(10, 22), placeId: home);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 8), Utc(10, 22, 9), D(10, 22), D(10, 22), placeId: fragment);
+
+        using (var body = await GetDayAsync(narrowClient, "2026-10-22"))
+            Assert.Equal([(home, true), (fragment, false)], HomesOf(body)); // 120 m is outside 100 m
+
+        await using var wide = new ApiFactory(cs, new Dictionary<string, string?> { ["Detection:HomeRadiusMeters"] = "130" });
+        using (var body = await GetDayAsync(wide.CreateClient(), "2026-10-22"))
+            Assert.Equal([(home, true), (fragment, true)], HomesOf(body)); // and inside 130 m
+    }
+
+    [Fact]
+    public async Task Day_keeps_the_number_of_a_cafe_near_the_home_that_was_never_the_night_location()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var home = await InsertPlaceAsync(cs, userName: "Home", city: "Oslo", country: "Norway");
+        // 150 m from home, inside the 250 m radius, and a place with stays but never a night: a café, a shop, a gym.
+        var cafe = await InsertPlaceAsync(cs, osmName: "Cafe Nord", city: "Oslo", country: "Norway", lat: Geo.Offset(Spots.Home, 150, 0).Latitude, lon: Spots.Home.Longitude);
+        await InsertHomePeriodAsync(cs, home, D(1, 1), null);
+        await InsertNightAsync(cs, D(10, 20), home);
+        await InsertNightAsync(cs, D(10, 21), home);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 6), Utc(10, 22, 7), D(10, 22), D(10, 22), placeId: home);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 8), Utc(10, 22, 9), D(10, 22), D(10, 22), placeId: cafe);
+
+        using var body = await GetDayAsync(client, "2026-10-22");
+
+        Assert.Equal([(home, true), (cafe, false)], HomesOf(body));
+    }
+
+    [Fact]
+    public async Task Day_marks_a_near_place_as_home_only_by_the_nights_of_the_home_period_in_effect()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var home = await InsertPlaceAsync(cs, userName: "Home", city: "Oslo", country: "Norway");
+        var fragment = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway", lat: Spots.Home.Latitude, lon: Geo.Offset(Spots.Home, 0, 120).Longitude);
+        // Two periods of the one place, with a stretch away between them.
+        await InsertHomePeriodAsync(cs, home, D(1, 1), D(3, 31));
+        await InsertHomePeriodAsync(cs, home, D(6, 1), null);
+        // The fragment was a night place in the first period, and once in between, when no home period covered the night.
+        await InsertNightAsync(cs, D(2, 10), fragment);
+        await InsertNightAsync(cs, D(4, 20), fragment);
+        foreach (var day in new[] { D(2, 15), D(8, 15) })
+        {
+            var noon = new DateTime(2026, day.Month, day.Day, 10, 0, 0, DateTimeKind.Utc);
+            await InsertSegmentAsync(cs, "stay", noon, noon.AddHours(1), day, day, placeId: home);
+            await InsertSegmentAsync(cs, "stay", noon.AddHours(2), noon.AddHours(3), day, day, placeId: fragment);
+        }
+
+        using var inFirst = await GetDayAsync(client, "2026-02-15");
+        using var inSecond = await GetDayAsync(client, "2026-08-15");
+
+        Assert.Equal([(home, true), (fragment, true)], HomesOf(inFirst));
+        // Its night was in another period, and one outside every period: neither makes it home in this one.
+        Assert.Equal([(home, true), (fragment, false)], HomesOf(inSecond));
+    }
+
+    [Fact]
+    public async Task Day_takes_the_night_places_of_a_merged_fragment_as_the_place_it_was_merged_into()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var home = await InsertPlaceAsync(cs, userName: "Home", city: "Oslo", country: "Norway");
+        var survivor = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway", lat: Spots.Home.Latitude, lon: Geo.Offset(Spots.Home, 0, 120).Longitude);
+        var absorbed = await InsertPlaceAsync(cs, osmName: "Storgata 5b", city: "Oslo", country: "Norway", mergedInto: survivor);
+        await InsertHomePeriodAsync(cs, home, D(1, 1), null);
+        // The night was stored with the place as it was then; the stay is shown at the place it was merged into.
+        await InsertNightAsync(cs, D(10, 1), absorbed);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 6), Utc(10, 22, 7), D(10, 22), D(10, 22), placeId: home);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 8), Utc(10, 22, 9), D(10, 22), D(10, 22), placeId: absorbed);
+
+        using var body = await GetDayAsync(client, "2026-10-22");
+
+        Assert.Equal([(home, true), (survivor, true)], HomesOf(body));
+    }
+
+    [Fact]
+    public async Task Day_without_a_home_marks_nothing()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var place = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway");
+        var other = await InsertPlaceAsync(cs, osmName: "Cafe Nord", city: "Oslo", country: "Norway", lat: 59.93, lon: 10.76);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 6), Utc(10, 22, 7), D(10, 22), D(10, 22), placeId: place);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 8), Utc(10, 22, 9), D(10, 22), D(10, 22), placeId: other);
+
+        // No home period at all.
+        using (var none = await GetDayAsync(client, "2026-10-22"))
+            Assert.Equal([(place, false), (other, false)], HomesOf(none));
+
+        // Periods that end the day before and begin the day after: neither covers the day, though one is of the place.
+        await InsertHomePeriodAsync(cs, place, D(1, 1), D(10, 21));
+        await InsertHomePeriodAsync(cs, place, D(10, 23), null);
+        using var around = await GetDayAsync(client, "2026-10-22");
+        Assert.Equal([(place, false), (other, false)], HomesOf(around));
+    }
+
+    [Fact]
+    public async Task Day_uses_the_home_of_the_day_viewed_after_a_move()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var oldHome = await InsertPlaceAsync(cs, userName: "Old flat", city: "Oslo", country: "Norway");
+        var newHome = await InsertPlaceAsync(cs, userName: "New flat", city: "Bergen", country: "Norway", lat: 60.39, lon: 5.32);
+        // Moved on 1 October: both ends of a period are days it covers, so the 30th is the old home's last day and the 1st the new one's first.
+        await InsertHomePeriodAsync(cs, oldHome, D(1, 1), D(9, 30));
+        await InsertHomePeriodAsync(cs, newHome, D(10, 1), null);
+        foreach (var day in new[] { D(9, 30), D(10, 1) })
+        {
+            var noon = new DateTime(2026, day.Month, day.Day, 10, 0, 0, DateTimeKind.Utc);
+            await InsertSegmentAsync(cs, "stay", noon, noon.AddHours(1), day, day, placeId: oldHome);
+            await InsertSegmentAsync(cs, "stay", noon.AddHours(2), noon.AddHours(3), day, day, placeId: newHome);
+        }
+
+        using var lastDayOfOld = await GetDayAsync(client, "2026-09-30");
+        using var firstDayOfNew = await GetDayAsync(client, "2026-10-01");
+
+        Assert.Equal([(oldHome, true), (newHome, false)], HomesOf(lastDayOfOld));
+        Assert.Equal([(oldHome, false), (newHome, true)], HomesOf(firstDayOfNew)); // the old home's place, a day after the move
+    }
+
+    [Fact]
+    public async Task Day_marks_stays_at_the_surviving_place_of_a_merged_home()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var survivor = await InsertPlaceAsync(cs, userName: "Home", city: "Oslo", country: "Norway");
+        var absorbed = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway", mergedInto: survivor);
+        var other = await InsertPlaceAsync(cs, osmName: "Cafe Nord", city: "Oslo", country: "Norway", lat: 59.93, lon: 10.76);
+        // The period was stored for the place as it was then, before the merge; the day shows the place it was merged into.
+        await InsertHomePeriodAsync(cs, absorbed, D(1, 1), null);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 6), Utc(10, 22, 7), D(10, 22), D(10, 22), placeId: absorbed);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 8), Utc(10, 22, 9), D(10, 22), D(10, 22), placeId: survivor);
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 10), Utc(10, 22, 11), D(10, 22), D(10, 22), placeId: other);
+
+        using var body = await GetDayAsync(client, "2026-10-22");
+
+        Assert.Equal([(survivor, true), (survivor, true), (other, false)], HomesOf(body));
+    }
+
+    [Fact]
+    public async Task Day_takes_the_home_the_trips_list_does_where_periods_overlap()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var early = await InsertPlaceAsync(cs, osmName: "Early", lat: 59.1, lon: 10.1);
+        var later = await InsertPlaceAsync(cs, osmName: "Later", lat: 59.2, lon: 10.2);
+        var latest = await InsertPlaceAsync(cs, osmName: "Latest", lat: 59.3, lon: 10.3);
+        var owners = await InsertPlaceAsync(cs, osmName: "Owner's", lat: 59.4, lon: 10.4);
+        // The period that began later is stored first, so that its row has the lower id: neither the start nor the id alone is the rule.
+        await InsertHomePeriodAsync(cs, later, D(9, 1), null);
+        await InsertHomePeriodAsync(cs, early, D(1, 1), null);
+        await InsertHomePeriodAsync(cs, latest, D(10, 12), null);
+        await InsertHomePeriodAsync(cs, owners, D(10, 1), D(10, 31), "user");
+        foreach (var day in new[] { D(9, 15), D(10, 15) })
+        {
+            var noon = new DateTime(2026, day.Month, day.Day, 10, 0, 0, DateTimeKind.Utc);
+            var at = 0;
+            foreach (var place in new[] { early, later, latest, owners })
+                await InsertSegmentAsync(cs, "stay", noon.AddHours(at), noon.AddHours(at++).AddMinutes(30), day, day, placeId: place);
+        }
+
+        using var september = await GetDayAsync(client, "2026-09-15");
+        using var october = await GetDayAsync(client, "2026-10-15");
+
+        // Of the two detected periods that cover the 15th of September, the one that began later wins.
+        Assert.Equal([(early, false), (later, true), (latest, false), (owners, false)], HomesOf(september));
+        // On the 15th of October the owner's period wins over all three, though a detected one began after it.
+        Assert.Equal([(early, false), (later, false), (latest, false), (owners, true)], HomesOf(october));
+    }
+
+    [Fact]
+    public async Task Day_has_a_new_etag_when_its_home_changes()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var place = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway");
+        await InsertSegmentAsync(cs, "stay", Utc(10, 22, 6), Utc(10, 22, 7), D(10, 22), D(10, 22), placeId: place);
+        var before = await client.GetAsync("/api/day/2026-10-22", Ct);
+        var oldTag = before.Headers.ETag;
+        Assert.NotNull(oldTag);
+
+        await InsertHomePeriodAsync(cs, place, D(1, 1), null);
+
+        // The tag is of the body, and the body now says the stay is at home: what the browser has is not current any more.
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/day/2026-10-22");
+        request.Headers.TryAddWithoutValidation("If-None-Match", oldTag.ToString());
+        var after = await client.SendAsync(request, Ct);
+        Assert.Equal(HttpStatusCode.OK, after.StatusCode);
+        Assert.NotEqual(oldTag, after.Headers.ETag);
+    }
+
     [Fact]
     public async Task Gap_has_the_positions_either_side_and_no_distance()
     {

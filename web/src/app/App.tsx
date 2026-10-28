@@ -12,6 +12,8 @@ import { PlacePanel } from "../views/PlacePanel";
 import { RangePanel } from "../views/RangePanel";
 import { StatusBanner } from "../views/StatusBanner";
 import { TopBar } from "../views/TopBar";
+import { TripPanel } from "../views/TripPanel";
+import { TripsPanel } from "../views/TripsPanel";
 import styles from "./App.module.css";
 import { navigate, useRoute, type Route } from "./router";
 import { useBottomEdge } from "./useBottomEdge";
@@ -30,14 +32,16 @@ const DESKTOP_QUERY = "(min-width: 900px)";
 const AIR = 16;
 
 /**
- * The panel of the view of the route. The day and the place have their own, and the week, the month, the year and the range share one
- * (the period they cover is what differs). A place is a panel of its own, made again for another place (`key`), so that nothing of one
- * place is ever under the name of another. `onFocus` is how a panel asks for the map to be brought to something (a row tapped): the
- * map is the shell's, and the one.
+ * The panel of the view of the route. The day, the place, the trips and a trip have their own, and the week, the month, the year and the
+ * range share one (the period they cover is what differs). A place is a panel of its own, made again for another place (`key`), so that
+ * nothing of one place is ever under the name of another; so is a trip. `onFocus` is how a panel asks for the map to be brought to
+ * something (a row tapped): the map is the shell's, and the one.
  */
 function Panel({ route, onFocus }: { route: Route; onFocus: (features: FitFeatures) => void }) {
   if (route.view === "day") return <DayPanel date={route.date} onFocus={onFocus} />;
   if (route.view === "place") return <PlacePanel key={route.id} id={route.id} />;
+  if (route.view === "trips") return <TripsPanel />;
+  if (route.view === "trip") return <TripPanel key={route.id} id={route.id} />;
   const { from, to } = periodRange(route);
   return <RangePanel from={from} to={to} />;
 }

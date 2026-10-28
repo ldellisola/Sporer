@@ -1,7 +1,9 @@
-import { useEffect, useRef, type PointerEvent } from "react";
-import { navigate, type PeriodRoute, type Route } from "../app/router";
+import { useEffect, useMemo, useRef } from "react";
+import { isPeriodRoute, navigate, type PeriodRoute, type Route } from "../app/router";
 import { addDays, isDate, MAX_RANGE_DAYS, monthOf, periodDays, periodLabel, periodRange, step, today, weekStart } from "../time/dates";
 import styles from "./TopBar.module.css";
+import { TripRow } from "./TripRow";
+import { useArrowKeys, useSwipe } from "./useStepping";
 
 type View = PeriodRoute["view"];
 type RangeRoute = Extract<PeriodRoute, { view: "range" }>;
@@ -13,9 +15,6 @@ const SEGMENTS: readonly { view: View; label: string }[] = [
   { view: "year", label: "Year" },
   { view: "range", label: "Range" },
 ];
-
-/** A swipe along the date row steps the period when it is at least this far, and goes mostly sideways. */
-const SWIPE_MIN_PX = 50;
 
 /** How long a date left in a range field, with the focus still in it, waits for another edit before it is taken. */
 const COMMIT_AFTER_MS = 600;
@@ -29,11 +28,11 @@ const EARLIEST = "1900-01-01";
 /**
  * The date a period is anchored on when the bar switches to another view: the day that was shown last when it lies in the period
  * that is shown, else today when today does, else the first day of the period (a week's Monday, a month's or a year's first day).
- * A place has no period: the day shown last, else today. The address says no more than the period, so the last day is the app's to
- * remember (`useLastDay`), and it is what brings a month or a year back to the day that was looked at.
+ * A place, the trips and a trip have no period: the day shown last, else today. The address says no more than the period, so the last
+ * day is the app's to remember (`useLastDay`), and it is what brings a month or a year back to the day that was looked at.
  */
 function anchorOf(route: Route, lastDay: string | null): string {
-  if (route.view === "place") return lastDay ?? today();
+  if (!isPeriodRoute(route)) return lastDay ?? today();
   const { from, to } = periodRange(route);
   if (lastDay !== null && lastDay >= from && lastDay <= to) return lastDay;
   const now = today();
@@ -53,7 +52,7 @@ function switchView(route: Route, view: View, lastDay: string | null): PeriodRou
     case "year":
       return { view, year: Number(anchor.slice(0, 4)) };
     case "range": {
-      const { from, to } = route.view === "place" ? { from: anchor, to: anchor } : periodRange(route);
+      const { from, to } = isPeriodRoute(route) ? periodRange(route) : { from: anchor, to: anchor };
       return { view, from, to };
     }
   }
@@ -84,12 +83,6 @@ function isPlainEdit(route: RangeRoute, edge: "from" | "to", typed: string): boo
   const next = editRange(route, edge, typed);
   return next !== null && (edge === "from" ? next.to === route.to : next.from === route.from);
 }
-
-// Where the arrow keys are not the bar's: fields that are typed into, and the map, which pans with them when it has the focus.
-const OWNS_ARROWS = 'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="region"][aria-label="Map view"]';
-
-/** Whether a key press is meant for something that has the arrow keys for itself. */
-const ownsArrows = (target: EventTarget | null): boolean => target instanceof Element && target.closest(OWNS_ARROWS) !== null;
 
 interface DateFieldProps {
   label: string;
@@ -165,31 +158,43 @@ function DateField({ label, value, other, onCommit, isPlain }: DateFieldProps) {
   );
 }
 
+/** The suitcase of the Trips button, drawn in place: it takes the colour of the button's text. */
+function Suitcase() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect x="3.5" y="7.5" width="17" height="12" rx="2.5" />
+      <path d="M9 7.5V6a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 6v1.5" />
+      <path d="M8.5 7.5v12M15.5 7.5v12" />
+    </svg>
+  );
+}
+
 /**
- * The card that floats at the top of the map: the views as a segmented control, for a range its two dates, and the period with
- * ‹ › to step it. Switching view keeps the date (see `anchorOf`; `lastDay` is the day shown last). Stepping is also a swipe along the period,
- * or ← and → on the keyboard unless the focus is in a field or on the map. A place has no period to step: its bar has the views to go to, and none is shown as current.
+ * The card that floats at the top of the map: the views as a segmented control with the Trips button after it, for a range its two
+ * dates, and the period with ‹ › to step it. Switching view keeps the date (see `anchorOf`; `lastDay` is the day shown last). Stepping is
+ * also a swipe along the period, or ← and → on the keyboard unless the focus is in a field or on the map. A place has no period to step: its
+ * bar has the views to go to, and none is shown as current. The trips are the same: the list has a title in the place of the period, and a
+ * trip its name and dates, with ‹ › to step to the trips either side of it (see `TripRow`); the Trips button is the one that is pressed.
  */
 export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: string | null }) {
-  const period = route.view === "place" ? null : route;
-  const swipeStart = useRef<{ x: number; y: number } | null>(null);
+  const period = isPeriodRoute(route) ? route : null;
 
-  useEffect(() => {
-    if (period === null) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      // Alt and ⌘ with an arrow are the browser's (back, forward); a held key would ask for a day every few milliseconds.
-      if (event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || ownsArrows(event.target)) return;
-      event.preventDefault();
-      navigate(step(period, event.key === "ArrowLeft" ? -1 : 1));
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [period]);
+  const stepPeriod = useMemo(() => (period === null ? null : (delta: -1 | 1) => navigate(step(period, delta))), [period]);
+  useArrowKeys(stepPeriod);
+  const swipe = useSwipe(stepPeriod);
 
-  const stepBy = (delta: -1 | 1) => {
-    if (period !== null) navigate(step(period, delta));
-  };
+  const stepBy = (delta: -1 | 1) => stepPeriod?.(delta);
   /** Takes a date typed into one end of the range; whether it was one to take. */
   const setRange = (edge: "from" | "to", typed: string): boolean => {
     const next = route.view === "range" ? editRange(route, edge, typed) : null;
@@ -198,32 +203,31 @@ export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: stri
     return true;
   };
 
-  const onPointerDown = (event: PointerEvent) => {
-    if (event.isPrimary) swipeStart.current = { x: event.clientX, y: event.clientY };
-  };
-  const onPointerUp = (event: PointerEvent) => {
-    const start = swipeStart.current;
-    swipeStart.current = null;
-    if (start === null) return;
-    const across = event.clientX - start.x;
-    const down = event.clientY - start.y;
-    if (Math.abs(across) >= SWIPE_MIN_PX && Math.abs(across) > 2 * Math.abs(down)) stepBy(across < 0 ? 1 : -1); // a finger to the left brings the next
-  };
-
   return (
     <header className={styles.bar}>
-      <div className={styles.segments} role="group" aria-label="View">
-        {SEGMENTS.map(({ view, label }) => (
-          <button
-            key={view}
-            type="button"
-            className={styles.segment}
-            aria-pressed={route.view === view}
-            onClick={() => navigate(switchView(route, view, lastDay))}
-          >
-            {label}
-          </button>
-        ))}
+      <div className={styles.head}>
+        <div className={styles.segments} role="group" aria-label="View">
+          {SEGMENTS.map(({ view, label }) => (
+            <button
+              key={view}
+              type="button"
+              className={styles.segment}
+              aria-pressed={route.view === view}
+              onClick={() => navigate(switchView(route, view, lastDay))}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          className={styles.trips}
+          aria-label="Trips"
+          aria-pressed={route.view === "trips" || route.view === "trip"}
+          onClick={() => navigate({ view: "trips" })}
+        >
+          <Suitcase />
+        </button>
       </div>
       {route.view === "range" && (
         <div className={styles.fields} role="group" aria-label="Date range">
@@ -244,12 +248,7 @@ export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: stri
         </div>
       )}
       {period !== null && (
-        <div
-          className={styles.dateRow}
-          onPointerDown={onPointerDown}
-          onPointerUp={onPointerUp}
-          onPointerCancel={() => (swipeStart.current = null)}
-        >
+        <div className={styles.dateRow} {...swipe}>
           <button type="button" className={styles.arrow} aria-label={`Previous ${period.view}`} onClick={() => stepBy(-1)}>
             ‹
           </button>
@@ -261,6 +260,12 @@ export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: stri
           </button>
         </div>
       )}
+      {route.view === "trips" && (
+        <div className={styles.titleRow}>
+          <h1 className={styles.label}>Trips</h1>
+        </div>
+      )}
+      {route.view === "trip" && <TripRow id={route.id} />}
     </header>
   );
 }

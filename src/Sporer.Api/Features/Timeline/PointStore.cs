@@ -42,6 +42,33 @@ public sealed class PointStore(NpgsqlDataSource dataSource)
         return first is { } time ? DateTime.SpecifyKind(time, DateTimeKind.Utc) : null;
     }
 
+    /// <summary>
+    /// The point nearest in time to <paramref name="instantUtc"/> that is at most <paramref name="within"/> away from it, or
+    /// null when there is none. Two queries, each bounded by <c>instantUtc ± within</c> so that they use the hypertable's time
+    /// index and read one row: the latest point at or before the instant, and the earliest after it. The closer of the two
+    /// wins, and an exact tie goes to the earlier one. A point at the instant itself is the nearest there can be. Raw points,
+    /// as <see cref="LoadAsync"/> reads them: nothing is cleaned or dropped here.
+    /// </summary>
+    public async Task<TrackPoint?> NearestAsync(DateTime instantUtc, TimeSpan within, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+
+        var before = (await connection.QueryAsync<PointRow>(new CommandDefinition(
+            Select + " where time <= @Instant and time >= @Earliest order by time desc, device limit 1",
+            new { Instant = instantUtc, Earliest = instantUtc - within }, cancellationToken: ct))).SingleOrDefault();
+        var after = (await connection.QueryAsync<PointRow>(new CommandDefinition(
+            Select + " where time > @Instant and time <= @Latest order by time, device limit 1",
+            new { Instant = instantUtc, Latest = instantUtc + within }, cancellationToken: ct))).SingleOrDefault();
+
+        if (before is null) return after is null ? null : ToTrackPoint(after);
+        if (after is null) return ToTrackPoint(before);
+
+        var closer = instantUtc - AsUtc(before.Time) <= AsUtc(after.Time) - instantUtc ? before : after;
+        return ToTrackPoint(closer);
+    }
+
+    private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
+
     private const string Select =
         "select time as Time, device as Device, latitude as Latitude, longitude as Longitude, speed as Speed, "
         + "horizontal_accuracy as HorizontalAccuracy, motion as Motion from locationlog";

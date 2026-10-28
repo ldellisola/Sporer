@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Times the read endpoints the web app uses, on random dates and windows of a history, and measures what they send.
 #
-#   tools/perf/api-latency.sh <base-url> <first-date> <last-date> [warmup=20] [days=200] [months=100] [years=20] [places=200] [seed=1]
+#   tools/perf/api-latency.sh <base-url> <first-date> <last-date> [warmup=20] [days=200] [months=100] [years=20] [places=200] [seed=1] [trips=50]
 #
 # For each endpoint some requests warm it up, then the measured ones follow, once each:
 #   GET /api/day/{date}                      `days` random dates
 #   GET /api/range?from&to, and /api/heat    `months` random windows of 31 days, `years` random windows of 365 days
 #   GET /api/places/{id}                     `places` requests for the places the busiest year has
+#   GET /api/trips                           `trips` requests, and GET /api/trips/{id} `trips` requests for each trip the list has
 # The windows start on a random date, so they are not the calendar months and years the web app asks for; a window of 31 or
 # 365 days is the longest of them. Everything is picked with a generator of the script's own (see RNG below), so that a seed gives the
 # same dates and windows every time and on every awk, and two runs can be compared on the same requests.
@@ -25,6 +26,7 @@ month_count=${6:-100}
 year_count=${7:-20}
 place_count=${8:-200}
 seed=${9:-1}
+trip_count=${10:-50}
 
 # Fail with a reason, up front, rather than half way through a run: the vertex counts and the places need jq, and nothing is measured
 # without an API that answers (a refused connection would count as a request of 0 ms).
@@ -135,3 +137,26 @@ get br < "$workdir/paths" > "$workdir/times"
 report "GET /api/places/{id} ($place_count, $count ids)" "$workdir/times"
 tail -n +$((warmup + 1)) "$workdir/paths" > "$workdir/measured"
 raw_sizes "  (same requests, raw)" "$workdir/measured"
+
+# The trips: the list, then every trip of it by its id (the ids and the nights are the list's). Nothing is drawn at random: the same
+# path is asked for `trip_count` times, after `warmup` more that are not measured. The raw size and the vertices (of the trip's moves)
+# are of the same path, uncompressed.
+trip_run() { # label path
+  : > "$workdir/paths"
+  for ((i = 0; i < warmup + trip_count; i++)); do echo "$2" >> "$workdir/paths"; done
+  get br < "$workdir/paths" > "$workdir/times"
+  report "$1" "$workdir/times"
+  tail -n +$((warmup + 1)) "$workdir/paths" > "$workdir/measured"
+  raw_sizes "  (same requests, raw)" "$workdir/measured"
+}
+
+trip_run "GET /api/trips ($trip_count)" /api/trips
+curl -s "$base/api/trips" | jq -r '.trips[] | "\(.id) \(.nights)"' > "$workdir/trips"
+if [ ! -s "$workdir/trips" ]; then
+  echo "GET /api/trips/{id}: the list is empty: no trip to ask for"
+else
+  echo "  (the list has $(wc -l < "$workdir/trips") trips)"
+  while read -r id nights; do
+    trip_run "GET /api/trips/$id ($trip_count, $nights nights)" "/api/trips/$id"
+  done < "$workdir/trips"
+fi

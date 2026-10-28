@@ -1,13 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MapPadding, MapViewProps } from "../map/MapView";
-import type { DayResponse, PlaceResponse, RangeResponse, StatusResponse, StaySegment } from "../api/types";
-import { dayGeoJson, placeGeoJson, placePoint, rangeGeoJson } from "../map/layers";
+import type { DayResponse, HeatResponse, PlaceResponse, RangeResponse, StatusResponse, StaySegment, TripResponse, TripsResponse } from "../api/types";
+import { dayGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripGeoJson, tripsGeoJson } from "../map/layers";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
 import cafe from "../../e2e/fixtures/place-cafe.json";
 import october from "../../e2e/fixtures/range-october.json";
+import lisbonTrip from "../../e2e/fixtures/trip-2026-09-12.json";
+import tripsList from "../../e2e/fixtures/trips.json";
 import { periodDays, periodLabel, today } from "../time/dates";
 import { App } from "./App";
 import { navigate } from "./router";
@@ -101,10 +103,12 @@ function emptyPlace(path: string): PlaceResponse {
 
 type Answer = (path: string) => Response | Promise<Response>;
 
-/** Answers a day with a day, a period with a period and a place with a place, none of them with anything in it. */
+/** Answers a day with a day, a period with a period and a place with a place, none of them with anything in it; no trips, and no trip. */
 const answerEmpty: Answer = (path) => {
   if (path.startsWith("/api/range")) return Response.json(emptyRange(path));
   if (path.startsWith("/api/places/")) return Response.json(emptyPlace(path));
+  if (path === "/api/trips") return Response.json({ trips: [] } satisfies TripsResponse);
+  if (path.startsWith("/api/trips/")) return new Response("{}", { status: 404 });
   return Response.json(day(path.split("/").pop()!));
 };
 
@@ -155,17 +159,17 @@ function stubDesktop(matches: boolean) {
   );
 }
 
-function renderApp(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
-  return {
-    client,
-    ...render(
-      <StrictMode>
-        <QueryClientProvider client={client}>
-          <App />
-        </QueryClientProvider>
-      </StrictMode>,
-    ),
-  };
+/**
+ * The app on a client of its own. `strict` is false for a test that counts the requests for one query: StrictMode mounts what it shows twice,
+ * so that what was asked for is asked for again, and a count of them could not tell the panel and the map sharing one request from each asking.
+ */
+function renderApp(client = new QueryClient({ defaultOptions: { queries: { retry: false } } }), { strict = true } = {}) {
+  const app = (
+    <QueryClientProvider client={client}>
+      <App />
+    </QueryClientProvider>
+  );
+  return { client, ...render(strict ? <StrictMode>{app}</StrictMode> : app) };
 }
 
 beforeEach(() => {
@@ -596,6 +600,8 @@ describe("App day panel", () => {
       { view: "year", year: 2026 },
       { view: "range", from: "2026-10-01", to: "2026-10-05" },
       { view: "place", id: 3 },
+      { view: "trips" },
+      { view: "trip", id: "2026-09-12" },
     ] as const) {
       act(() => navigate(route));
       expect(screen.getByRole("region", { name: "Details" })).not.toBeEmptyDOMElement();
@@ -625,12 +631,12 @@ describe("App day on the map", () => {
     const auto = mapProps().fitTo;
     const home = placePoint((OSLO_DAY.segments[0] as StaySegment).place!);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Home, on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show home, Home, until 08:32, on the map" }));
     const first = mapProps().fitTo;
     expect(first).toEqual([home]);
     expect(first).not.toBe(auto);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Home, on the map" })); // the same row again: another array, so the map moves again
+    fireEvent.click(screen.getByRole("button", { name: "Show home, Home, until 08:32, on the map" })); // the same row again: another array, so the map moves again
     expect(mapProps().fitTo).toEqual([home]);
     expect(mapProps().fitTo).not.toBe(first);
   });
@@ -643,7 +649,7 @@ describe("App day on the map", () => {
     expect(mapProps().home).toEqual([...routes.features, ...stops.features]);
     const home = mapProps().home;
 
-    fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Café, on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Café, on the map" }));
 
     expect(mapProps().fitTo).toHaveLength(1); // the map is taken to the row...
     expect(mapProps().home).toBe(home); // ...and Recenter is still the whole day
@@ -676,7 +682,7 @@ describe("App day on the map", () => {
     stubApi((path) => Response.json(path.endsWith("2026-10-22") ? { ...OSLO_DAY, state } : day(path.split("/").pop()!)));
     const { client } = renderApp();
     await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Café, on the map" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Café, on the map" }));
     const tapped = mapProps().fitTo;
 
     state = "done"; // the poll of a day that was still being processed finds it done
@@ -712,7 +718,7 @@ describe("App row taps on the sheet", () => {
   const OSLO_DAY = flightDay as DayResponse;
   const sheet = () => screen.getByRole("region", { name: "Details" });
   const resize = () => fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
-  const tapRow = () => fireEvent.click(screen.getByRole("button", { name: "Show stop 2, Café, on the map" }));
+  const tapRow = () => fireEvent.click(screen.getByRole("button", { name: "Show stop 1, Café, on the map" }));
 
   test("App_a_row_tap_lowers_a_full_sheet_to_half_so_that_the_map_can_be_seen", async () => {
     stubApi((path) => Response.json(path.endsWith("2026-10-22") ? OSLO_DAY : day(path.split("/").pop()!)));
@@ -1101,5 +1107,215 @@ describe("App place", () => {
     expect(window.location.pathname).toBe(`/day/${today()}`);
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(periodLabel({ view: "day", date: today() })); // the day view of today, with its bar
     expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
+  });
+});
+
+describe("App trips", () => {
+  const TRIPS = tripsList as TripsResponse; // newest first: 2026-10-22 (New York, ongoing), 2026-09-12 (Lisbon & Sintra), 2026-08-01 (Copenhagen)
+  const LISBON = lisbonTrip as TripResponse;
+  /** The list and the trips of the fixtures; a trip that is not in it is a 404, as the server says; anything else is as empty as `answerEmpty` has it. */
+  const answerWithTrips: Answer = (path) => {
+    if (path.startsWith("/api/heat")) return Response.json({ maxSeconds: 0, cells: [] } satisfies HeatResponse);
+    if (path === "/api/trips") return Response.json(TRIPS);
+    if (path === "/api/trips/2026-09-12") return Response.json(LISBON);
+    const listed = TRIPS.trips.find((trip) => path === `/api/trips/${trip.id}`);
+    if (listed !== undefined) {
+      const { thumbnail: _thumbnail, ...summary } = listed;
+      return Response.json({ ...LISBON, ...summary } satisfies TripResponse);
+    }
+    return answerEmpty(path);
+  };
+  const details = () => screen.getByRole("region", { name: "Details" });
+  /** What the app asks for that is a period: a day, a range, a heat. */
+  const periodRequests = (paths: string[]) => paths.filter((path) => /^\/api\/(day|range|heat)/.test(path));
+
+  // A trips route has no period: nothing that is made from the dates of a period (a range, a heat, a day, a step) may be asked of it, and the
+  // heat that was turned on for the views that have a period stays turned on and is not asked for here.
+  beforeEach(() => {
+    window.localStorage.setItem("heat", "true");
+  });
+  afterEach(() => {
+    window.localStorage.removeItem("heat");
+  });
+
+  test("App_shows_the_trips_route_with_a_title_the_cards_the_map_of_their_cities_and_no_request_for_a_period_or_its_heat", async () => {
+    window.history.replaceState(null, "", "/trips");
+    const paths = stubApi(answerWithTrips);
+
+    renderApp(undefined, { strict: false }); // the requests are counted below
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Trips"); // the bar's title row
+    expect(within(details()).getByRole("heading", { name: "Trips" })).toBeInTheDocument(); // and the panel, until the list is
+    expect(mapProps().data.places).toBeUndefined(); // the map has nothing either while the list is on its way
+    expect(mapProps().fitTo).toBeNull();
+    expect(await within(details()).findByRole("list", { name: "Trips" })).toBeInTheDocument(); // the real list was asked for and came
+    expect(within(details()).queryByText("Loading…")).not.toBeInTheDocument();
+    expect(paths.filter((path) => path === "/api/trips")).toHaveLength(1); // one request, for the panel and the map (counted, not collapsed into a set)
+    expect(paths.filter((path) => path !== "/api/status" && path !== "/api/trips")).toEqual([]); // and nothing else
+    expect(periodRequests(paths)).toEqual([]);
+    expect(mapProps().heatToggle).toBeUndefined(); // there is no period to show the heat of
+    // What the panel lists is what the map draws: a dot for each city, no routes, and the map brought to all of them.
+    expect(mapProps().data).toEqual({ ...tripsGeoJson(TRIPS), view: "trips" });
+    expect(mapProps().data.places?.features).toHaveLength(4);
+    expect(mapProps().fitTo).toEqual(tripsGeoJson(TRIPS).places.features);
+    expect(mapProps().home).toEqual(tripsGeoJson(TRIPS).places.features);
+  });
+
+  test("App_opens_a_trip_from_its_card_and_draws_that_trip_and_none_of_the_cities_of_the_others", async () => {
+    window.history.replaceState(null, "", "/trips");
+    stubApi(answerWithTrips);
+    renderApp();
+    const list = await within(details()).findByRole("list", { name: "Trips" });
+    expect(mapProps().data.places?.features).toHaveLength(4); // the cities of all the trips
+
+    fireEvent.click(within(list).getByRole("button", { name: /^Open Lisbon & Sintra/ }));
+
+    expect(window.location.pathname).toBe("/trip/2026-09-12");
+    expect(await screen.findByRole("heading", { level: 1, name: "Lisbon & Sintra" })).toBeInTheDocument();
+    await waitFor(() => expect(mapProps().data.view).toBe("trip")); // the trip's own map: its routes and the dots of its two cities, and not the four
+    expect(mapProps().data.places?.features).toHaveLength(2);
+    expect(mapProps().data.routes.features).toHaveLength(LISBON.moves.length);
+  });
+
+  test("App_shows_a_trip_with_its_name_in_the_bar_its_stats_and_days_in_the_panel_and_its_routes_and_cities_on_the_map", async () => {
+    window.history.replaceState(null, "", "/trip/2026-09-12");
+    const paths = stubApi(answerWithTrips);
+
+    renderApp(undefined, { strict: false }); // the requests are counted below
+
+    expect(screen.getByText("Loading…")).toBeInTheDocument(); // the panel, until the trip is there
+    expect(mapProps().data.routes.features).toEqual([]); // and the map
+    expect(await screen.findByRole("heading", { level: 1, name: "Lisbon & Sintra" })).toBeInTheDocument();
+    expect(screen.getByText("12 – 16 Sep 2026")).toBeInTheDocument();
+    expect(await within(details()).findByText("2 flights")).toBeInTheDocument();
+    expect(within(details()).getByText("169 km on the ground")).toBeInTheDocument();
+    expect(within(details()).getByRole("list", { name: "Day by day" })).toBeInTheDocument();
+    expect(within(details()).queryByText("Loading…")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Older trip" })).toBeEnabled()); // the list came as well
+    // What the panel lists is what the map draws: the trip's routes and the dots of its cities, and the map is brought to all of them.
+    expect(mapProps().data).toMatchObject({ ...tripGeoJson(LISBON), view: "trip" });
+    expect(mapProps().fitTo).toEqual([...tripGeoJson(LISBON).routes.features, ...tripGeoJson(LISBON).places.features]);
+    expect(mapProps().home).toEqual(mapProps().fitTo);
+    // The trip asked for once, for the bar, the panel and the map; the heat (it is on) of its dates and of no others.
+    expect(paths.filter((path) => path === "/api/trips/2026-09-12")).toHaveLength(1);
+    expect(paths.filter((path) => path === "/api/trips")).toHaveLength(1);
+    await waitFor(() => expect(paths).toContain("/api/heat?from=2026-09-12&to=2026-09-16"));
+    expect(periodRequests(paths)).toEqual(["/api/heat?from=2026-09-12&to=2026-09-16"]); // no day, no range
+    await waitFor(() => expect(mapProps().data.heat).toBeDefined()); // and what came is what the map is given, under the routes of the trip
+    expect(mapProps().heatToggle).toMatchObject({ on: true }); // the button is there on a trip, as on a day
+  });
+
+  test("App_opens_a_day_from_a_day_of_the_trip", async () => {
+    window.history.replaceState(null, "", "/trip/2026-09-12");
+    stubApi(answerWithTrips);
+    renderApp();
+    const days = await within(details()).findByRole("list", { name: "Day by day" });
+
+    fireEvent.click(within(days).getByRole("button", { name: /^Open Mon 14 Sep/ }));
+
+    expect(window.location.pathname).toBe("/day/2026-09-14");
+    expect(await screen.findByRole("heading", { level: 1, name: "Monday 14 September" })).toBeInTheDocument();
+  });
+
+  test("App_says_a_trip_that_the_server_does_not_have_no_longer_exists_and_draws_nothing_of_it", async () => {
+    window.history.replaceState(null, "", "/trip/2026-01-01");
+    const paths = stubApi(answerWithTrips);
+
+    renderApp();
+
+    expect(await within(details()).findByText("This trip no longer exists")).toBeInTheDocument();
+    expect(within(details()).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(within(details()).queryByText("Loading…")).not.toBeInTheDocument();
+    expect(mapProps().data.routes.features).toEqual([]);
+    expect(mapProps().data.places).toBeUndefined();
+    expect(mapProps().fitTo).toBeNull();
+    expect(mapProps().home).toBeNull();
+    expect(periodRequests(paths)).toEqual([]); // a trip that is gone has no dates to ask the heat of
+    expect(mapProps().heatToggle).toBeUndefined(); // and no button for the heat of what does not exist (P3-R22)
+
+    fireEvent.click(within(details()).getByRole("button", { name: "See all trips" }));
+
+    expect(window.location.pathname).toBe("/trips");
+    expect(await within(details()).findByRole("list", { name: "Trips" })).toBeInTheDocument();
+  });
+
+  test("App_shows_an_error_for_a_trip_that_could_not_be_had_with_a_retry_that_asks_again_and_not_the_message_of_a_trip_that_is_gone", async () => {
+    window.history.replaceState(null, "", "/trip/2026-09-12");
+    let failing = true;
+    stubApi((path) => (path === "/api/trips/2026-09-12" && failing ? new Response("{}", { status: 500 }) : answerWithTrips(path)));
+    renderApp();
+
+    expect(await within(details()).findByRole("alert")).toHaveTextContent("Couldn't load — Retry");
+    expect(within(details()).queryByText("This trip no longer exists")).not.toBeInTheDocument();
+    expect(mapProps().data.routes.features).toEqual([]);
+
+    failing = false;
+    fireEvent.click(within(details()).getByRole("button", { name: "Retry" }));
+
+    expect(await within(details()).findByRole("list", { name: "Day by day" })).toBeInTheDocument();
+    await waitFor(() => expect(mapProps().data.routes.features).toHaveLength(LISBON.moves.length));
+  });
+
+  test("App_goes_to_the_trips_with_the_button_of_the_bar_and_back_to_the_day_that_was_shown_asking_for_no_period_on_the_way", async () => {
+    const paths = stubApi(answerWithTrips);
+    renderApp();
+    await screen.findByText("No data for this day");
+    await waitFor(() => expect(paths).toContain("/api/heat?from=2026-10-22&to=2026-10-22")); // the heat is on for a day
+    const before = periodRequests(paths).length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Trips" }));
+
+    expect(window.location.pathname).toBe("/trips");
+    expect(screen.getByRole("button", { name: "Trips", pressed: true })).toBeInTheDocument();
+    await waitFor(() => expect(within(details()).queryByText("Loading…")).not.toBeInTheDocument());
+    expect(periodRequests(paths)).toHaveLength(before);
+    expect(mapProps().heatToggle).toBeUndefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Week" })); // a view that has a period again, at the day that was last shown
+    expect(window.location.pathname).toBe("/week/2026-10-19");
+    expect(mapProps().heatToggle).toBeDefined();
+    await screen.findByText("No data for this period");
+  });
+
+  test("App_goes_from_one_trip_to_the_next_and_has_the_neighbours_of_the_trip_it_is_at_ready", async () => {
+    window.history.replaceState(null, "", "/trip/2026-10-22");
+    const paths = stubApi(answerWithTrips);
+    const { client } = renderApp();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Older trip" })).toBeEnabled()); // the list is known now
+    expect(screen.getByRole("button", { name: "Newer trip" })).toBeDisabled(); // the newest
+    expect(client.getQueryData(["trip", "2026-08-01"])).toBeUndefined(); // the neighbours of a trip that was opened as a page are not known before the list is
+
+    fireEvent.click(screen.getByRole("button", { name: "Older trip" }));
+
+    expect(window.location.pathname).toBe("/trip/2026-09-12");
+    expect(await screen.findByRole("heading", { level: 1, name: "Lisbon & Sintra" })).toBeInTheDocument();
+    await waitFor(() => expect(client.getQueryData(["trip", "2026-08-01"])).toBeDefined()); // the trip after this one, which nothing has asked for
+    expect(paths.filter((path) => path === "/api/trips/2026-08-01")).toHaveLength(1);
+    // The heat is on, and is asked for of the dates of the trips that were shown (New York's and Lisbon's); a neighbour that was only
+    // prefetched is not shown, and its heat is not asked for. No day and no range is asked for.
+    await waitFor(() => expect(periodRequests(paths)).toContain("/api/heat?from=2026-09-12&to=2026-09-16"));
+    expect(periodRequests(paths).filter((path) => !path.startsWith("/api/heat"))).toEqual([]);
+    expect(periodRequests(paths)).not.toContain("/api/heat?from=2026-08-01&to=2026-08-03");
+
+    fireEvent.click(screen.getByRole("button", { name: "Older trip" }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Copenhagen" })).toBeInTheDocument(); // from the cache: the prefetch's one request
+    expect(paths.filter((path) => path === "/api/trips/2026-08-01")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Older trip" })).toBeDisabled();
+  });
+
+  test("App_leaves_a_trip_that_the_server_does_not_have_as_Trip_with_no_period_asked_for", async () => {
+    window.history.replaceState(null, "", "/trip/2026-01-01");
+    const paths = stubApi(answerWithTrips);
+
+    const { client } = renderApp();
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Trip" })).toBeInTheDocument();
+    await waitFor(() => expect(client.getQueryState(["trips"])?.status).toBe("success")); // the list is there...
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0))); // ...and the bar has been told so
+    expect(paths).toContain("/api/trips");
+    expect(periodRequests(paths)).toEqual([]);
+    expect(screen.getByRole("button", { name: "Older trip" })).toBeDisabled(); // the trip is not in it: no trip is older or newer than it
+    expect(screen.getByRole("button", { name: "Newer trip" })).toBeDisabled();
   });
 });

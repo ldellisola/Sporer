@@ -1,8 +1,8 @@
 namespace Sporer.Timeline;
 
 /// <summary>
-/// Thresholds for point cleaning, stay/move segmentation, mode classification and place matching
-/// (spec section 6). Bound from configuration section <c>Detection</c>; the defaults are the spec's.
+/// Thresholds for point cleaning, stay/move segmentation, mode classification, place matching and the home and trip
+/// rules (spec section 6). Bound from configuration section <c>Detection</c>; the defaults are the spec's.
 /// </summary>
 public sealed record DetectionOptions
 {
@@ -47,4 +47,38 @@ public sealed record DetectionOptions
 
     /// <summary>Line simplification tolerance for the coarse track.</summary>
     public double CoarseToleranceMeters { get; init; } = 50;
+
+    /// <summary>
+    /// The hour of local time (24-hour clock) a night is located at: the night of a date is placed at this hour on the
+    /// next day, in the zone the person was in then (spec 6.6, 03:00).
+    /// </summary>
+    public int NightHour { get; init; } = 3;
+
+    /// <summary>
+    /// When no stay covers a night's instant, the nearest raw point within this long of it locates the night; if there
+    /// is none, the night is unknown.
+    /// </summary>
+    public TimeSpan NightPointWindow { get; init; } = TimeSpan.FromHours(12);
+
+    /// <summary>A new home is judged over this many consecutive calendar nights.</summary>
+    public int HomeWindowNights { get; init; } = 90;
+
+    /// <summary>
+    /// A place becomes home once it, with the places within <see cref="HomeRadiusMeters"/> of it, is the night location on at
+    /// least this many of the last <see cref="HomeWindowNights"/> nights; unknown nights count against it. Keep it above half
+    /// the window, so that only one home can qualify at a time.
+    /// </summary>
+    public int HomeMinNights { get; init; } = 60;
+
+    /// <summary>
+    /// Places within this distance of each other count as one home, because GPS drift can split a home into several places
+    /// a hundred metres or so apart (a stay matches a place within <see cref="PlaceRadiusMeters"/> or makes its own). Two
+    /// homes closer than this are one home, and so can two homes up to about twice this apart, when a place of the new one
+    /// lies within this distance of the old one: a move next door is not detected. That is harmless for trips, because it
+    /// is far below <see cref="TripMinDistanceKm"/>.
+    /// </summary>
+    public double HomeRadiusMeters { get; init; } = 250;
+
+    /// <summary>A night is away when its location is at least this far from the home in effect that night.</summary>
+    public double TripMinDistanceKm { get; init; } = 50;
 }

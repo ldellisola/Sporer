@@ -14,6 +14,7 @@ import {
 } from "react";
 import { useConfig } from "../api/queries";
 import { boundsOf, type Bounds } from "./bounds";
+import { addHomeImage } from "./house";
 import {
   LAYER_IDS,
   layerSpecs,
@@ -32,11 +33,16 @@ import { loadMapLibre, type MapLibreLoader, type MapLibreModule } from "./maplib
 import styles from "./MapView.module.css";
 import { loadStyle, type StyleSpecification } from "./style";
 
-/** What the map draws. Routes are drawn as a day (bold, with a casing) when `stops` is given, else as part of a period (faint). */
+/**
+ * What the map draws. Routes are drawn as a day (bold, with a casing) when `stops` is given, else as part of a period (faint), unless
+ * `view` says which they are: the trips (a dot for each city, no routes) and a trip (bold routes and dots) are not told from a period
+ * by the shape of their data.
+ */
 export interface MapData {
   routes: RouteCollection;
   stops?: StopCollection;
   places?: PlaceCollection;
+  view?: RouteView;
   /** Drawn as a heat layer while given, under the routes, which fade (to a fifth) for as long as there is a glow to show through. */
   heat?: HeatCollection;
 }
@@ -99,13 +105,18 @@ export interface MapViewProps {
    * often as its data changes; null (or no position in it) says there is nothing to go back to, and disables the button.
    */
   home?: readonly Feature<Geometry, unknown>[] | null;
+  /**
+   * What covers the map. The controls are set in by it, and what is fitted is fitted into the rest, with a little more air at the left and at
+   * the right while a dot of the drawing has a label (see `LABEL_AIR_PX`): the air is for the camera and is not added to the controls' insets.
+   */
   padding?: MapPadding;
   /** The heat button, a button of the map's own like Recenter. Given only where there is a period to show the heat of: without it there is no button. */
   heatToggle?: HeatToggle;
   /**
    * Called with the id of the place when one is tapped (clicked, on a desktop): a dot of a period, or a pin of a day (the number on it
    * too), or the one nearest to the point of those within 12 px of it, so that a finger need not hit a dot of 8 px. The map does not know
-   * of routes: the parent takes the owner there. A drag that ends over a dot is no tap, as MapLibre has it.
+   * of routes: the parent takes the owner there. A drag that ends over a dot is no tap, as MapLibre has it. A dot that is no place (the
+   * city of the trips, whose `id` is 0) is not tapped, and has no pointer over it.
    */
   onPlaceTap?: (id: number) => void;
   /**
@@ -125,8 +136,8 @@ export interface MapViewProps {
   onStyleLoad?: () => void;
 }
 
-/** The layers of the dots of a period, and of the pins of a day with the numbers on them: what a tap opens the place of. */
-const TAPPABLE_LAYERS = [LAYER_IDS.places, LAYER_IDS.stops, LAYER_IDS.stopNumbers];
+/** The layers of the dots of a period, and of the pins of a day with the house or the numbers on them: what a tap opens the place of. */
+const TAPPABLE_LAYERS = [LAYER_IDS.places, LAYER_IDS.stops, LAYER_IDS.stopHome, LAYER_IDS.stopNumbers];
 
 /**
  * How far from a dot or a pin a tap still opens it, in pixels. A finger is some 40 px wide and the smallest dot is 8 px across, so a tap
@@ -211,7 +222,7 @@ const newPushed = (): Pushed => ({ collections: {}, underHeat: false });
  * `pushed` for it, and again whenever the data changes.
  */
 function syncData(map: MapLibreMap, data: MapData, dark: boolean, pushed: Pushed): void {
-  const view: RouteView = data.stops === undefined ? "range" : "day";
+  const view: RouteView = data.view ?? (data.stops === undefined ? "range" : "day");
   const collections = {
     routes: data.routes,
     stops: data.stops ?? EMPTY_STOPS,
@@ -254,16 +265,39 @@ function paddingVariables(padding: MapPadding): CSSProperties {
   } as CSSProperties;
 }
 
-function fit(map: MapLibreMap, bounds: Bounds, padding: MapPadding): void {
-  map.fitBounds(bounds, { padding, maxZoom: FIT_MAX_ZOOM, duration: FIT_DURATION_MS });
+/**
+ * The air a fit leaves at the left and at the right while the drawing has labelled dots, in pixels: what the dot at an edge of the fit takes
+ * beyond its position, which is its radius (16 px at the most) and its outline. The labels point toward the inside of the drawing (`withSides`
+ * of `layers`), so none of them needs room beyond the outermost dots. MapLibre never moves a label back onto the screen once it is beyond its
+ * edge, which is what a label that pointed outward at an edge would have needed the width of the label in air for: so much that a phone would
+ * have no room left to fit anything into.
+ */
+const LABEL_AIR_PX = 24;
+
+/** Whether any dot of the drawing carries a label (the places that the period's, the trips' and a trip's dots name): they are what the air is for. */
+const hasLabels = (data: MapData): boolean => data.places?.features.some((dot) => dot.properties.label !== undefined) ?? false;
+
+/**
+ * The padding that a fit is made with: what covers the map, and for a drawing with labelled dots some air at each side, for the outermost
+ * dots to lie in whole. The air is for the camera alone: the controls are set in by the padding that covers the map (`paddingVariables`),
+ * which does not change.
+ */
+function fitPadding(padding: MapPadding, data: MapData): MapPadding {
+  return hasLabels(data) ? { ...padding, left: padding.left + LABEL_AIR_PX, right: padding.right + LABEL_AIR_PX } : padding;
+}
+
+function fit(map: MapLibreMap, bounds: Bounds, padding: MapPadding, data: MapData): void {
+  map.fitBounds(bounds, { padding: fitPadding(padding, data), maxZoom: FIT_MAX_ZOOM, duration: FIT_DURATION_MS });
 }
 
 /**
  * The place that a tap at `point` (pixels of the map) opens: the dot or the pin nearest to it, of those that are drawn within
  * `TAP_SLOP_PX` of it, or undefined when there is none. Near is by the position of the place (where its dot or pin is centred), not by
  * how much of a feature lies in the box: a big dot's edge is near where its middle is not. The dot says the place as its `id`; a pin's `id`
- * is a stay's (the first of them), so it says it as `placeId`. A feature that says no place is passed over. Only layers that the style has
- * are looked in: MapLibre reports an error for one that it has not (before the style has loaded, say), and finds nothing there.
+ * is a stay's (the first of them), so it says it as `placeId`. A feature that says no place is passed over: one with no id, and one whose id
+ * is not a place's (0 or less: the dots of the cities of the trips are `id: 0`), so that the place next to such a dot is the one that is
+ * found, and a tap on a dot of a city, or the pointer over it, is a tap on the map. Only layers that the style has are looked in: MapLibre
+ * reports an error for one that it has not (before the style has loaded, say), and finds nothing there.
  */
 function placeAt(map: MapLibreMap, { x, y }: { x: number; y: number }): number | undefined {
   const layers = TAPPABLE_LAYERS.filter((id) => map.getLayer(id) !== undefined);
@@ -273,7 +307,7 @@ function placeAt(map: MapLibreMap, { x, y }: { x: number; y: number }): number |
   let nearestDistance = Infinity;
   for (const feature of map.queryRenderedFeatures(box, { layers })) {
     const id: unknown = feature.properties[feature.layer.id === LAYER_IDS.places ? "id" : "placeId"];
-    if (typeof id !== "number" || feature.geometry.type !== "Point") continue;
+    if (typeof id !== "number" || id <= 0 || feature.geometry.type !== "Point") continue;
     const [lon, lat] = feature.geometry.coordinates;
     const at = map.project([lon!, lat!]);
     const distance = Math.hypot(at.x - x, at.y - y);
@@ -327,7 +361,7 @@ function MapSurface({
   const [mapAttempts, setMapAttempts] = useState(0);
   const [styleAttempts, setStyleAttempts] = useState(0);
 
-  const { routes, stops, places, heat } = data;
+  const { routes, stops, places, heat, view } = data;
   const bounds = useMemo(() => (fitTo === null ? null : boundsOf(fitTo)), [fitTo]);
   const homeBounds = useMemo(() => (home === undefined ? bounds : home === null ? null : boundsOf(home)), [home, bounds]);
 
@@ -450,6 +484,7 @@ function MapSurface({
       readyRef.current = true;
       showState(rootRef.current, phase === "failed" ? "unavailable" : "ready");
       pushedRef.current = newPushed();
+      addHomeImage(map); // each style has its own images: the house comes before the layer that draws it
       syncData(map, latest.current.data, latest.current.dark, pushedRef.current);
       if (phase !== "failed") latest.current.onStyleLoad?.();
     };
@@ -552,19 +587,19 @@ function MapSurface({
   // the latest data by itself.
   useEffect(() => {
     if (map !== null && readyRef.current) {
-      syncData(map, { routes, stops, places, heat }, latest.current.dark, pushedRef.current);
+      syncData(map, { routes, stops, places, heat, view }, latest.current.dark, pushedRef.current);
     }
-  }, [map, routes, stops, places, heat, latest]);
+  }, [map, routes, stops, places, heat, view, latest]);
 
   // A map that was not there yet when `fitTo` was given is brought to it, with the padding of now, the moment it is there.
   useEffect(() => {
     const target = latest.current.bounds;
-    if (map !== null && target !== null) fit(map, target, latest.current.padding);
+    if (map !== null && target !== null) fit(map, target, latest.current.padding, latest.current.data);
   }, [map, fitTo, latest]); // each new `fitTo` moves the map, whether or not its box is the one it is already at; padding does not
 
   const recenter = (): void => {
     const target = latest.current.homeBounds;
-    if (map !== null && target !== null) fit(map, target, latest.current.padding);
+    if (map !== null && target !== null) fit(map, target, latest.current.padding, latest.current.data);
   };
 
   return (

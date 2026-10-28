@@ -6,18 +6,23 @@ import { ApiError } from "./client";
 import {
   createQueryClient,
   dayQueryOptions,
-  placeOf,
   prefetchNeighbours,
   rangeQueryOptions,
   refreshInterval,
+  shownOf,
+  tripNeighbours,
+  tripQueryOptions,
+  tripsQueryOptions,
   useConfig,
   useDay,
   useHeat,
   usePlace,
   useRange,
   useStatus,
+  useTrip,
+  useTrips,
 } from "./queries";
-import type { DayResponse, LoadState, PlaceResponse, RangeResponse } from "./types";
+import type { DayResponse, LoadState, PlaceResponse, RangeResponse, TripListItem, TripResponse, TripsResponse } from "./types";
 
 const SUMMARY = { places: 0, distanceMeters: 0, movingSeconds: 0 };
 
@@ -27,6 +32,37 @@ function day(date: string, state: LoadState = "done"): DayResponse {
 
 function range(from: string, to: string, state: LoadState = "done"): RangeResponse {
   return { from, to, state, summary: { ...SUMMARY, moves: 0 }, moves: [], places: [], days: [] };
+}
+
+/** A trip of the list, with only what tells it from the others: its id (the date of its first night) and its length. */
+function listed(id: string, nights = 2): TripListItem {
+  return {
+    id,
+    name: "Lisbon",
+    firstNight: id,
+    lastNight: id,
+    nights,
+    start: `${id}T07:00:00Z`,
+    end: `${id}T18:00:00Z`,
+    startTimeZone: "Europe/Oslo",
+    endTimeZone: "Europe/Oslo",
+    localStartDate: id,
+    localEndDate: id,
+    ongoing: false,
+    cities: [{ name: "Lisbon", country: "Portugal", nights, lat: 38.72, lon: -9.14 }],
+    thumbnail: [
+      [10.75, 59.91],
+      [-9.14, 38.72],
+    ],
+  };
+}
+
+const tripsOf = (...ids: string[]): TripsResponse => ({ trips: ids.map((id) => listed(id)) });
+
+/** A trip's own page, with no stay, move or day in it. */
+function trip(id: string): TripResponse {
+  const { thumbnail: _thumbnail, ...summary } = listed(id);
+  return { ...summary, stats: { flights: 0, cities: 1, places: 1, groundDistanceMeters: 0 }, moves: [], days: [] };
 }
 
 function json(body: unknown, status = 200): Response {
@@ -77,6 +113,8 @@ describe("query hooks", () => {
         range: useRange("2026-10-19", "2026-10-25"),
         heat: useHeat("2026-10-19", "2026-10-25", true),
         place: usePlace(7),
+        trips: useTrips(),
+        trip: useTrip("2026-09-12"),
         status: useStatus(),
         config: useConfig(),
       }),
@@ -94,6 +132,8 @@ describe("query hooks", () => {
         "/api/places/7",
         "/api/range?from=2026-10-19&to=2026-10-25",
         "/api/status",
+        "/api/trips",
+        "/api/trips/2026-09-12",
       ].sort(),
     );
   });
@@ -420,28 +460,45 @@ describe("query hooks", () => {
     expect((result.current.error as ApiError).status).toBe(404);
   });
 
-  // The panel and the map both show a place by this, so that a place that is gone is gone for both.
-  describe("placeOf", () => {
+  // The panels, the bars and the maps of a place and of a trip show them by this, so that what is gone is gone for all of them: one rule for what a
+  // 404 does to what a query still holds, whichever the response is.
+  describe("shownOf", () => {
     const PLACE = { id: 7, name: "Home" } as PlaceResponse;
+    const TRIP = trip("2026-09-12");
 
-    test("placeOf_shows_the_place_the_query_has", () => {
-      expect(placeOf({ data: PLACE, error: null })).toEqual({ gone: false, shown: PLACE });
+    test("shownOf_shows_what_the_query_has", () => {
+      expect(shownOf({ data: PLACE, error: null })).toEqual({ gone: false, shown: PLACE });
+      expect(shownOf({ data: TRIP, error: null })).toEqual({ gone: false, shown: TRIP });
     });
 
-    test("placeOf_shows_nothing_while_there_is_nothing_yet", () => {
-      expect(placeOf({ data: undefined, error: null })).toEqual({ gone: false, shown: undefined });
+    test("shownOf_shows_nothing_while_there_is_nothing_yet", () => {
+      expect(shownOf<PlaceResponse>({ data: undefined, error: null })).toEqual({ gone: false, shown: undefined });
+      expect(shownOf<TripResponse>({ data: undefined, error: null })).toEqual({ gone: false, shown: undefined });
     });
 
-    test("placeOf_drops_the_place_the_query_still_holds_when_the_server_says_it_is_gone", () => {
-      // A 404 is for good: what the query kept of the place from before is not shown any more, on the map or in the panel.
-      expect(placeOf({ data: PLACE, error: new ApiError(404, "/api/places/7") })).toEqual({ gone: true, shown: undefined });
-      expect(placeOf({ data: undefined, error: new ApiError(404, "/api/places/7") })).toEqual({ gone: true, shown: undefined });
+    test("shownOf_drops_what_the_query_still_holds_when_the_server_says_it_is_gone", () => {
+      // A 404 is for good: what the query kept from before is not shown any more, on the map or in the panel, of a place or of a trip.
+      expect(shownOf({ data: PLACE, error: new ApiError(404, "/api/places/7") })).toEqual({ gone: true, shown: undefined });
+      expect(shownOf({ data: undefined, error: new ApiError(404, "/api/places/7") })).toEqual({ gone: true, shown: undefined });
+      expect(shownOf({ data: TRIP, error: new ApiError(404, "/api/trips/2026-09-12") })).toEqual({ gone: true, shown: undefined });
     });
 
-    test("placeOf_keeps_the_place_under_any_other_failure", () => {
+    test("shownOf_keeps_what_it_has_under_any_other_failure", () => {
       for (const error of [new ApiError(500, "/api/places/7"), new ApiError(400, "/api/places/7"), new TypeError("Failed to fetch")]) {
-        expect(placeOf({ data: PLACE, error }), String(error)).toEqual({ gone: false, shown: PLACE });
+        expect(shownOf({ data: PLACE, error }), String(error)).toEqual({ gone: false, shown: PLACE });
+        expect(shownOf({ data: TRIP, error }), String(error)).toEqual({ gone: false, shown: TRIP });
       }
+    });
+
+    test("shownOf_takes_what_a_query_of_either_kind_holds", async () => {
+      // The one function is what the hooks of both are given: the types of their data go through it as they are.
+      stubApi(() => json({}, 404));
+      const client = newClient();
+      const place = renderHook(() => shownOf(usePlace(7)), { wrapper: wrapperFor(client) });
+      const aTrip = renderHook(() => shownOf(useTrip("2026-09-12")), { wrapper: wrapperFor(client) });
+
+      await waitFor(() => expect(place.result.current.gone).toBe(true));
+      await waitFor(() => expect(aTrip.result.current.gone).toBe(true));
     });
   });
 
@@ -473,6 +530,70 @@ describe("query hooks", () => {
     expect(result.current.data).toBeUndefined();
     await act(async () => releaseSecond(json({ id: 8 })));
     await waitFor(() => expect(result.current.data?.id).toBe(8));
+  });
+
+  test("useTrips_reads_the_list_the_server_gives_newest_first", async () => {
+    stubApi(() => json(tripsOf("2026-10-20", "2026-09-12")));
+    const { result } = renderHook(() => useTrips(), { wrapper: wrapperFor(newClient()) });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(result.current.data?.trips.map((t) => t.id)).toEqual(["2026-10-20", "2026-09-12"]);
+  });
+
+  test("useTrip_with_no_id_asks_for_nothing_even_when_every_trip_is_refetched", async () => {
+    const urls = stubApi(() => json(trip("2026-09-12")));
+    const client = newClient();
+    const { result } = renderHook(() => useTrip(null), { wrapper: wrapperFor(client) });
+
+    await act(async () => undefined);
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["trip"] });
+      await client.refetchQueries({ queryKey: ["trip"] });
+    });
+
+    expect(urls).toEqual([]); // the view on show is not a trip, and none is asked for as `/api/trips/null`
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(result.current.data).toBeUndefined();
+  });
+
+  test("useTrip_keeps_no_other_trip_for_the_one_that_loads", async () => {
+    // The name and the days of one trip under the heading of another would be wrong, and not just old.
+    let releaseSecond: (response: Response) => void = () => {};
+    stubApi((url) => (url.endsWith("2026-09-12") ? json(trip("2026-09-12")) : new Promise<Response>((resolve) => (releaseSecond = resolve))));
+    const { result, rerender } = renderHook(({ id }) => useTrip(id), {
+      initialProps: { id: "2026-09-12" },
+      wrapper: wrapperFor(newClient()),
+    });
+    await waitFor(() => expect(result.current.data?.id).toBe("2026-09-12"));
+
+    rerender({ id: "2026-10-20" });
+
+    expect(result.current.data).toBeUndefined();
+    await act(async () => releaseSecond(json(trip("2026-10-20"))));
+    await waitFor(() => expect(result.current.data?.id).toBe("2026-10-20"));
+  });
+
+  test("useTrip_does_not_retry_a_404", async () => {
+    // The real retry policy: a trip that the server says is not there will not be there the next time (as for a place), whereas a failure
+    // of any other kind is tried once more. The second half is what makes the first one mean something.
+    vi.useFakeTimers();
+    const gone = stubApi(() => json({ title: "Not Found" }, 404));
+    const missing = renderHook(() => useTrip("2026-01-01"), { wrapper: wrapperFor(createQueryClient()) });
+    await tick(1);
+
+    expect(missing.result.current.isError).toBe(true); // at once: no retry was waiting
+    expect((missing.result.current.error as ApiError).status).toBe(404);
+    await tick(10_000);
+    expect(gone).toEqual(["/api/trips/2026-01-01"]);
+
+    const broken = stubApi(() => json({}, 500));
+    const failing = renderHook(() => useTrip("2026-09-12"), { wrapper: wrapperFor(createQueryClient()) });
+    await tick(1);
+    expect(failing.result.current.isError).toBe(false); // waiting to try again
+    await tick(10_000);
+    expect(failing.result.current.isError).toBe(true);
+    expect(broken).toEqual(["/api/trips/2026-09-12", "/api/trips/2026-09-12"]);
   });
 
   test("useStatus_polls_every_30_seconds", async () => {
@@ -557,6 +678,26 @@ describe("createQueryClient", () => {
   });
 });
 
+describe("tripNeighbours", () => {
+  // The list is newest first, so the trip after one in it is the older, and the one before it the newer.
+  const LIST = ["2026-10-20", "2026-09-12", "2026-08-01"].map((id) => ({ id }));
+
+  test("tripNeighbours_are_the_trips_either_side_of_a_trip_in_the_list", () => {
+    expect(tripNeighbours(LIST, "2026-09-12")).toEqual({ older: "2026-08-01", newer: "2026-10-20" });
+  });
+
+  test("tripNeighbours_have_no_newer_trip_for_the_first_and_no_older_for_the_last", () => {
+    expect(tripNeighbours(LIST, "2026-10-20")).toEqual({ older: "2026-09-12", newer: null });
+    expect(tripNeighbours(LIST, "2026-08-01")).toEqual({ older: null, newer: "2026-09-12" });
+    expect(tripNeighbours([{ id: "2026-09-12" }], "2026-09-12")).toEqual({ older: null, newer: null });
+  });
+
+  test("tripNeighbours_have_none_for_a_trip_that_is_not_in_the_list_or_for_no_list", () => {
+    expect(tripNeighbours(LIST, "2026-01-01")).toEqual({ older: null, newer: null });
+    expect(tripNeighbours([], "2026-09-12")).toEqual({ older: null, newer: null });
+  });
+});
+
 describe("prefetchNeighbours", () => {
   test("prefetchNeighbours_loads_the_previous_and_next_day", async () => {
     const urls = stubApi((url) => json(day(url.split("/").pop() ?? "")));
@@ -614,5 +755,61 @@ describe("prefetchNeighbours", () => {
     const client = newClient();
 
     await expect(prefetchNeighbours(client, { view: "day", date: "2026-10-22" })).resolves.toBeUndefined();
+  });
+
+  describe("of a trip", () => {
+    /** A client that has the list of trips, newest first, as the top bar leaves it when it has asked for it. */
+    function withList(...ids: string[]): QueryClient {
+      const client = newClient();
+      client.setQueryData(tripsQueryOptions().queryKey, tripsOf(...ids));
+      return client;
+    }
+    const tripAt = (id: string) => ({ view: "trip", id }) as const;
+
+    test("prefetchNeighbours_loads_the_trips_either_side_of_a_trip_from_the_list_it_has", async () => {
+      const urls = stubApi((url) => json(trip(url.split("/").pop() ?? "")));
+      const client = withList("2026-10-20", "2026-09-12", "2026-08-01");
+
+      await prefetchNeighbours(client, tripAt("2026-09-12"));
+
+      expect([...urls].sort()).toEqual(["/api/trips/2026-08-01", "/api/trips/2026-10-20"]);
+      expect(client.getQueryData(tripQueryOptions("2026-08-01").queryKey)?.id).toBe("2026-08-01");
+      expect(client.getQueryData(tripQueryOptions("2026-10-20").queryKey)?.id).toBe("2026-10-20");
+      expect(client.getQueryData(tripQueryOptions("2026-09-12").queryKey)).toBeUndefined(); // the trip on show is not its own neighbour
+    });
+
+    test("prefetchNeighbours_loads_the_one_neighbour_of_the_trip_at_either_end_of_the_list", async () => {
+      const urls = stubApi((url) => json(trip(url.split("/").pop() ?? "")));
+
+      // A client for each: what the first loads is fresh for the second, which would not ask for it again.
+      await prefetchNeighbours(withList("2026-10-20", "2026-09-12", "2026-08-01"), tripAt("2026-10-20")); // the newest: only an older one
+      await prefetchNeighbours(withList("2026-10-20", "2026-09-12", "2026-08-01"), tripAt("2026-08-01")); // the oldest: only a newer one
+
+      expect(urls).toEqual(["/api/trips/2026-09-12", "/api/trips/2026-09-12"]);
+    });
+
+    test("prefetchNeighbours_does_nothing_for_a_trip_when_the_list_is_not_there_yet_and_does_not_ask_for_it", async () => {
+      const urls = stubApi(() => json({}));
+
+      await prefetchNeighbours(newClient(), tripAt("2026-09-12")); // the list is the top bar's to load: nothing is known of the neighbours until it is
+
+      expect(urls).toEqual([]);
+    });
+
+    test("prefetchNeighbours_does_nothing_for_a_trip_that_is_not_in_the_list_and_for_the_list_itself", async () => {
+      const urls = stubApi(() => json({}));
+      const client = withList("2026-10-20", "2026-09-12");
+
+      await prefetchNeighbours(client, tripAt("2026-01-01"));
+      await prefetchNeighbours(client, { view: "trips" });
+
+      expect(urls).toEqual([]);
+    });
+
+    test("prefetchNeighbours_does_not_throw_when_a_neighbouring_trip_cannot_be_had", async () => {
+      stubApi(() => json({}, 500));
+
+      await expect(prefetchNeighbours(withList("2026-10-20", "2026-09-12"), tripAt("2026-10-20"))).resolves.toBeUndefined();
+    });
   });
 });

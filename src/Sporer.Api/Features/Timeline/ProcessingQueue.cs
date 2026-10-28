@@ -279,7 +279,10 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
     /// them would anchor the rebuild (see <see cref="SegmentStore.FindAnchorsAsync"/>) and carry its output into the
     /// new one. The set-aside dirty ranges go too, and the chunk attempts return to zero: the backfill goes over all of that
     /// history again, and a set-aside range that stayed would be listed twice, and would hold back the new rebuilds.
-    /// Places are kept, and the raw points are never touched.
+    /// What is derived from the segments goes with them: every night, every trip and the detected home periods are deleted,
+    /// and the window waiting to be refreshed is cleared, because the backfill refreshes it all again as it goes. The
+    /// home periods the owner set (<c>user</c>) are not derived from anything and stay. Places are kept, and the raw points
+    /// are never touched.
     /// </summary>
     public async Task RestartBackfillAsync(string algorithmVersion, DateTime? fromUtc, DateTime? toUtc, CancellationToken ct = default)
     {
@@ -287,6 +290,14 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
         await connection.ExecuteAsync(new CommandDefinition("delete from segment", transaction: transaction, cancellationToken: ct));
+        await connection.ExecuteAsync(new CommandDefinition(
+            """
+            delete from night;
+            delete from trip;
+            delete from home_period where source = 'detected';
+            update night_refresh set from_utc = null, to_utc = null where id = 1;
+            """,
+            transaction: transaction, cancellationToken: ct));
         await connection.ExecuteAsync(new CommandDefinition(
             "delete from dirty_range where attempts >= @SetAside",
             new { SetAside = SetAsideAfterAttempts }, transaction, cancellationToken: ct));

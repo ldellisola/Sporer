@@ -99,6 +99,8 @@ describe("useDayRollover", () => {
     ["a week", { view: "week", start: "2026-10-19" } as Route, "/week/2026-10-19"],
     ["a month", { view: "month", month: "2026-10" } as Route, "/month/2026-10"],
     ["a place", { view: "place", id: 4 } as Route, "/place/4"],
+    ["the trips", { view: "trips" } as Route, "/trips"],
+    ["a trip", { view: "trip", id: "2026-10-22" } as Route, "/trip/2026-10-22"],
     ["a range", { view: "range", from: "2026-10-20", to: "2026-10-22" } as Route, "/range/2026-10-20..2026-10-22"],
   ])("useDayRollover_leaves_%s_alone", (_name, route, path) => {
     window.history.replaceState(null, "", path);

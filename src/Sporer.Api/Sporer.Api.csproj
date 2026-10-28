@@ -26,4 +26,8 @@
     <ProjectReference Include="..\Sporer.Timeline\Sporer.Timeline.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Sporer.Api.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -43,6 +43,31 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     /// </summary>
     internal const string InUse = "p.merged_into_id is null and exists (select 1 from segment s where s.place_id = p.id)";
 
+    /// <summary>
+    /// The SQL for the place each of some places stands for, to follow <c>with recursive</c> and a list of CTEs that includes
+    /// <c>named</c> (its <c>place_id</c> column holds the places a query needs) and to be followed by more of them.
+    /// <c>survivor</c> maps each of those places (<c>origin</c>) to the place it stands for (<c>id</c>): a place merged into
+    /// another is followed through <c>merged_into_id</c>, up to 32 links, as the day view does, to the one that is not merged
+    /// into any. A chain that never ends (a cycle, which the app does not write but the schema allows) has no survivor, so an
+    /// inner join on <c>survivor</c> drops the places on it and a left join finds nothing for them. The range and trip views
+    /// share this, so that they cannot disagree with each other about which place a stay is at.
+    /// </summary>
+    internal const string Survivors =
+        """
+        chain as (
+            select p.id as origin, p.id, p.merged_into_id, 0 as depth
+            from place p
+            where p.id in (select place_id from named)
+            union all
+            select chain.origin, next.id, next.merged_into_id, chain.depth + 1
+            from chain join place next on next.id = chain.merged_into_id
+            where chain.depth < 32
+        ),
+        survivor as (
+            select origin, id from chain where merged_into_id is null
+        )
+        """;
+
     /// <summary>The most stays <see cref="FindDetailAsync"/> lists.</summary>
     public const int RecentVisitCount = 50;
 
@@ -93,6 +118,48 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
             "select id as Id, latitude as Latitude, longitude as Longitude from place where merged_into_id is null order by id",
             cancellationToken: ct));
         return rows.Select(r => (r.Id, new GeoPoint(r.Latitude, r.Longitude))).ToList();
+    }
+
+    /// <summary>
+    /// For each place that was merged into another, the place it ends up at: the merges are followed from it to the one that
+    /// was not merged itself, up to 32 links, as the day and range views do. A stay keeps the place id it was given, so this is
+    /// how the id of a stay's place is turned into the id of the place that stands for it. A place that was not merged is not
+    /// in the result (it is its own survivor), and neither is one whose merges lead nowhere: a cycle, which the app does not
+    /// write but the schema allows, or a chain of more than 32 links.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<long, long>> LoadSurvivorsAsync(CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var rows = await connection.QueryAsync<SurvivorRow>(new CommandDefinition(
+            """
+            with recursive chain as (
+                select id as merged, merged_into_id as reached, 1 as depth
+                from place
+                where merged_into_id is not null
+                union all
+                select chain.merged, step.merged_into_id, chain.depth + 1
+                from chain join place step on step.id = chain.reached
+                where step.merged_into_id is not null and chain.depth < 32
+            )
+            select chain.merged as Merged, chain.reached as Survivor
+            from chain join place ending on ending.id = chain.reached
+            where ending.merged_into_id is null
+            """,
+            cancellationToken: ct));
+        return rows.ToDictionary(r => r.Merged, r => r.Survivor);
+    }
+
+    /// <summary>The centre of each of the places <paramref name="ids"/> that exists, merged ones included.</summary>
+    public async Task<IReadOnlyDictionary<long, GeoPoint>> LoadPositionsAsync(IEnumerable<long> ids, CancellationToken ct = default)
+    {
+        var wanted = ids.Distinct().ToArray();
+        if (wanted.Length == 0) return new Dictionary<long, GeoPoint>();
+
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var rows = await connection.QueryAsync<PlaceRow>(new CommandDefinition(
+            "select id as Id, latitude as Latitude, longitude as Longitude from place where id = any(@Ids)",
+            new { Ids = wanted }, cancellationToken: ct));
+        return rows.ToDictionary(r => r.Id, r => new GeoPoint(r.Latitude, r.Longitude));
     }
 
     /// <summary>Adds a place at <paramref name="centre"/>, still unnamed and waiting to be geocoded, and returns its id.</summary>
@@ -185,6 +252,8 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
     private sealed record PlaceRow(long Id, double Latitude, double Longitude);
+
+    private sealed record SurvivorRow(long Merged, long Survivor);
 
     private sealed record DetailRow(
         long Id, string? Name, string? Address, string? City, string? Country, double Latitude, double Longitude,

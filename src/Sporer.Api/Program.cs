@@ -10,6 +10,7 @@ using Sporer.Api.Database;
 using Sporer.Api.Features.Places;
 using Sporer.Api.Features.Range;
 using Sporer.Api.Features.Timeline;
+using Sporer.Api.Features.Trips;
 using Sporer.Api.Http;
 using Sporer.Timeline;
 
@@ -26,6 +27,11 @@ builder.Services.AddSingleton<PointStore>();
 builder.Services.AddSingleton<PlaceStore>();
 builder.Services.AddSingleton<SegmentStore>();
 builder.Services.AddSingleton<RangeStore>();
+builder.Services.AddSingleton<NightStore>();
+builder.Services.AddSingleton<NightBuilder>();
+builder.Services.AddSingleton<TripStore>();
+builder.Services.AddSingleton<TripRefresher>();
+builder.Services.AddSingleton<ITripRefresher>(sp => sp.GetRequiredService<TripRefresher>());
 builder.Services.AddSingleton<ITimelineProcessor, TimelineProcessor>();
 builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConfiguration>().GetSection("Processing").Get<ProcessingOptions>() ?? new ProcessingOptions());

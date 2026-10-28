@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Time.Testing;
 using Sporer.Api.Features.Timeline;
+using Sporer.Api.Features.Trips;
 using Sporer.Testing;
 using Sporer.Timeline;
 
@@ -68,7 +69,7 @@ public class TimelineWorkerTests(DatabaseFixture db)
             return calls;
         }
 
-        public async Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
+        public async Task<ReprocessResult> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
         {
             _calls.Enqueue((fromUtc, toUtc));
             if (Interlocked.Exchange(ref _failNext, null) is { } error)
@@ -79,21 +80,69 @@ public class TimelineWorkerTests(DatabaseFixture db)
         }
     }
 
+    /// <summary>
+    /// Rebuilds nothing and says it rebuilt from two hours before the range to three hours after it: a window that is not
+    /// the range, so that a test can tell what the worker takes from the result.
+    /// </summary>
+    private sealed class WindowProcessor : ITimelineProcessor
+    {
+        public Task<ReprocessResult> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
+            => Task.FromResult(new ReprocessResult(0, fromUtc.AddHours(-2), toUtc.AddHours(3)));
+    }
+
+    /// <summary>Wraps the real refresher: records every window it is asked to refresh, and can be told to fail every call.</summary>
+    private sealed class RecordingRefresher(ITripRefresher inner) : ITripRefresher
+    {
+        private Exception? _failWith;
+        private readonly ConcurrentQueue<(DateTime From, DateTime To)> _calls = new();
+
+        /// <summary>The windows asked for, in order.</summary>
+        public IEnumerable<(DateTime From, DateTime To)> Calls => _calls;
+
+        /// <summary>Fails every call with <paramref name="error"/>; null stops it.</summary>
+        public void FailWith(Exception? error) => _failWith = error;
+
+        /// <summary>Runs, awaited, when a refresh is asked for, before anything else (it can cancel, as a host that stops does).</summary>
+        public Func<CancellationToken, Task>? OnCall { get; set; }
+
+        public (DateTime From, DateTime To)[] TakeCalls()
+        {
+            var calls = Calls.ToArray();
+            _calls.Clear();
+            return calls;
+        }
+
+        public async Task RefreshAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
+        {
+            _calls.Enqueue((fromUtc, toUtc));
+            if (OnCall is { } hook)
+                await hook(ct);
+            if (_failWith is { } error)
+                throw error;
+            await inner.RefreshAsync(fromUtc, toUtc, ct);
+        }
+    }
+
     private sealed class Harness(WebApplicationFactory<Program> api) : IAsyncDisposable
     {
         public WebApplicationFactory<Program> Api { get; } = api;
         public TimelineWorker Worker { get; } = api.Services.GetRequiredService<TimelineWorker>(); // starting the host runs the migrations
         public RecordingProcessor Processor { get; } = (RecordingProcessor)api.Services.GetRequiredService<ITimelineProcessor>();
+        public RecordingRefresher Refresher { get; } = (RecordingRefresher)api.Services.GetRequiredService<ITripRefresher>();
 
         public ValueTask DisposeAsync() => Api.DisposeAsync();
     }
 
-    private static Harness Start(string cs, TimeProvider time, IDictionary<string, string?>? settings = null)
+    /// <summary>The processor underneath the recording one is the real one, unless <paramref name="processor"/> makes another.</summary>
+    private static Harness Start(
+        string cs, TimeProvider time, IDictionary<string, string?>? settings = null, Func<IServiceProvider, ITimelineProcessor>? processor = null)
         => new(new ApiFactory(cs, settings, time).WithWebHostBuilder(b => b.ConfigureTestServices(services =>
         {
             services.RemoveAll<ITimelineProcessor>();
             services.AddSingleton<ITimelineProcessor>(sp =>
-                new RecordingProcessor(ActivatorUtilities.CreateInstance<TimelineProcessor>(sp)));
+                new RecordingProcessor(processor?.Invoke(sp) ?? ActivatorUtilities.CreateInstance<TimelineProcessor>(sp)));
+            services.RemoveAll<ITripRefresher>();
+            services.AddSingleton<ITripRefresher>(sp => new RecordingRefresher(sp.GetRequiredService<TripRefresher>()));
         })));
 
     /// <summary>Runs passes until one finds nothing to do.</summary>
@@ -138,6 +187,15 @@ public class TimelineWorkerTests(DatabaseFixture db)
 
     private static Task<long> CountAsync(string cs, string table) => Sql.ScalarAsync<long>(cs, $"select count(*) from {table}", ct: Ct);
 
+    private sealed record PendingRow(DateTime? FromUtc, DateTime? ToUtc);
+
+    /// <summary>The window waiting to be refreshed (<c>night_refresh</c>): both null when nothing is.</summary>
+    private static async Task<(DateTime? From, DateTime? To)> PendingAsync(string cs)
+    {
+        var row = (await Sql.QueryAsync<PendingRow>(cs, "select from_utc as FromUtc, to_utc as ToUtc from night_refresh where id = 1", ct: Ct)).Single();
+        return (row.FromUtc, row.ToUtc);
+    }
+
     private static Task<long> StaysBetweenAsync(string cs, DateTime from, DateTime to) => Sql.ScalarAsync<long>(cs,
         "select count(*) from segment where kind = 'stay' and start_utc >= @from and start_utc < @to", new { from, to }, Ct);
 
@@ -149,11 +207,20 @@ public class TimelineWorkerTests(DatabaseFixture db)
     {
         var version = AlgorithmVersion.Compute(new DetectionOptions());
 
-        Assert.Matches("^1:[0-9a-f]{12}$", version);
+        Assert.Matches("^2:[0-9a-f]{12}$", version);
         Assert.StartsWith($"{AlgorithmVersion.CodeVersion}:", version);
         Assert.Equal(version, AlgorithmVersion.Compute(new DetectionOptions()));
         Assert.NotEqual(version, AlgorithmVersion.Compute(new DetectionOptions { StayRadiusMeters = 150 }));
         Assert.NotEqual(version, AlgorithmVersion.Compute(new DetectionOptions { StayMinDuration = TimeSpan.FromMinutes(6) }));
+        Assert.NotEqual(version, AlgorithmVersion.Compute(new DetectionOptions { HomeMinNights = 61 })); // the home and trip options count too
+    }
+
+    [Fact]
+    public void AlgorithmVersion_code_version_is_2()
+    {
+        // 2 is the code that derives nights, homes and trips: a database built by version 1 has none, and is rebuilt once.
+        Assert.Equal(2, AlgorithmVersion.CodeVersion);
+        Assert.StartsWith("2:", AlgorithmVersion.Compute(new DetectionOptions()));
     }
 
     [Fact]
@@ -739,8 +806,12 @@ public class TimelineWorkerTests(DatabaseFixture db)
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
 
         var pass = h.Worker.RunOnceAsync(cts.Token);
-        // The cursor is saved before the pause, so once it has moved the pass is waiting out the hour.
-        await WaitForAsync(async () => (await StateAsync(cs)).BackfillCursor > T(7, 0), "the first backfill step");
+        // The pass saves the cursor, then refreshes the trips, then pauses, so a moved cursor alone only shows that the refresh
+        // is next. The step added its window to the pending refresh before the cursor was saved, and the refresh empties the
+        // window when it is done: with the cursor moved and nothing pending the pass is waiting out the hour. The cursor is read
+        // first, because once it has moved the window is either pending or already empty.
+        await WaitForAsync(async () => (await StateAsync(cs)).BackfillCursor > T(7, 0) && await PendingAsync(cs) == (null, null),
+            "the first backfill step and its refresh");
         cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pass.WaitAsync(TimeSpan.FromSeconds(10), Ct));
@@ -826,5 +897,244 @@ public class TimelineWorkerTests(DatabaseFixture db)
         {
             await h.Worker.StopAsync(Ct);
         }
+    }
+
+    // ---- homes and trips ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Worker_refreshes_trips_once_per_pass_after_rebuilding()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = ClockAfterThreeWeeks();
+        await using var h = Start(cs, clock, processor: _ => new WindowProcessor());
+        await FinishBackfillAsync(h.Worker); // empty database: nothing to backfill
+        var old = clock.GetUtcNow().UtcDateTime.AddMinutes(-5);
+        await AddDirtyAsync(cs, T(10, 0), T(10, 30), old);
+        await AddDirtyAsync(cs, T(15, 0), T(15, 10), old); // 4.5 hours later: a range of its own
+        h.Refresher.TakeCalls();
+
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+
+        // Two ranges were rebuilt, and one refresh covers both: from where the first window starts to where the last one
+        // ends (the windows the processor reported, not the ranges it was asked for).
+        Assert.Equal([(T(10, 0), T(10, 30)), (T(15, 0), T(15, 10))], h.Processor.TakeCalls());
+        Assert.Equal([(T(8, 0), T(18, 10))], h.Refresher.TakeCalls());
+        Assert.Equal((null, null), await PendingAsync(cs)); // and it is done with
+
+        Assert.False(await h.Worker.RunOnceAsync(Ct));
+        Assert.Empty(h.Refresher.Calls); // nothing was rebuilt since: nothing to refresh
+    }
+
+    [Fact]
+    public async Task Worker_refreshes_the_window_of_a_backfill_step_in_the_same_pass()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = ClockAfterThreeWeeks();
+        await using var h = Start(cs, clock);
+        await PointSeeder.InsertAsync(cs, CommuteDays(0, 14), Ct);
+
+        Assert.True(await h.Worker.RunOnceAsync(Ct)); // week 1
+
+        // The window of the rebuilt step (the real processor's: from the step's start), and the nights of it are stored: each
+        // is covered by the stay that carries on through it, from the first day to the seventh.
+        var call = Assert.Single(h.Refresher.Calls);
+        Assert.Equal((T(7, 0), T(7, 0, 7)), call);
+        Assert.Equal((null, null), await PendingAsync(cs));
+        Assert.Equal(
+            Enumerable.Range(0, 7).Select(day => DateOnly.FromDateTime(T(0, 0, day))),
+            (await Sql.QueryAsync<DateTime>(cs, "select date::timestamp from night where source = 'stay' order by date", ct: Ct)).Select(DateOnly.FromDateTime));
+    }
+
+    [Fact]
+    public async Task Worker_keeps_a_failed_refresh_pending_and_does_not_fail_the_range()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = ClockAfterThreeWeeks();
+        await using var h = Start(cs, clock, processor: _ => new WindowProcessor());
+        await FinishBackfillAsync(h.Worker);
+        await AddDirtyAsync(cs, T(10, 0), T(10, 30), clock.GetUtcNow().UtcDateTime.AddMinutes(-5));
+        var window = (T(8, 0), T(13, 30));
+        h.Refresher.FailWith(new InvalidOperationException("refresh exploded"));
+
+        Assert.True(await h.Worker.RunOnceAsync(Ct)); // the range was rebuilt
+
+        // The range is done, not failed: it is not retried, and the processor is not asked for it again. What is retried is the
+        // refresh, from the window in the database.
+        Assert.Empty(await DirtyAsync(cs));
+        Assert.Equal(window, await PendingAsync(cs));
+        Assert.Contains("refresh exploded", (await StateAsync(cs)).LastError);
+        Assert.Equal([window], h.Refresher.TakeCalls());
+        h.Processor.TakeCalls();
+
+        // It waits before trying again, as a failed backfill step does (2 minutes the first time): the passes in between are not
+        // work, so the loop waits its poll interval, and do not call the refresher. They still save the error, which a pass
+        // that saved only what it found would wipe.
+        clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.False(await h.Worker.RunOnceAsync(Ct));
+        Assert.Empty(h.Refresher.Calls);
+        Assert.Equal(window, await PendingAsync(cs));
+        Assert.Contains("refresh exploded", (await StateAsync(cs)).LastError);
+
+        // Then it is tried again from the same window, fails again, and waits twice as long.
+        clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.False(await h.Worker.RunOnceAsync(Ct));
+        Assert.Equal([window], h.Refresher.TakeCalls());
+        clock.Advance(TimeSpan.FromMinutes(3));
+        Assert.False(await h.Worker.RunOnceAsync(Ct));
+        Assert.Empty(h.Refresher.Calls);
+        Assert.Empty(h.Processor.Calls);
+        Assert.Contains("refresh exploded", (await StateAsync(cs)).LastError);
+
+        // Once it works the window is refreshed and cleared, and the error with it.
+        h.Refresher.FailWith(null);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+        Assert.Equal([window], h.Refresher.TakeCalls());
+        Assert.Equal((null, null), await PendingAsync(cs));
+        Assert.Null((await StateAsync(cs)).LastError);
+        Assert.False(await h.Worker.RunOnceAsync(Ct));
+        Assert.Empty(h.Refresher.Calls);
+
+        // A success starts the wait over: the next failure is tried again after 2 minutes, not after the 8 that came next.
+        await AddDirtyAsync(cs, T(10, 0), T(10, 30), clock.GetUtcNow().UtcDateTime.AddMinutes(-5));
+        h.Refresher.FailWith(new InvalidOperationException("refresh exploded again"));
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+        h.Refresher.TakeCalls();
+        clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.False(await h.Worker.RunOnceAsync(Ct));
+        Assert.Single(h.Refresher.Calls);
+    }
+
+    [Fact]
+    public async Task A_restart_forgets_the_wait_of_a_failing_refresh()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = ClockAfterThreeWeeks();
+        await using var h = Start(cs, clock);
+        await PointSeeder.InsertAsync(cs, CommuteDays(0, 14), Ct);
+        h.Refresher.FailWith(new InvalidOperationException("refresh exploded"));
+        Assert.True(await h.Worker.RunOnceAsync(Ct)); // week 1; its refresh fails and now waits 2 minutes
+        Assert.Single(h.Refresher.TakeCalls());
+
+        // The algorithm version changes under the running worker (as it would for a new one after a restart): the backfill starts
+        // over, which clears what was pending, so a failure of the old window has nothing to wait for.
+        await Sql.ExecAsync(cs, "update processing_state set algorithm_version = 'old'", ct: Ct);
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+
+        Assert.Single(h.Refresher.TakeCalls()); // the first week again, refreshed at once, not after the 2 minutes
+    }
+
+    [Fact]
+    public async Task A_refresh_error_is_saved_with_the_error_of_a_backfill_step_until_each_clears()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = ClockAfterThreeWeeks();
+        await using var h = Start(cs, clock);
+        await PointSeeder.InsertAsync(cs, CommuteDays(0, 14), Ct);
+        h.Refresher.FailWith(new InvalidOperationException("refresh exploded"));
+
+        Assert.True(await h.Worker.RunOnceAsync(Ct)); // week 1 is rebuilt; its refresh fails
+        var state = await StateAsync(cs);
+        Assert.Equal(T(7, 0, 7), state.BackfillCursor); // the refresh did not hold the backfill up
+        Assert.Contains("refresh exploded", state.LastError);
+        Assert.DoesNotContain("chunk exploded", state.LastError);
+
+        h.Processor.FailNext(new InvalidOperationException("chunk exploded"));
+        Assert.True(await h.Worker.RunOnceAsync(Ct)); // week 2 fails; week 1's refresh is still waiting, and its error is saved again
+        state = await StateAsync(cs);
+        Assert.Equal(T(7, 0, 7), state.BackfillCursor);
+        Assert.Contains("chunk exploded", state.LastError);
+        Assert.Contains("refresh exploded", state.LastError);
+
+        h.Refresher.FailWith(null);
+        clock.Advance(TimeSpan.FromMinutes(2)); // the backoff of the failed step
+        await FinishBackfillAsync(h.Worker);
+
+        state = await StateAsync(cs);
+        Assert.True(state.BackfillCursor >= state.BackfillTo);
+        Assert.Null(state.LastError);
+        Assert.Equal((null, null), await PendingAsync(cs));
+        // The night before the first day to the night of the last day but one: the last day's night has not happened.
+        Assert.Equal(14, await CountAsync(cs, "night"));
+    }
+
+    [Fact]
+    public async Task A_stop_during_the_refresh_keeps_the_step_the_backfill_has_just_done()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var h = Start(cs, ClockAfterThreeWeeks());
+        await PointSeeder.InsertAsync(cs, CommuteDays(0, 14), Ct);
+        using var stopping = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        h.Refresher.OnCall = token =>
+        {
+            stopping.Cancel(); // the host stops while the refresh runs
+            token.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => h.Worker.RunOnceAsync(stopping.Token));
+
+        // The cursor has moved past the week that was rebuilt, and its attempt is cleared: had they been lost, the next starts would
+        // find the week's attempts counting up to a chunk the process cannot get through, and set a good one aside.
+        var state = await StateAsync(cs);
+        Assert.Equal(T(7, 0, 7), state.BackfillCursor);
+        Assert.Equal(0, await Sql.ScalarAsync<int>(cs, "select backfill_chunk_attempts from processing_state", ct: Ct));
+        Assert.NotNull((await PendingAsync(cs)).From); // and the window that was being refreshed is still waiting
+        Assert.Empty(await DirtyAsync(cs));
+
+        // The next process refreshes it, and goes on from the second week.
+        h.Refresher.OnCall = null;
+        h.Processor.TakeCalls();
+        h.Refresher.TakeCalls();
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+        Assert.Equal([(T(7, 0, 7), T(7, 0, 14))], h.Processor.TakeCalls());
+        Assert.Equal((null, null), await PendingAsync(cs));
+    }
+
+    [Fact]
+    public async Task Worker_refreshes_a_window_that_a_stopped_process_left_pending()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var h = Start(cs, ClockAfterThreeWeeks());
+        await FinishBackfillAsync(h.Worker);
+        // What a process that was killed after rebuilding and before refreshing leaves behind.
+        await Sql.ExecAsync(cs, "update night_refresh set from_utc = @from, to_utc = @to", new { from = T(8, 0), to = T(9, 0) }, Ct);
+
+        Assert.True(await h.Worker.RunOnceAsync(Ct));
+
+        Assert.Equal([(T(8, 0), T(9, 0))], h.Refresher.TakeCalls());
+        Assert.Equal((null, null), await PendingAsync(cs));
+    }
+
+    [Fact]
+    public async Task Worker_restart_clears_nights_homes_and_trips()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = ClockAfterThreeWeeks();
+        await using (var first = Start(cs, clock))
+        {
+            await PointSeeder.InsertAsync(cs, CommuteDays(0, 3), Ct);
+            await FinishBackfillAsync(first.Worker);
+            Assert.True(await CountAsync(cs, "night") > 0); // what the backfill derived
+        }
+        var place = await Sql.ScalarAsync<long>(cs, "select min(id) from place", ct: Ct);
+        await Sql.ExecAsync(cs,
+            """
+            insert into home_period (place_id, from_date, to_date, source) values
+              (@place, '2026-09-01', null, 'detected'), (@place, '2026-01-01', '2026-08-31', 'user');
+            insert into trip (id, last_night, nights, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date)
+            values ('2026-10-05', '2026-10-06', 2, '2026-10-05T10:00:00Z', null, 'Europe/Oslo', 'Europe/Oslo', '2026-10-05', '2026-10-07');
+            update night_refresh set from_utc = '2026-10-01T00:00:00Z', to_utc = '2026-10-02T00:00:00Z';
+            update processing_state set paused = true; -- so that the reset can be seen before it moves on
+            """, new { place }, Ct);
+
+        await using var second = Start(cs, clock, new Dictionary<string, string?> { ["Detection:StayRadiusMeters"] = "150" });
+        Assert.True(await second.Worker.RunOnceAsync(Ct));
+
+        Assert.Equal(0, await CountAsync(cs, "night"));
+        Assert.Equal(0, await CountAsync(cs, "trip"));
+        Assert.Equal(["user"], await Sql.QueryAsync<string>(cs, "select source from home_period", ct: Ct)); // the owner's own stays
+        Assert.Equal((null, null), await PendingAsync(cs));
+        Assert.Empty(second.Refresher.Calls); // nothing was waiting after the reset
     }
 }

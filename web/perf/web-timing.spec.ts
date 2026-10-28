@@ -9,10 +9,12 @@ declare const process: { env: Record<string, string | undefined> }; // this file
 
 /**
  * The web half of the performance check (spec §8): the time from navigation to the panel's rows and to the map's `idle` event, for a
- * day, a month and a year, on a phone's page with the processor held back 4 times, against API answers recorded from a server over the
- * synthetic history (`npm run perf:record`). Run by `npm run perf`, not by `npm run e2e`: it is a measurement, and asserts only that
- * it measured what it meant to (every run reached the panel's rows and the map's idle, nothing outside the recording was asked for).
- * The method, what is measured and what is not, is in docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md.
+ * day, a month and a year, for the list of trips (its cards are the rows) and for each trip (its days are the rows), on a phone's page
+ * with the processor held back 4 times, against API answers recorded from a server over the synthetic history (`npm run perf:record`).
+ * Run by `npm run perf`, not by `npm run e2e`: it is a measurement, and asserts only that it measured what it meant to (every run
+ * reached the panel's rows and the map's idle, nothing outside the recording was asked for).
+ * The method, what is measured and what is not, is in docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md, and for the trips in
+ * docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -163,10 +165,13 @@ interface Sample {
   /** The first frame the map drew with this period's routes ready, after the rows: the routes are on screen, the camera may still be moving. */
   routesDrawnAt: number | null;
   blockedBeforeRows: number;
-  /** From a tap on "Next day" (or month, year) to the new panel's rows, to their paint, and to the map's idle after them. */
-  stepRowsMs: number;
+  /**
+   * From a tap on "Next day" (or month, year) to the new panel's rows, to their paint, and to the map's idle after them. Null for the
+   * list of trips and for a trip, which are timed on the cold navigation only.
+   */
+  stepRowsMs: number | null;
   stepPaintedMs: number | null;
-  stepIdleMs: number;
+  stepIdleMs: number | null;
   stepRoutesDrawnMs: number | null;
 }
 
@@ -211,6 +216,8 @@ async function run(page: import("@playwright/test").Page, scenario: Scenario, ke
     status: bodies.get("/api/status") as object,
     "day/*": (request): Reply => answer(request.url(), unrecorded),
     range: (request): Reply => answer(request.url(), unrecorded),
+    trips: (request): Reply => answer(request.url(), unrecorded),
+    "trips/*": (request): Reply => answer(request.url(), unrecorded),
   });
 
   const client = await page.context().newCDPSession(page);
@@ -220,7 +227,7 @@ async function run(page: import("@playwright/test").Page, scenario: Scenario, ke
   await page.goto(scenario.url, { waitUntil: "commit" });
   await page.waitForFunction(() => window.__probe.finished, null, { polling: 200, timeout: 90_000 });
 
-  const sample = await page.evaluate((): Omit<Sample, "stepRowsMs" | "stepPaintedMs" | "stepIdleMs" | "stepRoutesDrawnMs"> => {
+  const sample = await page.evaluate((request): Omit<Sample, "stepRowsMs" | "stepPaintedMs" | "stepIdleMs" | "stepRoutesDrawnMs"> => {
     const probe = window.__probe;
     const firstFrameAfterRoutes = (loads: number[], frames: number[], since: number): number | null => {
       const loaded = loads.find((at) => at >= since);
@@ -230,7 +237,9 @@ async function run(page: import("@playwright/test").Page, scenario: Scenario, ke
     const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
     const rowsFirst = probe.rows.find(([, count]) => count > 0) as [number, number];
     const idle = probe.idles.find((at) => at >= rowsFirst[0]) as number;
-    const api = (performance.getEntriesByType("resource") as PerformanceResourceTiming[]).filter((r) => /\/api\/(day|range)/.test(r.name));
+    // The answer the panel is made of: the request of the scenario itself (the first the app makes, for a day, a month or a year; for a
+    // trip, the one of the trip, which is not necessarily the first of the page, since the bar asks for the list too).
+    const api = (performance.getEntriesByType("resource") as PerformanceResourceTiming[]).filter((r) => r.name.endsWith(request));
     const [, rowCount] = probe.rows[probe.rows.length - 1] as [number, number];
     return {
       dataAt: api[0]?.responseEnd ?? null,
@@ -245,16 +254,24 @@ async function run(page: import("@playwright/test").Page, scenario: Scenario, ke
       routesDrawnAt: firstFrameAfterRoutes(probe.routeLoads, probe.renderAt, rowsFirst[0]),
       blockedBeforeRows: probe.longTasks.filter(([start]) => start < rowsFirst[0]).reduce((sum, [, duration]) => sum + duration, 0),
     };
-  });
+  }, scenario.request);
   if (keep) {
     mkdirSync(RESULTS, { recursive: true });
     await page.screenshot({ path: join(RESULTS, `${scenario.id}.png`) });
   }
 
+  // The list of trips and a trip are timed on the cold navigation only (the brief of the trips asks for no more).
+  const view = scenario.url.split("/")[1] as string;
+  if (view === "trips" || view === "trip") {
+    expect(unrecorded, "requests the recording has no answer for").toEqual([]);
+    expect(sample.rowCount, "rows of the panel").toBeGreaterThan(0);
+    return { ...sample, stepRowsMs: null, stepPaintedMs: null, stepIdleMs: null, stepRoutesDrawnMs: null };
+  }
+
   // Then the step the spec means by "navigating": a tap on › with the page open and the next day or period already fetched (the app
   // prefetches it as soon as the one on show is). The page is at rest by now: the map has been idle, and so has everything else.
   await page.evaluate(watchStep);
-  await page.getByRole("button", { name: `Next ${scenario.url.split("/")[1]}` }).click();
+  await page.getByRole("button", { name: `Next ${view}` }).click();
   await page.waitForFunction(() => window.__probe.step.finished, null, { polling: 200, timeout: 60_000 });
   const step = await page.evaluate(() => {
     const { step: made, routeLoads, renderAt } = window.__probe;

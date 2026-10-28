@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { PeriodRoute } from "../app/router";
-import { addDays, dateLabel, dateOf, monthOf, periodLabel, periodRange, shortDayLabel, step, today, weekStart } from "./dates";
+import { addDays, dateLabel, dateOf, dateRangeLabel, monthOf, periodLabel, periodRange, shortDayLabel, step, today, weekStart } from "./dates";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -165,6 +165,14 @@ describe("periods", () => {
     expect(dateLabel("2025-12-31")).toBe("Wed 31 Dec 2025"); // the year is there, for a list that runs over years
     expect(dateLabel("2028-02-29")).toBe("Tue 29 Feb 2028");
     expect(dateLabel("2026-01-01")).toBe("Thu 1 Jan 2026"); // no leading zero
+  });
+
+  test("dateRangeLabel_says_the_month_once_when_both_dates_are_in_it_and_the_year_once_at_the_end", () => {
+    expect(dateRangeLabel("2026-09-12", "2026-09-18")).toBe("12 – 18 Sep 2026"); // the form of a week, and of a trip
+    expect(dateRangeLabel("2026-09-28", "2026-10-04")).toBe("28 Sep – 4 Oct 2026"); // over a month end
+    expect(dateRangeLabel("2025-12-29", "2026-01-04")).toBe("29 Dec 2025 – 4 Jan 2026"); // over a year end
+    expect(dateRangeLabel("2026-09-12", "2026-09-12")).toBe("12 Sep 2026"); // one date is one date
+    expect(dateRangeLabel("2026-09-12", "2026-09-18", false)).toBe("12 Sep – 18 Sep 2026"); // the form of a range
   });
 
   test("periodLabel_names_each_view_in_english", () => {

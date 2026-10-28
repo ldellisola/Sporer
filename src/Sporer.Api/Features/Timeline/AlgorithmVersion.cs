@@ -11,8 +11,12 @@ namespace Sporer.Api.Features.Timeline;
 /// </summary>
 public static class AlgorithmVersion
 {
-    /// <summary>Bump this when the detection code changes in a way that changes its output.</summary>
-    public const int CodeVersion = 1;
+    /// <summary>
+    /// Bump this when the detection code changes in a way that changes its output. Version 2 added the nights, homes and trips
+    /// that are derived from the segments: the options for them change the thresholds' fingerprint anyway, and the bump says
+    /// that the code changed, so that the first start after the upgrade rebuilds everything once.
+    /// </summary>
+    public const int CodeVersion = 2;
 
     /// <summary><c>"{CodeVersion}:{first 12 hex digits of the SHA-256 of the options as JSON}"</c>.</summary>
     public static string Compute(DetectionOptions options)

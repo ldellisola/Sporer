@@ -3,6 +3,8 @@ import type { DayResponse, RangeResponse } from "../src/api/types";
 import config from "./fixtures/config.json" with { type: "json" };
 import heat from "./fixtures/heat.json" with { type: "json" };
 import status from "./fixtures/status.json" with { type: "json" };
+import trip from "./fixtures/trip-2026-09-12.json" with { type: "json" };
+import trips from "./fixtures/trips.json" with { type: "json" };
 
 /**
  * What an API request is answered with: JSON, with 200 unless a status is given. A status of 400 or more is a deliberate
@@ -18,7 +20,7 @@ export interface Reply {
 export type Override = ((request: Request) => Reply | Promise<Reply>) | object;
 
 /**
- * Overrides by API path, without the `/api/` prefix and without the query: `"day/2026-10-22"`, `"range"`, `"places/7"`.
+ * Overrides by API path, without the `/api/` prefix and without the query: `"day/2026-10-22"`, `"range"`, `"places/7"`, `"trips"`.
  * A key ending in `/*` matches every path below it (`"day/*"`); an exact key wins over it.
  */
 export type Overrides = Record<string, Override>;
@@ -74,6 +76,17 @@ const defaults: Record<string, Override> = {
   config,
   status,
   heat,
+  trips,
+  // The page of a trip: the fixture's own for the one that has days and moves, the summary of the list (with nothing in it) for the other
+  // trips of the list, and the 404 that the server gives for an id that is not a stored trip.
+  "trips/*": (request): Reply => {
+    const id = new URL(request.url()).pathname.split("/").pop();
+    if (id === trip.id) return { json: trip };
+    const listed = trips.trips.find((candidate) => candidate.id === id);
+    if (listed === undefined) return { status: 404, json: { title: "Not Found" } };
+    const { thumbnail: _thumbnail, ...summary } = listed;
+    return { json: { ...summary, stats: { flights: 0, cities: summary.cities.length, places: 0, groundDistanceMeters: 0 }, moves: [], days: [] } };
+  },
   "day/*": (request): Reply => {
     const date = new URL(request.url()).pathname.split("/").pop() ?? "";
     const day: DayResponse = { date, timeZone: "Europe/Oslo", state: "done", summary: EMPTY_SUMMARY, segments: [] };

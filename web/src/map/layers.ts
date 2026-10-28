@@ -5,7 +5,12 @@ import type {
   Mode,
   PlaceRef,
   RangeResponse,
+  TripResponse,
+  TripsResponse,
 } from "../api/types";
+import { formatCount } from "../time/format";
+import { boundsOf } from "./bounds";
+import { HOME_IMAGE } from "./house";
 import type { StyleSpecification } from "./style";
 
 // --- GeoJSON ---
@@ -25,13 +30,22 @@ export type RouteMode = Mode | "unknown";
 export type RouteProperties = { id: number; mode: RouteMode };
 /**
  * A pin is one place of the day, however many of its stays there are. `order` is the number of the first of them (counted from 1,
- * see `stopOrders`) and `id` its id; `label` lists the numbers of all of them ("1 · 4" for a day that starts and ends at home), and
- * is what the pin shows; `name` is null for a place that has none (yet). `placeId` is the place the pin is, which a tap on it opens:
+ * see `stopOrders`) and `id` its id; `label` lists the numbers of all of them ("1 · 4" for a day that starts at the café and ends there),
+ * and is what the pin shows; `name` is null for a place that has none (yet). `placeId` is the place the pin is, which a tap on it opens:
  * it is not `id`, which is a stay's, and one place for a pin that merges several stays.
+ *
+ * The pin of home, the place that is home on the day, has `home: true` and shows a house in place of its number: it has no number (its `order`
+ * is 0, which puts its name first) and its `label` is empty, however many of its stays there are. A pin that is not home says nothing of it.
  */
-export type StopProperties = { order: number; label: string; name: string | null; id: number; placeId: number };
-/** `id` is the place, which a tap on its dot opens; `radius` is in pixels; `label` is only there for the places that are named on the map. */
-export type PlaceProperties = { id: number; radius: number; label?: string };
+export type StopProperties = { order: number; label: string; name: string | null; id: number; placeId: number; home?: true };
+/** Which side of the middle of the drawing a dot is on, by longitude: its label is put on the other one, toward the inside of the drawing. */
+export type LabelSide = "west" | "east";
+
+/**
+ * `id` is the place, which a tap on its dot opens (0 for a dot that is no place, the city of a trip: a tap on it opens nothing); `radius` is
+ * in pixels; `label` is only there for the places that are named on the map, and so is `side`, which says where the label goes (see `withSides`).
+ */
+export type PlaceProperties = { id: number; radius: number; label?: string; side?: LabelSide };
 export type HeatProperties = { weight: number };
 
 export type RouteCollection = FeatureCollection<LineString, RouteProperties>;
@@ -67,16 +81,37 @@ function route(id: number, mode: Mode | null | undefined, geometry: LonLat[]): F
 }
 
 /**
- * The number of each stay of a day that has a pin, by the id of the stay: counted from 1 in the order of the day. A stay at a
- * position that matched no place has no position to draw, so it has no pin and no number. The pins of the map are labelled from
- * this and the rows of the timeline are numbered from it, so that the two always agree.
+ * The number of each stay of a day that has a pin and is not home, by the id of the stay: counted from 1 in the order of the day. A stay at a
+ * position that matched no place has no position to draw, so it has no pin and no number; a stay at home has a pin that shows a house, and no
+ * number: the numbers are those of the other stops. The pins of the map are labelled from this and the rows of the timeline are numbered from
+ * it, so that the two always agree.
  */
 export function stopOrders(day: DayResponse): Map<number, number> {
   const orders = new Map<number, number>();
   for (const segment of day.segments) {
-    if (segment.kind === "stay" && segment.place !== null) orders.set(segment.id, orders.size + 1);
+    if (segment.kind === "stay" && segment.place !== null && !segment.home) orders.set(segment.id, orders.size + 1);
   }
   return orders;
+}
+
+/**
+ * Says for each labelled dot of a drawing which side of its middle the dot is on, so that its label goes toward the inside of it: the map
+ * does not move a label back onto the screen once it has put it beyond the edge, so the outermost dots would lose their names to it, while a
+ * label that points inward has the whole of the drawing to lie in. The middle is that of the longitudes of everything the map is brought to
+ * (the routes and the dots), where the fit puts the middle of what is free; a dot in the middle itself is of the west, and a drawing that is a
+ * single dot has its label at its right, as every label had. The longitudes are on a circle: a drawing across the antimeridian has its middle
+ * halfway between its two ends the short way round. Dots with no label say nothing. It sets `side` on the dots it is given, which the caller has just made.
+ */
+function withSides(routes: RouteCollection, places: PlaceCollection): PlaceCollection {
+  const bounds = boundsOf([...routes.features, ...places.features]);
+  if (bounds === null) return places;
+  const middle = (bounds[0][0] + bounds[1][0]) / 2;
+  for (const dot of places.features) {
+    if (dot.properties.label === undefined) continue;
+    const away = ((((dot.geometry.coordinates[0] - middle + 540) % 360) + 360) % 360) - 180; // from the middle, east positive, within -180 to 180
+    dot.properties.side = away > 0 ? "east" : "west";
+  }
+  return places;
 }
 
 /** The point on the map that is a place: where its pin is, for whatever is to be brought into view. */
@@ -84,9 +119,10 @@ export const placePoint = (place: PlaceRef): Feature<Point, Record<string, never
 
 /**
  * The routes of a day (every move, with its mode) and its stops: a pin for each place the day was spent at, labelled with the
- * numbers of its stays (`stopOrders`), so that a day that starts and ends at home has one pin that says "1 · 4" and not two that
- * print their numbers over each other. Pins come in the order of their first stay. Gaps are not drawn: the day is never bridged
- * with a line that was not travelled.
+ * numbers of its stays (`stopOrders`), so that a day that starts and ends at the same place has one pin that says "1 · 4" and not two
+ * that print their numbers over each other. Pins come in the order of their first stay. The pin of home is one for the place however many
+ * of its stays there are, and says no number: it has `home: true`, and the layers draw a house on it. Home is the place that is home on the day
+ * and its stays are all home, so that a pin is never both. Gaps are not drawn: the day is never bridged with a line that was not travelled.
  */
 export function dayGeoJson(day: DayResponse): { routes: RouteCollection; stops: StopCollection } {
   const orders = stopOrders(day);
@@ -98,13 +134,16 @@ export function dayGeoJson(day: DayResponse): { routes: RouteCollection; stops: 
       routes.features.push(...route(segment.id, segment.mode, segment.geometry));
     } else if (segment.kind === "stay" && segment.place !== null) {
       const { place } = segment;
-      const order = orders.get(segment.id) ?? 0;
+      const order = orders.get(segment.id); // none for a stay at home, which is drawn as a house
       const pin = pinOf.get(place.id);
       if (pin === undefined) {
-        const created = point(place.lon, place.lat, { order, label: String(order), name: place.name, id: segment.id, placeId: place.id });
+        const created =
+          order === undefined
+            ? point(place.lon, place.lat, { order: 0, label: "", name: place.name, id: segment.id, placeId: place.id, home: true })
+            : point(place.lon, place.lat, { order, label: String(order), name: place.name, id: segment.id, placeId: place.id });
         pinOf.set(place.id, created);
         stops.features.push(created);
-      } else {
+      } else if (order !== undefined && pin.properties.home === undefined) {
         pin.properties.label += ` · ${order}`;
       }
     }
@@ -128,6 +167,9 @@ const LABELLED_PLACES = 5;
 const MIN_DOT_RADIUS = 4;
 const DOT_RADIUS_RANGE = 12;
 
+/** The radius in pixels of the dot of a place that has `amount` of whatever the dots are sized by, where `max` is the most that any has: its area follows it. */
+const dotRadius = (amount: number, max: number): number => (max > 0 ? MIN_DOT_RADIUS + DOT_RADIUS_RANGE * Math.sqrt(amount / max) : MIN_DOT_RADIUS);
+
 /**
  * The routes of a period, and a dot for each place whose radius grows with the time spent there: `4 + 12 * sqrt(seconds / max)`
  * pixels (so that the area follows the time), where `max` is the most time spent in any place. The five places with the most
@@ -147,12 +189,82 @@ export function rangeGeoJson(range: RangeResponse): { routes: RouteCollection; p
   const places: PlaceCollection = {
     type: "FeatureCollection",
     features: range.places.map((place) => {
-      const radius = max > 0 ? MIN_DOT_RADIUS + DOT_RADIUS_RANGE * Math.sqrt(place.seconds / max) : MIN_DOT_RADIUS;
+      const radius = dotRadius(place.seconds, max);
       const label = labelled.has(place) ? (place.name ?? place.city ?? undefined) : undefined;
       return point(place.lon, place.lat, label === undefined ? { id: place.id, radius } : { id: place.id, radius, label });
     }),
   };
-  return { routes, places };
+  return { routes, places: withSides(routes, places) };
+}
+
+/** What a city's dot says on the map of the trips and of a trip, in the trips' wording ("Lisbon · 4 nights", "Lisbon · 1 night"). */
+const cityLabel = (name: string, nights: number): string => `${name} · ${formatCount(nights, "night")}`;
+
+/** A city of the trips: the nights slept in it over all of them, and the sums that its position is the mean of, by nights. */
+interface CityTotal {
+  name: string;
+  nights: number;
+  lonSum: number;
+  latSum: number;
+  /** Where the first of its stays put it, for a city that has no nights to weigh them by. */
+  first: [lon: number, lat: number];
+}
+
+/**
+ * The map of all the trips: no routes, and a dot for each city that was slept in, a (name, country) pair counted once however many trips
+ * it is in, with its nights over all of them. The radius is that of a period's dots (`4 + 12 * sqrt(nights / max)`), where `max` is the most
+ * nights in any city, and the five cities with the most nights carry the label of a trip's cities, "Lisbon · 9 nights". A city is where the
+ * trips that were in it put it, the mean of their positions weighed by their nights. The dots come in the order the cities are first met,
+ * newest trip first, which is also the order that cities with as many nights are labelled in.
+ *
+ * Every dot has the `id` 0: a city is no place, and a tap on its dot opens nothing (the map passes over what has no place's id).
+ */
+export function tripsGeoJson(trips: TripsResponse): { routes: RouteCollection; places: PlaceCollection } {
+  const totals = new Map<string, CityTotal>();
+  for (const trip of trips.trips) {
+    for (const city of trip.cities) {
+      const key = `${city.name}\u0000${city.country ?? ""}`;
+      const total = totals.get(key) ?? { name: city.name, nights: 0, lonSum: 0, latSum: 0, first: [city.lon, city.lat] };
+      total.nights += city.nights;
+      total.lonSum += city.lon * city.nights;
+      total.latSum += city.lat * city.nights;
+      totals.set(key, total);
+    }
+  }
+
+  const cities = [...totals.values()];
+  const max = cities.reduce((most, city) => Math.max(most, city.nights), 0);
+  const labelled = new Set([...cities].sort((a, b) => b.nights - a.nights).slice(0, LABELLED_PLACES)); // stable, as a period's
+  const places: PlaceCollection = {
+    type: "FeatureCollection",
+    features: cities.map((city) => {
+      const [lon, lat] = city.nights > 0 ? [city.lonSum / city.nights, city.latSum / city.nights] : city.first;
+      const radius = dotRadius(city.nights, max);
+      return point(lon!, lat!, labelled.has(city) ? { id: 0, radius, label: cityLabel(city.name, city.nights) } : { id: 0, radius });
+    }),
+  };
+  const routes: RouteCollection = { type: "FeatureCollection", features: [] };
+  return { routes, places: withSides(routes, places) };
+}
+
+/**
+ * The map of one trip: its moves as routes (each with its mode, so that the layers colour them by it and draw the flights dashed), and a
+ * dot for each of its cities, where the city is, sized as the dots of the trips are (`4 + 12 * sqrt(nights / max)` pixels, where `max` is
+ * the most nights in any city of the trip). Unlike the trips' map, which names the five cities with the most nights, every city of a trip
+ * is named, in the same words ("Lisbon · 4 nights"): a trip has few of them, and what the map is for is to say where it went. The dots are
+ * `id: 0` like those: a city is no place, and a tap on its dot opens nothing.
+ */
+export function tripGeoJson(trip: TripResponse): { routes: RouteCollection; places: PlaceCollection } {
+  const routes: RouteCollection = {
+    type: "FeatureCollection",
+    features: trip.moves.flatMap((move) => route(move.id, move.mode, move.geometry)),
+  };
+  const max = trip.cities.reduce((most, city) => Math.max(most, city.nights), 0);
+  const places: PlaceCollection = {
+    type: "FeatureCollection",
+    features: trip.cities.map((city) => point(city.lon, city.lat, { id: 0, radius: dotRadius(city.nights, max), label: cityLabel(city.name, city.nights) })),
+  };
+  return { routes, places: withSides(routes, places) };
 }
 
 /** A point for each cell of the heat, weighing what share of the most time spent in any cell its time is (0 to 1). */
@@ -183,14 +295,19 @@ export const LAYER_IDS = {
   rangeRoute: "sporer-range-route",
   rangeFlight: "sporer-range-flight",
   places: "sporer-places",
-  placeLabels: "sporer-place-labels",
+  placeLabelsWest: "sporer-place-labels-west",
+  placeLabelsEast: "sporer-place-labels-east",
   stops: "sporer-stops",
   stopNames: "sporer-stop-names",
+  stopHome: "sporer-stop-home",
   stopNumbers: "sporer-stop-numbers",
 } as const;
 
-/** A day is drawn bold, with pins; a period (week, month, year, range) is drawn faint, with dots. */
-export type RouteView = "day" | "range";
+/**
+ * A day is drawn bold, with pins; a period (week, month, year, range) is drawn faint, with dots; the trips are the dots of their cities,
+ * with no routes; a trip is drawn bold as a day is, with the dots of its cities.
+ */
+export type RouteView = "day" | "range" | "trips" | "trip";
 
 export type LayerSpecification = StyleSpecification["layers"][number];
 type LineLayer = Extract<LayerSpecification, { type: "line" }>;
@@ -255,13 +372,55 @@ type CircleRadius = Extract<NonNullable<NonNullable<CircleLayer["paint"]>["circl
  */
 const PIN_RADIUS: CircleRadius = ["max", 12, ["+", 6, ["*", 2.2, ["length", ["to-string", ["get", "label"]]]]]];
 
+type SymbolLayer = Extract<LayerSpecification, { type: "symbol" }>;
+type Anchors = NonNullable<NonNullable<SymbolLayer["layout"]>["text-variable-anchor"]>;
+
+/** The pins of home, which show a house, and the others, which show their numbers. A pin that says nothing of home is not home. */
+const IS_HOME: FilterSpecification = ["==", ["get", "home"], true];
+const IS_NOT_HOME: FilterSpecification = ["!=", ["get", "home"], true];
+
+/** The dots that carry a label, those at the east of the drawing and the others (one that says no side is one of those). */
+const LABELLED_EAST: FilterSpecification = ["all", ["has", "label"], ["==", ["get", "side"], "east"]];
+const LABELLED_WEST: FilterSpecification = ["all", ["has", "label"], ["!=", ["get", "side"], "east"]];
+
+/**
+ * The names of the dots on one side of the drawing. A label goes toward the inside of it (see `withSides`), which one layer cannot say for
+ * both sides, since the order of the places a label may be put at is not something a feature can choose: the west dots have theirs at the right
+ * of the dot, the east dots at its left (the anchor is the side of the text that is next to the dot, so "left" is a text on the right).
+ * A label that collides with another is moved to the next place, which is at a corner of the dot on the same side, above or below, and one that
+ * has none free is left out, and its dot stays. All the places are inward ones, and none is at the outer side, or centred above or below, where a
+ * label that has been put by the dot at the edge of the screen would be cut off: MapLibre keeps a label at the place it last found free, and does
+ * not go back to its first choice once the camera has moved on (a fit that starts at the world finds some places taken that are free when it ends),
+ * so a place that clips at the edge would stay once it had been taken. A dot that says no side is a west one, as every dot was.
+ */
+function placeLabels(id: string, filter: FilterSpecification, anchors: Anchors, paint: SymbolLayer["paint"]): LayerSpecification {
+  return {
+    id,
+    type: "symbol",
+    source: SOURCE_IDS.places,
+    filter,
+    layout: {
+      "text-field": ["get", "label"],
+      "text-font": BOLD_FONT,
+      "text-size": LABEL_SIZE,
+      "text-variable-anchor": anchors,
+      "text-radial-offset": ["+", ["/", ["get", "radius"], LABEL_SIZE], 0.3], // clear of the dot, in ems
+      "text-justify": "auto",
+    },
+    paint,
+  };
+}
+
 /**
  * Every layer the map draws, from the bottom up: the heat, the routes, the place dots with their labels, the stop pins with their
- * numbers and names. Layers of the routes of the other view are there but hidden, so that going from a day to a month, or back,
- * only changes their visibility. `dark` is for the text on the map, which is dark on a light map and light on a dark one.
+ * names and their numbers (or the house, on the pin of home). Layers of the routes of the other views are there but hidden, so that going
+ * from a day to a month, or back, only changes their visibility: a day's routes (bold, over a casing) are shown for a day and for a trip, a
+ * period's (faint) for a period, and the list of trips shows no routes at all. The dots, their labels and the pins are not hidden by any
+ * view; the source of the ones that a view does not draw is empty. `dark` is for the text on the map, which is dark on a light map and
+ * light on a dark one.
  */
 export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[] {
-  const shown = (shownIn: RouteView): "visible" | "none" => (view === shownIn ? "visible" : "none");
+  const shown = (...shownIn: RouteView[]): "visible" | "none" => (shownIn.includes(view) ? "visible" : "none");
   const ink = dark ? "#F2F2F7" : "#1C1C1E";
   const halo = dark ? "#1C1C1E" : WHITE;
   const labelPaint = { "text-color": ink, "text-halo-color": halo, "text-halo-width": 2 };
@@ -291,7 +450,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       type: "line",
       source: SOURCE_IDS.routes,
       filter: IS_NOT_FLIGHT, // a solid casing under a dashed line would fill its gaps
-      layout: { "line-cap": "round", "line-join": "round", visibility: shown("day") },
+      layout: { "line-cap": "round", "line-join": "round", visibility: shown("day", "trip") },
       paint: { "line-color": WHITE, "line-width": CASING_WIDTH },
     },
     {
@@ -299,7 +458,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       type: "line",
       source: SOURCE_IDS.routes,
       filter: IS_NOT_FLIGHT,
-      layout: { "line-cap": "round", "line-join": "round", visibility: shown("day") },
+      layout: { "line-cap": "round", "line-join": "round", visibility: shown("day", "trip") },
       paint: { "line-color": MODE_COLOR, "line-width": DAY_ROUTE_WIDTH },
     },
     {
@@ -307,7 +466,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       type: "line",
       source: SOURCE_IDS.routes,
       filter: IS_FLIGHT,
-      layout: { "line-cap": "butt", "line-join": "round", visibility: shown("day") }, // round caps would close the gaps
+      layout: { "line-cap": "butt", "line-join": "round", visibility: shown("day", "trip") }, // round caps would close the gaps
       paint: { "line-color": MODE_COLORS.flight, "line-width": DAY_ROUTE_WIDTH, "line-dasharray": FLIGHT_DASH },
     },
     {
@@ -344,21 +503,8 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
         "circle-stroke-width": 2,
       },
     },
-    {
-      id: LAYER_IDS.placeLabels,
-      type: "symbol",
-      source: SOURCE_IDS.places,
-      filter: ["has", "label"],
-      layout: {
-        "text-field": ["get", "label"],
-        "text-font": BOLD_FONT,
-        "text-size": LABEL_SIZE,
-        "text-variable-anchor": ["left", "right", "top", "bottom"],
-        "text-radial-offset": ["+", ["/", ["get", "radius"], LABEL_SIZE], 0.3], // clear of the dot, in ems
-        "text-justify": "auto",
-      },
-      paint: labelPaint,
-    },
+    placeLabels(LAYER_IDS.placeLabelsWest, LABELLED_WEST, ["left", "top-left", "bottom-left"], labelPaint),
+    placeLabels(LAYER_IDS.placeLabelsEast, LABELLED_EAST, ["right", "top-right", "bottom-right"], labelPaint),
     {
       id: LAYER_IDS.stops,
       type: "circle",
@@ -387,11 +533,22 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       paint: labelPaint,
     },
     {
+      // The house on the pin of home, where its number would be: white, as the numbers are (an SDF image, `house`, takes the colour of the layer).
+      // Placed before the names, like the numbers, and for the same reason it is never left out: the timeline marks home, so the map does.
+      id: LAYER_IDS.stopHome,
+      type: "symbol",
+      source: SOURCE_IDS.stops,
+      filter: IS_HOME,
+      layout: { "icon-image": HOME_IMAGE, "icon-allow-overlap": true },
+      paint: { "icon-color": WHITE },
+    },
+    {
       // The last layer, which MapLibre places first: no name or label hides a number. And no number is left out for another one
-      // being near: the timeline shows every number, so the map does.
+      // being near: the timeline shows every number, so the map does. Home has none: it has a house, in the layer under this.
       id: LAYER_IDS.stopNumbers,
       type: "symbol",
       source: SOURCE_IDS.stops,
+      filter: IS_NOT_HOME,
       layout: {
         "text-field": ["get", "label"],
         "text-font": BOLD_FONT,

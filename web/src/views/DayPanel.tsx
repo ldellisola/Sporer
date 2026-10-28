@@ -7,6 +7,7 @@ import { dateOf } from "../time/dates";
 import { formatCount, formatDistance, formatDuration, formatTime } from "../time/format";
 import { Chip, Chips } from "./Chips";
 import styles from "./DayPanel.module.css";
+import { HouseIcon } from "./HouseIcon";
 import rows from "./Rows.module.css";
 import { Shown } from "./Shown";
 import { Empty, ErrorState, Loading } from "./States";
@@ -44,8 +45,9 @@ function stayTimes(stay: StaySegment, day: DayResponse, ongoing: boolean): strin
  * A row of the timeline that takes the map to its segment. The row is a button of its own, laid over the whole row (see the style
  * sheet), and is not the parent of what else in the row can be tapped: a button inside a button is not HTML, and a tap on the name
  * of a place would be a tap on the row too. Its `label` is its only name, so each row's is its own: a stop by its number, a move by
- * when it began. It holds what the row says of itself (the number and the name of a stop, the mode and the distance of a move), so
- * that whoever names a row by what they read on it names its button.
+ * when it began, home, which has a house and no number, by the times the row gives. It holds what the row says of itself (the number and
+ * the name of a stop, "home" and the name and the times of home, the mode and the distance of a move), so that whoever names a row by what
+ * they read on it names its button.
  */
 function FitButton({ label, onClick }: { label: string; onClick: () => void }) {
   return <button type="button" className={`${rows.tap} ${styles.fit}`} aria-label={label} onClick={onClick} />;
@@ -54,9 +56,19 @@ function FitButton({ label, onClick }: { label: string; onClick: () => void }) {
 function StayRow({ stay, order, when, onFocus }: { stay: StaySegment; order: number | undefined; when: string; onFocus: DayPanelProps["onFocus"] }) {
   const { place } = stay;
   const name = place?.name ?? "Unnamed place";
+  const home = place !== null && stay.home; // home is a place: a stay that is at none is not it, whatever it says
   return (
     <li className={styles.row}>
-      {order === undefined ? <span className={styles.dot} aria-hidden="true" /> : <span className={styles.pin}>{order}</span>}
+      {home ? (
+        // The house is where the number goes, on the pin as on the map: no number for home, and the others are counted without it (`stopOrders`).
+        <span className={styles.pin}>
+          <HouseIcon />
+        </span>
+      ) : order === undefined ? (
+        <span className={styles.dot} aria-hidden="true" />
+      ) : (
+        <span className={styles.pin}>{order}</span>
+      )}
       <div className={styles.text}>
         {place === null ? (
           <span className={styles.name}>{name}</span>
@@ -68,8 +80,15 @@ function StayRow({ stay, order, when, onFocus }: { stay: StaySegment; order: num
         <span className={styles.when}>{when}</span>
       </div>
       <span className={rows.duration}>{formatDuration(secondsOf(stay))}</span>
-      {place !== null && order !== undefined && (
-        <FitButton label={`Show stop ${order}, ${place.name ?? "unnamed place"}, on the map`} onClick={() => onFocus([placePoint(place)])} />
+      {place !== null && (home || order !== undefined) && (
+        <FitButton
+          label={
+            home
+              ? `Show home, ${place.name ?? "unnamed place"}, ${when}, on the map`
+              : `Show stop ${order}, ${place.name ?? "unnamed place"}, on the map`
+          }
+          onClick={() => onFocus([placePoint(place)])}
+        />
       )}
     </li>
   );

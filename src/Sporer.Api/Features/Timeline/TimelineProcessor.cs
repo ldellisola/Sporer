@@ -4,18 +4,27 @@ using Sporer.Timeline;
 
 namespace Sporer.Api.Features.Timeline;
 
+/// <summary>
+/// What a rebuild did: <paramref name="Written"/> segments were stored, and the timeline between <paramref name="RebuiltFromUtc"/>
+/// and <paramref name="RebuiltToUtc"/> is what was recomputed. That is the range that was asked for, widened to the stays
+/// around it where there are any (with none stored, it is the range itself), and it is the window whatever is derived from
+/// the segments (the nights, the homes and the trips) has to be refreshed over.
+/// </summary>
+public sealed record ReprocessResult(int Written, DateTime RebuiltFromUtc, DateTime RebuiltToUtc);
+
 /// <summary>Rebuilds the derived timeline (segments and places) from the raw points of a time range.</summary>
 public interface ITimelineProcessor
 {
     /// <summary>
-    /// Reprocesses <paramref name="fromUtc"/> to <paramref name="toUtc"/> and returns how many segments were written.
+    /// Reprocesses <paramref name="fromUtc"/> to <paramref name="toUtc"/> and returns how many segments were written and the
+    /// window that was rebuilt (see <see cref="ReprocessResult"/>).
     /// The range is widened to the stays around it (see <see cref="SegmentStore.FindAnchorsAsync"/>), so the result is
     /// the same as processing all the data at once. Where no stay follows and nothing later is stored, the rebuild stops
     /// at the first point after the range, so the last segments may be cut short until a later run (which starts at the
     /// last stay before it) completes them. The rebuild does not reach back into a stretch that was set aside after repeated
     /// failures (see <see cref="SegmentStore.FindAnchorsAsync"/>).
     /// </summary>
-    Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct);
+    Task<ReprocessResult> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct);
 }
 
 /// <summary>
@@ -34,7 +43,7 @@ public sealed class TimelineProcessor(
     /// </summary>
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public async Task<int> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
+    public async Task<ReprocessResult> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
     {
         var from = AsUtc(fromUtc);
         var to = AsUtc(toUtc);
@@ -77,7 +86,10 @@ public sealed class TimelineProcessor(
             }
 
             await segments.ReplaceAsync(t0, t1, stored, ct);
-            return stored.Count;
+
+            // From the first anchor to where the load stopped: the closing stay's end when there is one, else the end of what was
+            // loaded. Everything stored between the two was replaced.
+            return new ReprocessResult(stored.Count, t0, upper);
         }
         finally
         {

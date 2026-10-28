@@ -11,7 +11,8 @@
       "end": "2026-10-23T13:00:00Z",
       "startTimeZone": "America/New_York",
       "endTimeZone": "America/New_York",
-      "place": { "id": 5, "name": "Hotel Midtown", "city": "New York", "country": "United States", "lat": 40.755, "lon": -73.986 }
+      "place": { "id": 5, "name": "Hotel Midtown", "city": "New York", "country": "United States", "lat": 40.755, "lon": -73.986 },
+      "home": false
     },
     {
       "kind": "move",
@@ -31,7 +32,8 @@
       "end": "2026-10-23T14:05:00Z",
       "startTimeZone": "America/New_York",
       "endTimeZone": "America/New_York",
-      "place": { "id": 6, "name": "Coffee Shop", "city": "New York", "country": "United States", "lat": 40.758, "lon": -73.98 }
+      "place": { "id": 6, "name": "Coffee Shop", "city": "New York", "country": "United States", "lat": 40.758, "lon": -73.98 },
+      "home": false
     },
     {
       "kind": "move",
@@ -51,7 +53,8 @@
       "end": "2026-10-23T18:00:00Z",
       "startTimeZone": "America/New_York",
       "endTimeZone": "America/New_York",
-      "place": { "id": 7, "name": "Museum", "city": "New York", "country": "United States", "lat": 40.779, "lon": -73.963 }
+      "place": { "id": 7, "name": "Museum", "city": "New York", "country": "United States", "lat": 40.779, "lon": -73.963 },
+      "home": false
     }
   ]
 }

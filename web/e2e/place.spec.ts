@@ -5,6 +5,7 @@ import osloDay from "./fixtures/day-oslo-new-york.json" with { type: "json" };
 import cafe from "./fixtures/place-cafe.json" with { type: "json" };
 import { mockApi } from "./mockApi";
 import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
+import { sheetAtRest } from "./sheet";
 import { fixTime } from "./today";
 
 // The browser is in Tokyo, which the place is not in: every date and time on screen must be the clock of the zone it happened in. And one
@@ -27,6 +28,7 @@ async function openSheet(page: Page): Promise<void> {
   if (isWide(page)) return;
   for (let i = 0; i < 2 && (await details(page).getAttribute("data-snap")) !== "full"; i++) await grip(page).click();
   await expect(details(page)).toHaveAttribute("data-snap", "full");
+  await sheetAtRest(page); // and has come up, so that a row in it is where a click will find it
 }
 
 const API = {
