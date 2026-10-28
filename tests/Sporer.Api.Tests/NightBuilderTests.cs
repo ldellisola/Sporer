@@ -105,6 +105,30 @@ public class NightBuilderTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task NightBuilder_matches_a_point_night_near_a_merged_place_to_its_survivor()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var builder = api.Services.GetRequiredService<NightBuilder>();
+        var survivor = await TimelineSeeder.InsertPlaceAsync(cs, lat: Spots.Home.Latitude, lon: Spots.Home.Longitude);
+        // 200 m from the survivor, merged into it: a night within 75 m of this one is a night at the survivor, as a stay there would be.
+        var merged = await TimelineSeeder.InsertPlaceAsync(
+            cs, lat: Geo.Offset(Spots.Home, 200, 0).Latitude, lon: Geo.Offset(Spots.Home, 200, 0).Longitude, mergedInto: survivor);
+        await GapAsync(cs, Utc(6, 10, 18), Utc(6, 12, 8));
+        await PointAsync(cs, Utc(6, 11, 0, 30), Geo.Offset(Spots.Home, 240, 0)); // night of 10 June: 40 m from the merged place's centre
+        await PointAsync(cs, Utc(6, 12, 0, 30), Geo.Offset(Spots.Home, 100, 0)); // night of 11 June: 100 m from both, inside neither radius
+
+        var built = await builder.BuildAsync(Utc(6, 10, 12), Utc(6, 11, 12), Ct);
+
+        var near = NightOf(built, D(6, 10));
+        var far = NightOf(built, D(6, 11));
+        Assert.Equal((survivor, "point"), (near.Night.PlaceId, near.Source));
+        Assert.Equal((null, "point"), (far.Night.PlaceId, far.Source));
+        Assert.NotEqual(merged, near.Night.PlaceId);
+        Assert.Equal(2, await Sql.ScalarAsync<long>(cs, "select count(*) from place", ct: Ct));
+    }
+
+    [Fact]
     public async Task NightBuilder_marks_a_night_unknown_when_nothing_is_within_12_hours()
     {
         var cs = await db.CreateDatabaseAsync(Ct);

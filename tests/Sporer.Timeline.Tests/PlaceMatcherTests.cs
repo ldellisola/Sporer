@@ -13,7 +13,9 @@ public class PlaceMatcherTests
     private static readonly GeoPoint Fiji = new(-17.0000, 179.9990);
     private static readonly GeoPoint Chukotka = new(71.0000, 179.9990);
 
-    private static PlaceMatcher MatcherOf(params (long Id, GeoPoint Centre)[] places) => new(places, Radius);
+    /// <summary>A matcher of places that each stand for themselves (none of them is merged into another).</summary>
+    private static PlaceMatcher MatcherOf(params (long Id, GeoPoint Centre)[] places)
+        => new(places.Select(p => (p.Id, p.Centre, SurvivorId: p.Id)), Radius);
 
     /// <summary>
     /// A latitude on a grid line of a grid of radius-tall cells aligned to -90 (the natural layout; if the matcher
@@ -65,6 +67,65 @@ public class PlaceMatcherTests
         var matcher = MatcherOf((4, Geo.Offset(onLine, -10, 0)));
 
         Assert.Equal(4, matcher.Match(Geo.Offset(onLine, 10, 0)));
+    }
+
+    // ---- merged places ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void PlaceMatcher_matches_a_merged_place_to_its_survivor()
+    {
+        // Place 2 was merged into place 1, which is a kilometre away: a stay at the centre of place 2 is at place 1 now. Place 3 is
+        // its own survivor, and a stay at it is at it.
+        var matcher = new PlaceMatcher(
+            [(1, Spots.Home, 1L), (2, Spots.Cafe, 1L), (3, Spots.Office, 3L)], Radius);
+
+        Assert.Equal(1, matcher.Match(Spots.Cafe));
+        Assert.Equal(1, matcher.Match(Geo.Offset(Spots.Cafe, 50, 0))); // within the radius of the merged place's centre
+        Assert.Null(matcher.Match(Geo.Offset(Spots.Cafe, 80, 0)));     // beyond it: not near anything
+        Assert.Equal(1, matcher.Match(Spots.Home));
+        Assert.Equal(3, matcher.Match(Spots.Office));
+    }
+
+    [Fact]
+    public void PlaceMatcher_matches_through_a_chain_of_merges_to_the_last_survivor()
+    {
+        // The survivor of each place is worked out by the caller (from the chain of merges): 3 was merged into 2, which was merged into 1.
+        var matcher = new PlaceMatcher([(1, Spots.Home, 1L), (2, Spots.Cafe, 1L), (3, Spots.Office, 1L)], Radius);
+
+        Assert.Equal(1, matcher.Match(Spots.Office));
+        Assert.Equal(1, matcher.Match(Spots.Cafe));
+    }
+
+    [Fact]
+    public void PlaceMatcher_nearest_centre_wins_across_merged_and_active()
+    {
+        var query = Spots.Cafe;
+        var merged = (Id: 2L, Centre: Geo.Offset(query, 20, 0), SurvivorId: 9L);     // 20 m away, merged into 9
+        var active = (Id: 1L, Centre: Geo.Offset(query, 0, 60), SurvivorId: 1L);     // 60 m away, its own survivor
+        Assert.Equal(9, new PlaceMatcher([active, merged, (9, Spots.Home, 9L)], Radius).Match(query)); // the merged one is nearer
+
+        var farMerged = (Id: 2L, Centre: Geo.Offset(query, 70, 0), SurvivorId: 9L);  // 70 m away
+        Assert.Equal(1, new PlaceMatcher([farMerged, active, (9, Spots.Home, 9L)], Radius).Match(query)); // the active one is nearer
+
+        // An exact tie goes to the lower id of the two places, not to the lower id of their survivors.
+        var tiedMerged = (Id: 5L, Centre: Geo.Offset(query, 40, 0), SurvivorId: 1L);
+        var tiedActive = (Id: 7L, Centre: Geo.Offset(query, -40, 0), SurvivorId: 7L);
+        Assert.Equal(Geo.DistanceMeters(query, tiedMerged.Centre), Geo.DistanceMeters(query, tiedActive.Centre), 6);
+        Assert.Equal(1, new PlaceMatcher([tiedActive, tiedMerged, (1, Spots.Home, 1L)], Radius).Match(query));
+        Assert.Equal(1, new PlaceMatcher([(1, Spots.Home, 1L), tiedMerged, tiedActive], Radius).Match(query));
+    }
+
+    [Fact]
+    public void An_added_place_can_stand_for_another()
+    {
+        var matcher = MatcherOf((1, Spots.Home));
+
+        matcher.Add(9, Spots.Cafe, 1);
+
+        Assert.Equal(1, matcher.Match(Spots.Cafe));
+        Assert.Throws<ArgumentException>(() => matcher.Add(9, Spots.Office, 9)); // the id is the place's, not the survivor's
+        matcher.Add(10, Spots.Office, 1);
+        Assert.Equal(1, matcher.Match(Spots.Office));
     }
 
     // ---- borders, whatever the grid ------------------------------------------------------------------------------
@@ -156,7 +217,7 @@ public class PlaceMatcherTests
                 var place = new GeoPoint(hemisphere * (90 - c / metersPerDegree), longitude);
                 Assert.True(Geo.DistanceMeters(query, place) <= radius, "bad test data");
 
-                Assert.Equal(5, new PlaceMatcher([(5, place)], radius).Match(query));
+                Assert.Equal(5, new PlaceMatcher([(5, place, 5L)], radius).Match(query));
             }
         }
     }
@@ -279,9 +340,9 @@ public class PlaceMatcherTests
     {
         var place = Geo.Offset(Spots.Cafe, 150, 0);
 
-        Assert.Null(new PlaceMatcher([(1, place)], 75).Match(Spots.Cafe));
-        Assert.Equal(1, new PlaceMatcher([(1, place)], 200).Match(Spots.Cafe));
-        Assert.Equal(1, new PlaceMatcher([(1, place)], 2_000).Match(Geo.Offset(Spots.Cafe, 1_800, 0)));
+        Assert.Null(new PlaceMatcher([(1, place, 1L)], 75).Match(Spots.Cafe));
+        Assert.Equal(1, new PlaceMatcher([(1, place, 1L)], 200).Match(Spots.Cafe));
+        Assert.Equal(1, new PlaceMatcher([(1, place, 1L)], 2_000).Match(Geo.Offset(Spots.Cafe, 1_800, 0)));
     }
 
     [Fact]
@@ -343,7 +404,7 @@ public class PlaceMatcherTests
     /// </summary>
     private static void AssertAgreesWithBruteForce(List<(long Id, GeoPoint Centre)> places, List<GeoPoint> queries, Random random)
     {
-        var matcher = new PlaceMatcher(places.OrderBy(_ => random.Next()).ToList(), Radius);
+        var matcher = new PlaceMatcher(places.OrderBy(_ => random.Next()).Select(p => (p.Id, p.Centre, SurvivorId: p.Id)), Radius);
         var matched = 0;
 
         foreach (var query in queries)

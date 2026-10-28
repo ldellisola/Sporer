@@ -54,7 +54,7 @@ public class PlaceEndpointTests(DatabaseFixture db)
 
         var root = body.RootElement;
         Assert.Equal(
-            new[] { "id", "name", "address", "city", "country", "lat", "lon", "totalSeconds", "visits", "firstVisit", "lastVisit", "recentVisits" },
+            new[] { "id", "name", "address", "city", "country", "lat", "lon", "totalSeconds", "visits", "firstVisit", "lastVisit", "recentVisits", "merged" },
             root.EnumerateObject().Select(p => p.Name));
         Assert.Equal(place, root.GetProperty("id").GetInt64());
         Assert.Equal("Storgata 5", root.GetProperty("name").GetString()); // the owner's name wins over OpenStreetMap's
@@ -152,8 +152,12 @@ public class PlaceEndpointTests(DatabaseFixture db)
             Assert.Equal(
                 new[] { "2026-10-23T11:00:00Z", "2026-10-22T08:00:00Z", "2026-10-22T06:00:00Z" },
                 root.GetProperty("recentVisits").EnumerateArray().Select(v => v.GetProperty("start").GetString()));
+            // The places merged directly into the survivor are listed by name (and with them nothing else of theirs: no centre, no
+            // address); the one merged into the middle one is not merged into the survivor, so it is not.
+            Assert.Equal(new[] { middle, bare }, root.GetProperty("merged").EnumerateArray().Select(m => m.GetProperty("id").GetInt64()));
+            Assert.Equal(new[] { "Middle", "Bare" }, root.GetProperty("merged").EnumerateArray().Select(m => m.GetProperty("name").GetString()));
             Assert.DoesNotContain("Absorbed", root.GetRawText());
-            Assert.DoesNotContain("Middle", root.GetRawText());
+            Assert.DoesNotContain("Bergen", root.GetRawText());
         }
     }
 

@@ -105,8 +105,10 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     /// <summary>
     /// Replaces every detected home period and every trip by <paramref name="homes"/> and <paramref name="trips"/>. The home
     /// periods the owner set (<c>user</c>) are not touched. One transaction: readers see the old rows or the new ones, and a
-    /// failure leaves the old ones. Internal: the app writes them only together with the nights (<see cref="ReplaceAllAsync"/>);
-    /// this is for the tests, which pin what the homes and trips tables hold without building nights first.
+    /// failure leaves the old ones. Internal: the app writes them in the transaction of <see cref="TripRefresher"/>, with the nights
+    /// (<see cref="ReplaceAllAsync(NpgsqlConnection, NpgsqlTransaction, DateOnly, DateOnly, IReadOnlyList{ValueTuple{Night, string}}, IReadOnlyList{HomePeriod}, IReadOnlyList{DetectedTrip}, CancellationToken)"/>)
+    /// or without them (<see cref="ReplaceDetectedAsync(NpgsqlConnection, NpgsqlTransaction, IReadOnlyList{HomePeriod}, IReadOnlyList{DetectedTrip}, CancellationToken)"/>);
+    /// this is for the tests, which pin what the homes and trips tables hold without a refresh.
     /// </summary>
     internal async Task ReplaceDetectedAsync(
         IReadOnlyList<HomePeriod> homes, IReadOnlyList<DetectedTrip> trips, CancellationToken ct = default)
@@ -134,13 +136,29 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
-        await nightStore.ReplaceAsync(connection, transaction, from, to, nights, ct);
-        await ReplaceDetectedAsync(connection, transaction, homes, trips, ct);
+        await ReplaceAllAsync(connection, transaction, from, to, nights, homes, trips, ct);
 
         await transaction.CommitAsync(ct);
     }
 
-    private static async Task ReplaceDetectedAsync(
+    /// <summary>
+    /// The same, in the caller's transaction, which commits it or not: it is how <see cref="TripRefresher"/> writes after it has taken
+    /// its lock, in the transaction that holds it.
+    /// </summary>
+    internal async Task ReplaceAllAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, DateOnly from, DateOnly to,
+        IReadOnlyList<(Night Night, string Source)> nights, IReadOnlyList<HomePeriod> homes, IReadOnlyList<DetectedTrip> trips,
+        CancellationToken ct = default)
+    {
+        await nightStore.ReplaceAsync(connection, transaction, from, to, nights, ct);
+        await ReplaceDetectedAsync(connection, transaction, homes, trips, ct);
+    }
+
+    /// <summary>
+    /// The same as <see cref="ReplaceDetectedAsync(IReadOnlyList{HomePeriod}, IReadOnlyList{DetectedTrip}, CancellationToken)"/>, in the
+    /// caller's transaction: it is how the homes and trips are written without the nights (<see cref="ITripRefresher.RecomputeAsync"/>).
+    /// </summary>
+    internal static async Task ReplaceDetectedAsync(
         NpgsqlConnection connection, NpgsqlTransaction transaction,
         IReadOnlyList<HomePeriod> homes, IReadOnlyList<DetectedTrip> trips, CancellationToken ct)
     {

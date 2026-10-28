@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Http.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Sporer.Api.Features.Trips;
@@ -214,6 +216,153 @@ public class TripRefresherTests(DatabaseFixture db)
         Assert.Equal(0, await Sql.ScalarAsync<long>(cs, "select count(*) from night", ct: Ct));
         Assert.Empty(await HomesAsync(cs));
         Assert.Empty(await TripsAsync(cs));
+    }
+
+    // ---- recomputing without rebuilding --------------------------------------------------------------------------------
+
+    private sealed record Snapshot(IReadOnlyList<Night> Nights, IReadOnlyList<HomeRow> Homes, IReadOnlyList<TripRow> Trips);
+
+    /// <summary>Row by row: a record does not compare the lists it holds by what is in them.</summary>
+    private static void AssertSame(Snapshot expected, Snapshot actual)
+    {
+        Assert.Equal(expected.Nights, actual.Nights);
+        Assert.Equal(expected.Homes, actual.Homes);
+        Assert.Equal(expected.Trips, actual.Trips);
+    }
+
+    private static async Task<Snapshot> SnapshotAsync(ApiFactory api, string cs)
+        => new(await api.Services.GetRequiredService<NightStore>().LoadAllAsync(Ct), await HomesAsync(cs), await TripsAsync(cs));
+
+    [Fact]
+    public async Task Recompute_works_out_homes_and_trips_from_the_stored_nights_and_builds_none()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var refresher = api.Services.GetRequiredService<ITripRefresher>();
+        var (home, _, lisbonStay) = await SeedOneTripAsync(cs);
+        await refresher.RefreshAsync(Utc(4, 1), Utc(7, 15, 12), Ct);
+        await Sql.ExecAsync(cs, "insert into home_period (place_id, from_date, to_date, source) values (@home, '2025-01-01', '2025-12-31', 'user')", new { home }, Ct);
+        var before = await SnapshotAsync(api, cs);
+        Assert.Single(before.Trips);
+        Assert.Equal(2, before.Homes.Count);
+
+        // What was derived is lost, and the timeline is not what the nights were built from: a rebuild of the nights would show it.
+        await Sql.ExecAsync(cs, "delete from trip; delete from home_period where source = 'detected'; delete from segment where id = @lisbonStay", new { lisbonStay }, Ct);
+
+        await refresher.RecomputeAsync(Ct);
+
+        // The trip is back, the nights are as they were stored, and the owner's home was not touched.
+        AssertSame(before, await SnapshotAsync(api, cs));
+    }
+
+    [Fact]
+    public async Task Recompute_resolves_merged_places_to_their_survivor()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var refresher = api.Services.GetRequiredService<ITripRefresher>();
+        var survivor = await PlaceAsync(cs, Spots.Home);
+        var other = await PlaceAsync(cs, Geo.Offset(Spots.Home, 0, 300));
+        await StayAsync(cs, Utc(3, 31, 12), Utc(5, 20, 7), survivor, Spots.Home);
+        await StayAsync(cs, Utc(5, 20, 12), Utc(7, 9, 7), other, Geo.Offset(Spots.Home, 0, 300));
+        await refresher.RefreshAsync(Utc(4, 1), Utc(7, 9, 7), Ct);
+        Assert.Empty(await HomesAsync(cs)); // 50 nights at each, 300 m apart: no home
+
+        await Sql.ExecAsync(cs, "update place set merged_into_id = @survivor where id = @other", new { survivor, other }, Ct);
+        await refresher.RecomputeAsync(Ct);
+
+        Assert.Equal([new HomeRow(survivor, "2026-03-31", null, "detected")], await HomesAsync(cs));
+    }
+
+    [Fact]
+    public async Task Merge_recomputes_homes_at_once()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var refresher = api.Services.GetRequiredService<ITripRefresher>();
+        // One house that GPS drift made two places 300 m apart (more than the 250 m that make one home), slept at by turns for 50 nights
+        // each: neither has 60 of 90 nights, so there is no home at all.
+        var first = await PlaceAsync(cs, Spots.Home);
+        var second = await PlaceAsync(cs, Geo.Offset(Spots.Home, 0, 300));
+        await StayAsync(cs, Utc(3, 31, 12), Utc(5, 20, 7), first, Spots.Home);
+        await StayAsync(cs, Utc(5, 20, 12), Utc(7, 9, 7), second, Geo.Offset(Spots.Home, 0, 300));
+        await refresher.RefreshAsync(Utc(4, 1), Utc(7, 9, 7), Ct);
+        Assert.Empty(await HomesAsync(cs));
+
+        // Merged, they are one place with all 100 nights. The merge answers when the homes are worked out: nothing refreshes them after it.
+        using var merged = await client.PostAsJsonAsync($"/api/places/{first}/merge", new { place = second, name = (string?)null }, Ct);
+        Assert.Equal(HttpStatusCode.OK, merged.StatusCode);
+        Assert.Equal([new HomeRow(first, "2026-03-31", null, "detected")], await HomesAsync(cs));
+        Assert.Empty(await TripsAsync(cs));
+
+        // And separated, they are two again, and so is what follows from it.
+        using var separated = await client.DeleteAsync($"/api/places/{first}/merged/{second}", Ct);
+        Assert.Equal(HttpStatusCode.NoContent, separated.StatusCode);
+        Assert.Empty(await HomesAsync(cs));
+    }
+
+    /// <summary>How many sessions of the database wait for an advisory lock.</summary>
+    private static Task<long> AdvisoryWaitersAsync(string cs) => Sql.ScalarAsync<long>(cs,
+        """
+        select count(*) from pg_locks
+        where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())
+        """, ct: Ct);
+
+    [Fact]
+    public async Task Recompute_and_refresh_do_not_interleave()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var refresher = api.Services.GetRequiredService<ITripRefresher>();
+        var (home, lisbon, lisbonStay) = await SeedOneTripAsync(cs);
+        // A second trip, in September, outside the window of the refresh.
+        await StayAsync(cs, Utc(7, 15, 12), Utc(9, 3, 7), home, Spots.Home);
+        await StayAsync(cs, Utc(9, 3, 12), Utc(9, 5, 8), lisbon, Spots.Lisbon, "Europe/Lisbon");
+        await StayAsync(cs, Utc(9, 5, 14), Utc(9, 8, 12), home, Spots.Home);
+        await refresher.RefreshAsync(Utc(4, 1), Utc(9, 8, 12), Ct);
+        Assert.Equal(["2026-07-09", "2026-09-03"], (await TripsAsync(cs)).Select(t => t.Id));
+
+        // Someone else holds the lock, as the worker's refresh or an edit's recompute would while it works. Both calls ask for it first,
+        // before they read anything, and both wait.
+        await using var holder = new NpgsqlConnection(cs);
+        await holder.OpenAsync(Ct);
+        await using var holding = await holder.BeginTransactionAsync(Ct);
+        await using (var take = new NpgsqlCommand("select pg_advisory_xact_lock(@key)", holder, holding))
+        {
+            take.Parameters.AddWithValue("key", TripRefresher.AdvisoryLockKey);
+            await take.ExecuteNonQueryAsync(Ct);
+        }
+        var recompute = Task.Run(() => refresher.RecomputeAsync(Ct), Ct);
+        var refresh = Task.Run(() => refresher.RefreshAsync(Utc(7, 9), Utc(7, 13), Ct), Ct);
+        var until = DateTime.UtcNow.AddSeconds(20);
+        while (await AdvisoryWaitersAsync(cs) < 2)
+        {
+            Assert.False(recompute.IsCompleted, "the recompute did not wait for the lock");
+            Assert.False(refresh.IsCompleted, "the refresh did not wait for the lock");
+            Assert.True(DateTime.UtcNow < until, "timed out waiting for the two to wait for the lock");
+            await Task.Delay(20, Ct);
+        }
+
+        // While they wait, the timeline changes under them: the person was at home all along in July, so the July trip is gone and
+        // the nights of those days are at home. Whatever either of them did read before it asked for the lock would be out of date.
+        await Sql.ExecAsync(cs, "delete from segment where id = @lisbonStay", new { lisbonStay }, Ct);
+        await Sql.ExecAsync(cs, "update segment set start_utc = @start, local_start_date = '2026-07-09' where start_utc = @was",
+            new { start = Utc(7, 9, 12), was = Utc(7, 12, 14) }, Ct);
+        await holding.CommitAsync(Ct);
+        await Task.WhenAll(recompute, refresh);
+
+        // One after the other, in whichever order, each reading what the other left: the homes and trips are those of the nights that are
+        // stored, and the nights those of the timeline as it is. Nothing is left from a read that was out of date, and nothing is twice.
+        var stored = await SnapshotAsync(api, cs);
+        Assert.Equal(["2026-09-03"], stored.Trips.Select(t => t.Id));
+        Assert.Equal(3, stored.Nights.Count(n => n.Date >= D(7, 9) && n.Date <= D(7, 11) && n.PlaceId == home));
+        Assert.Equal([new HomeRow(home, "2026-03-31", null, "detected")], stored.Homes);
+
+        await refresher.RefreshAsync(Utc(4, 1), Utc(9, 8, 12), Ct); // a fresh computation over the final data
+        AssertSame(stored, await SnapshotAsync(api, cs));
+        await refresher.RecomputeAsync(Ct);
+        AssertSame(stored, await SnapshotAsync(api, cs));
     }
 
     // ---- the store ---------------------------------------------------------------------------------------------------

@@ -72,7 +72,7 @@ public sealed class TimelineProcessor(
                 .Where(s => s is StaySegment || s.EndUtc > s.StartUtc)
                 .ToList();
 
-            var matcher = new PlaceMatcher(await places.LoadActiveAsync(ct), options.PlaceRadiusMeters);
+            var matcher = new PlaceMatcher(await places.LoadMatchableAsync(ct), options.PlaceRadiusMeters);
             var stored = new List<StoredSegment>(kept.Count);
             foreach (var segment in kept)
             {
