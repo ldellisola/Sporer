@@ -105,17 +105,55 @@ public class WritesTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task Write_with_no_body_and_no_content_type_is_left_to_the_endpoint()
+    public async Task Write_without_content_type_and_no_body_is_415()
     {
-        // Some writes take no body at all (a retry, a restore). A form always comes with a content type, so a request with
-        // neither is not one: the middleware says nothing, and what answers is whatever is routed there (here, nothing is).
+        // A write is JSON whether or not it has a body. A page of another site can make a browser send a POST with no body and no
+        // content type (a no-cors fetch), which is no form and needs no preflight: it must not reach a write that takes no body.
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var place = await OnTheTimelineAsync(cs, userName: "Mine");
+
+        foreach (var method in new[] { HttpMethod.Post, HttpMethod.Put, HttpMethod.Patch })
+        {
+            foreach (var (name, url) in new[] { ("a route that exists", $"/api/places/{place}/name"), ("a route that does not", "/api/there-is-no-such-endpoint") })
+            {
+                // No content at all, and an empty body: neither has a Content-Type.
+                using var none = new HttpRequestMessage(method, url);
+                using var empty = new HttpRequestMessage(method, url) { Content = Raw("", null) };
+                foreach (var request in new[] { none, empty })
+                {
+                    using var response = await client.SendAsync(request, Ct);
+
+                    var text = await response.Content.ReadAsStringAsync(Ct);
+                    Assert.True(response.StatusCode == HttpStatusCode.UnsupportedMediaType, $"{method} {name} gave {(int)response.StatusCode}: {text}");
+                    Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+                }
+            }
+        }
+
+        Assert.Equal("Mine", await UserNameAsync(cs, place)); // nothing was written
+    }
+
+    [Fact]
+    public async Task Write_json_with_empty_body_passes_the_middleware()
+    {
+        // Writes that take no body are sent as JSON with an empty body, or with {}: it is the middleware's business that the type
+        // is JSON, and the endpoint's what it does with the body. Here no endpoint is routed, so what answers is not the middleware.
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
         var client = api.CreateClient();
 
-        using var response = await client.PostAsync("/api/there-is-no-such-endpoint", null, Ct);
+        foreach (var body in new[] { "", "{}" })
+        {
+            foreach (var method in new[] { HttpMethod.Post, HttpMethod.Put, HttpMethod.Patch })
+            {
+                using var request = new HttpRequestMessage(method, "/api/there-is-no-such-endpoint") { Content = Raw(body, "application/json") };
+                using var response = await client.SendAsync(request, Ct);
 
-        Assert.NotEqual(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+                Assert.True(response.StatusCode != HttpStatusCode.UnsupportedMediaType, $"{method} with {(body == "" ? "an empty body" : body)} gave 415");
+            }
+        }
     }
 
     [Fact]
