@@ -8,6 +8,7 @@ using Npgsql;
 using Sporer.Api.Configuration;
 using Sporer.Api.Database;
 using Sporer.Api.Features.Places;
+using Sporer.Api.Features.Points;
 using Sporer.Api.Features.Range;
 using Sporer.Api.Features.Timeline;
 using Sporer.Api.Features.Trips;
@@ -24,6 +25,7 @@ builder.Services.AddSingleton<DatabaseWarnings>();
 builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConfiguration>().GetSection("Detection").Get<DetectionOptions>() ?? new DetectionOptions());
 builder.Services.AddSingleton<PointStore>();
+builder.Services.AddSingleton<ExcludedPointStore>();
 builder.Services.AddSingleton<PlaceStore>();
 builder.Services.AddSingleton<SegmentStore>();
 builder.Services.AddSingleton<RangeStore>();

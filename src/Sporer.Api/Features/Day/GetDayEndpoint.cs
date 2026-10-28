@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using FastEndpoints;
 using Sporer.Api.Features.Timeline;
@@ -19,8 +18,6 @@ namespace Sporer.Api.Features.Day;
 internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, ProcessingQueue queue, DetectionOptions options)
     : EndpointWithoutRequest<DayResponse>
 {
-    private const string UnknownZone = "UTC";
-
     public override void Configure()
     {
         Get("day/{date}");
@@ -29,18 +26,17 @@ internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, Pro
 
     public override async Task HandleAsync(CancellationToken ct)
     {
-        var text = Route<string>("date", isRequired: false);
-        if (!DateOnly.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+        if (!DayDate.TryParse(Route<string>("date", isRequired: false), out var date))
         {
-            ValidationFailures.Add(new("date", "The date must be a calendar date written yyyy-MM-dd."));
+            ValidationFailures.Add(new("date", DayDate.InvalidMessage));
             await Send.ErrorsAsync(400, ct);
             return;
         }
 
         var stored = await segments.FindDayAsync(date, ct);
 
-        // The zone the day is shown in: where its first segment starts, else where the latest earlier stay was.
-        var zone = stored.Count > 0 ? stored[0].StartTz : await segments.FindZoneBeforeAsync(date, ct);
+        // The zone the day is shown in (see DayZone).
+        var zone = await DayZone.FindAsync(segments, date, stored, ct);
         var (fromUtc, toUtc) = DaySpan.Of(date, zone);
 
         // The day's segments can reach past the day in the zone it is shown in: a stay across midnight, or a later segment
@@ -57,8 +53,8 @@ internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, Pro
         var home = await trips.FindHomeOnAsync(date, ct);
 
         await Send.OkAsync(new DayResponse(
-            date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-            zone ?? UnknownZone,
+            DayDate.ToText(date),
+            zone ?? DayZone.Unknown,
             pending ? "pending" : "done",
             Summarize(stored),
             [.. stored.Select(s => Map(s, home, options.HomeRadiusMeters))]), ct);

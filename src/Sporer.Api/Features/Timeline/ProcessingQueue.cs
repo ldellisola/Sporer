@@ -131,6 +131,22 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
             new { From = AsUtc(fromUtc), To = AsUtc(toUtc) }, cancellationToken: ct));
     }
 
+    /// <summary>
+    /// Records that the timeline between <paramref name="fromUtc"/> and <paramref name="toUtc"/> is to be rebuilt, and that it is due
+    /// at once: the range is stored as if it had been recorded <see cref="ProcessingOptions.Debounce"/> before
+    /// <paramref name="nowUtc"/>, so the worker takes it on its next pass (<see cref="DueRangesAsync"/>) instead of waiting for more
+    /// points to arrive, as it does for ingest. For what the owner does: removing and restoring points. The range is the first to the
+    /// last point it changes, and the rebuild widens it to the stays around it, as it does for ingest. It is written on the connection
+    /// and in the transaction given, so that it is recorded if, and only if, the change it is for is.
+    /// </summary>
+    public async Task EnqueueNowAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, DateTime fromUtc, DateTime toUtc, DateTime nowUtc,
+        CancellationToken ct = default)
+        => await connection.ExecuteAsync(new CommandDefinition(
+            "insert into dirty_range (from_utc, to_utc, created_at) values (@From, @To, @CreatedAt)",
+            new { From = AsUtc(fromUtc), To = AsUtc(toUtc), CreatedAt = AsUtc(nowUtc) - options.Debounce },
+            transaction, cancellationToken: ct));
+
     /// <summary>The rows are done with: they are removed.</summary>
     public async Task CompleteAsync(IReadOnlyList<long> ids, CancellationToken ct = default)
     {
