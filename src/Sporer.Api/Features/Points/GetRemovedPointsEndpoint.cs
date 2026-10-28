@@ -7,7 +7,8 @@ namespace Sporer.Api.Features.Points;
 /// <summary>
 /// One removal, as <c>GET /api/points/removed</c> lists it: the <paramref name="Batch"/> that <c>DELETE /api/points/removed/{batch}</c>
 /// restores, when it was made, how many points it holds, the times of the first and the last of them, and the local dates they are on
-/// (<c>yyyy-MM-dd</c>, oldest first, each in the zone the day view shows it in).
+/// (<c>yyyy-MM-dd</c>, oldest first): a date is listed when the point falls in that date's span, taken across the zones of the day's segments
+/// (<see cref="DayZone.FindPointSpanAsync"/>), so on a day of travel a point can be on two adjacent dates.
 /// </summary>
 public sealed record RemovedBatchDto(
     Guid Batch, DateTime RemovedAt, int Count, DateTime From, DateTime To, IReadOnlyList<string> LocalDates);
