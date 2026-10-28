@@ -250,25 +250,44 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     }
 
     /// <summary>
+    /// How often <see cref="RenameAsync"/> asks again: it is more than once only when a merge lands while it runs, and one such merge
+    /// does not come twice.
+    /// </summary>
+    private const int RenameAttempts = 3;
+
+    /// <summary>
     /// Names the place <paramref name="id"/> stands for (see <see cref="FindDetailAsync"/>) <paramref name="name"/>, which is the owner's
     /// and is shown in place of OpenStreetMap's wherever the place is; null takes it back, and OpenStreetMap's shows again. The name is
     /// set on the one place that survives merges, and nothing else is touched: the views read it from there, so there is nothing to
     /// rebuild, and processing never writes it. Returns the place as it is now, or null, with nothing changed, when there is no such place
     /// (the same ones <see cref="FindDetailAsync"/> finds none for).
     /// </summary>
+    /// <remarks>
+    /// The survivor is found and named in one statement, so that a merge cannot land between the two. One that is not yet committed when
+    /// the statement finds its survivor but is when it gets to name it has made the place no survivor: the update only names a place
+    /// that is not merged into another (checked on the row as it is then), so it names none, and the next attempt finds the place
+    /// the merge led to. The name is read back with the detail, so that it is what the views show.
+    /// </remarks>
     public async Task<PlaceDetail?> RenameAsync(long id, string? name, CancellationToken ct = default)
     {
-        var place = await FindDetailAsync(id, ct);
-        if (place is null)
-            return null;
-
         await using var connection = await dataSource.OpenConnectionAsync(ct);
-        // The name that shows now: the owner's, or, with none, OpenStreetMap's.
-        var shown = await connection.ExecuteScalarAsync<string?>(new CommandDefinition(
-            "update place set user_name = @Name where id = @Id returning coalesce(user_name, osm_name)",
-            new { Name = name, place.Id }, cancellationToken: ct));
 
-        return place with { Name = shown };
+        for (var attempt = 0; attempt < RenameAttempts; attempt++)
+        {
+            var named = await connection.ExecuteScalarAsync<long?>(new CommandDefinition(
+                SurvivorAndMembers +
+                """
+                update place set user_name = @Name
+                where id = (select id from survivor) and merged_into_id is null
+                returning id
+                """,
+                new { Id = id, Name = name }, cancellationToken: ct));
+
+            if (named is { } survivor)
+                return await FindDetailAsync(survivor, ct);
+        }
+
+        return null; // no such place; or, which is not to be expected, one that was merged on and on while this tried
     }
 
     private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);

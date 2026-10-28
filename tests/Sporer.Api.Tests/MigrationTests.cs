@@ -165,7 +165,7 @@ public class MigrationTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task Migration_0006_creates_its_tables_and_leaves_locationLog_alone()
+    public async Task Migration_0006_creates_its_tables_and_leaves_locationlog_alone()
     {
         // A database as the owner has it before any migration, with rows in it, as the 0005 test starts.
         var cs = await db.CreateDatabaseAsync(Ct);

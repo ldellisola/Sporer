@@ -151,9 +151,45 @@ public class WritesTests(DatabaseFixture db)
                 using var request = new HttpRequestMessage(method, "/api/there-is-no-such-endpoint") { Content = Raw(body, "application/json") };
                 using var response = await client.SendAsync(request, Ct);
 
-                Assert.True(response.StatusCode != HttpStatusCode.UnsupportedMediaType, $"{method} with {(body == "" ? "an empty body" : body)} gave 415");
+                // Past the middleware, with nothing routed there: the answer is the app's, and not the middleware's.
+                Assert.True(
+                    response.StatusCode == HttpStatusCode.MethodNotAllowed,
+                    $"{method} with {(body == "" ? "an empty body" : body)} gave {(int)response.StatusCode}");
+                Assert.NotEqual("application/problem+json", response.Content.Headers.ContentType?.MediaType);
             }
         }
+    }
+
+    // Where the check starts and stops: /api and what is under it, in any case, but not what only begins with it; Overland and what is
+    // under it, in any case, but not what only begins with it; and no method but POST, PUT and PATCH. A form body is what each of them
+    // is sent with. The middleware's own answer is a 415 with problem details, which is what tells it from anything else's.
+    [Theory]
+    [InlineData("POST", "/api", true)]
+    [InlineData("POST", "/api/places/1/name", true)]
+    [InlineData("PUT", "/API/places/1/name", true)]
+    [InlineData("PATCH", "/Api/places/1/name", true)]
+    [InlineData("POST", "/api/overlandx", true)]
+    [InlineData("POST", "/API/overlandx", true)]
+    [InlineData("POST", "/apix", false)]
+    [InlineData("POST", "/apix/places/1/name", false)]
+    [InlineData("POST", "/api/overland", false)]
+    [InlineData("POST", "/api/overland/", false)]
+    [InlineData("POST", "/API/overland", false)]
+    [InlineData("POST", "/API/overland/", false)]
+    [InlineData("DELETE", "/api/places/1/merged/2", false)]
+    [InlineData("DELETE", "/API/places/1/merged/2", false)]
+    public async Task The_check_covers_writes_under_api_and_nothing_else(string method, string path, bool checkedByTheMiddleware)
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+
+        using var request = new HttpRequestMessage(new HttpMethod(method), path) { Content = Raw("a=b", "application/x-www-form-urlencoded") };
+        using var response = await client.SendAsync(request, Ct);
+
+        var turnedAway = response.StatusCode == HttpStatusCode.UnsupportedMediaType
+                         && response.Content.Headers.ContentType?.MediaType == "application/problem+json";
+        Assert.True(turnedAway == checkedByTheMiddleware, $"{method} {path} gave {(int)response.StatusCode}");
     }
 
     [Fact]

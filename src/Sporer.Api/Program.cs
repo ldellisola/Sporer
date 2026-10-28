@@ -121,7 +121,7 @@ if (string.IsNullOrEmpty(app.Services.GetRequiredService<IOptions<OverlandOption
 // The order is the design. Forwarded headers first, so that everything after sees the client's address and scheme.
 // Compression wraps the rest, so the tag that conditional GET makes is over the uncompressed body, and a 304 needs no encoding.
 // The exception handler wraps conditional GET, which holds a body back and so leaves the response clean for the handler.
-// A write whose body is not JSON is turned away before any endpoint sees it, so it sits inside the exception handler and ahead of them.
+// A write that is not sent as JSON, with a body or without, is turned away before any endpoint sees it, so it sits inside the exception handler and ahead of them.
 app.UseForwardedHeaders();
 // Compression is for what is read. A write's answer, above all Overland's {"result":"ok"}, goes out as it is.
 app.UseWhen(

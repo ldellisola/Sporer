@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
+using Npgsql;
 using Sporer.Api.Features.Timeline;
 using Sporer.Testing;
 using Sporer.Timeline;
@@ -143,6 +144,48 @@ public class RenameMergeTests(DatabaseFixture db)
         }
     }
 
+    [Fact]
+    public async Task Rename_while_a_merge_lands_names_the_survivor()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        _ = api.Services; // starting the host runs the migrations
+        var survivor = await OnTheTimelineAsync(cs, osmName: "Survivor OSM", day: 22);
+        var merging = await OnTheTimelineAsync(cs, userName: "Merging", day: 23);
+        var places = api.Services.GetRequiredService<PlaceStore>();
+
+        // A merge of the place that is not committed yet: the rename does not see it, finds the place to be a survivor, and waits for
+        // the row that it is about to name. When the merge commits, the place is no longer one, and the name must not stay on it.
+        await using var merger = new NpgsqlConnection(cs);
+        await merger.OpenAsync(Ct);
+        await using var merge = await merger.BeginTransactionAsync(Ct);
+        await using (var command = new NpgsqlCommand("update place set merged_into_id = @survivor where id = @merging", merger, merge))
+        {
+            command.Parameters.AddWithValue("survivor", survivor);
+            command.Parameters.AddWithValue("merging", merging);
+            await command.ExecuteNonQueryAsync(Ct);
+        }
+
+        var rename = places.RenameAsync(merging, "New name", Ct);
+        var until = DateTime.UtcNow.AddSeconds(20);
+        while (await Sql.ScalarAsync<long>(cs,
+                   "select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'", ct: Ct) == 0)
+        {
+            Assert.False(rename.IsCompleted, "the rename did not wait for the merge");
+            Assert.True(DateTime.UtcNow < until, "timed out waiting for the rename to wait for the row");
+            await Task.Delay(20, Ct);
+        }
+        await merge.CommitAsync(Ct);
+
+        var named = await rename;
+
+        Assert.NotNull(named);
+        Assert.Equal(survivor, named.Id);
+        Assert.Equal("New name", named.Name);
+        Assert.Equal("New name", await UserNameAsync(cs, survivor));
+        Assert.Equal("Merging", await UserNameAsync(cs, merging)); // the place that was merged is as it was
+    }
+
     // ---- the name's own rules ----------------------------------------------------------------------------------------
 
     [Fact]
@@ -221,6 +264,34 @@ public class RenameMergeTests(DatabaseFixture db)
         }
 
         Assert.Equal("Mine", await UserNameAsync(cs, place));
+    }
+
+    [Fact]
+    public async Task Rename_without_a_name_is_400()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var place = await OnTheTimelineAsync(cs, userName: "Mine");
+
+        // Taking the name back is asked for with "name": null. A body that says nothing of it is no such request.
+        var bodies = new (string What, string Body)[]
+        {
+            ("an empty object", "{}"), ("an empty body", ""), ("another property", """{"nom":"x"}"""), ("an array", "[]"),
+        };
+        foreach (var (what, body) in bodies)
+        {
+            using var content = new StringContent(body, Encoding.UTF8, "application/json");
+            using var response = await client.PutAsync($"/api/places/{place}/name", content, Ct);
+            Assert.True(response.StatusCode == HttpStatusCode.BadRequest, $"{what} gave {(int)response.StatusCode}");
+        }
+
+        Assert.Equal("Mine", await UserNameAsync(cs, place));
+
+        using var reset = await client.PutAsync(
+            $"/api/places/{place}/name", new StringContent("""{"name":null}""", Encoding.UTF8, "application/json"), Ct);
+        Assert.Equal(HttpStatusCode.OK, reset.StatusCode);
+        Assert.Null(await UserNameAsync(cs, place));
     }
 
     [Fact]

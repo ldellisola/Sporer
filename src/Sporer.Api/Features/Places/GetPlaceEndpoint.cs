@@ -1,4 +1,3 @@
-using System.Globalization;
 using FastEndpoints;
 using Sporer.Api.Features.Timeline;
 
@@ -19,11 +18,9 @@ internal sealed class GetPlaceEndpoint(PlaceStore places) : EndpointWithoutReque
 
     public override async Task HandleAsync(CancellationToken ct)
     {
-        var text = Route<string>("id", isRequired: false);
-        // Digits only: no sign, no space, no exponent. An id too big for a long is no id either.
-        if (!long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var id) || id <= 0)
+        if (!PlaceId.TryParse(Route<string>("id", isRequired: false), out var id))
         {
-            ValidationFailures.Add(new("id", "The id must be a positive whole number."));
+            ValidationFailures.Add(new("id", PlaceId.InvalidMessage));
             await Send.ErrorsAsync(400, ct);
             return;
         }
