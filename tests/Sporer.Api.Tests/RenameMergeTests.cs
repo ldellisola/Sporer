@@ -1180,6 +1180,9 @@ public class RenameMergeTests(DatabaseFixture db)
         // would be on no day. It is refused, and nothing is written, not even the name.
         using var refused = await MergeAsync(client, survivor, long32[0], "Too deep");
         Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        // The members are 32 merges deep already (not 31): the message gives the depth at which the refusal fires.
+        var refusal = await refused.Content.ReadAsStringAsync(Ct);
+        Assert.Contains("that are 32 merges deep already: one more would be more than the 32 that can be followed", refusal);
         Assert.Null(await MergedIntoAsync(cs, long32[0]));
         Assert.Null(await UserNameAsync(cs, survivor));
         Assert.Equal(long32[0], await RootOfAsync(client, long32[^1]));

@@ -80,7 +80,7 @@ internal sealed class MergePlaceEndpoint(PlaceStore places, EditRecompute recomp
                 await Send.ErrorsAsync(409, ct);
                 return;
             case MergeOutcome.ChainTooLong:
-                ValidationFailures.Add(new("place", $"The place has places merged into it that are {PlaceStore.MaxMergeLinks - 1} merges deep already: one more would be more than the {PlaceStore.MaxMergeLinks} that can be followed."));
+                ValidationFailures.Add(new("place", $"The place has places merged into it that are {PlaceStore.MaxMergeLinks} merges deep already: one more would be more than the {PlaceStore.MaxMergeLinks} that can be followed."));
                 await Send.ErrorsAsync(409, ct);
                 return;
         }

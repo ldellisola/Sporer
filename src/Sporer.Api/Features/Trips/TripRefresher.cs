@@ -40,9 +40,10 @@ public interface ITripRefresher
 /// are serialized, in whichever order they get the lock, and each works from what the other left.
 /// </para>
 /// <para>
-/// What does not hold the lock is what changes the places and the timeline (a merge, a rebuild of the timeline): a read that
-/// lands in the middle of one is of the one state or of the other, and whatever changed asks for a refresh or a recompute of its own
-/// afterwards, which waits for the lock and works from what is there then.
+/// What does not hold the lock is what changes the places and reprocesses segments (a merge, the segmenter's rebuild of a window):
+/// a read that lands in the middle of one is of the one state or of the other, and whatever changed asks for a refresh or a
+/// recompute of its own afterwards, which waits for the lock and works from what is there then. The restart of a backfill
+/// (<c>ProcessingQueue.RestartBackfillAsync</c>) deletes the segments, nights, homes and trips, and does hold it (P4-R11).
 /// </para>
 /// </remarks>
 public sealed class TripRefresher(
