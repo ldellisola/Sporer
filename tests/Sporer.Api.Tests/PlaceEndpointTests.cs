@@ -154,8 +154,8 @@ public class PlaceEndpointTests(DatabaseFixture db)
                 root.GetProperty("recentVisits").EnumerateArray().Select(v => v.GetProperty("start").GetString()));
             // The places merged directly into the survivor are listed by name (and with them nothing else of theirs: no centre, no
             // address); the one merged into the middle one is not merged into the survivor, so it is not.
-            Assert.Equal(new[] { middle, bare }, root.GetProperty("merged").EnumerateArray().Select(m => m.GetProperty("id").GetInt64()));
-            Assert.Equal(new[] { "Middle", "Bare" }, root.GetProperty("merged").EnumerateArray().Select(m => m.GetProperty("name").GetString()));
+            Assert.Equal(new[] { bare, middle }, root.GetProperty("merged").EnumerateArray().Select(m => m.GetProperty("id").GetInt64()));
+            Assert.Equal(new[] { "Bare", "Middle" }, root.GetProperty("merged").EnumerateArray().Select(m => m.GetProperty("name").GetString()));
             Assert.DoesNotContain("Absorbed", root.GetRawText());
             Assert.DoesNotContain("Bergen", root.GetRawText());
         }

@@ -30,13 +30,13 @@ internal sealed record MergePlaceRequest
 /// that is not a positive whole number, a <c>place</c> that is missing or is not one, and a name that is too long are 400; a place
 /// that is no place of the timeline (see <see cref="PlaceStore.FindDetailAsync"/>) is 404; and two that are the same place once their
 /// merges are followed is 409. Nothing is reprocessed: what is read follows the merges, and the homes and trips are worked out again
-/// before the answer (see <see cref="ITripRefresher.RecomputeAsync"/>), so that they are never the ones of the places as they were.
+/// before the answer (see <see cref="EditRecompute"/>), so that they are never the ones of the places as they were.
 /// </summary>
 /// <remarks>
-/// The merge is committed before the homes and trips are, and each is its own transaction: a failure of the second leaves the places
-/// merged and the homes and trips as they were, until the next refresh or edit works them out again.
+/// The merge is committed before the homes and trips are, and each is its own transaction. A failure of the second does not undo the
+/// first, and the answer is still 200: <see cref="EditRecompute"/> logs it and has the worker work the homes and trips out.
 /// </remarks>
-internal sealed class MergePlaceEndpoint(PlaceStore places, ITripRefresher refresher) : Endpoint<MergePlaceRequest, PlaceResponse>
+internal sealed class MergePlaceEndpoint(PlaceStore places, EditRecompute recompute) : Endpoint<MergePlaceRequest, PlaceResponse>
 {
     public override void Configure()
     {
@@ -80,7 +80,7 @@ internal sealed class MergePlaceEndpoint(PlaceStore places, ITripRefresher refre
                 return;
         }
 
-        await refresher.RecomputeAsync(ct);
+        await recompute.RecomputeAfterEditAsync(ct);
 
         var survivor = await places.FindDetailAsync(merge.SurvivorId, ct);
         if (survivor is null)

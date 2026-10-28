@@ -10,7 +10,8 @@ namespace Sporer.Api.Features.Places;
 /// its stays, and those of the places merged into it, and <paramref name="FirstVisit"/> and <paramref name="LastVisit"/> are when
 /// the earliest and the latest of those began (ISO-8601 UTC, <c>Z</c>). <paramref name="RecentVisits"/> are the latest 50 stays,
 /// newest first. <paramref name="Merged"/> are the places merged directly into it, each by its id and its name (the owner's, else
-/// OpenStreetMap's, else null), so that one of them can be separated from it again.
+/// OpenStreetMap's, else null), so that one of them can be separated from it again: ordered by name, whatever the case, then by id;
+/// one with no name comes last.
 /// </summary>
 public sealed record PlaceResponse(
     long Id,

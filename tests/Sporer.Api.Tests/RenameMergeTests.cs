@@ -1,11 +1,15 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 using Npgsql;
 using Sporer.Api.Features.Timeline;
+using Sporer.Api.Features.Trips;
 using Sporer.Testing;
 using Sporer.Timeline;
 using static Sporer.Api.Tests.TripSeeder;
@@ -542,16 +546,43 @@ public class RenameMergeTests(DatabaseFixture db)
             (await MergeAsync(client, survivor, place, null)).Dispose();
         (await MergeAsync(client, first, viaFirst, null)).Dispose(); // by the id of a place merged on: the survivor's
 
-        // The places merged directly into it, each by its id and its name, which is the owner's, else OpenStreetMap's, else none.
+        // The places merged directly into it, each by its id and its name, which is the owner's, else OpenStreetMap's, else none. They are
+        // listed by that name (see Merged_places_are_listed_by_name_then_id); the one with none comes last.
         using var detail = await GetAsync(client, $"/api/places/{survivor}");
         var merged = detail.RootElement.GetProperty("merged").EnumerateArray().ToList();
         Assert.Equal(["id", "name"], merged[0].EnumerateObject().Select(p => p.Name));
-        Assert.Equal([first, second, unnamed, viaFirst], merged.Select(m => m.GetProperty("id").GetInt64()));
-        Assert.Equal(["First", "Second, by the owner", null, "Merged into the first"], merged.Select(m => m.GetProperty("name").GetString()));
-        Assert.Equal(JsonValueKind.Null, merged[2].GetProperty("name").ValueKind);
+        Assert.Equal([first, viaFirst, second, unnamed], merged.Select(m => m.GetProperty("id").GetInt64()));
+        Assert.Equal(["First", "Merged into the first", "Second, by the owner", null], merged.Select(m => m.GetProperty("name").GetString()));
+        Assert.Equal(JsonValueKind.Null, merged[3].GetProperty("name").ValueKind);
         Assert.Equal(5, detail.RootElement.GetProperty("visits").GetInt32());
         // A place merged by the id of a place that was merged on is merged into the survivor, not into the one in the middle.
         Assert.Equal(survivor, await MergedIntoAsync(cs, viaFirst));
+    }
+
+    [Fact]
+    public async Task Merged_places_are_listed_by_name_then_id()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var survivor = await OnTheTimelineAsync(cs, osmName: "Survivor", day: 22);
+
+        // Merged in an order that is not the order of their names. The name is the one that shows: the owner's, else OpenStreetMap's.
+        async Task<long> MergedAsync(string? userName, string? osmName)
+            => await TimelineSeeder.InsertPlaceAsync(cs, userName: userName, osmName: osmName, mergedInto: survivor);
+        var banana = await MergedAsync(null, "banana");
+        var cherry = await MergedAsync("Cherry", "Aardvark"); // the owner's name wins: it sorts as "Cherry", not as "Aardvark"
+        var none = await MergedAsync(null, null);
+        var dupFirst = await MergedAsync(null, "Dup");
+        var apple = await MergedAsync(null, "Apple");
+        var lowerApple = await MergedAsync(null, "apple"); // the case makes no difference to the order, so the ids decide
+        var dupSecond = await MergedAsync("Dup", null);
+
+        using var detail = await GetAsync(client, $"/api/places/{survivor}");
+
+        var merged = detail.RootElement.GetProperty("merged").EnumerateArray().ToList();
+        Assert.Equal([apple, lowerApple, banana, cherry, dupFirst, dupSecond, none], merged.Select(m => m.GetProperty("id").GetInt64()));
+        Assert.Equal(["Apple", "apple", "banana", "Cherry", "Dup", "Dup", null], merged.Select(m => m.GetProperty("name").GetString()));
     }
 
     [Fact]
@@ -912,6 +943,108 @@ public class RenameMergeTests(DatabaseFixture db)
         using var place = await GetAsync(client2, $"/api/places/{cafe}");
         Assert.Equal(office, place.RootElement.GetProperty("id").GetInt64());
         Assert.Equal(12, place.RootElement.GetProperty("visits").GetInt32()); // two stays a day, over six days
+    }
+
+    // ---- when the homes and trips cannot be worked out ---------------------------------------------------------------
+
+    /// <summary>The Error entries of what is logged, as <see cref="EditRecompute"/> writes them when a recompute fails.</summary>
+    private sealed class ErrorLog : ILoggerProvider
+    {
+        private readonly ConcurrentQueue<(string Category, string Message, Exception? Exception)> _errors = new();
+
+        public IReadOnlyCollection<(string Category, string Message, Exception? Exception)> Errors => _errors;
+
+        public ILogger CreateLogger(string categoryName) => new Capture(categoryName, _errors);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class Capture(string category, ConcurrentQueue<(string, string, Exception?)> errors) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                if (logLevel >= LogLevel.Error)
+                    errors.Enqueue((category, formatter(state, exception), exception));
+            }
+        }
+    }
+
+    private static ApiFactory ApiWithAFailingRefresher(string cs, ErrorLog log, TimeProvider? time = null, FailingRefresher? refresher = null)
+        => new(cs, time: time, configureServices: services =>
+        {
+            services.RemoveAll<ITripRefresher>();
+            services.AddSingleton<ITripRefresher>(refresher ?? new FailingRefresher());
+            services.AddSingleton<ILoggerProvider>(log);
+        });
+
+    [Fact]
+    public async Task Merge_whose_recompute_fails_still_answers_200_and_leaves_the_homes_and_trips_to_the_worker()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var log = new ErrorLog();
+        var refresher = new FailingRefresher();
+        await using var api = ApiWithAFailingRefresher(cs, log, refresher: refresher);
+        var client = api.CreateClient();
+        var (hotel, market) = await HotelAndMarketAsync(cs);
+        await StoreAsync(api, [Stay(D(9, 12), hotel, Spots.Lisbon), Stay(D(9, 13), market, Geo.Offset(Spots.Lisbon, 500, 500))], []);
+        var trips = api.Services.GetRequiredService<TripStore>();
+        Assert.Null(await trips.TakePendingAsync(Ct));
+
+        using var merged = await JsonOf(await MergeAsync(client, hotel, market, "Both"));
+
+        // The edit is done, and says so.
+        Assert.Equal(1, refresher.Recomputes);
+        Assert.Equal(hotel, merged.RootElement.GetProperty("id").GetInt64());
+        Assert.Equal("Both", merged.RootElement.GetProperty("name").GetString());
+        Assert.Equal(hotel, await MergedIntoAsync(cs, market));
+        // The failure is logged as an error, with what failed.
+        var error = Assert.Single(log.Errors);
+        Assert.IsType<InvalidOperationException>(error.Exception);
+        Assert.Equal(typeof(EditRecompute).FullName, error.Category);
+        // And the worker is asked to work the homes and trips out on its next pass: a window of the day of the latest stored night.
+        Assert.Equal((Utc(9, 13), Utc(9, 13)), await trips.TakePendingAsync(Ct));
+    }
+
+    [Fact]
+    public async Task Merge_whose_recompute_fails_with_no_night_stored_asks_the_worker_for_today()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var log = new ErrorLog();
+        var now = new DateTimeOffset(2026, 10, 28, 12, 30, 0, TimeSpan.Zero);
+        await using var api = ApiWithAFailingRefresher(cs, log, new FakeTimeProvider(now));
+        var client = api.CreateClient();
+        var (hotel, market) = await HotelAndMarketAsync(cs);
+
+        using var merged = await MergeAsync(client, hotel, market, null);
+
+        Assert.Equal(HttpStatusCode.OK, merged.StatusCode);
+        Assert.Equal(hotel, await MergedIntoAsync(cs, market));
+        Assert.Single(log.Errors);
+        Assert.Equal((now.UtcDateTime, now.UtcDateTime), await api.Services.GetRequiredService<TripStore>().TakePendingAsync(Ct));
+    }
+
+    [Fact]
+    public async Task Separate_whose_recompute_fails_still_answers_204_and_leaves_the_homes_and_trips_to_the_worker()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var log = new ErrorLog();
+        await using var api = ApiWithAFailingRefresher(cs, log);
+        var client = api.CreateClient();
+        var (hotel, market) = await HotelAndMarketAsync(cs);
+        await StoreAsync(api, [Stay(D(9, 12), hotel, Spots.Lisbon), Stay(D(9, 13), hotel, Spots.Lisbon)], []);
+        await Sql.ExecAsync(cs, "update place set merged_into_id = @hotel where id = @market", new { hotel, market }, Ct);
+
+        using var separated = await SeparateAsync(client, hotel, market);
+
+        Assert.Equal(HttpStatusCode.NoContent, separated.StatusCode);
+        Assert.Null(await MergedIntoAsync(cs, market));
+        Assert.Single(log.Errors);
+        Assert.Equal((Utc(9, 13), Utc(9, 13)), await api.Services.GetRequiredService<TripStore>().TakePendingAsync(Ct));
     }
 
     // ---- candidates --------------------------------------------------------------------------------------------------

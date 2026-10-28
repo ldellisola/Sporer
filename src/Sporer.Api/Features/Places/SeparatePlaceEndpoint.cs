@@ -11,10 +11,10 @@ namespace Sporer.Api.Features.Places;
 /// its own stays and its own name; what was merged into it is with it. The name the survivor was given at the merge stays with the
 /// survivor: nothing keeps the one it had before. Answers 204. An id that is not a positive whole number is a 400, and a place that is
 /// not merged into <c>id</c> (it is unknown, is not merged at all, is merged into another, or into this one through another) a 404.
-/// Nothing is reprocessed, and the homes and trips are worked out again before the answer, as for a merge
-/// (see <see cref="ITripRefresher.RecomputeAsync"/>).
+/// Nothing is reprocessed, and the homes and trips are worked out again before the answer, as for a merge (see
+/// <see cref="EditRecompute"/>, which also says what a failure of that does: the answer is 204 all the same).
 /// </summary>
-internal sealed class SeparatePlaceEndpoint(PlaceStore places, ITripRefresher refresher) : EndpointWithoutRequest
+internal sealed class SeparatePlaceEndpoint(PlaceStore places, EditRecompute recompute) : EndpointWithoutRequest
 {
     public override void Configure()
     {
@@ -44,7 +44,7 @@ internal sealed class SeparatePlaceEndpoint(PlaceStore places, ITripRefresher re
             return;
         }
 
-        await refresher.RecomputeAsync(ct);
+        await recompute.RecomputeAfterEditAsync(ct);
 
         await Send.NoContentAsync(ct);
     }

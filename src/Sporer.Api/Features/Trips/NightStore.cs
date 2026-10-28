@@ -96,6 +96,15 @@ public sealed class NightStore(NpgsqlDataSource dataSource)
             r.Latitude is { } latitude && r.Longitude is { } longitude ? new GeoPoint(latitude, longitude) : null)).ToList();
     }
 
+    /// <summary>The date of the latest night, or null when none is stored.</summary>
+    public async Task<DateOnly?> FindLatestDateAsync(CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var date = await connection.ExecuteScalarAsync<string?>(new CommandDefinition(
+            "select to_char(max(date), 'YYYY-MM-DD') from night", cancellationToken: ct));
+        return date is null ? null : DateOnly.ParseExact(date, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     /// <summary>Npgsql writes only UTC values to timestamptz. Everything in the timeline is UTC; unspecified means UTC too.</summary>
     private static DateTime AsUtc(DateTime value) => value.Kind switch
     {

@@ -25,7 +25,7 @@ public sealed record MergedPlace(long Id, string? Name);
 /// surviving place's, <paramref name="Name"/> the owner's name, else OpenStreetMap's, else null. <paramref name="TotalSeconds"/>
 /// and <paramref name="Visits"/> are over all of its stays, <paramref name="FirstVisit"/> and <paramref name="LastVisit"/> the
 /// starts of the earliest and the latest; <paramref name="RecentVisits"/> are the latest stays, newest first, and
-/// <paramref name="Merged"/> the places merged directly into it, in the order they were made.
+/// <paramref name="Merged"/> the places merged directly into it, by name (ignoring case; those with none last), then by id.
 /// </summary>
 public sealed record PlaceDetail(
     long Id, string? Name, string? Address, string? City, string? Country, double Latitude, double Longitude,
@@ -259,7 +259,8 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     /// it: <c>TotalSeconds</c> is the stays' durations added up, <c>Visits</c> their number, <c>FirstVisit</c> and
     /// <c>LastVisit</c> when the earliest and the latest began (as the date of a visit is that of its start).
     /// <c>RecentVisits</c> are the latest <see cref="RecentVisitCount"/> stays by start, newest first, and <c>Merged</c> the places
-    /// merged directly into the place (all of them, whether or not a segment still shows them). The totals and the lists are
+    /// merged directly into the place (all of them, whether or not a segment still shows them), ordered by the name that shows,
+    /// whatever the case, then by id; a place with no name comes last. The totals and the lists are
     /// read from one snapshot, so that a rewrite of the timeline that lands in the middle cannot leave them disagreeing.
     /// </remarks>
     public async Task<PlaceDetail?> FindDetailAsync(long id, CancellationToken ct = default)
@@ -304,7 +305,12 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
             new { Id = id, Limit = RecentVisitCount }, transaction, cancellationToken: ct));
 
         var merged = await connection.QueryAsync<MergedRow>(new CommandDefinition(
-            "select id as Id, coalesce(user_name, osm_name) as Name from place where merged_into_id = @Id order by id",
+            """
+            select id as Id, coalesce(user_name, osm_name) as Name
+            from place
+            where merged_into_id = @Id
+            order by lower(coalesce(user_name, osm_name)), id
+            """,
             new { place.Id }, transaction, cancellationToken: ct));
 
         await transaction.CommitAsync(ct);

@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
+using Sporer.Api.Features.Timeline;
 using Sporer.Api.Features.Trips;
 using Sporer.Testing;
 using Sporer.Timeline;
@@ -300,6 +302,43 @@ public class TripRefresherTests(DatabaseFixture db)
         using var separated = await client.DeleteAsync($"/api/places/{first}/merged/{second}", Ct);
         Assert.Equal(HttpStatusCode.NoContent, separated.StatusCode);
         Assert.Empty(await HomesAsync(cs));
+    }
+
+    [Fact]
+    public async Task Merge_whose_recompute_fails_is_worked_out_by_the_worker_on_its_next_pass()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var refresher = default(FailingRefresher);
+        await using var api = new ApiFactory(cs, configureServices: services =>
+        {
+            services.RemoveAll<ITripRefresher>();
+            services.AddSingleton<ITripRefresher>(sp => refresher = new FailingRefresher(sp.GetRequiredService<TripRefresher>(), failures: 1));
+        });
+        var client = api.CreateClient();
+        var worker = api.Services.GetRequiredService<TimelineWorker>();
+        // The timeline is as the algorithm has made it: the worker's first pass starts it over (and deletes these segments) unless it is told so.
+        await Sql.ExecAsync(cs, "update processing_state set algorithm_version = @version where id = 1",
+            new { version = AlgorithmVersion.Compute(api.Services.GetRequiredService<DetectionOptions>()) }, Ct);
+        var first = await PlaceAsync(cs, Spots.Home);
+        var second = await PlaceAsync(cs, Geo.Offset(Spots.Home, 0, 300));
+        await StayAsync(cs, Utc(3, 31, 12), Utc(5, 20, 7), first, Spots.Home);
+        await StayAsync(cs, Utc(5, 20, 12), Utc(7, 9, 7), second, Geo.Offset(Spots.Home, 0, 300));
+        await api.Services.GetRequiredService<ITripRefresher>().RefreshAsync(Utc(4, 1), Utc(7, 9, 7), Ct);
+        Assert.Empty(await HomesAsync(cs));
+
+        // The recompute of the merge fails (once). The merge answers, and the homes are as they were.
+        using var merged = await client.PostAsJsonAsync($"/api/places/{first}/merge", new { place = second, name = (string?)null }, Ct);
+        Assert.Equal(HttpStatusCode.OK, merged.StatusCode);
+        Assert.Equal(1, refresher!.Recomputes);
+        Assert.Empty(await HomesAsync(cs));
+        Assert.NotNull(await api.Services.GetRequiredService<TripStore>().TakePendingAsync(Ct));
+
+        // The worker's next pass does it: the two places are one home, and nothing is pending any more.
+        Assert.True(await worker.RunOnceAsync(Ct));
+
+        Assert.Equal([new HomeRow(first, "2026-03-31", null, "detected")], await HomesAsync(cs));
+        Assert.Null(await api.Services.GetRequiredService<TripStore>().TakePendingAsync(Ct));
+        Assert.Null(await Sql.ScalarAsync<string?>(cs, "select last_error from processing_state where id = 1", ct: Ct));
     }
 
     /// <summary>How many sessions of the database wait for an advisory lock.</summary>
