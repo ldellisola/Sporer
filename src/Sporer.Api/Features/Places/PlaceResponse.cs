@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Sporer.Api.Features.Timeline;
 
 namespace Sporer.Api.Features.Places;
 
@@ -22,7 +23,14 @@ public sealed record PlaceResponse(
     int Visits,
     DateTime FirstVisit,
     DateTime LastVisit,
-    IReadOnlyList<PlaceVisitDto> RecentVisits);
+    IReadOnlyList<PlaceVisitDto> RecentVisits)
+{
+    /// <summary>The answer for <paramref name="place"/>, as <c>GET /api/places/{id}</c> and the writes to a place give it.</summary>
+    public static PlaceResponse From(PlaceDetail place) => new(
+        place.Id, place.Name, place.Address, place.City, place.Country, place.Latitude, place.Longitude,
+        place.TotalSeconds, place.Visits, place.FirstVisit, place.LastVisit,
+        [.. place.RecentVisits.Select(v => new PlaceVisitDto(v.StartUtc, v.EndUtc, v.Date, v.TimeZone))]);
+}
 
 /// <summary>
 /// A stay at a place. <paramref name="Date"/> is the local date it started on (<c>yyyy-MM-dd</c>), in <paramref name="TimeZone"/>,

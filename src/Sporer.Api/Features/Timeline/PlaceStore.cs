@@ -249,6 +249,28 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
             [.. visits.Select(v => new PlaceVisit(AsUtc(v.StartUtc), AsUtc(v.EndUtc), v.Date, v.TimeZone))]);
     }
 
+    /// <summary>
+    /// Names the place <paramref name="id"/> stands for (see <see cref="FindDetailAsync"/>) <paramref name="name"/>, which is the owner's
+    /// and is shown in place of OpenStreetMap's wherever the place is; null takes it back, and OpenStreetMap's shows again. The name is
+    /// set on the one place that survives merges, and nothing else is touched: the views read it from there, so there is nothing to
+    /// rebuild, and processing never writes it. Returns the place as it is now, or null, with nothing changed, when there is no such place
+    /// (the same ones <see cref="FindDetailAsync"/> finds none for).
+    /// </summary>
+    public async Task<PlaceDetail?> RenameAsync(long id, string? name, CancellationToken ct = default)
+    {
+        var place = await FindDetailAsync(id, ct);
+        if (place is null)
+            return null;
+
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        // The name that shows now: the owner's, or, with none, OpenStreetMap's.
+        var shown = await connection.ExecuteScalarAsync<string?>(new CommandDefinition(
+            "update place set user_name = @Name where id = @Id returning coalesce(user_name, osm_name)",
+            new { Name = name, place.Id }, cancellationToken: ct));
+
+        return place with { Name = shown };
+    }
+
     private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
     private sealed record PlaceRow(long Id, double Latitude, double Longitude);

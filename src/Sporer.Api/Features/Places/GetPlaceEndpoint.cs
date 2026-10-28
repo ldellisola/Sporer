@@ -35,9 +35,6 @@ internal sealed class GetPlaceEndpoint(PlaceStore places) : EndpointWithoutReque
             return;
         }
 
-        await Send.OkAsync(new PlaceResponse(
-            place.Id, place.Name, place.Address, place.City, place.Country, place.Latitude, place.Longitude,
-            place.TotalSeconds, place.Visits, place.FirstVisit, place.LastVisit,
-            [.. place.RecentVisits.Select(v => new PlaceVisitDto(v.StartUtc, v.EndUtc, v.Date, v.TimeZone))]), ct);
+        await Send.OkAsync(PlaceResponse.From(place), ct);
     }
 }

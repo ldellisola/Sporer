@@ -281,8 +281,9 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
     /// history again, and a set-aside range that stayed would be listed twice, and would hold back the new rebuilds.
     /// What is derived from the segments goes with them: every night, every trip and the detected home periods are deleted,
     /// and the window waiting to be refreshed is cleared, because the backfill refreshes it all again as it goes. The
-    /// home periods the owner set (<c>user</c>) are not derived from anything and stay. Places are kept, and the raw points
-    /// are never touched.
+    /// home periods the owner set (<c>user</c>) are not derived from anything and stay. Places are kept, with the names and
+    /// merges the owner made, and so are the owner's other tables (<c>excluded_point</c>, <c>trip_edit</c>, <c>app_setting</c>), which
+    /// this never reads or writes. The raw points are never touched.
     /// </summary>
     public async Task RestartBackfillAsync(string algorithmVersion, DateTime? fromUtc, DateTime? toUtc, CancellationToken ct = default)
     {
