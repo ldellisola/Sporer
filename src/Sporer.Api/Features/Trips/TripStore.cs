@@ -126,10 +126,11 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     /// <see cref="NightStore"/> does) and every detected home period and trip by <paramref name="homes"/> and
     /// <paramref name="trips"/>, all in one transaction. The homes and trips are worked out from the nights, so a reader must
     /// never find new nights with the old trips, which two transactions would allow for as long as it took the second to run
-    /// or, after a failure between them, for good: a failure leaves all of it as it was. This is the only way the app writes
-    /// them.
+    /// or, after a failure between them, for good: a failure leaves all of it as it was. The app writes them through the overload that
+    /// takes the caller's transaction (<see cref="TripRefresher"/>, whose transaction holds the lock that serializes whatever writes them);
+    /// this one takes no lock, and is internal, for the tests, which pin what the tables hold without a refresh.
     /// </summary>
-    public async Task ReplaceAllAsync(
+    internal async Task ReplaceAllAsync(
         DateOnly from, DateOnly to, IReadOnlyList<(Night Night, string Source)> nights,
         IReadOnlyList<HomePeriod> homes, IReadOnlyList<DetectedTrip> trips, CancellationToken ct = default)
     {

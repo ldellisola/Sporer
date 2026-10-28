@@ -428,29 +428,6 @@ public class MigrationTests(DatabaseFixture db)
 
         Assert.ThrowsAny<Exception>(() => api.Services); // the app does not start
 
-        Assert.Contains(log.Messages, m => m.Contains("retention", StringComparison.OrdinalIgnoreCase));
-    }
-
-    private sealed class CapturingLoggerProvider : ILoggerProvider
-    {
-        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _messages = new();
-
-        public IEnumerable<string> Messages => _messages;
-
-        public ILogger CreateLogger(string categoryName) => new Capture(_messages);
-
-        public void Dispose()
-        {
-        }
-
-        private sealed class Capture(System.Collections.Concurrent.ConcurrentQueue<string> messages) : ILogger
-        {
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-                => messages.Enqueue(formatter(state, exception));
-        }
+        Assert.Contains(log.Entries, e => e.Message.Contains("retention", StringComparison.OrdinalIgnoreCase));
     }
 }

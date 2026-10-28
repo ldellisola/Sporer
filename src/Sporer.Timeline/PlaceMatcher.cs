@@ -1,17 +1,18 @@
 namespace Sporer.Timeline;
 
 /// <summary>
-/// In-memory place matching: the place that stands for the nearest known place within a radius of a position (spec
-/// section 6, 75 m by default), or none. One matcher is built per reprocessing run; <see cref="Add(long, GeoPoint)"/>
-/// registers places created during the run so later stays in the same run match them.
+/// In-memory place matching: the nearest known place within a radius of a position (spec section 6, 75 m by default),
+/// or none. One matcher is built per reprocessing run; <see cref="Add"/> registers places created during the run so
+/// later stays in the same run match them.
 /// <para>
-/// Every place is known, the ones that were merged into another too, each with the survivor it stands for (itself, if it
-/// was not merged): the centre of a merged place still draws the stays that are near it, to the place it was merged into.
-/// The nearest centre wins, as it does when no place is merged.
+/// Matching is deterministic: the nearest place wins and an exact tie in distance goes to the lower id, whatever
+/// order the places were added in. A place exactly <c>radiusMeters</c> away still matches.
 /// </para>
 /// <para>
-/// Matching is deterministic: the nearest place wins and an exact tie in distance goes to the lower id (of the places, not
-/// of their survivors), whatever order the places were added in. A place exactly <c>radiusMeters</c> away still matches.
+/// The matcher knows nothing of merges. It is given every place there is, the ones that were merged into another too, and
+/// answers the id of the place whose centre is nearest, which is that place's own: a stay keeps the place it was given, and
+/// whatever reads it follows the merges to the survivor. (Were the survivor's id stored, separating the two places could not
+/// give the stays back, and a rebuild would move all of the merged place's history to the survivor.)
 /// </para>
 /// <para>
 /// Places are kept in a grid only to narrow the candidates; the haversine distance (<see cref="Geo.DistanceMeters"/>)
@@ -36,12 +37,9 @@ public sealed class PlaceMatcher
     private readonly Dictionary<(long Band, long Cell), List<Entry>> _cells = [];
     private readonly HashSet<long> _ids = [];
 
-    /// <param name="places">
-    /// The places known at the start: each one's id, its centre, and the id of the place it stands for (<c>SurvivorId</c>: its
-    /// own, or that of the place it was merged into, however indirectly). Ids must be unique.
-    /// </param>
+    /// <param name="places">The places known at the start, by id. Ids must be unique.</param>
     /// <param name="radiusMeters">A position matches a place whose centre is at most this far away.</param>
-    public PlaceMatcher(IEnumerable<(long Id, GeoPoint Centre, long SurvivorId)> places, double radiusMeters)
+    public PlaceMatcher(IEnumerable<(long Id, GeoPoint Centre)> places, double radiusMeters)
     {
         ArgumentNullException.ThrowIfNull(places);
         if (!double.IsFinite(radiusMeters) || radiusMeters <= 0)
@@ -49,21 +47,13 @@ public sealed class PlaceMatcher
 
         _radiusMeters = radiusMeters;
         _cellDegrees = double.RadiansToDegrees(radiusMeters / Geo.EarthRadiusMeters);
-        foreach (var (id, centre, survivorId) in places) Add(id, centre, survivorId);
+        foreach (var (id, centre) in places) Add(id, centre);
     }
 
-    /// <summary>Registers a place that stands for itself (one that was just created) so that later calls to <see cref="Match"/> can return it.</summary>
+    /// <summary>Registers a place so that later calls to <see cref="Match"/> can return it.</summary>
     /// <exception cref="ArgumentException">A place with this id was already added.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="centre"/> is not a position on the globe.</exception>
-    public void Add(long id, GeoPoint centre) => Add(id, centre, id);
-
-    /// <summary>
-    /// Registers a place that stands for <paramref name="survivorId"/>, so that later calls to <see cref="Match"/> return that
-    /// id for a position near <paramref name="centre"/>.
-    /// </summary>
-    /// <exception cref="ArgumentException">A place with this id was already added.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="centre"/> is not a position on the globe.</exception>
-    public void Add(long id, GeoPoint centre, long survivorId)
+    public void Add(long id, GeoPoint centre)
     {
         if (!IsPosition(centre))
             throw new ArgumentOutOfRangeException(nameof(centre), centre, "A place centre needs a finite latitude within +-90 and a finite longitude.");
@@ -74,13 +64,12 @@ public sealed class PlaceMatcher
         var band = BandOf(normalised.Latitude);
         var key = (band, LongitudeCell(normalised.Longitude, LongitudeCellCount(band)));
         if (!_cells.TryGetValue(key, out var entries)) _cells[key] = entries = [];
-        entries.Add(new Entry(id, normalised, survivorId));
+        entries.Add(new Entry(id, normalised));
     }
 
     /// <summary>
-    /// The id of the place that stands for the nearest place within the radius of <paramref name="p"/> (the lower place id on an
-    /// exact tie): the nearest place's own id, or that of the place it was merged into. Null when there is none, including when
-    /// <paramref name="p"/> is not a valid position.
+    /// The id of the nearest place within the radius of <paramref name="p"/> (the lower id on an exact tie), or null
+    /// when there is none, including when <paramref name="p"/> is not a valid position.
     /// </summary>
     public long? Match(GeoPoint p)
     {
@@ -101,7 +90,6 @@ public sealed class PlaceMatcher
             : double.RadiansToDegrees(Math.Asin(Math.Min(1, Math.Sin(angle) / Math.Cos(double.DegreesToRadians(query.Latitude)))));
 
         long? bestId = null;
-        long? bestSurvivor = null;
         var bestDistance = double.MaxValue;
 
         for (var band = bandFrom; band <= bandTo; band++)
@@ -123,13 +111,12 @@ public sealed class PlaceMatcher
                     {
                         bestDistance = distance;
                         bestId = entry.Id;
-                        bestSurvivor = entry.SurvivorId;
                     }
                 }
             }
         }
 
-        return bestSurvivor;
+        return bestId;
     }
 
     private static bool IsPosition(GeoPoint p)
@@ -159,5 +146,5 @@ public sealed class PlaceMatcher
 
     private static long Wrap(long cell, long cellCount) => ((cell % cellCount) + cellCount) % cellCount;
 
-    private readonly record struct Entry(long Id, GeoPoint Centre, long SurvivorId);
+    private readonly record struct Entry(long Id, GeoPoint Centre);
 }

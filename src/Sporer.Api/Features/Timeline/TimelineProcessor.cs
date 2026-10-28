@@ -99,7 +99,8 @@ public sealed class TimelineProcessor(
 
     /// <summary>
     /// The place a stay belongs to: the nearest known one within the match radius, else a new one (which later stays
-    /// then match). A stay at a position that is not on the globe (ingest stores whatever a client sends) gets no place:
+    /// then match). A place that was merged into another is known too, and the stay is stored at it, not at the survivor: the views
+    /// follow the merge when they read it, and separating the two places gives the stay back. A stay at a position that is not on the globe (ingest stores whatever a client sends) gets no place:
     /// the matcher rejects such a position, and one bad point must not stop the range from being processed.
     /// </summary>
     private async Task<long?> PlaceIdAsync(PlaceMatcher matcher, GeoPoint centre, CancellationToken ct)

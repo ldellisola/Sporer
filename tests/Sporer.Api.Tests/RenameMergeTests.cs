@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
@@ -858,7 +857,7 @@ public class RenameMergeTests(DatabaseFixture db)
         {
             ("a place that is not merged", c, lone), ("a place that is merged into no place at all", lone, a),
             ("a place merged into another place", b, c), ("a place merged indirectly", c, b),
-            ("the place itself", c, c), ("a merged place from itself", a, a),
+            ("the place itself", c, c),
             ("an unknown place", c, 999_999), ("from an unknown place", 999_999, a),
         };
         foreach (var (what, id, other) in cases)
@@ -889,10 +888,58 @@ public class RenameMergeTests(DatabaseFixture db)
         Assert.Equal(HttpStatusCode.NotFound, twice.StatusCode);
     }
 
+    [Fact]
+    public async Task Separate_takes_the_route_id_for_the_place_it_stands_for()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var a = await OnTheTimelineAsync(cs, osmName: "A", day: 21);
+        var b = await OnTheTimelineAsync(cs, osmName: "B", day: 22);
+        var c = await OnTheTimelineAsync(cs, osmName: "C", day: 23);
+        (await MergeAsync(client, a, b, null)).Dispose(); // B into A
+        (await MergeAsync(client, c, a, null)).Dispose(); // A into C: B -> A -> C
+
+        // B stands for C, as in every other request. A was merged directly into C, so it can be separated from it by B's id.
+        using var separated = await SeparateAsync(client, b, a);
+
+        Assert.Equal(HttpStatusCode.NoContent, separated.StatusCode);
+        Assert.Null(await MergedIntoAsync(cs, a));
+        Assert.Equal(a, await MergedIntoAsync(cs, b));
+        // B now stands for A, which is merged into no place, and C has nothing merged into it: neither can be separated from the other.
+        using (var again = await SeparateAsync(client, b, a))
+            Assert.Equal(HttpStatusCode.NotFound, again.StatusCode);
+        using (var fromC = await SeparateAsync(client, c, b))
+            Assert.Equal(HttpStatusCode.NotFound, fromC.StatusCode);
+        // B itself was merged directly into the place its id stands for.
+        using var itself = await SeparateAsync(client, b, b);
+        Assert.Equal(HttpStatusCode.NoContent, itself.StatusCode);
+        Assert.Null(await MergedIntoAsync(cs, b));
+    }
+
     private static async Task<long[]> RangePlaceIdsAsync(HttpClient client, string from, string to)
     {
         using var range = await GetAsync(client, $"/api/range?from={from}&to={to}");
         return [.. range.RootElement.GetProperty("places").EnumerateArray().Select(p => p.GetProperty("id").GetInt64()).Order()];
+    }
+
+    /// <summary>
+    /// Three days of the commute (1 to 3 October) processed, and the ids of the three places it makes: where the day begins, the cafe on
+    /// the way, and the office. Every day has a stay at each of them, in that order.
+    /// </summary>
+    private static async Task<(long Home, long Cafe, long Office)> CommutingDaysAsync(string cs, ApiFactory api)
+    {
+        await PointSeeder.InsertAsync(cs, Enumerable.Range(0, 3).SelectMany(CommuteDay), Ct);
+        await FinishBackfillAsync(api);
+        var stays = await Sql.QueryAsync<long>(cs, "select place_id from segment where kind = 'stay' order by start_utc limit 3", ct: Ct);
+        Assert.Equal(3, stays.Distinct().Count());
+        return (stays[0], stays[1], stays[2]);
+    }
+
+    private static async Task<int> VisitsAsync(HttpClient client, long place)
+    {
+        using var detail = await GetAsync(client, $"/api/places/{place}");
+        return detail.RootElement.GetProperty("visits").GetInt32();
     }
 
     [Fact]
@@ -905,76 +952,131 @@ public class RenameMergeTests(DatabaseFixture db)
         await using (var first = new ApiFactory(cs, time: clock))
         {
             var client = first.CreateClient(); // starting the host runs the migrations
-            await PointSeeder.InsertAsync(cs, Enumerable.Range(0, 3).SelectMany(CommuteDay), Ct);
-            await FinishBackfillAsync(first);
-            var stays = await Sql.QueryAsync<long>(cs, "select place_id from segment where kind = 'stay' order by start_utc limit 3", ct: Ct);
-            (home, cafe, office) = (stays[0], stays[1], stays[2]);
-            Assert.Equal(3, new[] { home, cafe, office }.Distinct().Count());
+            (home, cafe, office) = await CommutingDaysAsync(cs, first);
+            Assert.Equal([home, cafe, office], await StayPlacesOfDayAsync(client, "2026-10-01"));
 
             // The cafe is merged into the office: the owner is on the office's page and chose its name.
             using var merged = await JsonOf(await MergeAsync(client, office, cafe, "Office and cafe"));
             Assert.Equal(office, merged.RootElement.GetProperty("id").GetInt64());
             Assert.Equal(6, merged.RootElement.GetProperty("visits").GetInt32()); // the office's three, and the cafe's three
+            Assert.Equal([home, office, office], await StayPlacesOfDayAsync(client, "2026-10-01"));
         }
 
         // Another algorithm version: the segments, nights and trips are cleared and the timeline is built again from the points.
-        // The places are not, and a stay at the cafe is now a stay at the office, which is the place the cafe's centre stands for.
+        // The places are not: the merge is kept, no place is made, and the views still show the cafe's stays at the office.
         clock.Advance(TimeSpan.FromHours(1));
         await using var second = new ApiFactory(cs, new Dictionary<string, string?> { ["Detection:StayRadiusMeters"] = "150" }, clock);
         var client2 = second.CreateClient();
         await FinishBackfillAsync(second);
 
-        Assert.Equal(3, await Sql.ScalarAsync<long>(cs, "select count(*) from place", ct: Ct)); // the merge was kept, and no place was made
+        Assert.Equal(3, await Sql.ScalarAsync<long>(cs, "select count(*) from place", ct: Ct));
         Assert.Equal(office, await MergedIntoAsync(cs, cafe));
-        Assert.Equal([home, office, office, home, office, office, home, office, office],
-            await Sql.QueryAsync<long>(cs, "select place_id from segment where kind = 'stay' order by start_utc", ct: Ct));
         Assert.Equal("Office and cafe", await UserNameAsync(cs, office));
+        Assert.Equal([home, office, office], await StayPlacesOfDayAsync(client2, "2026-10-01"));
+        Assert.Equal(new[] { home, office }.Order(), await RangePlaceIdsAsync(client2, "2026-10-01", "2026-10-03"));
+        Assert.Equal(6, await VisitsAsync(client2, cafe)); // asked for the cafe, answered with the office, and the time of both
 
-        // Stays that come later are matched the same way: three days more, none of them at a place of their own.
+        // Stays that come later are matched the same way: three days more, none of them at a place of their own, and all at the office.
         await PointSeeder.InsertAsync(cs, Enumerable.Range(3, 3).SelectMany(CommuteDay), Ct);
         await second.Services.GetRequiredService<ITimelineProcessor>().ReprocessAsync(Day.AddDays(3), Day.AddDays(7), Ct);
 
         Assert.Equal(3, await Sql.ScalarAsync<long>(cs, "select count(*) from place", ct: Ct));
-        Assert.Equal(
-            [home, office, office, home, office, office, home, office, office, home, office, office, home, office, office, home, office, office],
-            await Sql.QueryAsync<long>(cs, "select place_id from segment where kind = 'stay' order by start_utc", ct: Ct));
         // The day of the 5th: the stay at the office that began the evening before, and the three of the day (the cafe's is the office's).
         Assert.Equal([office, home, office, office], await StayPlacesOfDayAsync(client2, "2026-10-05"));
+        Assert.Equal(new[] { home, office }.Order(), await RangePlaceIdsAsync(client2, "2026-10-01", "2026-10-06"));
+        Assert.Equal(12, await VisitsAsync(client2, cafe)); // two stays a day, over six days
         using var place = await GetAsync(client2, $"/api/places/{cafe}");
         Assert.Equal(office, place.RootElement.GetProperty("id").GetInt64());
-        Assert.Equal(12, place.RootElement.GetProperty("visits").GetInt32()); // two stays a day, over six days
+        Assert.Equal([cafe], place.RootElement.GetProperty("merged").EnumerateArray().Select(m => m.GetProperty("id").GetInt64()));
+    }
+
+    [Fact]
+    public async Task Separate_returns_stays_recorded_after_the_merge()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = new FakeTimeProvider(new DateTimeOffset(Day.AddDays(22)));
+        await using var api = new ApiFactory(cs, time: clock);
+        var client = api.CreateClient();
+        var (home, cafe, office) = await CommutingDaysAsync(cs, api);
+        (await JsonOf(await MergeAsync(client, office, cafe, null))).Dispose();
+
+        // Two days more, after the merge. The stays at the cafe are at the cafe's place (the merge is no reason to forget it), and the
+        // views show them at the office, as they do the older ones.
+        await PointSeeder.InsertAsync(cs, Enumerable.Range(3, 2).SelectMany(CommuteDay), Ct);
+        await api.Services.GetRequiredService<ITimelineProcessor>().ReprocessAsync(Day.AddDays(3), Day.AddDays(6), Ct);
+        Assert.Equal(3, await Sql.ScalarAsync<long>(cs, "select count(*) from place", ct: Ct));
+        Assert.Equal([office, home, office, office], await StayPlacesOfDayAsync(client, "2026-10-05"));
+        Assert.Equal(10, await VisitsAsync(client, office));
+
+        using var separated = await SeparateAsync(client, office, cafe);
+
+        // The cafe is a place again, with the stays of the days before the merge and those of the days after it.
+        Assert.Equal(HttpStatusCode.NoContent, separated.StatusCode);
+        Assert.Equal([home, cafe, office], await StayPlacesOfDayAsync(client, "2026-10-01"));
+        Assert.Equal([office, home, cafe, office], await StayPlacesOfDayAsync(client, "2026-10-05"));
+        Assert.Equal(new[] { home, cafe, office }.Order(), await RangePlaceIdsAsync(client, "2026-10-01", "2026-10-06"));
+        Assert.Equal(5, await VisitsAsync(client, cafe));
+        Assert.Equal(5, await VisitsAsync(client, office));
+    }
+
+    [Fact]
+    public async Task Separate_returns_stays_recorded_after_a_rebuild()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var clock = new FakeTimeProvider(new DateTimeOffset(Day.AddDays(22)));
+
+        long home, cafe, office;
+        await using (var first = new ApiFactory(cs, time: clock))
+        {
+            var client1 = first.CreateClient(); // starting the host runs the migrations
+            (home, cafe, office) = await CommutingDaysAsync(cs, first);
+            (await JsonOf(await MergeAsync(client1, office, cafe, null))).Dispose();
+        }
+
+        // The timeline is built again, with the cafe merged into the office. Its stays are still the cafe's.
+        clock.Advance(TimeSpan.FromHours(1));
+        await using var second = new ApiFactory(cs, new Dictionary<string, string?> { ["Detection:StayRadiusMeters"] = "150" }, clock);
+        var client = second.CreateClient();
+        await FinishBackfillAsync(second);
+        Assert.Equal([home, office, office], await StayPlacesOfDayAsync(client, "2026-10-01"));
+
+        using var separated = await SeparateAsync(client, office, cafe);
+
+        Assert.Equal(HttpStatusCode.NoContent, separated.StatusCode);
+        Assert.Equal(3, await Sql.ScalarAsync<long>(cs, "select count(*) from place", ct: Ct));
+        Assert.Equal([home, cafe, office], await StayPlacesOfDayAsync(client, "2026-10-01"));
+        Assert.Equal(new[] { home, cafe, office }.Order(), await RangePlaceIdsAsync(client, "2026-10-01", "2026-10-03"));
+        Assert.Equal(3, await VisitsAsync(client, cafe));
+        Assert.Equal(3, await VisitsAsync(client, office));
+    }
+
+    [Fact]
+    public async Task Matching_knows_every_place_that_has_a_survivor_and_none_that_has_not()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        _ = api.Services; // starting the host runs the migrations
+        var root = await TimelineSeeder.InsertPlaceAsync(cs, osmName: "Root");
+        var merged = await TimelineSeeder.InsertPlaceAsync(cs, osmName: "Merged", mergedInto: root);
+        var viaMerged = await TimelineSeeder.InsertPlaceAsync(cs, osmName: "Merged twice", mergedInto: merged);
+        var alone = await TimelineSeeder.InsertPlaceAsync(cs, osmName: "Alone");
+        // A cycle, which the app does not write but the schema allows: these have no survivor.
+        var loop1 = await TimelineSeeder.InsertPlaceAsync(cs, osmName: "Loop one");
+        var loop2 = await TimelineSeeder.InsertPlaceAsync(cs, osmName: "Loop two", mergedInto: loop1);
+        await Sql.ExecAsync(cs, "update place set merged_into_id = @loop2 where id = @loop1", new { loop1, loop2 }, Ct);
+
+        var matchable = await api.Services.GetRequiredService<PlaceStore>().LoadMatchableAsync(Ct);
+
+        // Each is itself: a stay near the centre of a place that was merged is at that place, and is shown at the survivor when it is read.
+        Assert.Equal([root, merged, viaMerged, alone], matchable.Select(p => p.Id));
     }
 
     // ---- when the homes and trips cannot be worked out ---------------------------------------------------------------
 
-    /// <summary>The Error entries of what is logged, as <see cref="EditRecompute"/> writes them when a recompute fails.</summary>
-    private sealed class ErrorLog : ILoggerProvider
-    {
-        private readonly ConcurrentQueue<(string Category, string Message, Exception? Exception)> _errors = new();
+    /// <summary>What was logged as an error, which is how <see cref="EditRecompute"/> says that a recompute failed.</summary>
+    private static IEnumerable<LogEntry> ErrorsOf(CapturingLoggerProvider log) => log.Entries.Where(e => e.Level >= LogLevel.Error);
 
-        public IReadOnlyCollection<(string Category, string Message, Exception? Exception)> Errors => _errors;
-
-        public ILogger CreateLogger(string categoryName) => new Capture(categoryName, _errors);
-
-        public void Dispose()
-        {
-        }
-
-        private sealed class Capture(string category, ConcurrentQueue<(string, string, Exception?)> errors) : ILogger
-        {
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-            {
-                if (logLevel >= LogLevel.Error)
-                    errors.Enqueue((category, formatter(state, exception), exception));
-            }
-        }
-    }
-
-    private static ApiFactory ApiWithAFailingRefresher(string cs, ErrorLog log, TimeProvider? time = null, FailingRefresher? refresher = null)
+    private static ApiFactory ApiWithAFailingRefresher(string cs, CapturingLoggerProvider log, TimeProvider? time = null, FailingRefresher? refresher = null)
         => new(cs, time: time, configureServices: services =>
         {
             services.RemoveAll<ITripRefresher>();
@@ -986,7 +1088,7 @@ public class RenameMergeTests(DatabaseFixture db)
     public async Task Merge_whose_recompute_fails_still_answers_200_and_leaves_the_homes_and_trips_to_the_worker()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
-        var log = new ErrorLog();
+        var log = new CapturingLoggerProvider();
         var refresher = new FailingRefresher();
         await using var api = ApiWithAFailingRefresher(cs, log, refresher: refresher);
         var client = api.CreateClient();
@@ -1003,7 +1105,7 @@ public class RenameMergeTests(DatabaseFixture db)
         Assert.Equal("Both", merged.RootElement.GetProperty("name").GetString());
         Assert.Equal(hotel, await MergedIntoAsync(cs, market));
         // The failure is logged as an error, with what failed.
-        var error = Assert.Single(log.Errors);
+        var error = Assert.Single(ErrorsOf(log));
         Assert.IsType<InvalidOperationException>(error.Exception);
         Assert.Equal(typeof(EditRecompute).FullName, error.Category);
         // And the worker is asked to work the homes and trips out on its next pass: a window of the day of the latest stored night.
@@ -1014,7 +1116,7 @@ public class RenameMergeTests(DatabaseFixture db)
     public async Task Merge_whose_recompute_fails_with_no_night_stored_asks_the_worker_for_today()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
-        var log = new ErrorLog();
+        var log = new CapturingLoggerProvider();
         var now = new DateTimeOffset(2026, 10, 28, 12, 30, 0, TimeSpan.Zero);
         await using var api = ApiWithAFailingRefresher(cs, log, new FakeTimeProvider(now));
         var client = api.CreateClient();
@@ -1024,7 +1126,7 @@ public class RenameMergeTests(DatabaseFixture db)
 
         Assert.Equal(HttpStatusCode.OK, merged.StatusCode);
         Assert.Equal(hotel, await MergedIntoAsync(cs, market));
-        Assert.Single(log.Errors);
+        Assert.Single(ErrorsOf(log));
         Assert.Equal((now.UtcDateTime, now.UtcDateTime), await api.Services.GetRequiredService<TripStore>().TakePendingAsync(Ct));
     }
 
@@ -1032,7 +1134,7 @@ public class RenameMergeTests(DatabaseFixture db)
     public async Task Separate_whose_recompute_fails_still_answers_204_and_leaves_the_homes_and_trips_to_the_worker()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
-        var log = new ErrorLog();
+        var log = new CapturingLoggerProvider();
         await using var api = ApiWithAFailingRefresher(cs, log);
         var client = api.CreateClient();
         var (hotel, market) = await HotelAndMarketAsync(cs);
@@ -1043,8 +1145,101 @@ public class RenameMergeTests(DatabaseFixture db)
 
         Assert.Equal(HttpStatusCode.NoContent, separated.StatusCode);
         Assert.Null(await MergedIntoAsync(cs, market));
-        Assert.Single(log.Errors);
+        Assert.Single(ErrorsOf(log));
         Assert.Equal((Utc(9, 13), Utc(9, 13)), await api.Services.GetRequiredService<TripStore>().TakePendingAsync(Ct));
+    }
+
+    // ---- how long a chain of merges can be ----------------------------------------------------------------------------
+
+    /// <summary>
+    /// <paramref name="length"/> places, each merged into the one before it, built in the database: the last is <c>length - 1</c> links
+    /// from the first, which survives. Only the last has a stay (the group is on the timeline through it).
+    /// </summary>
+    private static async Task<List<long>> ChainAsync(string cs, int length, int day)
+    {
+        var chain = new List<long>();
+        for (var i = 0; i < length; i++)
+            chain.Add(await TimelineSeeder.InsertPlaceAsync(cs, osmName: $"Link {i}", mergedInto: i == 0 ? null : chain[i - 1]));
+        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, day, 6), Utc(10, day, 7), D(10, day), D(10, day), placeId: chain[^1]);
+        return chain;
+    }
+
+    [Fact]
+    public async Task Merge_that_would_chain_more_than_32_merges_is_409()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var survivor = await OnTheTimelineAsync(cs, osmName: "Survivor", day: 20);
+        var long32 = await ChainAsync(cs, 33, day: 21); // the last is 32 links from the first: as far as the views follow
+        var short31 = await ChainAsync(cs, 32, day: 22); // 31 links
+        using (var read = await GetAsync(client, $"/api/places/{long32[^1]}"))
+            Assert.Equal(long32[0], read.RootElement.GetProperty("id").GetInt64()); // 32 links are read
+
+        // Merging the first of 33 into another place would put the last 33 links from its survivor, which no view could follow: the place
+        // would be on no day. It is refused, and nothing is written, not even the name.
+        using var refused = await MergeAsync(client, survivor, long32[0], "Too deep");
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        Assert.Null(await MergedIntoAsync(cs, long32[0]));
+        Assert.Null(await UserNameAsync(cs, survivor));
+        Assert.Equal(long32[0], await RootOfAsync(client, long32[^1]));
+
+        // One link fewer is the most there is room for: the last of 32 ends 32 links from the survivor.
+        using var accepted = await JsonOf(await MergeAsync(client, survivor, short31[0], null));
+        Assert.Equal(survivor, accepted.RootElement.GetProperty("id").GetInt64());
+        Assert.Equal(survivor, await RootOfAsync(client, short31[^1]));
+        Assert.Equal(2, accepted.RootElement.GetProperty("visits").GetInt32());
+
+        // It is the depth of what is merged that counts: a place with nothing deep in it can be merged into the long chain, which has no room
+        // for anything deep...
+        var shallow = await OnTheTimelineAsync(cs, osmName: "Shallow", day: 23);
+        using var intoTheChain = await JsonOf(await MergeAsync(client, long32[^1], shallow, null));
+        Assert.Equal(long32[0], intoTheChain.RootElement.GetProperty("id").GetInt64());
+        Assert.Equal(long32[0], await RootOfAsync(client, shallow));
+        // ...and the survivor, which has the 32 links of the second chain in it, cannot be merged into the long chain's place: the deepest
+        // place would then be 33 links from its survivor.
+        using var deepest = await MergeAsync(client, long32[0], survivor, null);
+        Assert.Equal(HttpStatusCode.Conflict, deepest.StatusCode);
+        Assert.Null(await MergedIntoAsync(cs, survivor));
+    }
+
+    private static async Task<long> RootOfAsync(HttpClient client, long place)
+    {
+        using var detail = await GetAsync(client, $"/api/places/{place}");
+        return detail.RootElement.GetProperty("id").GetInt64();
+    }
+
+    [Fact]
+    public async Task Many_merges_at_once_end_in_200_or_409_and_no_deadlock()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var places = new List<long>();
+        for (var i = 0; i < 8; i++)
+            places.Add(await OnTheTimelineAsync(cs, osmName: $"Place {i}", day: 1 + i));
+
+        // Pairs of places, in any order, all at once: merges that overlap, that are opposite, that are of places already merged.
+        var random = new Random(20261028);
+        var requests = Enumerable.Range(0, 48).Select(_ =>
+        {
+            var pair = places.OrderBy(_ => random.Next()).Take(2).ToArray();
+            return Task.Run(() => MergeAsync(client, pair[0], pair[1], null));
+        }).ToList();
+        var responses = await Task.WhenAll(requests);
+
+        // Every merge is made or finds the two to be one place already (a deadlock would be a 500).
+        foreach (var response in responses)
+        {
+            Assert.True(response.StatusCode is HttpStatusCode.OK or HttpStatusCode.Conflict, $"a merge gave {(int)response.StatusCode}");
+            response.Dispose();
+        }
+        // No cycle was made: every place still stands for a place (the view of it answers), and the merged ones are all the places there are
+        // but the ones that survive.
+        var roots = new HashSet<long>();
+        foreach (var place in places)
+            roots.Add(await RootOfAsync(client, place));
+        Assert.Equal(places.Count - roots.Count, await Sql.ScalarAsync<long>(cs, "select count(*) from place where merged_into_id is not null", ct: Ct));
     }
 
     // ---- candidates --------------------------------------------------------------------------------------------------

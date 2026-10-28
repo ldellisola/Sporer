@@ -341,6 +341,43 @@ public class TripRefresherTests(DatabaseFixture db)
         Assert.Null(await Sql.ScalarAsync<string?>(cs, "select last_error from processing_state where id = 1", ct: Ct));
     }
 
+    [Fact]
+    public async Task Restarting_the_backfill_waits_for_the_lock_the_derived_tables_are_written_under()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var refresher = api.Services.GetRequiredService<ITripRefresher>();
+        await SeedOneTripAsync(cs);
+        await refresher.RefreshAsync(Utc(4, 1), Utc(7, 15, 12), Ct);
+        Assert.NotEmpty(await TripsAsync(cs));
+
+        // A refresh or a recompute holds the lock. The restart deletes the nights, homes and trips, so it must not do it under the feet
+        // of one that is working from them: it waits.
+        await using var holder = new NpgsqlConnection(cs);
+        await holder.OpenAsync(Ct);
+        await using var holding = await holder.BeginTransactionAsync(Ct);
+        await using (var take = new NpgsqlCommand("select pg_advisory_xact_lock(@key)", holder, holding))
+        {
+            take.Parameters.AddWithValue("key", TripRefresher.AdvisoryLockKey);
+            await take.ExecuteNonQueryAsync(Ct);
+        }
+        var restart = Task.Run(() => api.Services.GetRequiredService<ProcessingQueue>().RestartBackfillAsync("a new version", Utc(1, 1), Utc(7, 15), Ct), Ct);
+        var until = DateTime.UtcNow.AddSeconds(20);
+        while (await AdvisoryWaitersAsync(cs) < 1)
+        {
+            Assert.False(restart.IsCompleted, "the restart did not wait for the lock");
+            Assert.True(DateTime.UtcNow < until, "timed out waiting for the restart to wait for the lock");
+            await Task.Delay(20, Ct);
+        }
+        Assert.NotEmpty(await TripsAsync(cs));
+
+        await holding.CommitAsync(Ct);
+        await restart;
+
+        Assert.Empty(await TripsAsync(cs));
+        Assert.Equal(0, await Sql.ScalarAsync<long>(cs, "select count(*) from night", ct: Ct));
+    }
+
     /// <summary>How many sessions of the database wait for an advisory lock.</summary>
     private static Task<long> AdvisoryWaitersAsync(string cs) => Sql.ScalarAsync<long>(cs,
         """

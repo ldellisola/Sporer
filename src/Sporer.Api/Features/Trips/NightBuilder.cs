@@ -22,10 +22,11 @@ public sealed class NightBuilder(PointStore points, SegmentStore segments, Place
     /// <remarks>
     /// A night is read at <see cref="DetectionOptions.NightHour"/> local time on the day after its date. Where it is located:
     /// the stay that covers that instant (its place and its centre), else the nearest raw point within
-    /// <see cref="DetectionOptions.NightPointWindow"/> (the place that stands for the nearest place within
-    /// <see cref="DetectionOptions.PlaceRadiusMeters"/>, merged places included, as a stay is matched; or none), else the night is
-    /// unknown and has no position. The place of a stay is the one the stay has, merged into another or not: the night keeps it as it
-    /// is, and its reader (<c>TripRefresher</c>) resolves it to the survivor through <see cref="PlaceStore.LoadSurvivorsAsync"/>.
+    /// <see cref="DetectionOptions.NightPointWindow"/> (the nearest place within <see cref="DetectionOptions.PlaceRadiusMeters"/>,
+    /// merged places included, as a stay is matched, which is that place itself and not the one it was merged into; or none), else
+    /// the night is unknown and has no position. The place of a stay is the one the stay has, merged into another or not: the night
+    /// keeps it as it is, and its reader (<c>TripRefresher</c>) resolves it to the survivor through
+    /// <see cref="PlaceStore.LoadSurvivorsAsync"/>.
     /// <para>
     /// A night is left out when it cannot be built: when it has not happened yet (its instant is after the end of the last
     /// stored segment, so nothing is known about it), and when no segment is near enough to say which zone the person was in,

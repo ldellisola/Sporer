@@ -49,6 +49,12 @@ public enum MergeOutcome
 
     /// <summary>Both are the same place once their merges are followed.</summary>
     Conflict,
+
+    /// <summary>
+    /// The merge would chain more merges than the views follow (<see cref="PlaceStore.MaxMergeLinks"/>): some place would reach its
+    /// survivor in more links than that, and so stand for no place at all.
+    /// </summary>
+    ChainTooLong,
 }
 
 /// <summary>What <see cref="PlaceStore.MergeAsync"/> did; <paramref name="SurvivorId"/> is the place that survives, when it merged.</summary>
@@ -158,27 +164,28 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
         """;
 
     /// <summary>
-    /// Every place, the merged ones too, with its centre and the place it stands for (its own id when it was not merged), which is
-    /// what a stay near its centre is matched to (see <see cref="PlaceMatcher"/>). The merges are followed as the views do, up to 32
-    /// links; a place whose merges lead nowhere (a cycle, which the app does not write but the schema allows) stands for none, and is
-    /// left out.
+    /// Every place, the merged ones too, with its centre: what a stay is matched to (see <see cref="PlaceMatcher"/>), which answers the
+    /// id of the place itself, merged or not. A stay near the centre of a place that was merged into another is stored at that place:
+    /// whatever reads it follows the merges to the survivor, and separating the two places gives the stay back. A place whose merges
+    /// lead nowhere (a cycle, which the app does not write but the schema allows, or a chain of more than 32 links) stands for no place,
+    /// as the views see it, and is left out.
     /// </summary>
-    public async Task<List<(long Id, GeoPoint Centre, long SurvivorId)>> LoadMatchableAsync(CancellationToken ct = default)
+    public async Task<List<(long Id, GeoPoint Centre)>> LoadMatchableAsync(CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
-        var rows = await connection.QueryAsync<MatchableRow>(new CommandDefinition(
+        var rows = await connection.QueryAsync<PlaceRow>(new CommandDefinition(
             $"""
             with recursive
             named as (
                 select id as place_id from place
             ),
             {Survivors}
-            select p.id as Id, p.latitude as Latitude, p.longitude as Longitude, survivor.id as SurvivorId
+            select p.id as Id, p.latitude as Latitude, p.longitude as Longitude
             from place p join survivor on survivor.origin = p.id
             order by p.id
             """,
             cancellationToken: ct));
-        return rows.Select(r => (r.Id, new GeoPoint(r.Latitude, r.Longitude), r.SurvivorId)).ToList();
+        return rows.Select(r => (r.Id, new GeoPoint(r.Latitude, r.Longitude))).ToList();
     }
 
     /// <summary>
@@ -393,28 +400,45 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     private const int MergeAttempts = 5;
 
     /// <summary>
+    /// The most links a place can be from its survivor, as the day, range, place and trip views follow them. A merge that would make
+    /// a chain longer is refused (<see cref="MergeOutcome.ChainTooLong"/>): a place beyond it would have no survivor, and be on no day.
+    /// </summary>
+    public const int MaxMergeLinks = 32;
+
+    /// <summary>
     /// Merges the place <paramref name="other"/> stands for into the place <paramref name="id"/> stands for (see
     /// <see cref="FindDetailAsync"/>): the one is set to be merged into the other, and nothing else of it is touched. A stay keeps the
     /// place it was given, and what is read follows the merges. A <paramref name="name"/> that is not null becomes the survivor's
     /// name, as <see cref="RenameAsync"/> takes one, with the merge or not at all (an empty one takes it back); null leaves the
     /// survivor's name as it is. The result is <see cref="MergeOutcome.NotFound"/>, with nothing changed, when either is no place of
-    /// the timeline, and <see cref="MergeOutcome.Conflict"/> when both are the same place.
+    /// the timeline, <see cref="MergeOutcome.Conflict"/> when both are the same place, and <see cref="MergeOutcome.ChainTooLong"/> when
+    /// the merge would put a place more than <see cref="MaxMergeLinks"/> links from its survivor.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Both are places that no merge has moved on, and the merge is written under a lock on both rows, taken in the order of their ids,
     /// and checked again once held (<c>merged_into_id is null</c>, on the rows as they are then). Two merges in opposite directions
     /// (A into B, and B into A) each find two places that are their own survivors, ask for the same two rows in the same order, and
     /// the second waits for the first. When the first commits, the row it merged is no longer one that has not been merged, so
     /// the second does not get its two: it resolves the places again, finds one survivor on both sides and is a conflict. Without
     /// this it would make a cycle, which no view could read.
+    /// </para>
+    /// <para>
+    /// Each attempt is a transaction of its own, so that an attempt that does not get its two rows lets go of the one it got: it
+    /// would otherwise hold it while asking for rows with lower ids than it, and break the order the locks are taken in.
+    /// </para>
+    /// <para>
+    /// The chain is checked under the lock too: the places merged into the absorbed one can only change by a merge that locks it, so
+    /// its deepest member cannot move while this looks. The merge puts every one of them one link further from its survivor.
+    /// </para>
     /// </remarks>
     public async Task<MergeResult> MergeAsync(long id, long other, string? name, CancellationToken ct = default)
     {
-        await using var connection = await dataSource.OpenConnectionAsync(ct);
-        await using var transaction = await connection.BeginTransactionAsync(ct);
-
         for (var attempt = 0; attempt < MergeAttempts; attempt++)
         {
+            await using var connection = await dataSource.OpenConnectionAsync(ct);
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+
             var survivor = await FindOnTimelineAsync(connection, transaction, id, ct);
             var absorbed = await FindOnTimelineAsync(connection, transaction, other, ct);
             if (survivor is null || absorbed is null)
@@ -427,7 +451,23 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
                 "select id from place where id = any(@Ids) and merged_into_id is null order by id for update",
                 new { Ids = new[] { survivor.Id, absorbed.Id } }, transaction, cancellationToken: ct));
             if (locked.Count() != 2)
-                continue;
+                continue; // the transaction is rolled back, and its lock with it
+
+            // The deepest of the places merged into the absorbed one (itself, at 0) is that many links from it, and one more from the survivor.
+            var deepest = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+                """
+                with recursive members as (
+                    select id, 0 as depth from place where id = @Absorbed
+                    union all
+                    select merged.id, members.depth + 1
+                    from members join place merged on merged.merged_into_id = members.id
+                    where members.depth < @Max
+                )
+                select max(depth) from members
+                """,
+                new { Absorbed = absorbed.Id, Max = MaxMergeLinks }, transaction, cancellationToken: ct));
+            if (deepest + 1 > MaxMergeLinks)
+                return new MergeResult(MergeOutcome.ChainTooLong);
 
             await connection.ExecuteAsync(new CommandDefinition(
                 "update place set merged_into_id = @Survivor where id = @Absorbed",
@@ -447,17 +487,19 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     }
 
     /// <summary>
-    /// Separates <paramref name="other"/> from <paramref name="id"/>: when <paramref name="other"/> was merged directly into
-    /// <paramref name="id"/>, it is no longer merged into any place, and what was merged into it stays with it. Returns whether it was
-    /// (false for a place that is not merged into <paramref name="id"/>, whether it exists or not, and for one merged into it only
-    /// through another). The place is the one that was named, not the one it stands for. One statement, so that two separations of
+    /// Separates <paramref name="other"/> from the place <paramref name="id"/> stands for (see <see cref="FindDetailAsync"/>, as merge,
+    /// rename and candidates take an id): when <paramref name="other"/> was merged directly into that place, it is no longer merged into
+    /// any place, and what was merged into it stays with it. Returns whether it was: false for a place that is not merged into it,
+    /// whether it exists or not (one merged into it only through another is not), and for an <paramref name="id"/> that is no place of
+    /// the timeline. <paramref name="other"/> is the place itself, not the one it stands for. One statement, so that two separations of
     /// the same place cannot both succeed.
     /// </summary>
     public async Task<bool> SeparateAsync(long id, long other, CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         var changed = await connection.ExecuteAsync(new CommandDefinition(
-            "update place set merged_into_id = null where id = @Other and merged_into_id = @Id",
+            SurvivorAndMembers +
+            "update place set merged_into_id = null where id = @Other and merged_into_id = (select id from survivor)",
             new { Id = id, Other = other }, cancellationToken: ct));
         return changed > 0;
     }
@@ -535,8 +577,6 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     private sealed record PlaceRow(long Id, double Latitude, double Longitude);
 
     private sealed record SurvivorRow(long Merged, long Survivor);
-
-    private sealed record MatchableRow(long Id, double Latitude, double Longitude, long SurvivorId);
 
     private sealed record MergedRow(long Id, string? Name);
 

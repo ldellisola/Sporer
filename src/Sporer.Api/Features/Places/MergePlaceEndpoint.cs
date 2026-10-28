@@ -29,7 +29,8 @@ internal sealed record MergePlaceRequest
 /// or none, leaves it as it is. Answers 200 with the survivor, as <c>GET /api/places/{id}</c> gives it, merged places and all. An id
 /// that is not a positive whole number, a <c>place</c> that is missing or is not one, and a name that is too long are 400; a place
 /// that is no place of the timeline (see <see cref="PlaceStore.FindDetailAsync"/>) is 404; and two that are the same place once their
-/// merges are followed is 409. Nothing is reprocessed: what is read follows the merges, and the homes and trips are worked out again
+/// merges are followed, or a merge that would chain more than <see cref="PlaceStore.MaxMergeLinks"/> merges (more than the views
+/// follow) is 409. Nothing is reprocessed: what is read follows the merges, and the homes and trips are worked out again
 /// before the answer (see <see cref="EditRecompute"/>), so that they are never the ones of the places as they were.
 /// </summary>
 /// <remarks>
@@ -76,6 +77,10 @@ internal sealed class MergePlaceEndpoint(PlaceStore places, EditRecompute recomp
                 return;
             case MergeOutcome.Conflict:
                 ValidationFailures.Add(new("place", "The place is the one it is to be merged into, or is merged into it already."));
+                await Send.ErrorsAsync(409, ct);
+                return;
+            case MergeOutcome.ChainTooLong:
+                ValidationFailures.Add(new("place", $"The place has places merged into it that are {PlaceStore.MaxMergeLinks - 1} merges deep already: one more would be more than the {PlaceStore.MaxMergeLinks} that can be followed."));
                 await Send.ErrorsAsync(409, ct);
                 return;
         }

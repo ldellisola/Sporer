@@ -20,7 +20,7 @@ internal sealed class FailingRefresher(ITripRefresher? inner = null, int? failur
     public Task RecomputeAsync(CancellationToken ct)
     {
         var call = Interlocked.Increment(ref _calls);
-        if (inner is null || call <= failures)
+        if (inner is null || failures is null || call <= failures)
             throw new InvalidOperationException("the homes and trips cannot be worked out");
         return inner.RecomputeAsync(ct);
     }

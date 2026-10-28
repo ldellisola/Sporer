@@ -1,6 +1,7 @@
 using Dapper;
 using Npgsql;
 using Sporer.Api.Configuration;
+using Sporer.Api.Features.Trips;
 
 namespace Sporer.Api.Features.Timeline;
 
@@ -279,7 +280,8 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
     /// them would anchor the rebuild (see <see cref="SegmentStore.FindAnchorsAsync"/>) and carry its output into the
     /// new one. The set-aside dirty ranges go too, and the chunk attempts return to zero: the backfill goes over all of that
     /// history again, and a set-aside range that stayed would be listed twice, and would hold back the new rebuilds.
-    /// What is derived from the segments goes with them: every night, every trip and the detected home periods are deleted,
+    /// What is derived from the segments goes with them: every night, every trip and the detected home periods are deleted
+    /// (under the advisory lock that whatever writes them holds, see <see cref="TripRefresher.AdvisoryLockKey"/>),
     /// and the window waiting to be refreshed is cleared, because the backfill refreshes it all again as it goes. The
     /// home periods the owner set (<c>user</c>) are not derived from anything and stay. Places are kept, with the names and
     /// merges the owner made, and so are the owner's other tables (<c>excluded_point</c>, <c>trip_edit</c>, <c>app_setting</c>), which
@@ -290,6 +292,10 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
+        // The nights, homes and trips are written only under this lock (see TripRefresher), and this deletes them: a refresh or an
+        // edit's recompute that is working from them finishes first, and one that comes after finds none.
+        await connection.ExecuteAsync(new CommandDefinition(
+            "select pg_advisory_xact_lock(@Key)", new { Key = TripRefresher.AdvisoryLockKey }, transaction, cancellationToken: ct));
         await connection.ExecuteAsync(new CommandDefinition("delete from segment", transaction: transaction, cancellationToken: ct));
         await connection.ExecuteAsync(new CommandDefinition(
             """
