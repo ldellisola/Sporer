@@ -342,9 +342,12 @@ interface CreditFold {
  * five seconds after `arm` is called or at once when the user first touches the map, whichever comes first. The caller arms it when the
  * map first shows its real style, and not for the plain one that stands in for a style that could not be had: the credit is to be open
  * when the map that it credits first appears, whatever was tapped on the blank map before, and MapLibre never opens a folded credit again
- * by itself: so `arm` opens it, if the blank map's drag (MapLibre folds it on one) or ⓘ has folded it. A touch is a tap (`click`) or a move that the user makes (`movestart` with the event of the pointer, wheel or keyboard in
- * it: a pinch, a wheel, a double tap, a drag); the app's own `fitBounds` has none and leaves it open. A tap on the ⓘ button ends it as
- * well (it is not a tap on the map to MapLibre): whoever closes and opens the credit again is not to have it folded under their finger.
+ * by itself: so `arm` opens it, if the blank map's drag (MapLibre folds it on one) or ⓘ has folded it. Open is two things, as MapLibre's
+ * `_updateCompact` makes it at the start: the class that shows the text, and the `open` of the `<details>`, which an ⓘ tap takes away too
+ * (a closed `<details>` draws nothing but its summary, whatever the style sheet says; a drag takes only the class). A touch is a tap
+ * (`click`) or a move that the user makes (`movestart` with the event of the pointer, wheel or keyboard in it: a pinch, a wheel, a double
+ * tap, a drag); the app's own `fitBounds` has none and leaves it open. A tap on the ⓘ button ends it as well (it is not a tap on the map
+ * to MapLibre): whoever closes and opens the credit again is not to have it folded under their finger.
  * It folds as MapLibre's drag does, by taking away the class that has it open, so that its own ⓘ button still shows it again. This is done
  * once for a map: afterwards a credit that was opened with ⓘ is MapLibre's again, and folds on the next drag. `stop` undoes it all (the
  * timer, the listeners), for when the map is removed, and keeps a later `arm` from starting anything.
@@ -371,7 +374,11 @@ function foldCreditEarly(map: MapLibreMap, container: HTMLElement): CreditFold {
     if (state !== "waiting") return; // the first real style only: the one of another colour scheme is no new map
     state = "armed";
     const credit = container.querySelector(CREDIT_SELECTOR);
-    if (credit?.classList.contains(CREDIT_COMPACT_CLASS)) credit.classList.add(CREDIT_OPEN_CLASS); // open when the map first appears, whatever it was before
+    if (credit?.classList.contains(CREDIT_COMPACT_CLASS)) {
+      // Open when the map first appears, whatever it was before: as MapLibre makes it, the class and the `open` of the `<details>` both.
+      credit.classList.add(CREDIT_OPEN_CLASS);
+      credit.setAttribute("open", "");
+    }
     timer = setTimeout(fold, CREDIT_OPEN_MS);
     infoButton = container.querySelector(CREDIT_BUTTON_SELECTOR);
     infoButton?.addEventListener("click", stop);

@@ -61,17 +61,31 @@ const maplibre = vi.hoisted(() => {
       },
     };
 
-    /** MapLibre's credit as it is built for a compact attribution: open (`maplibregl-compact-show`) until it is folded. */
+    /**
+     * MapLibre's credit as it is built for a compact attribution: open (`maplibregl-compact-show`, and the `open` of the `<details>`, which a
+     * closed one draws nothing of but its summary) until it is folded. A drag takes the class only; ⓘ takes both.
+     */
     readonly credit = document.createElement("details");
-    /** Its ⓘ button, which toggles the class that has it open, as MapLibre's own handler does. It is no tap on the map: no `click` of the map comes of it. */
+    /** Its ⓘ button, which toggles the class and `open`, as MapLibre's own handler does. It is no tap on the map: no `click` of the map comes of it. */
     readonly infoButton = document.createElement("summary");
 
     constructor(options: Record<string, unknown>) {
       if (FakeMap.failWith) throw FakeMap.failWith;
       this.options = options;
       this.credit.className = "maplibregl-ctrl maplibregl-ctrl-attrib maplibregl-compact maplibregl-compact-show";
+      this.credit.setAttribute("open", "");
       this.infoButton.className = "maplibregl-ctrl-attrib-button";
-      this.infoButton.addEventListener("click", () => this.credit.classList.toggle("maplibregl-compact-show"));
+      // MapLibre's `_toggleAttribution`: it sets or takes away `open` as the click is about to toggle it (a `<summary>` does that by itself,
+      // after the handlers, and so does jsdom), so that the class and `open` end up together.
+      this.infoButton.addEventListener("click", () => {
+        if (this.credit.classList.contains("maplibregl-compact-show")) {
+          this.credit.setAttribute("open", "");
+          this.credit.classList.remove("maplibregl-compact-show");
+        } else {
+          this.credit.classList.add("maplibregl-compact-show");
+          this.credit.removeAttribute("open");
+        }
+      });
       this.credit.append(this.infoButton);
       this.on("drag", () => this.credit.classList.remove("maplibregl-compact-show")); // MapLibre's own: the one thing that folds a credit
       (options["container"] as HTMLElement | undefined)?.append(this.credit);
@@ -728,6 +742,26 @@ describe("MapView", () => {
       expect(map.credit).toHaveClass(OPEN);
       vi.advanceTimersByTime(1);
       expect(map.credit).not.toHaveClass(OPEN); // ...and it folds five seconds after
+    });
+
+    test("MapView_opens_the_credit_and_its_details_when_the_real_style_first_loads_though_ⓘ_had_closed_it_on_the_blank_map", async () => {
+      const { map, handle } = await blankMap();
+      expect(map.credit).toHaveClass(OPEN);
+      expect(map.credit).toHaveAttribute("open");
+
+      fireEvent.click(map.infoButton); // ⓘ closes it for good: the class is gone, and so is the `open` of the <details>, which draws nothing closed
+      expect(map.credit).not.toHaveClass(OPEN);
+      expect(map.credit).not.toHaveAttribute("open");
+      await realStyleLoads(map, handle);
+
+      expect(map.credit).toHaveClass(OPEN);
+      expect(map.credit).toHaveAttribute("open"); // not an empty box
+      fireEvent.click(map.infoButton); // and ⓘ works as it does on any map: it closes what is open...
+      expect(map.credit).not.toHaveClass(OPEN);
+      expect(map.credit).not.toHaveAttribute("open");
+      fireEvent.click(map.infoButton); // ...and opens what is closed
+      expect(map.credit).toHaveClass(OPEN);
+      expect(map.credit).toHaveAttribute("open");
     });
 
     test("MapView_does_not_open_the_credit_again_for_the_style_of_another_colour_scheme", async () => {

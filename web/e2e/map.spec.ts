@@ -86,6 +86,7 @@ test.describe("the credit when it is open", () => {
       await page.emulateMedia({ colorScheme: scheme });
       await page.goto("/day/2026-10-22");
       await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+      await openCredit(page); // open and steady, whatever the time that this takes (it folds by itself five seconds after the map appears)
       const credit = map(page).locator(".maplibregl-ctrl-attrib");
 
       await expect(credit).toHaveClass(/maplibregl-compact-show/);
@@ -283,6 +284,13 @@ test.describe("a style that cannot be had the first time", () => {
     await page.mouse.move(x + 60, y + 40, { steps: 5 });
     await page.mouse.up();
     await expect(credit).not.toHaveClass(/maplibregl-compact-show/);
+    // ⓘ opens it and closes it again (it takes the `open` of the <details> with it, and a closed <details> draws nothing): Retry opens it for the real map.
+    const info = credit.locator(".maplibregl-ctrl-attrib-button");
+    await info.click();
+    await expect(credit).toHaveClass(/maplibregl-compact-show/);
+    await info.click();
+    await expect(credit).not.toHaveClass(/maplibregl-compact-show/);
+    await expect(credit).not.toHaveAttribute("open");
 
     await note.getByRole("button", { name: "Retry" }).click();
 
