@@ -115,10 +115,31 @@
   cursor: default;
 }
 
-/* The attribution is MapLibre's own, white by default; on a dark map it is dark too, with the same credit and links. */
+/*
+ * The attribution is MapLibre's own: the OpenStreetMap licence asks for it, but it need not stand out. It is open when the map appears and
+ * folds to its ⓘ button by itself (see `foldCreditEarly` in MapView.tsx), so while it is open it is small text on a faint background, and
+ * the ⓘ button, which is 24px, keeps the size to tap. Its place is not changed here (the corners above set it inside the padding; the
+ * margin is MapLibre's). Each selector is the root's class and two of MapLibre's, which outweighs MapLibre's own rules whichever sheet is later.
+ */
+.root :global(.maplibregl-ctrl.maplibregl-ctrl-attrib) {
+  background: rgba(255, 255, 255, 0.5);
+  /* Blurred behind, as the buttons are: labels and routes that lie under the small text are not read through it. */
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  font-size: 10px;
+  line-height: 13px;
+}
+
+/* Open: close to the text, with room at the right for the button (24px wide, at the corner), and no lower than it. */
+.root :global(.maplibregl-ctrl-attrib.maplibregl-compact-show) {
+  min-height: 22px;
+  padding: 1px 26px 1px 6px;
+}
+
+/* On a dark map the attribution is dark too, with the same credit and links. */
 @media (prefers-color-scheme: dark) {
   .root :global(.maplibregl-ctrl.maplibregl-ctrl-attrib) {
-    background: rgba(44, 44, 46, 0.8);
+    background: rgba(44, 44, 46, 0.65); /* fainter than before (0.8), but not so faint that light labels and routes show through the text */
     color: #e5e5ea;
   }
 

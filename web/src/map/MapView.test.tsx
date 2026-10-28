@@ -61,9 +61,34 @@ const maplibre = vi.hoisted(() => {
       },
     };
 
+    /**
+     * MapLibre's credit as it is built for a compact attribution: open (`maplibregl-compact-show`, and the `open` of the `<details>`, which a
+     * closed one draws nothing of but its summary) until it is folded. A drag takes the class only; ⓘ takes both.
+     */
+    readonly credit = document.createElement("details");
+    /** Its ⓘ button, which toggles the class and `open`, as MapLibre's own handler does. It is no tap on the map: no `click` of the map comes of it. */
+    readonly infoButton = document.createElement("summary");
+
     constructor(options: Record<string, unknown>) {
       if (FakeMap.failWith) throw FakeMap.failWith;
       this.options = options;
+      this.credit.className = "maplibregl-ctrl maplibregl-ctrl-attrib maplibregl-compact maplibregl-compact-show";
+      this.credit.setAttribute("open", "");
+      this.infoButton.className = "maplibregl-ctrl-attrib-button";
+      // MapLibre's `_toggleAttribution`: it sets or takes away `open` as the click is about to toggle it (a `<summary>` does that by itself,
+      // after the handlers, and so does jsdom), so that the class and `open` end up together.
+      this.infoButton.addEventListener("click", () => {
+        if (this.credit.classList.contains("maplibregl-compact-show")) {
+          this.credit.setAttribute("open", "");
+          this.credit.classList.remove("maplibregl-compact-show");
+        } else {
+          this.credit.classList.add("maplibregl-compact-show");
+          this.credit.removeAttribute("open");
+        }
+      });
+      this.credit.append(this.infoButton);
+      this.on("drag", () => this.credit.classList.remove("maplibregl-compact-show")); // MapLibre's own: the one thing that folds a credit
+      (options["container"] as HTMLElement | undefined)?.append(this.credit);
       FakeMap.instances.push(this);
     }
 
@@ -170,6 +195,7 @@ const maplibre = vi.hoisted(() => {
     }
     remove(): void {
       this.removed = true;
+      this.credit.remove();
     }
   }
 
@@ -522,6 +548,257 @@ describe("MapView", () => {
     expect(options["dragRotate"]).toBe(false);
     expect(options["maxPitch"]).toBe(0);
     expect(rotationDisabled).toBe(true);
+  });
+
+  // MapLibre opens the compact credit and folds it only when the map is dragged. The app folds it sooner, once for each map: five seconds
+  // after the map has its first style (the credit is made from the style's sources, so that is when it appears) or at once when the user
+  // first zooms or taps the map, and never for the app's own moves. It folds as MapLibre's drag does, by taking away the class that has it
+  // open, so that the ⓘ button of MapLibre still shows it again (the fake map's button toggles the class, as MapLibre's does).
+  describe("the credit", () => {
+    const OPEN = "maplibregl-compact-show";
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** The map, up, with its first style loaded, on fake timers from there on: the five seconds are counted from that. */
+    async function appeared(props: Partial<MapViewProps> = {}) {
+      goodStyle();
+      const rendered = render(view(props));
+      const map = await mapUp();
+      await styleApplied();
+      vi.useFakeTimers();
+      map.emit("style.load");
+      return { map, ...rendered };
+    }
+
+    /** What MapLibre fires when the user moves the map: the event of the pointer, wheel or keyboard is in `originalEvent`. A zoom is a move too. */
+    const userZoom = (map: InstanceType<typeof FakeMap>, type: string): void => {
+      const originalEvent = new Event(type);
+      map.emit("movestart", { originalEvent });
+      map.emit("zoomstart", { originalEvent });
+    };
+
+    test("MapView_opens_the_credit_when_the_map_appears_and_folds_it_five_seconds_after", async () => {
+      goodStyle();
+      render(view());
+      const map = await mapUp();
+      await styleApplied();
+      vi.useFakeTimers();
+      expect(map.credit).toHaveClass(OPEN);
+
+      vi.advanceTimersByTime(60_000); // the style is still on its way: there is no credit to fold yet, and it is not folded before it was seen
+      expect(map.credit).toHaveClass(OPEN);
+      map.emit("style.load");
+      vi.advanceTimersByTime(4_999);
+      expect(map.credit).toHaveClass(OPEN);
+      vi.advanceTimersByTime(1);
+
+      expect(map.credit).not.toHaveClass(OPEN);
+      expect(map.credit).toHaveClass("maplibregl-compact"); // still MapLibre's compact credit, with its ⓘ button to show it again
+      expect(map.credit).toBeInTheDocument(); // folded, not taken away
+    });
+
+    test("MapView_counts_the_five_seconds_from_the_first_style_and_not_from_the_one_of_another_colour_scheme", async () => {
+      const { map } = await appeared();
+
+      vi.advanceTimersByTime(2_000);
+      map.emit("style.load"); // a theme switch
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(2_999);
+      expect(map.credit).toHaveClass(OPEN);
+      vi.advanceTimersByTime(1);
+
+      expect(map.credit).not.toHaveClass(OPEN);
+    });
+
+    test.each(["touchmove", "wheel", "dblclick"])("MapView_folds_the_credit_at_once_when_the_user_zooms_with_a_%s", async (type) => {
+      const { map } = await appeared();
+      vi.advanceTimersByTime(1_000);
+      expect(map.credit).toHaveClass(OPEN);
+
+      userZoom(map, type);
+
+      expect(map.credit).not.toHaveClass(OPEN);
+      expect(vi.getTimerCount()).toBe(0); // the five seconds are no longer waited for
+      // Once for each map: a credit that ⓘ has opened again is not folded again, by the timer that was left or by the next zoom or tap.
+      fireEvent.click(map.infoButton);
+      expect(map.credit).toHaveClass(OPEN);
+      userZoom(map, type);
+      map.pointer("click", 200, 300);
+      vi.advanceTimersByTime(60_000);
+      expect(map.credit).toHaveClass(OPEN);
+    });
+
+    test("MapView_folds_the_credit_at_once_when_the_user_taps_the_map", async () => {
+      const { map } = await appeared();
+      vi.advanceTimersByTime(1_000);
+
+      map.pointer("click", 200, 300);
+
+      expect(map.credit).not.toHaveClass(OPEN);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(map.listenerCount("click")).toBe(1); // the tap that opens a place is still listened for
+      expect(map.listenerCount("movestart")).toBe(0);
+      fireEvent.click(map.infoButton); // ⓘ opens it again
+      expect(map.credit).toHaveClass(OPEN);
+      vi.advanceTimersByTime(60_000);
+      expect(map.credit).toHaveClass(OPEN);
+    });
+
+    test("MapView_does_not_fold_the_credit_for_a_move_of_its_own_but_for_the_five_seconds", async () => {
+      const row: Feature<Point, object> = { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [10.7, 59.9] } };
+      const { map } = await appeared({ fitTo: [row] });
+      expect(map.fitCalls).toHaveLength(1);
+
+      // What `fitBounds` makes MapLibre fire: no event of the user's behind any of them. The Recenter button is the app's own as well.
+      for (const type of ["movestart", "zoomstart", "zoom", "zoomend", "moveend"]) map.emit(type, {});
+      map.emit("movestart", { originalEvent: undefined });
+      fireEvent.click(screen.getByRole("button", { name: "Recenter map" }));
+      for (const type of ["movestart", "zoomstart", "zoom", "zoomend", "moveend"]) map.emit(type, {});
+
+      expect(map.fitCalls).toHaveLength(2);
+      expect(map.credit).toHaveClass(OPEN);
+      vi.advanceTimersByTime(4_999);
+      expect(map.credit).toHaveClass(OPEN);
+      vi.advanceTimersByTime(1);
+      expect(map.credit).not.toHaveClass(OPEN);
+    });
+
+    test("MapView_leaves_a_credit_open_that_the_user_closed_and_opened_again_with_its_button_in_the_first_five_seconds", async () => {
+      const { map } = await appeared();
+      vi.advanceTimersByTime(1_000);
+
+      fireEvent.click(map.infoButton); // closes it: a tap on the button is no tap on the map, and the map's `click` does not hear of it
+      expect(map.credit).not.toHaveClass(OPEN);
+      vi.advanceTimersByTime(500);
+      fireEvent.click(map.infoButton); // opens it again, with four seconds of the five still to go
+      expect(map.credit).toHaveClass(OPEN);
+
+      vi.advanceTimersByTime(4_000); // the five seconds are over
+      expect(map.credit).toHaveClass(OPEN);
+      vi.advanceTimersByTime(60_000);
+      expect(map.credit).toHaveClass(OPEN);
+      expect(map.listenerCount("movestart")).toBe(0);
+      expect(map.listenerCount("click")).toBe(1); // the place tap's
+    });
+
+    /** A map whose style could not be had the first time (the network is down), on the plain style that it fell back to, loaded, on fake timers. */
+    async function blankMap() {
+      let seen = 0;
+      stubFetch(() => (++seen === 1 ? Promise.reject(new TypeError("Failed to fetch")) : Response.json(STYLE))); // down, then not
+      const handle = createRef<MapViewHandle>();
+      const onStyleError = vi.fn<(error: Error) => void>();
+      render(view({ ref: handle, onStyleError }));
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      await styleApplied();
+      const map = theMap();
+      expect(map.styleCalls[0]?.style).toEqual({ version: 8, sources: {}, layers: [] });
+      vi.useFakeTimers();
+      map.emit("style.load"); // the plain style loads: a blank map, with the credit on it
+      return { map, handle };
+    }
+
+    /** Retry brings the real style, and the map that the credit is for appears when it has loaded. */
+    async function realStyleLoads(map: InstanceType<typeof FakeMap>, handle: { current: MapViewHandle | null }): Promise<void> {
+      vi.useRealTimers();
+      act(() => handle.current!.retry());
+      await waitFor(() => expect(map.styleCalls).toHaveLength(2));
+      expect(map.styleCalls[1]?.style).not.toEqual({ version: 8, sources: {}, layers: [] });
+      vi.useFakeTimers();
+      map.emit("style.load");
+    }
+
+    test("MapView_does_not_count_the_credits_five_seconds_for_the_plain_style_of_a_failure_but_for_the_real_style_that_Retry_brings", async () => {
+      const { map, handle } = await blankMap();
+
+      vi.advanceTimersByTime(60_000);
+      map.pointer("click", 200, 300); // a tap on the blank map
+      userZoom(map, "wheel");
+      expect(map.credit).toHaveClass(OPEN);
+      expect(vi.getTimerCount()).toBe(0);
+
+      await realStyleLoads(map, handle);
+
+      expect(map.credit).toHaveClass(OPEN);
+      vi.advanceTimersByTime(4_999);
+      expect(map.credit).toHaveClass(OPEN);
+      vi.advanceTimersByTime(1);
+      expect(map.credit).not.toHaveClass(OPEN);
+    });
+
+    test("MapView_opens_the_credit_when_the_real_style_first_loads_though_a_drag_on_the_blank_map_had_folded_it", async () => {
+      const { map, handle } = await blankMap();
+
+      map.emit("drag", { originalEvent: new Event("mousemove") }); // MapLibre folds the credit on a drag, and never opens it again
+      expect(map.credit).not.toHaveClass(OPEN);
+      vi.advanceTimersByTime(60_000);
+      expect(map.credit).not.toHaveClass(OPEN); // the blank map is left as the user has it
+
+      await realStyleLoads(map, handle);
+
+      expect(map.credit).toHaveClass(OPEN); // the map that it credits appears with it open...
+      vi.advanceTimersByTime(4_999);
+      expect(map.credit).toHaveClass(OPEN);
+      vi.advanceTimersByTime(1);
+      expect(map.credit).not.toHaveClass(OPEN); // ...and it folds five seconds after
+    });
+
+    test("MapView_opens_the_credit_and_its_details_when_the_real_style_first_loads_though_ⓘ_had_closed_it_on_the_blank_map", async () => {
+      const { map, handle } = await blankMap();
+      expect(map.credit).toHaveClass(OPEN);
+      expect(map.credit).toHaveAttribute("open");
+
+      fireEvent.click(map.infoButton); // ⓘ closes it for good: the class is gone, and so is the `open` of the <details>, which draws nothing closed
+      expect(map.credit).not.toHaveClass(OPEN);
+      expect(map.credit).not.toHaveAttribute("open");
+      await realStyleLoads(map, handle);
+
+      expect(map.credit).toHaveClass(OPEN);
+      expect(map.credit).toHaveAttribute("open"); // not an empty box
+      fireEvent.click(map.infoButton); // and ⓘ works as it does on any map: it closes what is open...
+      expect(map.credit).not.toHaveClass(OPEN);
+      expect(map.credit).not.toHaveAttribute("open");
+      fireEvent.click(map.infoButton); // ...and opens what is closed
+      expect(map.credit).toHaveClass(OPEN);
+      expect(map.credit).toHaveAttribute("open");
+    });
+
+    test("MapView_does_not_open_the_credit_again_for_the_style_of_another_colour_scheme", async () => {
+      const { map } = await appeared();
+      vi.advanceTimersByTime(5_000); // folded
+      expect(map.credit).not.toHaveClass(OPEN);
+
+      map.emit("style.load"); // a theme switch
+
+      expect(map.credit).not.toHaveClass(OPEN); // it is the user's from here on, as MapLibre has it
+    });
+
+    test("MapView_clears_the_timer_and_the_listeners_of_the_credit_when_the_map_is_removed", async () => {
+      const { map, unmount } = await appeared();
+      expect(vi.getTimerCount()).toBe(1);
+      expect(map.listenerCount("movestart")).toBe(1);
+      expect(map.listenerCount("click")).toBe(2); // the credit's, and the place tap's
+
+      unmount();
+
+      expect(map.removed).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      for (const type of ["style.load", "movestart", "click"]) expect(map.listenerCount(type), type).toBe(0);
+    });
+
+    test("MapView_folds_no_credit_of_a_map_that_is_removed_before_its_style_came", async () => {
+      goodStyle();
+      const { unmount } = render(view());
+      const map = await mapUp();
+      await styleApplied();
+      vi.useFakeTimers();
+
+      unmount();
+      map.emit("style.load"); // too late: nobody is listening, and no timer is started
+
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 
   test("MapView_loads_the_style_with_English_labels_and_without_diffing", async () => {
@@ -1585,7 +1862,7 @@ describe("MapView", () => {
       map.emit("style.load"); // a style that loads (a theme switch too) is no reason to listen again: the listeners are the map's
       map.drawn.push({ layerId: DOT.layer, properties: DOT.properties, at: [200, 300] });
 
-      expect(map.listenerCount("click")).toBe(1);
+      expect(map.listenerCount("click")).toBe(2); // the place tap's, and the credit's (which folds it on the first tap, see "the credit")
       expect(map.listenerCount("mousemove")).toBe(1);
       expect(map.listenerCount("mouseout")).toBe(1);
       map.pointer("click", 200, 300);

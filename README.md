@@ -137,7 +137,7 @@ tiles itself, so the device that shows Sporer must be able to reach the host of 
 
 The defaults are [OpenFreeMap](https://openfreemap.org/)'s, which need no key. A blank value keeps the default. Any style
 that uses OpenMapTiles-style layers will do (street names are shown in English where the tiles have an English name). The
-OpenStreetMap credit stays on the map whatever the style says. The web app reads the two values from `GET /api/config`.
+OpenStreetMap credit stays on the map whatever the style says: it shows when the map opens, folds to an ⓘ button after five seconds or the first touch, and ⓘ shows it again. The web app reads the two values from `GET /api/config`.
 
 ### Place naming (`Nominatim__*`)
 
