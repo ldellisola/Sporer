@@ -151,6 +151,16 @@ const NO_PADDING: MapPadding = { top: 0, right: 0, bottom: 0, left: 0 };
 const OSM_ATTRIBUTION =
   '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
 
+/**
+ * How long the credit stays open when the map appears before it folds to its ⓘ button: the OSMF attribution guidelines
+ * (https://osmfoundation.org/wiki/Licence/Attribution_Guidelines) allow it after about five seconds, or on interaction with the map.
+ */
+const CREDIT_OPEN_MS = 5000;
+
+/** MapLibre's credit, and the class that has it open (in its compact form, which the map is made with). */
+const CREDIT_SELECTOR = ".maplibregl-ctrl-attrib";
+const CREDIT_OPEN_CLASS = "maplibregl-compact-show";
+
 /** What a map shows when its style cannot be had: nothing, so that the routes lie on the background of the page. */
 const FALLBACK_STYLE: StyleSpecification = { version: 8, sources: {}, layers: [] };
 
@@ -319,6 +329,40 @@ function placeAt(map: MapLibreMap, { x, y }: { x: number; y: number }): number |
   return nearest;
 }
 
+/**
+ * Folds the credit of `map` (whose element is `container`) sooner than MapLibre does, which does it only when the map is dragged: once,
+ * five seconds after the map first has a style (that is when the credit appears: it is built from the style's sources) or at once when the
+ * user first touches the map, whichever comes first. A touch is a tap (`click`) or a move that the user makes (`movestart` with the event
+ * of the pointer, wheel or keyboard in it: a pinch, a wheel, a double tap, a drag); the app's own `fitBounds` has none and leaves it open.
+ * It folds as MapLibre's drag does, by taking away the class that has it open, so that its own ⓘ button still shows it again. This is done
+ * once for a map: afterwards a credit that was opened with ⓘ is MapLibre's again, and folds on the next drag. Returns what undoes it all
+ * (the timer, the listeners), for when the map is removed.
+ */
+function foldCreditEarly(map: MapLibreMap, container: HTMLElement): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stop = (): void => {
+    clearTimeout(timer);
+    map.off("style.load", start);
+    map.off("movestart", onMove);
+    map.off("click", fold);
+  };
+  const fold = (): void => {
+    stop();
+    container.querySelector(CREDIT_SELECTOR)?.classList.remove(CREDIT_OPEN_CLASS);
+  };
+  const onMove = ({ originalEvent }: { originalEvent?: unknown }): void => {
+    if (originalEvent !== undefined) fold();
+  };
+  function start(): void {
+    map.off("style.load", start); // the first style only: the one of another colour scheme is no new map
+    timer = setTimeout(fold, CREDIT_OPEN_MS);
+    map.on("movestart", onMove);
+    map.on("click", fold);
+  }
+  map.on("style.load", start);
+  return stop;
+}
+
 // --- The map ---
 
 /** Where the style comes from: an address, a reason it cannot be had, or nothing yet (the config is still on its way). */
@@ -377,6 +421,7 @@ function MapSurface({
     if (container === null) return;
     let cancelled = false;
     let made: MapLibreMap | null = null;
+    let stopFolding: (() => void) | null = null;
     failureRef.current = null; // an attempt is on its way (the first, or one that was asked for)
     showState(rootRef.current, "loading");
     const unavailable = (error: unknown): void => {
@@ -400,6 +445,7 @@ function MapSurface({
             maxPitch: 0,
           });
           made.touchZoomRotate.disableRotation();
+          stopFolding = foldCreditEarly(made, container);
           // MapLibre drops its style when the context is lost, and sets it again when the context is back; until then it is not to be touched.
           made.on("webglcontextlost", () => {
             readyRef.current = false;
@@ -412,6 +458,8 @@ function MapSurface({
         } catch (error) {
           // Whatever fails in making the map, or in setting it up, is reported and not thrown: nobody is waiting on this promise to catch
           // it. A map that was made and could not be set up is given back (it holds a WebGL context) and not kept.
+          stopFolding?.();
+          stopFolding = null;
           try {
             made?.remove();
           } catch {
@@ -427,6 +475,7 @@ function MapSurface({
     );
     return () => {
       cancelled = true;
+      stopFolding?.(); // the timer and the listeners go with the map
       made?.remove();
       readyRef.current = false;
     };

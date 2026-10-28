@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./base";
+import { openCredit } from "./credit";
 import status from "./fixtures/status.json" with { type: "json" };
 import { mockApi, type Reply } from "./mockApi";
 import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
@@ -268,6 +269,7 @@ test("attribution_stays_visible_and_uncovered_by_the_panel", async ({ page }) =>
   await expect(page.getByRole("region", { name: "Map view" })).toHaveAttribute("data-map-state", "ready");
   const link = page.getByRole("link", { name: "OpenStreetMap" });
   await expect(link).toBeVisible();
+  await openCredit(page); // the credit folds by itself after five seconds, which this test may take: it looks at the link all the while
 
   /** Whether what the user would touch at the middle of the link is the link: nothing lies over it. */
   const uncovered = () =>
@@ -301,6 +303,7 @@ test("sheet_at_full_leaves_the_map_a_padding_that_fits_and_the_credit_clear_of_t
   await page.goto("/day/2026-10-22");
   const map = page.getByRole("region", { name: "Map view" });
   await expect(map).toHaveAttribute("data-map-state", "ready");
+  await openCredit(page); // it folds by itself five seconds after the map appears, and the link is what is measured; the sheet covers the map's middle at full
   const { height } = page.viewportSize()!;
   if (!isWide(page)) {
     await grip(page).click();
