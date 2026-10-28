@@ -160,6 +160,7 @@ const CREDIT_OPEN_MS = 5000;
 /** MapLibre's credit, the class that has it open (in its compact form, which the map is made with), and its ⓘ button. */
 const CREDIT_SELECTOR = ".maplibregl-ctrl-attrib";
 const CREDIT_OPEN_CLASS = "maplibregl-compact-show";
+const CREDIT_COMPACT_CLASS = "maplibregl-compact";
 const CREDIT_BUTTON_SELECTOR = ".maplibregl-ctrl-attrib-button";
 
 /** What a map shows when its style cannot be had: nothing, so that the routes lie on the background of the page. */
@@ -341,7 +342,7 @@ interface CreditFold {
  * five seconds after `arm` is called or at once when the user first touches the map, whichever comes first. The caller arms it when the
  * map first shows its real style, and not for the plain one that stands in for a style that could not be had: the credit is to be open
  * when the map that it credits first appears, whatever was tapped on the blank map before, and MapLibre never opens a folded credit again
- * by itself. A touch is a tap (`click`) or a move that the user makes (`movestart` with the event of the pointer, wheel or keyboard in
+ * by itself: so `arm` opens it, if the blank map's drag (MapLibre folds it on one) or ⓘ has folded it. A touch is a tap (`click`) or a move that the user makes (`movestart` with the event of the pointer, wheel or keyboard in
  * it: a pinch, a wheel, a double tap, a drag); the app's own `fitBounds` has none and leaves it open. A tap on the ⓘ button ends it as
  * well (it is not a tap on the map to MapLibre): whoever closes and opens the credit again is not to have it folded under their finger.
  * It folds as MapLibre's drag does, by taking away the class that has it open, so that its own ⓘ button still shows it again. This is done
@@ -369,6 +370,8 @@ function foldCreditEarly(map: MapLibreMap, container: HTMLElement): CreditFold {
   const arm = (): void => {
     if (state !== "waiting") return; // the first real style only: the one of another colour scheme is no new map
     state = "armed";
+    const credit = container.querySelector(CREDIT_SELECTOR);
+    if (credit?.classList.contains(CREDIT_COMPACT_CLASS)) credit.classList.add(CREDIT_OPEN_CLASS); // open when the map first appears, whatever it was before
     timer = setTimeout(fold, CREDIT_OPEN_MS);
     infoButton = container.querySelector(CREDIT_BUTTON_SELECTOR);
     infoButton?.addEventListener("click", stop);

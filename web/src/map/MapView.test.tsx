@@ -73,6 +73,7 @@ const maplibre = vi.hoisted(() => {
       this.infoButton.className = "maplibregl-ctrl-attrib-button";
       this.infoButton.addEventListener("click", () => this.credit.classList.toggle("maplibregl-compact-show"));
       this.credit.append(this.infoButton);
+      this.on("drag", () => this.credit.classList.remove("maplibregl-compact-show")); // MapLibre's own: the one thing that folds a credit
       (options["container"] as HTMLElement | undefined)?.append(this.credit);
       FakeMap.instances.push(this);
     }
@@ -668,9 +669,10 @@ describe("MapView", () => {
       expect(map.listenerCount("click")).toBe(1); // the place tap's
     });
 
-    test("MapView_does_not_count_the_credits_five_seconds_for_the_plain_style_of_a_failure_but_for_the_real_style_that_Retry_brings", async () => {
+    /** A map whose style could not be had the first time (the network is down), on the plain style that it fell back to, loaded, on fake timers. */
+    async function blankMap() {
       let seen = 0;
-      stubFetch(() => (++seen === 1 ? Promise.reject(new TypeError("Failed to fetch")) : Response.json(STYLE))); // the network is down, then not
+      stubFetch(() => (++seen === 1 ? Promise.reject(new TypeError("Failed to fetch")) : Response.json(STYLE))); // down, then not
       const handle = createRef<MapViewHandle>();
       const onStyleError = vi.fn<(error: Error) => void>();
       render(view({ ref: handle, onStyleError }));
@@ -679,26 +681,63 @@ describe("MapView", () => {
       const map = theMap();
       expect(map.styleCalls[0]?.style).toEqual({ version: 8, sources: {}, layers: [] });
       vi.useFakeTimers();
-
       map.emit("style.load"); // the plain style loads: a blank map, with the credit on it
+      return { map, handle };
+    }
+
+    /** Retry brings the real style, and the map that the credit is for appears when it has loaded. */
+    async function realStyleLoads(map: InstanceType<typeof FakeMap>, handle: { current: MapViewHandle | null }): Promise<void> {
+      vi.useRealTimers();
+      act(() => handle.current!.retry());
+      await waitFor(() => expect(map.styleCalls).toHaveLength(2));
+      expect(map.styleCalls[1]?.style).not.toEqual({ version: 8, sources: {}, layers: [] });
+      vi.useFakeTimers();
+      map.emit("style.load");
+    }
+
+    test("MapView_does_not_count_the_credits_five_seconds_for_the_plain_style_of_a_failure_but_for_the_real_style_that_Retry_brings", async () => {
+      const { map, handle } = await blankMap();
+
       vi.advanceTimersByTime(60_000);
       map.pointer("click", 200, 300); // a tap on the blank map
       userZoom(map, "wheel");
       expect(map.credit).toHaveClass(OPEN);
       expect(vi.getTimerCount()).toBe(0);
 
-      vi.useRealTimers();
-      act(() => handle.current!.retry());
-      await waitFor(() => expect(map.styleCalls).toHaveLength(2));
-      expect(map.styleCalls[1]?.style).not.toEqual({ version: 8, sources: {}, layers: [] }); // the real style
-      vi.useFakeTimers();
-      map.emit("style.load"); // the map that the credit is for appears
+      await realStyleLoads(map, handle);
 
       expect(map.credit).toHaveClass(OPEN);
       vi.advanceTimersByTime(4_999);
       expect(map.credit).toHaveClass(OPEN);
       vi.advanceTimersByTime(1);
       expect(map.credit).not.toHaveClass(OPEN);
+    });
+
+    test("MapView_opens_the_credit_when_the_real_style_first_loads_though_a_drag_on_the_blank_map_had_folded_it", async () => {
+      const { map, handle } = await blankMap();
+
+      map.emit("drag", { originalEvent: new Event("mousemove") }); // MapLibre folds the credit on a drag, and never opens it again
+      expect(map.credit).not.toHaveClass(OPEN);
+      vi.advanceTimersByTime(60_000);
+      expect(map.credit).not.toHaveClass(OPEN); // the blank map is left as the user has it
+
+      await realStyleLoads(map, handle);
+
+      expect(map.credit).toHaveClass(OPEN); // the map that it credits appears with it open...
+      vi.advanceTimersByTime(4_999);
+      expect(map.credit).toHaveClass(OPEN);
+      vi.advanceTimersByTime(1);
+      expect(map.credit).not.toHaveClass(OPEN); // ...and it folds five seconds after
+    });
+
+    test("MapView_does_not_open_the_credit_again_for_the_style_of_another_colour_scheme", async () => {
+      const { map } = await appeared();
+      vi.advanceTimersByTime(5_000); // folded
+      expect(map.credit).not.toHaveClass(OPEN);
+
+      map.emit("style.load"); // a theme switch
+
+      expect(map.credit).not.toHaveClass(OPEN); // it is the user's from here on, as MapLibre has it
     });
 
     test("MapView_clears_the_timer_and_the_listeners_of_the_credit_when_the_map_is_removed", async () => {

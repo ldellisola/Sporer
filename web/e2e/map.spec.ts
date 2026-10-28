@@ -270,13 +270,19 @@ test.describe("a style that cannot be had the first time", () => {
     await expect(map(page)).toHaveAttribute("data-map-state", "unavailable");
     expect(asked).toBe(1); // it does not try again by itself
 
-    // The credit is on the blank map too. A tap on it must not fold the credit for the map that Retry brings: it is open when that appears.
+    // The credit is on the blank map too. A tap on it must not start the fold of the credit of the map that Retry brings: it is open when that appears.
     const credit = map(page).locator(".maplibregl-ctrl-attrib");
     await expect(credit).toHaveClass(/maplibregl-compact-show/);
     const [x, y] = await centre(page);
     await page.mouse.click(x, y);
     await page.waitForTimeout(500); // a fold, if there were one, is made by the tap at once
     await expect(credit).toHaveClass(/maplibregl-compact-show/);
+    // A drag of the blank map folds it, as it does on any map, and MapLibre never opens it again: it is opened for the map that Retry brings.
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 60, y + 40, { steps: 5 });
+    await page.mouse.up();
+    await expect(credit).not.toHaveClass(/maplibregl-compact-show/);
 
     await note.getByRole("button", { name: "Retry" }).click();
 
