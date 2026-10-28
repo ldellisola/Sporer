@@ -103,7 +103,7 @@ public class MigrationTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task Migration_0005_creates_the_trip_tables_and_leaves_locationLog_alone()
+    public async Task Migration_0005_creates_the_trip_tables_and_leaves_locationlog_alone()
     {
         // A database as the owner has it before any migration, with rows in it: the snapshot is taken from that table, as
         // Migrates_existing_database_keeping_rows does, and not from one that 0005 has already been through once.

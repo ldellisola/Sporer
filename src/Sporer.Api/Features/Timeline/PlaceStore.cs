@@ -263,10 +263,16 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     /// (the same ones <see cref="FindDetailAsync"/> finds none for).
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// It writes first and reads after: the name is set in one statement and the detail is read back in another, so a rebuild that removes
+    /// the group's segments between the two leaves the name written and gives null (a 404) for a place that was found a moment before.
+    /// </para>
+    /// <para>
     /// The survivor is found and named in one statement, so that a merge cannot land between the two. One that is not yet committed when
     /// the statement finds its survivor but is when it gets to name it has made the place no survivor: the update only names a place
     /// that is not merged into another (checked on the row as it is then), so it names none, and the next attempt finds the place
     /// the merge led to. The name is read back with the detail, so that it is what the views show.
+    /// </para>
     /// </remarks>
     public async Task<PlaceDetail?> RenameAsync(long id, string? name, CancellationToken ct = default)
     {

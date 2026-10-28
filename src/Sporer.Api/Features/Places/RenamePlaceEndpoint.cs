@@ -9,18 +9,21 @@ namespace Sporer.Api.Features.Places;
 /// back to the automatic one. It is read from the JSON body alone: a query that has a <c>name</c> is no part of the request.
 /// <see cref="HasName"/> says whether the body had the property at all: asking for the automatic name is <c>"name": null</c>, and a
 /// body that says nothing of it (<c>{}</c>, or none) must not be taken for that. (The JSON deserializer calls the setter only for a
-/// property that is there, null or not, which is what tells the two apart. Neither <c>required</c> nor <c>JsonRequired</c> made
-/// FastEndpoints refuse <c>{}</c>, and a body with nothing in it binds an instance with no setter called at all.)
+/// property that is there, null or not, which is what tells the two apart. The accessors are <c>set</c>, not <c>init</c>: source
+/// generation sets every init-only property at construction, which would make every body one that had a name. Neither
+/// <c>required</c> nor <c>JsonRequired</c> made FastEndpoints refuse <c>{}</c>, because the property carries <c>[DontBind]</c>
+/// (FastEndpoints 8.3.0) and the attributes are ignored on such a property; and a body with nothing in it binds an instance with
+/// no setter called at all.)
 /// </summary>
 internal sealed record RenamePlaceRequest
 {
-    private readonly string? _name;
+    private string? _name;
 
     [DontBind(Source.QueryParam)]
     public string? Name
     {
         get => _name;
-        init
+        set
         {
             _name = value;
             HasName = true;
@@ -28,7 +31,7 @@ internal sealed record RenamePlaceRequest
     }
 
     [JsonIgnore, DontBind(Source.QueryParam | Source.RouteParam | Source.FormField)]
-    public bool HasName { get; private init; }
+    public bool HasName { get; private set; }
 }
 
 /// <summary>
