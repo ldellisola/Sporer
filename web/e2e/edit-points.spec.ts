@@ -200,6 +200,8 @@ function boxAround(places: { x: number; y: number }[], margin: number): { from: 
 
 /** Opens the day, brings it up, and turns edit mode on: returns where things are once the points are drawn. */
 async function intoEditMode(page: Page, overrides: Overrides): Promise<{ project: Projector; writes: Awaited<ReturnType<typeof mockApi>>["writes"]; requests: string[] }> {
+  const logs: string[] = [];
+  if (process.env["PW_DIAG"]) page.on("console", (m) => logs.push(`${m.type()}: ${m.text()}`));
   await fixToday(page);
   const api = await mockApi(page, overrides);
   await page.goto("/day/2026-10-22");
@@ -223,10 +225,13 @@ async function intoEditMode(page: Page, overrides: Overrides): Promise<{ project
       for (const [dx, dy] of [[0, 0], [-2, 0], [2, 0], [0, -2], [0, 2], [-5, -5], [5, 5]]) around.push(`${dx},${dy}=${(await pixelAt(page, x + dx!, y + dy!)).join("/")}`);
       console.log(`DIAG ${test.info().project.name} wait=${wait} at=${x.toFixed(1)},${y.toFixed(1)} ${JSON.stringify(info)} ${around.join(" ")}`);
     }
+    console.log(`DIAGBAR ${test.info().project.name} ${JSON.stringify(await bar(page).innerText())}`);
+    console.log(`DIAGREQ ${test.info().project.name} ${JSON.stringify(api.requests)}`);
+    console.log(`DIAGLOG ${test.info().project.name} ${JSON.stringify(logs)}`);
+    const layers = await page.evaluate(() => [...document.querySelectorAll("canvas")].map((c) => `${c.className} ${c.width}x${c.height}`));
+    console.log(`DIAGCANVAS ${test.info().project.name} ${JSON.stringify(layers)}`);
     const crop = await page.screenshot({ clip: { x: Math.max(0, x - 60), y: Math.max(0, y - 60), width: 120, height: 120 } });
     console.log(`DIAGPNG ${test.info().project.name} ${crop.toString("base64")}`);
-    const full = await page.screenshot({ type: "jpeg", quality: 35, scale: "css" });
-    console.log(`DIAGFULL ${test.info().project.name} ${full.toString("base64")}`);
   }
   await expectDot(page, project, WALK(3), INK); // the points are drawn, and the camera is at rest
   return { project, writes: api.writes, requests: api.requests };
