@@ -1,9 +1,10 @@
 import { keepPreviousData, QueryClient, queryOptions, skipToken, useQuery } from "@tanstack/react-query";
-import { MAX_RANGE_DAYS, step, periodDays, periodRange, today } from "../time/dates";
+import { addDays, MAX_RANGE_DAYS, step, periodDays, periodRange, today } from "../time/dates";
 import { isPeriodRoute, type Route } from "../app/router";
 import { ApiError, getJson, isNotFound } from "./client";
 import type {
   ConfigResponse,
+  DayPointsResponse,
   DayResponse,
   HeatResponse,
   PlaceCandidate,
@@ -20,17 +21,51 @@ const POLL_MS = 30_000;
 const TODAY_POLL_MS = 60_000;
 
 /**
+ * After an edit of the points of a day its rebuild is queued due at once, and the worker has it done within seconds: the day that is pending
+ * then is asked for every 3 seconds, for up to two minutes after the edit, and after that as every pending day is (`POLL_MS`).
+ */
+const EDIT_POLL_MS = 3_000;
+const EDIT_POLL_WINDOW_MS = 120_000;
+
+/** When each day was last edited, by date, in the page's own time (`Date.now()`): what `pendingInterval` reads. It is the page's, as the cache is. */
+const editedAt = new Map<string, number>();
+
+/**
+ * Notes that the points of `date` were edited just now (a removal or its Undo), so that the day, which is pending until the worker has
+ * rebuilt it, is asked for every 3 seconds (`pendingInterval`). The days either side are noted too: a day spans into the zones of its
+ * neighbours, so a point of it may be one of theirs, and the owner may step there at once.
+ */
+export function noteDayEdited(date: string): void {
+  const now = Date.now();
+  for (const edited of [addDays(date, -1), date, addDays(date, 1)]) editedAt.set(edited, now);
+}
+
+/** Forgets every day that was noted as edited; for the tests, which share the module. */
+export function forgetEditedDays(): void {
+  editedAt.clear();
+}
+
+/**
+ * How long until a pending day is asked for again: every 3 seconds while it is within two minutes of an edit of its points (`edited` is the
+ * time of the edit, in `Date.now()` terms, or undefined for a day that was not edited), else every 30 seconds. The one place that says it.
+ */
+export function pendingInterval(edited: number | undefined, now: number = Date.now()): number {
+  return edited !== undefined && now - edited < EDIT_POLL_WINDOW_MS ? EDIT_POLL_MS : POLL_MS;
+}
+
+/**
  * How long until a day or a period (`from` to `to`, both dates included) is asked for again, or false for never. A period that is still
- * being processed ("pending") may change as its points are processed, so it is asked for every 30 seconds until it is "done". Today may
- * change whatever its state says, for points keep arriving while the app is open (spec 4.2: today refreshes as new data is processed),
- * so a period that holds it (`now`, a date of the browser's own zone) is asked for every minute, and every 30 seconds when it is pending
- * as well, as soon as it is processed. A period that is over is asked for no more once it is done. Nothing is asked for while there is no
- * period. `state` is that of what has been answered so far, if anything: today that could not be loaded is tried again too, which is how
+ * being processed ("pending") may change as its points are processed, so it is asked for every 30 seconds until it is "done"; a day that
+ * was just edited, every 3 seconds for the first two minutes (`pendingInterval`: a period of one date is a day, and the edits are noted by date).
+ * Today may change whatever its state says, for points keep arriving while the app is open (spec 4.2: today refreshes as new data is
+ * processed), so a period that holds it (`now`, a date of the browser's own zone) is asked for every minute, and every 30 seconds when it is
+ * pending as well, as soon as it is processed. A period that is over is asked for no more once it is done. Nothing is asked for while there
+ * is no period. `state` is that of what has been answered so far, if anything: today that could not be loaded is tried again too, which is how
  * an app opened before the VPN was up finds its day.
  */
 export function refreshInterval(from: string | null, to: string | null, state: string | undefined, now: string = today()): number | false {
   if (from === null || to === null) return false;
-  if (state === "pending") return POLL_MS;
+  if (state === "pending") return pendingInterval(from === to ? editedAt.get(from) : undefined); // one date: a day, which may have been edited
   return from <= now && now <= to ? TODAY_POLL_MS : false;
 }
 
@@ -47,6 +82,21 @@ export function dayQueryOptions(date: string | null, keepPrevious = true) {
     staleTime: STALE_MS,
     placeholderData: keepPrevious ? keepPreviousData : undefined,
     refetchInterval: (query) => refreshInterval(date, date, query.state.data?.state),
+  });
+}
+
+/**
+ * The raw points of a day, for edit mode: `[time, lon, lat, device]` in time order, those removed earlier left out. Nothing is asked for while
+ * `date` is null. No previous day's points stay for the day that loads: the dots of one day under another would be wrong, not just old.
+ * They are heavy (some 40,000 on a dense day), so they are asked for only when the caller says so (`useDayPoints`): they are no part of any
+ * view but edit mode, and after a removal or its Undo they are asked for again like every query that is on screen.
+ */
+export function dayPointsQueryOptions(date: string | null) {
+  return queryOptions({
+    queryKey: ["points", date] as const,
+    queryFn: date === null ? skipToken : ({ signal }) => getJson<DayPointsResponse>(`/api/day/${date}/points`, signal),
+    staleTime: STALE_MS,
+    gcTime: 0, // not kept once nothing shows them: tens of thousands of points, and the points of a day that was edited since would be old
   });
 }
 
@@ -140,6 +190,9 @@ export function configQueryOptions() {
 }
 
 export const useDay = (date: string | null, keepPrevious = true) => useQuery(dayQueryOptions(date, keepPrevious));
+
+/** The points of a day for edit mode; nothing is asked for while `enabled` is false, or while there is no date. */
+export const useDayPoints = (date: string | null, enabled = true) => useQuery({ ...dayPointsQueryOptions(date), enabled });
 
 export const useRange = (from: string | null, to: string | null, keepPrevious = true) => useQuery(rangeQueryOptions(from, to, keepPrevious));
 

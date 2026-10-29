@@ -8,6 +8,7 @@ import type {
   PlaceRef,
   RangePlace,
   RangeResponse,
+  RawPoint,
   StaySegment,
   TripCity,
   TripListItem,
@@ -17,6 +18,8 @@ import type {
 } from "../api/types";
 import {
   dayGeoJson,
+  editPointsGeoJson,
+  EDIT_SELECTED_COLOR,
   heatGeoJson,
   layerSpecs,
   LAYER_IDS,
@@ -651,6 +654,44 @@ describe("tripGeoJson", () => {
   });
 });
 
+describe("editPointsGeoJson", () => {
+  const POINTS: RawPoint[] = [
+    [1_761_120_000_123_456, 10.001, 59.001, 0],
+    [1_761_120_030_000_000, 10.002, 59.002, 1],
+    [1_761_120_060_000_007, 10.003, 59.003, 0],
+  ];
+
+  test("editPointsGeoJson_is_a_point_for_each_raw_point_longitude_first_with_its_index_as_its_numeric_id", () => {
+    const collection = editPointsGeoJson(POINTS);
+
+    expect(collection.type).toBe("FeatureCollection");
+    expect(collection.features.map((feature) => feature.id)).toEqual([0, 1, 2]); // the index into the points: what a selection is made of, and the map's feature state is keyed by
+    expect(collection.features.map((feature) => feature.geometry)).toEqual([
+      { type: "Point", coordinates: [10.001, 59.001] },
+      { type: "Point", coordinates: [10.002, 59.002] },
+      { type: "Point", coordinates: [10.003, 59.003] },
+    ]);
+  });
+
+  test("editPointsGeoJson_carries_nothing_else_of_a_point_the_time_and_the_device_stay_in_the_points", () => {
+    for (const feature of editPointsGeoJson(POINTS).features) expect(feature.properties).toEqual({});
+  });
+
+  test("editPointsGeoJson_of_no_points_is_an_empty_collection", () => {
+    expect(editPointsGeoJson([])).toEqual({ type: "FeatureCollection", features: [] });
+  });
+
+  test("editPointsGeoJson_makes_the_ids_of_a_dense_day_as_they_are_counted", () => {
+    const dense: RawPoint[] = Array.from({ length: 40_000 }, (_, i) => [1_761_120_000_000_000 + i * 1_000_000, 10 + i / 1e6, 59, 0]);
+
+    const { features } = editPointsGeoJson(dense);
+
+    expect(features).toHaveLength(40_000);
+    expect(features[39_999]?.id).toBe(39_999);
+    expect(features[39_999]?.geometry.coordinates).toEqual([10 + 39_999 / 1e6, 59]);
+  });
+});
+
 describe("heatGeoJson", () => {
   test("heatGeoJson_normalises_weights", () => {
     const heat: HeatResponse = {
@@ -730,6 +771,40 @@ describe("layerSpecs", () => {
       expect(sources.has((spec as { source: string }).source), spec.id).toBe(true);
     }
     expect(specs.map((spec) => spec.id)).toEqual(Object.values(LAYER_IDS));
+  });
+
+  test("layerSpecs_draw_the_edit_points_over_the_routes_and_under_the_places_and_the_stop_pins", () => {
+    const ids = layerSpecs("day", false).map((spec) => spec.id);
+
+    expect(LAYER_IDS.editPoints).toBe("sporer-edit-points");
+    expect(SOURCE_IDS.editPoints).toBe("sporer-edit-points");
+    for (const route of ROUTE_LAYERS) expect(ids.indexOf(route), route).toBeLessThan(ids.indexOf(LAYER_IDS.editPoints));
+    expect(ids.indexOf(LAYER_IDS.editPoints)).toBeLessThan(ids.indexOf(LAYER_IDS.places));
+    expect(ids.indexOf(LAYER_IDS.editPoints)).toBeLessThan(ids.indexOf(LAYER_IDS.stops));
+  });
+
+  test("layerSpecs_draw_an_edit_point_as_a_4px_dot_and_a_selected_one_7px_and_red_by_feature_state", () => {
+    const dots = find("day", LAYER_IDS.editPoints);
+
+    expect(dots.type).toBe("circle");
+    expect((dots as { source: string }).source).toBe(SOURCE_IDS.editPoints);
+    expect(EDIT_SELECTED_COLOR).toBe("#FF3B30");
+    // The state of a feature is `selected` or it is not (the e2e tests have the real map evaluate them: the pixels of a selected point are red).
+    const radius = paint(dots)["circle-radius"];
+    const colour = paint(dots)["circle-color"];
+    expect(radius).toEqual(["case", ["boolean", ["feature-state", "selected"], false], 7, 4]);
+    expect(colour).toEqual(["case", ["boolean", ["feature-state", "selected"], false], EDIT_SELECTED_COLOR, "#1C1C1E"]);
+    expect(layout(dots)["visibility"] ?? "visible").toBe("visible");
+  });
+
+  test("layerSpecs_draw_the_edit_points_in_the_ink_of_the_scheme_with_a_halo_of_the_other", () => {
+    expect(paint(find("day", LAYER_IDS.editPoints, true))["circle-color"]).toEqual(["case", ["boolean", ["feature-state", "selected"], false], EDIT_SELECTED_COLOR, "#F2F2F7"]);
+    expect(paint(find("day", LAYER_IDS.editPoints, false))["circle-stroke-color"]).toBe("#FFFFFF");
+    expect(paint(find("day", LAYER_IDS.editPoints, true))["circle-stroke-color"]).toBe("#1C1C1E");
+  });
+
+  test("layerSpecs_show_the_edit_points_in_every_view_the_source_of_all_but_a_day_in_edit_mode_is_empty", () => {
+    for (const view of ["day", "range", "trips", "trip"] as const) expect(layout(find(view, LAYER_IDS.editPoints))["visibility"] ?? "visible", view).toBe("visible");
   });
 
   test("layerSpecs_draw_the_heat_first_and_the_stops_last", () => {

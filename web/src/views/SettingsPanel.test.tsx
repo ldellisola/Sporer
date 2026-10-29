@@ -208,7 +208,7 @@ describe("SettingsPanel processing", () => {
     api.state.status = status({ pendingRanges: 1, failedRanges: [] }); // by the time it is asked again the worker has taken it up
     await act(async () => answer(Response.json({ retried: 1 })));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("Retrying 1 period");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Retrying 1 period")); // the status was there, empty, before: the note is put into it
     expect(screen.queryByRole("button", { name: "Retrying…" })).not.toBeInTheDocument();
     // The write invalidated what is on screen: the status was asked for again, and its failed periods are gone.
     await within(processing()).findByText("Nothing has failed");
@@ -221,7 +221,7 @@ describe("SettingsPanel processing", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Retry failed" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("Nothing was waiting to be retried");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Nothing was waiting to be retried"));
   });
 
   test("SettingsPanel_forgets_what_retry_did_when_its_note_has_been_there_ten_seconds", async () => {

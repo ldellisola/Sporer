@@ -122,6 +122,34 @@ export interface RangeDay {
   places: number;
 }
 
+// --- GET /api/day/{date}/points (Features/Points) and the removal of points ---
+
+/**
+ * One raw point of a day: `[t, lon, lat, device]`. `t` is the exact time in epoch microseconds, a whole number that a JavaScript number holds exactly:
+ * it is never rounded or turned into milliseconds, and is sent back as it came, for it is what the point is told from the others by. `device` is
+ * the index into `devices` of the answer.
+ */
+export type RawPoint = [t: number, lon: number, lat: number, device: number];
+
+/** The points of a day in time order, those removed earlier left out. A point may be on the neighbouring day too: a day spans the zones of its segments. */
+export interface DayPointsResponse {
+  date: string;
+  devices: string[];
+  points: RawPoint[];
+}
+
+/** A point to remove, as the server tells it: by the device and the exact time (epoch microseconds). */
+export interface PointRef {
+  device: string;
+  t: number;
+}
+
+/** The answer to `POST /api/points/remove`: the batch to restore it by, or null when nothing was removed (the points were removed already), and how many points it holds. */
+export interface RemovePointsResponse {
+  batch: string | null;
+  count: number;
+}
+
 // --- GET /api/heat?from=&to= (Features/Heat/HeatResponse.cs) ---
 
 /** `[lon, lat, seconds]`: the centre of a grid cell and the time spent in it. */

@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConfigResponse } from "../api/types";
 import { boundsOf } from "./bounds";
 import { LAYER_IDS, ROUTE_LAYERS, routeOpacity, SOURCE_IDS } from "./layers";
-import type { Feature, FeatureCollection, HeatCollection, LineString, Point, StopCollection } from "./layers";
+import type { EditPointCollection, Feature, FeatureCollection, HeatCollection, LineString, Point, StopCollection } from "./layers";
 import type { MapLibreLoader, MapLibreModule } from "./maplibre";
-import { MapView, type MapData, type MapViewHandle, type MapViewProps } from "./MapView";
+import { MapView, type MapData, type MapEdit, type MapViewHandle, type MapViewProps } from "./MapView";
 
 // jsdom has no WebGL, so `maplibre-gl` is replaced by a map that records what it is asked to do and fires the events a
 // real one fires, when the test says so (`emit`). It is as strict as the real one is helpful: adding a source twice, or a
@@ -21,6 +21,23 @@ const maplibre = vi.hoisted(() => {
     setData(data: unknown): void {
       this.data = data;
       this.setDataCalls += 1;
+    }
+  }
+
+  /** A handler of the map's gestures (`boxZoom`, `dragPan`): on or off, and every change there was. */
+  class FakeHandler {
+    readonly calls: string[] = [];
+    constructor(public enabled = true) {}
+    isEnabled(): boolean {
+      return this.enabled;
+    }
+    enable(): void {
+      this.calls.push("enable");
+      this.enabled = true;
+    }
+    disable(): void {
+      this.calls.push("disable");
+      this.enabled = false;
     }
   }
 
@@ -51,7 +68,17 @@ const maplibre = vi.hoisted(() => {
      * What is drawn at positions of the screen, for `queryRenderedFeatures`: a feature is at the pixel that its coordinates are, in this
      * double (see `project`), so a test says where on the screen a dot is by where it puts it.
      */
-    readonly drawn: { layerId: string; properties: Record<string, unknown>; at: [number, number] }[] = [];
+    readonly drawn: { layerId: string; properties: Record<string, unknown>; at: [number, number]; id?: number }[] = [];
+    /** The gestures of the map that edit mode turns off: on to begin with, as a map is made. */
+    readonly boxZoom = new FakeHandler();
+    readonly dragPan = new FakeHandler();
+    readonly doubleClickZoom = new FakeHandler();
+    /**
+     * The feature state of each source, by the id of the feature: what `setFeatureState` set and `removeFeatureState` took away. A style has none of it.
+     * `stateCalls` has every call, in order, as `set 3`, `remove 3` and `clear`.
+     */
+    readonly featureStates = new Map<string, Map<number, Record<string, unknown>>>();
+    readonly stateCalls: string[] = [];
     /** The boxes and layers that `queryRenderedFeatures` was asked, in order. */
     readonly queries: { box: unknown; layers: string[] }[] = [];
     readonly touchZoomRotate = {
@@ -130,7 +157,38 @@ const maplibre = vi.hoisted(() => {
       const [[left, top], [right, bottom]] = box;
       return this.drawn
         .filter(({ layerId, at: [x, y] }) => options.layers.includes(layerId) && x >= left && x <= right && y >= top && y <= bottom)
-        .map(({ layerId, properties, at }) => ({ properties, layer: { id: layerId }, geometry: { type: "Point", coordinates: at } }));
+        .map(({ layerId, properties, at, id }) => ({ id, properties, layer: { id: layerId }, geometry: { type: "Point", coordinates: at } }));
+    }
+    /** MapLibre's: the source has to be in the style (it reports an error and does nothing for one that is not, which here is a test that fails). */
+    private requireSource(source: string): Map<number, Record<string, unknown>> {
+      this.requireStyle();
+      if (!this.sources.has(source)) throw new Error(`The source '${source}' does not exist in the map's style.`);
+      const states = this.featureStates.get(source) ?? new Map<number, Record<string, unknown>>();
+      this.featureStates.set(source, states);
+      return states;
+    }
+    setFeatureState({ source, id }: { source: string; id: number }, state: Record<string, unknown>): void {
+      const states = this.requireSource(source);
+      states.set(id, { ...states.get(id), ...state });
+      this.stateCalls.push(`set ${id}`);
+    }
+    removeFeatureState({ source, id }: { source: string; id?: number }, key?: string): void {
+      const states = this.requireSource(source);
+      if (id === undefined) {
+        states.clear();
+        this.stateCalls.push("clear");
+        return;
+      }
+      const state = { ...states.get(id) };
+      if (key === undefined) for (const name of Object.keys(state)) delete state[name];
+      else delete state[key];
+      if (Object.keys(state).length === 0) states.delete(id);
+      else states.set(id, state);
+      this.stateCalls.push(`remove ${id}`);
+    }
+    /** The ids that have the state `selected` in `source`, sorted. */
+    selectedIn(source: string): number[] {
+      return [...(this.featureStates.get(source) ?? [])].filter(([, state]) => state["selected"] === true).map(([id]) => id).sort((a, b) => a - b);
     }
 
     private requireStyle(): void {
@@ -138,6 +196,7 @@ const maplibre = vi.hoisted(() => {
     }
     setStyle(style: unknown, options: unknown): this {
       this.styleCalls.push({ style, options });
+      this.featureStates.clear(); // a style has none of the state of the one before
       this.sources.clear();
       this.layers.clear();
       this.images.clear(); // the images of a style go with it
@@ -414,7 +473,7 @@ describe("MapView", () => {
     expect(region()).toHaveAttribute("data-map-state", "unavailable");
     theMap().emit("style.load"); // the plain style loads
     expect(region()).toHaveAttribute("data-map-state", "unavailable");
-    expect(theMap().sources.size).toBe(4);
+    expect(theMap().sources.size).toBe(Object.values(SOURCE_IDS).length);
   });
 
   test("MapView_calls_onStyleLoad_for_every_style_that_loads_but_not_for_the_plain_one_it_falls_back_to", async () => {
@@ -1348,7 +1407,7 @@ describe("MapView", () => {
       await quietly();
 
       expect(map.styleCalls).toHaveLength(1); // not the plain style: the light one stays
-      expect(map.sources.size).toBe(4);
+      expect(map.sources.size).toBe(Object.values(SOURCE_IDS).length);
       expect([...map.layers.keys()]).toEqual(Object.values(LAYER_IDS));
       expect(region()).toHaveAttribute("data-map-state", "unavailable"); // reported, so that a note with its Retry can be shown
       // It goes on working: data that comes meanwhile reaches the style that is there.
@@ -1388,7 +1447,7 @@ describe("MapView", () => {
       expect(onStyleError).toHaveBeenCalledTimes(1);
       map.emit("style.load");
       expect(region()).toHaveAttribute("data-map-state", "unavailable"); // still not the style that was asked for
-      expect(map.sources.size).toBe(4); // but it is drawn on
+      expect(map.sources.size).toBe(Object.values(SOURCE_IDS).length); // but it is drawn on
     });
 
     // The app says "Couldn't switch the map style" when a basemap is still drawn and only the switch failed, and "Map unavailable" when
@@ -1890,6 +1949,395 @@ describe("MapView", () => {
     });
   });
 
+  describe("editing points", () => {
+    /** The points of a day as the map is given them: with ids that are their indices, at the pixels of the screen that the double puts them at (`project` is the identity). */
+    const pointsAt = (...at: [number, number][]): EditPointCollection => ({
+      type: "FeatureCollection",
+      features: at.map(([x, y], id) => ({ type: "Feature", id, properties: {}, geometry: { type: "Point", coordinates: [x, y] } })),
+    });
+    const edit = (over: Partial<MapEdit> = {}): MapEdit => ({
+      selected: new Set<number>(),
+      area: false,
+      onAreaChange: vi.fn(),
+      onToggle: vi.fn(),
+      onSelect: vi.fn(),
+      ...over,
+    });
+    const withData = (editPoints: EditPointCollection | undefined, over: Partial<MapViewProps> = {}): Partial<MapViewProps> => ({
+      data: { routes: EMPTY_ROUTES, ...(editPoints === undefined ? {} : { editPoints }) },
+      ...over,
+    });
+    /** Draws each point of `points` where it is (as the real map has them in its layer), for a tap to find. */
+    const drawPoints = (map: InstanceType<typeof FakeMap>, points: EditPointCollection) => {
+      for (const feature of points.features) map.drawn.push({ layerId: LAYER_IDS.editPoints, properties: {}, at: feature.geometry.coordinates as [number, number], id: feature.id });
+    };
+    const POINTS = pointsAt([100, 100], [140, 100], [100, 140], [300, 300]);
+
+    /** A map with its style loaded, with `props`. */
+    async function up(props: Partial<MapViewProps> = {}) {
+      goodStyle();
+      const rendered = render(view(props));
+      const map = await mapUp();
+      await styleApplied();
+      map.emit("style.load");
+      return { map, ...rendered };
+    }
+
+    test("MapView_gives_the_edit_points_to_their_source_in_one_setData_and_their_layer_is_over_the_routes_and_under_the_pins", async () => {
+      const { map, rerender } = await up(withData(undefined, { edit: edit() }));
+      const source = map.sources.get(SOURCE_IDS.editPoints)!;
+      expect(source.data).toEqual({ type: "FeatureCollection", features: [] }); // an empty source: the layer is there, with nothing in it
+      const layers = [...map.layers.keys()];
+      for (const route of ROUTE_LAYERS) expect(layers.indexOf(route), route).toBeLessThan(layers.indexOf(LAYER_IDS.editPoints));
+      expect(layers.indexOf(LAYER_IDS.editPoints)).toBeLessThan(layers.indexOf(LAYER_IDS.stops));
+
+      const big = pointsAt(...Array.from({ length: 40_000 }, (_, i): [number, number] => [i % 400, Math.floor(i / 400)]));
+      rerender(view(withData(big, { edit: edit() })));
+
+      expect(source.data).toBe(big);
+      expect(source.setDataCalls).toBe(1); // when the points load: one call for all of them
+    });
+
+    test("MapView_selects_by_feature_state_and_never_by_new_data", async () => {
+      const { map, rerender } = await up(withData(POINTS, { edit: edit() }));
+      const source = map.sources.get(SOURCE_IDS.editPoints)!;
+      const setData = source.setDataCalls;
+      expect(map.selectedIn(SOURCE_IDS.editPoints)).toEqual([]);
+
+      rerender(view(withData(POINTS, { edit: edit({ selected: new Set([0, 2]) }) })));
+      expect(map.selectedIn(SOURCE_IDS.editPoints)).toEqual([0, 2]);
+      expect(map.stateCalls).toEqual(["set 0", "set 2"]);
+
+      rerender(view(withData(POINTS, { edit: edit({ selected: new Set([2, 3]) }) })));
+      expect(map.selectedIn(SOURCE_IDS.editPoints)).toEqual([2, 3]);
+      expect(map.stateCalls).toEqual(["set 0", "set 2", "remove 0", "set 3"]); // only what changed: 2 was selected, and is not touched again
+
+      rerender(view(withData(POINTS, { edit: edit({ selected: new Set() }) })));
+      expect(map.selectedIn(SOURCE_IDS.editPoints)).toEqual([]);
+      expect(source.setDataCalls).toBe(setData); // not one setData for any of it
+    });
+
+    test("MapView_does_not_touch_the_state_when_it_is_rendered_again_with_the_same_selection", async () => {
+      const selected = new Set([1]);
+      const { map, rerender } = await up(withData(POINTS, { edit: edit({ selected }) }));
+      const calls = [...map.stateCalls];
+
+      rerender(view(withData(POINTS, { edit: edit({ selected }) })));
+
+      expect(map.stateCalls).toEqual(calls);
+    });
+
+    test("MapView_selects_the_points_of_a_dense_day_one_state_each_and_clears_them_when_edit_mode_ends", async () => {
+      const dense = pointsAt(...Array.from({ length: 40_000 }, (_, i): [number, number] => [i % 400, Math.floor(i / 400)]));
+      const all = new Set(Array.from({ length: 40_000 }, (_, i) => i));
+      const { map, rerender } = await up(withData(dense, { edit: edit() }));
+
+      rerender(view(withData(dense, { edit: edit({ selected: all }) })));
+      expect(map.stateCalls).toHaveLength(40_000);
+      expect(map.selectedIn(SOURCE_IDS.editPoints)).toHaveLength(40_000);
+
+      rerender(view(withData(undefined))); // Done: no edit mode, no points
+
+      expect(map.selectedIn(SOURCE_IDS.editPoints)).toEqual([]);
+      expect(map.sources.get(SOURCE_IDS.editPoints)?.data).toEqual({ type: "FeatureCollection", features: [] });
+    });
+
+    test("MapView_sets_the_state_of_the_selection_again_when_a_style_has_loaded_for_a_style_has_none", async () => {
+      const { map } = await up(withData(POINTS, { edit: edit({ selected: new Set([1, 3]) }) }));
+      expect(map.selectedIn(SOURCE_IDS.editPoints)).toEqual([1, 3]);
+
+      map.setStyle({}, {}); // the colour scheme changed: the new style has no source, no layer, no state
+      expect(map.selectedIn(SOURCE_IDS.editPoints)).toEqual([]);
+      map.emit("style.load");
+
+      expect(map.sources.get(SOURCE_IDS.editPoints)?.data).toBe(POINTS); // the points came back with the style
+      expect(map.selectedIn(SOURCE_IDS.editPoints)).toEqual([1, 3]); // and what was selected is still selected
+      expect(map.layers.has(LAYER_IDS.editPoints)).toBe(true);
+    });
+
+    test("MapView_takes_the_state_off_when_the_points_are_other_points", async () => {
+      // The ids are indices into the points: the same ids of another list are other points.
+      const { map, rerender } = await up(withData(POINTS, { edit: edit({ selected: new Set([0, 1]) }) }));
+
+      const other = pointsAt([10, 10], [20, 20]);
+      rerender(view(withData(other, { edit: edit({ selected: new Set() }) })));
+
+      expect(map.selectedIn(SOURCE_IDS.editPoints)).toEqual([]);
+      expect(map.stateCalls).toContain("clear");
+      expect(map.sources.get(SOURCE_IDS.editPoints)?.data).toBe(other);
+    });
+
+    test("MapView_selects_the_point_that_is_tapped_the_nearest_within_12px_and_opens_no_place", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const onToggle = vi.fn<(id: number) => void>();
+      const { map } = await up(withData(POINTS, { edit: edit({ onToggle }), onPlaceTap }));
+      drawPoints(map, POINTS);
+      map.drawn.push({ layerId: LAYER_IDS.places, properties: { id: 7, radius: 9 }, at: [101, 101] }); // a place right over a point
+
+      map.pointer("click", 102, 101);
+
+      expect(onToggle).toHaveBeenCalledTimes(1);
+      expect(onToggle).toHaveBeenCalledWith(0);
+      expect(onPlaceTap).not.toHaveBeenCalled(); // in edit mode a tap is for the points
+    });
+
+    test("MapView_looks_for_points_in_a_box_of_12px_round_the_tap_in_their_layer_only", async () => {
+      const { map } = await up(withData(POINTS, { edit: edit() }));
+
+      map.pointer("click", 200, 300);
+
+      expect(map.queries).toEqual([{ box: [[188, 288], [212, 312]], layers: [LAYER_IDS.editPoints] }]);
+    });
+
+    test("MapView_picks_the_nearer_of_two_points_a_tap_is_between_and_nothing_for_a_tap_farther_off_than_12px", async () => {
+      const onToggle = vi.fn<(id: number) => void>();
+      const { map } = await up(withData(POINTS, { edit: edit({ onToggle }) }));
+      drawPoints(map, POINTS);
+
+      map.pointer("click", 128, 100); // between 0 (100) and 1 (140): 28 and 12 px
+      expect(onToggle).toHaveBeenLastCalledWith(1);
+      map.pointer("click", 118, 100); // 18 and 22 px: farther than the slop of both... the box finds none
+      expect(onToggle).toHaveBeenCalledTimes(1);
+      map.pointer("click", 109, 104); // 9 px and 5 px away: 0 is the nearer
+      expect(onToggle).toHaveBeenLastCalledWith(0);
+      map.pointer("click", 200, 200);
+      expect(onToggle).toHaveBeenCalledTimes(2);
+    });
+
+    test("MapView_finds_a_point_by_its_id_and_measures_from_where_the_points_say_it_is_and_not_from_where_the_map_says_the_feature_is", async () => {
+      // What MapLibre gives back of a feature is cut to its tile, and is a little off: the point is where the day's points say it is.
+      const onToggle = vi.fn<(id: number) => void>();
+      const { map } = await up(withData(POINTS, { edit: edit({ onToggle }) }));
+      map.drawn.push({ layerId: LAYER_IDS.editPoints, properties: {}, at: [104, 100], id: 1 }); // the feature of point 1 is cut at 104: point 1 is at 140
+      map.drawn.push({ layerId: LAYER_IDS.editPoints, properties: {}, at: [100, 100], id: 0 });
+      map.drawn.push({ layerId: LAYER_IDS.editPoints, properties: {}, at: [101, 100], id: 99 }); // and one that the points have no id of is passed over
+
+      map.pointer("click", 105, 100);
+
+      expect(onToggle).toHaveBeenCalledTimes(1);
+      expect(onToggle).toHaveBeenCalledWith(0); // 5 px from point 0, 35 from point 1: the geometry of the feature would have said 1
+    });
+
+    test("MapView_taps_nothing_in_edit_mode_before_there_are_points_and_before_the_style_has_the_layer", async () => {
+      const onToggle = vi.fn<(id: number) => void>();
+      const { map } = await up(withData(undefined, { edit: edit({ onToggle }) }));
+      map.pointer("click", 100, 100); // no points yet
+      map.layers.delete(LAYER_IDS.editPoints); // a style that has been replaced, whose layers are not there yet
+      map.pointer("click", 100, 100);
+
+      expect(onToggle).not.toHaveBeenCalled();
+      expect(map.queries).toEqual([]);
+    });
+
+    test("MapView_opens_places_by_a_tap_as_ever_when_it_is_not_in_edit_mode_even_where_there_are_points", async () => {
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { map } = await up(withData(POINTS, { onPlaceTap })); // no `edit`: points that were left in the data are not for tapping
+      map.drawn.push({ layerId: LAYER_IDS.places, properties: { id: 7, radius: 9 }, at: [100, 100] });
+      drawPoints(map, POINTS);
+
+      map.pointer("click", 100, 100);
+
+      expect(onPlaceTap).toHaveBeenCalledWith(7);
+    });
+
+    test("MapView_calls_the_latest_onToggle_and_goes_back_to_places_when_edit_mode_ends", async () => {
+      const first = vi.fn<(id: number) => void>();
+      const second = vi.fn<(id: number) => void>();
+      const onPlaceTap = vi.fn<(id: number) => void>();
+      const { map, rerender } = await up(withData(POINTS, { edit: edit({ onToggle: first }), onPlaceTap }));
+      drawPoints(map, POINTS);
+      map.drawn.push({ layerId: LAYER_IDS.places, properties: { id: 7, radius: 9 }, at: [300, 300] });
+
+      rerender(view(withData(POINTS, { edit: edit({ onToggle: second }), onPlaceTap })));
+      map.pointer("click", 100, 100);
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledWith(0);
+
+      rerender(view(withData(POINTS, { onPlaceTap })));
+      map.pointer("click", 300, 300);
+      expect(onPlaceTap).toHaveBeenCalledWith(7);
+    });
+
+    test("MapView_shows_a_pointer_over_a_point_in_edit_mode_and_not_over_a_place", async () => {
+      const { map } = await up(withData(POINTS, { edit: edit() }));
+      drawPoints(map, POINTS);
+      map.drawn.push({ layerId: LAYER_IDS.places, properties: { id: 7, radius: 9 }, at: [300, 200] });
+
+      map.pointer("mousemove", 102, 100);
+      expect(map.canvas.style.cursor).toBe("pointer");
+      map.pointer("mousemove", 300, 200); // a place: a tap would not open it
+      expect(map.canvas.style.cursor).toBe("");
+      map.pointer("mousemove", 140, 104);
+      expect(map.canvas.style.cursor).toBe("pointer");
+      map.emit("mouseout");
+      expect(map.canvas.style.cursor).toBe("");
+    });
+
+    test("MapView_turns_box_zoom_off_in_edit_mode_and_back_on_when_it_ends", async () => {
+      const { map, rerender } = await up();
+      expect(map.boxZoom.enabled).toBe(true);
+
+      rerender(view({ edit: edit() }));
+      expect(map.boxZoom.enabled).toBe(false);
+      rerender(view({ edit: edit({ selected: new Set([1]) }) })); // rendered again: no second call
+      expect(map.boxZoom.calls).toEqual(["disable"]);
+
+      rerender(view());
+      expect(map.boxZoom.enabled).toBe(true);
+      expect(map.boxZoom.calls).toEqual(["disable", "enable"]);
+    });
+
+    test("MapView_leaves_box_zoom_off_after_edit_mode_when_it_was_off_before", async () => {
+      const { map, rerender } = await up();
+      map.boxZoom.enabled = false;
+
+      rerender(view({ edit: edit() }));
+      rerender(view());
+
+      expect(map.boxZoom.enabled).toBe(false);
+      expect(map.boxZoom.calls).toEqual(["disable"]); // as it was found
+    });
+
+    test("MapView_turns_double_tap_zoom_off_in_edit_mode_for_two_quick_taps_are_two_points_and_back_on_when_it_ends", async () => {
+      const { map, rerender } = await up();
+      expect(map.doubleClickZoom.enabled).toBe(true);
+
+      rerender(view({ edit: edit() }));
+      expect(map.doubleClickZoom.enabled).toBe(false);
+      rerender(view({ edit: edit({ area: true }) }));
+      expect(map.doubleClickZoom.calls).toEqual(["disable"]); // not again for another render
+
+      rerender(view());
+      expect(map.doubleClickZoom.enabled).toBe(true);
+      expect(map.doubleClickZoom.calls).toEqual(["disable", "enable"]);
+    });
+
+    test("MapView_turns_panning_off_only_while_select_area_is_on_and_back_on_when_it_ends", async () => {
+      const { map, rerender } = await up({ edit: edit() });
+      expect(map.dragPan.enabled).toBe(true); // edit mode alone does not stop the map being moved
+
+      rerender(view({ edit: edit({ area: true }) }));
+      expect(map.dragPan.enabled).toBe(false);
+
+      rerender(view({ edit: edit({ area: false }) }));
+      expect(map.dragPan.enabled).toBe(true);
+
+      rerender(view({ edit: edit({ area: true }) }));
+      expect(map.dragPan.enabled).toBe(false);
+      rerender(view()); // edit mode ends with select area on
+      expect(map.dragPan.enabled).toBe(true);
+      expect(map.boxZoom.enabled).toBe(true);
+    });
+
+    test("MapView_puts_both_gestures_back_when_the_map_goes_while_it_is_in_edit_mode", async () => {
+      const { map, unmount } = await up({ edit: edit({ area: true }) });
+
+      unmount();
+
+      expect(map.boxZoom.enabled).toBe(true);
+      expect(map.dragPan.enabled).toBe(true);
+      expect(map.doubleClickZoom.enabled).toBe(true);
+      expect(map.removed).toBe(true);
+    });
+
+    test("MapView_has_a_select_area_button_only_in_edit_mode_that_says_whether_it_is_on_and_asks_for_the_other", async () => {
+      const onAreaChange = vi.fn<(on: boolean) => void>();
+      goodStyle();
+      const { rerender } = render(view());
+      expect(screen.queryByRole("button", { name: "Select area" })).not.toBeInTheDocument();
+
+      rerender(view({ edit: edit({ onAreaChange }) }));
+      const button = screen.getByRole("button", { name: "Select area" });
+      expect(button).toHaveAttribute("type", "button");
+      expect(button).toHaveAttribute("aria-pressed", "false");
+      fireEvent.click(button);
+      expect(onAreaChange).toHaveBeenLastCalledWith(true);
+      expect(button).toHaveAttribute("aria-pressed", "false"); // the parent holds the state
+
+      rerender(view({ edit: edit({ onAreaChange, area: true }) }));
+      expect(button).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(button);
+      expect(onAreaChange).toHaveBeenLastCalledWith(false);
+
+      rerender(view());
+      expect(screen.queryByRole("button", { name: "Select area" })).not.toBeInTheDocument();
+    });
+
+    test("MapView_has_the_select_area_button_in_the_group_of_the_map_buttons_like_the_heat_button", () => {
+      goodStyle();
+      render(view({ edit: edit(), heatToggle: { on: false, onChange: () => undefined } }));
+
+      const group = screen.getByRole("button", { name: "Recenter map" }).parentElement;
+      expect(screen.getByRole("button", { name: "Select area" }).parentElement).toBe(group);
+      expect(screen.getByRole("button", { name: "Select area" })).toHaveClass("button");
+    });
+
+    test("MapView_selects_every_point_inside_a_rectangle_that_is_drawn_with_select_area_on", async () => {
+      const onSelect = vi.fn<(ids: readonly number[]) => void>();
+      const onToggle = vi.fn<(id: number) => void>();
+      const { container } = await up(withData(POINTS, { edit: edit({ area: true, onSelect, onToggle }) }));
+      const surface = container.querySelector(".surface")!;
+      expect(surface).not.toBeNull();
+
+      fireEvent.pointerDown(surface, { clientX: 90, clientY: 90, pointerId: 1, isPrimary: true, pointerType: "touch" });
+      fireEvent.pointerMove(surface, { clientX: 150, clientY: 150, pointerId: 1, isPrimary: true, pointerType: "touch" });
+      fireEvent.pointerUp(surface, { clientX: 150, clientY: 150, pointerId: 1, isPrimary: true, pointerType: "touch" });
+
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      expect(onSelect).toHaveBeenCalledWith([0, 1, 2]); // (100, 100), (140, 100) and (100, 140) are inside; (300, 300) is not
+      expect(onToggle).not.toHaveBeenCalled();
+    });
+
+    test("MapView_takes_the_edges_of_a_rectangle_as_inside_and_finds_the_points_of_a_box_with_none", async () => {
+      const onSelect = vi.fn<(ids: readonly number[]) => void>();
+      const { container } = await up(withData(POINTS, { edit: edit({ area: true, onSelect }) }));
+      const surface = container.querySelector(".surface")!;
+      const drag = (from: [number, number], to: [number, number]) => {
+        const at = (point: [number, number]) => ({ clientX: point[0], clientY: point[1], pointerId: 1, isPrimary: true, pointerType: "touch" });
+        fireEvent.pointerDown(surface, at(from));
+        fireEvent.pointerMove(surface, at(to));
+        fireEvent.pointerUp(surface, at(to));
+      };
+
+      drag([100, 100], [140, 140]); // the points are on its edges and at its corner: 0 and 1 on the top, 2 on the left
+      expect(onSelect).toHaveBeenLastCalledWith([0, 1, 2]);
+
+      drag([400, 400], [500, 500]); // none
+      expect(onSelect).toHaveBeenLastCalledWith([]);
+    });
+
+    test("MapView_selects_a_point_for_a_tap_on_the_surface_of_select_area_for_the_map_under_it_never_saw_it", async () => {
+      const onToggle = vi.fn<(id: number) => void>();
+      const { map, container } = await up(withData(POINTS, { edit: edit({ area: true, onToggle }) }));
+      drawPoints(map, POINTS);
+      const surface = container.querySelector(".surface")!;
+
+      fireEvent.pointerDown(surface, { clientX: 142, clientY: 99, pointerId: 1, isPrimary: true, pointerType: "touch" });
+      fireEvent.pointerUp(surface, { clientX: 142, clientY: 99, pointerId: 1, isPrimary: true, pointerType: "touch" });
+
+      expect(onToggle).toHaveBeenCalledWith(1);
+    });
+
+    test("MapView_has_no_surface_for_select_area_while_it_is_off_and_the_shift_drag_of_a_mouse_still_selects", async () => {
+      const onSelect = vi.fn<(ids: readonly number[]) => void>();
+      const { container } = await up(withData(POINTS, { edit: edit({ onSelect }) }));
+      expect(container.querySelector(".surface")).toBeNull();
+
+      fireEvent.mouseDown(region().querySelector("canvas") ?? region(), { clientX: 90, clientY: 90, button: 0, shiftKey: true });
+      fireEvent.mouseMove(window, { clientX: 150, clientY: 150, shiftKey: true });
+      fireEvent.mouseUp(window, { clientX: 150, clientY: 150, shiftKey: true });
+
+      expect(onSelect).toHaveBeenCalledWith([0, 1, 2]);
+    });
+
+    test("MapView_has_no_area_selection_outside_edit_mode", async () => {
+      const { container } = await up(withData(POINTS));
+
+      expect(container.querySelector(".surface")).toBeNull();
+      expect(container.querySelector(".layer")).toBeNull();
+    });
+  });
+
   describe("heat", () => {
     const toggle = (on: boolean, onChange: (on: boolean) => void = () => undefined) => ({ on, onChange });
     const opacityOf = (map: InstanceType<typeof FakeMap>, id: string) => map.layers.get(id)?.paint?.["line-opacity"];
@@ -2238,7 +2686,7 @@ describe("MapView", () => {
       expect(urls).toEqual(["/styles/liberty"]);
       const map = theMap();
       map.emit("style.load");
-      expect(map.sources.size).toBe(4);
+      expect(map.sources.size).toBe(Object.values(SOURCE_IDS).length);
 
       setScheme("dark");
       await styleApplied(2);

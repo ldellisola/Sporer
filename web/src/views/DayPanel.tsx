@@ -1,12 +1,15 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useDay } from "../api/queries";
 import type { DayResponse, GapSegment, MoveSegment, StaySegment } from "../api/types";
 import { navigate } from "../app/router";
+import type { PointEditing } from "../app/useEditPoints";
 import { dayGeoJson, modeColor, placePoint, stopOrders, type FitFeatures, type RouteProperties, type Feature, type LineString } from "../map/layers";
 import { dateOf } from "../time/dates";
 import { formatCount, formatDistance, formatDuration, formatTime } from "../time/format";
 import { Chip, Chips } from "./Chips";
 import styles from "./DayPanel.module.css";
+import { EditBar } from "./EditBar";
+import forms from "./Forms.module.css";
 import { HouseIcon } from "./HouseIcon";
 import { UNNAMED } from "./placeNames";
 import rows from "./Rows.module.css";
@@ -20,6 +23,8 @@ export interface DayPanelProps {
   date: string;
   /** Asks for the map to be brought to these features: a row of the timeline was tapped. Each tap is one call, however often it is the same row. */
   onFocus: (features: FitFeatures) => void;
+  /** Edit mode for the points of the day, which the shell holds (the map is edited on, and needs it too). Without it the day has no button to edit its points. */
+  edit?: PointEditing;
 }
 
 const MODE_WORDS = { walk: "Walk", cycle: "Cycle", drive: "Drive", flight: "Flight", unknown: "Move" } as const;
@@ -121,29 +126,59 @@ function GapRow({ gap }: { gap: GapSegment }) {
   );
 }
 
-/** What is on screen of a day: its chips and its timeline; `asked` says whether it is the day that the address asks for. */
-function Day({ day, asked, loading, onFocus }: { day: DayResponse; asked: boolean; loading: boolean; onFocus: DayPanelProps["onFocus"] }) {
+/**
+ * What is on screen of a day: its chips and its timeline; `asked` says whether it is the day that the address asks for. A day with data has the button
+ * that turns edit mode on (`edit`) beside its chips, in the header, and edit mode has the bar of it (`EditBar`) at the top in its place: the bar is
+ * there for a day that has no data now as well (every point was removed), for edit mode has to be left. The button is for the day asked for: edit mode
+ * is that of the day on the address, and not of the one that stays on screen while it loads. Done puts the focus back on the button, which the owner
+ * pressed to begin; edit mode that ends for another reason (the owner went to another day) leaves the focus where it is.
+ */
+function Day({ day, asked, loading, onFocus, edit }: { day: DayResponse; asked: boolean; loading: boolean; onFocus: DayPanelProps["onFocus"]; edit?: PointEditing }) {
   // The numbers are the map's: the pins are labelled from the same `stopOrders`, and the routes tapped are the lines it draws.
   const orders = useMemo(() => stopOrders(day), [day]);
   const routes = useMemo(() => new Map(dayGeoJson(day).routes.features.map((route) => [route.properties.id, route])), [day]);
   const empty = day.segments.length === 0;
   const isToday = dateOf(new Date().toISOString(), day.timeZone) === day.date;
   const last = day.segments.length - 1;
+  const editing = edit?.active === true;
+  const editButton = useRef<HTMLButtonElement>(null);
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (editing || !refocus.current) return;
+    refocus.current = false;
+    editButton.current?.focus();
+  });
 
   return (
     // What is shown while the day asked for is on its way is the day before: it stays, and says it is not the one asked for. Under an
     // error nothing is on its way, and the error says what the day shown is.
     <Shown busy={!asked && loading}>
-      <Chips>
-        {!empty && (
-          <>
-            <Chip>{formatCount(day.summary.places, "place")}</Chip>
-            <Chip>{formatDistance(day.summary.distanceMeters)}</Chip>
-            <Chip>{`${formatDuration(day.summary.movingSeconds)} moving`}</Chip>
-          </>
+      {edit !== undefined && editing && (
+        <EditBar
+          edit={edit}
+          onDone={() => {
+            refocus.current = true;
+            edit.done();
+          }}
+        />
+      )}
+      <div className={styles.head}>
+        <Chips>
+          {!empty && (
+            <>
+              <Chip>{formatCount(day.summary.places, "place")}</Chip>
+              <Chip>{formatDistance(day.summary.distanceMeters)}</Chip>
+              <Chip>{`${formatDuration(day.summary.movingSeconds)} moving`}</Chip>
+            </>
+          )}
+          {day.state === "pending" && <Chip updating>Updating…</Chip>}
+        </Chips>
+        {edit !== undefined && !editing && asked && !empty && (
+          <button ref={editButton} type="button" className={`${forms.secondary} ${styles.edit}`} onClick={edit.start}>
+            Edit points
+          </button>
         )}
-        {day.state === "pending" && <Chip updating>Updating…</Chip>}
-      </Chips>
+      </div>
       {empty ? (
         // An empty day that is not the one asked for says nothing of the one that is.
         asked ? <Empty message="No data for this day" /> : loading && <Loading />
@@ -178,9 +213,10 @@ function Day({ day, asked, loading, onFocus }: { day: DayResponse; asked: boolea
  * stays and moves and gaps in the order of the day. A tap on a stay or a move takes the map to it (`onFocus`); a tap on the name of a
  * place opens the place. The day is the one the map draws, from the same query, and the numbers of its stops are the map's.
  *
- * The day that was on screen stays under the one that is loading, and under an error with its Retry (see `useKeptData`).
+ * The day that was on screen stays under the one that is loading, and under an error with its Retry (see `useKeptData`). A day with data has the button
+ * that turns on edit mode for its points, which the shell holds (`edit`): see `Day`.
  */
-export function DayPanel({ date, onFocus }: DayPanelProps) {
+export function DayPanel({ date, onFocus, edit }: DayPanelProps) {
   const day = useDay(date);
   const shown = useKeptData(day.data);
   return (
@@ -189,7 +225,7 @@ export function DayPanel({ date, onFocus }: DayPanelProps) {
       {shown === undefined ? (
         !day.isError && <Loading />
       ) : (
-        <Day day={shown} asked={shown.date === date} loading={!day.isError} onFocus={onFocus} />
+        <Day day={shown} asked={shown.date === date} loading={!day.isError} onFocus={onFocus} edit={edit} />
       )}
     </>
   );

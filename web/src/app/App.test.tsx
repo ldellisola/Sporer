@@ -1405,3 +1405,239 @@ describe("App settings", () => {
     await screen.findByText("No data for this period");
   });
 });
+
+describe("App edit points", () => {
+  const T0 = 1_761_120_000_123_456;
+  const POINTS = {
+    date: "2026-10-22",
+    devices: ["phone"],
+    points: [
+      [T0, 10.0, 59.0, 0],
+      [T0 + 30_000_001, 10.001, 59.001, 0],
+      [T0 + 60_000_002, 10.002, 59.002, 0],
+      [T0 + 90_000_003, 10.003, 59.003, 0],
+    ],
+  };
+  const details = () => screen.getByRole("region", { name: "Details" });
+  const sidebar = () => screen.getByRole("complementary", { name: "Details" });
+  const edit = () => mapProps().edit!;
+
+  /** The API with a day to edit, its points, and the writes of edit mode; returns what was asked for (a write with its body). */
+  function stubEditing(writes: Record<string, () => Response> = {}) {
+    const calls: { method: string; path: string; body: unknown }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        calls.push({ method, path, body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined });
+        if (method !== "GET") return (writes[`${method} ${path}`] ?? (() => new Response("{}", { status: 501 })))();
+        if (path === "/api/status") return Response.json(STATUS);
+        if (path.endsWith("/points")) return Response.json(POINTS);
+        return path.endsWith("2026-10-22") ? Response.json(flightDay) : answerEmpty(path);
+      }),
+    );
+    return calls;
+  }
+  const writesOf = <T extends { method: string }>(calls: T[]): T[] => calls.filter((call) => call.method !== "GET");
+
+  async function intoEditMode() {
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit points" }));
+    await waitFor(() => expect(mapProps().data.editPoints).toBeDefined());
+  }
+
+  test("App_is_not_in_edit_mode_to_begin_with_the_map_has_no_edit_and_no_points_are_asked_for", async () => {
+    const calls = stubEditing();
+    stubLayout(100);
+
+    renderApp();
+
+    expect(await screen.findByRole("button", { name: "Edit points" })).toBeInTheDocument();
+    expect(mapProps().edit).toBeUndefined();
+    expect(mapProps().data.editPoints).toBeUndefined();
+    expect(calls.some((call) => call.path.endsWith("/points"))).toBe(false);
+    expect(screen.queryByRole("group", { name: "Edit points" })).not.toBeInTheDocument();
+  });
+
+  test("App_edit_points_turns_edit_mode_on_for_the_panel_and_the_map_which_draws_the_points_of_the_day", async () => {
+    const calls = stubEditing();
+    stubLayout(100);
+
+    await intoEditMode();
+
+    expect(screen.getByRole("group", { name: "Edit points" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument();
+    expect(mapProps().edit).toEqual({ selected: new Set(), area: false, onAreaChange: expect.any(Function), onToggle: expect.any(Function), onSelect: expect.any(Function) });
+    expect(mapProps().data.editPoints?.features).toHaveLength(4);
+    expect(mapProps().data.routes).toEqual(dayGeoJson(flightDay as DayResponse).routes); // over the day's routes
+    expect(calls.filter((call) => call.path.endsWith("/points")).map((call) => call.path)).toEqual(["/api/day/2026-10-22/points"]);
+  });
+
+  test("App_brings_a_sheet_that_is_up_down_to_its_peek_when_edit_mode_begins_for_the_map_is_what_is_edited_on", async () => {
+    stubEditing();
+    stubLayout(100);
+    renderApp();
+    const button = await screen.findByRole("button", { name: "Edit points" });
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" })); // half
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" })); // full
+    expect(details()).toHaveAttribute("data-snap", "full");
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(details()).toHaveAttribute("data-snap", "peek"));
+    expect(screen.getByRole("group", { name: "Edit points" })).toBeInTheDocument(); // and the bar is what a peek shows
+  });
+
+  test("App_selects_what_the_map_says_is_tapped_or_drawn_and_the_bar_counts_it", async () => {
+    stubEditing();
+    stubLayout(100);
+    await intoEditMode();
+    const bar = () => screen.getByRole("group", { name: "Edit points" });
+    expect(within(bar()).getByText("0 selected")).toBeInTheDocument();
+
+    act(() => edit().onToggle(1));
+    expect(within(bar()).getByText("1 selected")).toBeInTheDocument();
+    expect(edit().selected).toEqual(new Set([1]));
+
+    act(() => edit().onSelect([0, 1, 3]));
+    expect(within(bar()).getByText("3 selected")).toBeInTheDocument();
+    expect(edit().selected).toEqual(new Set([0, 1, 3]));
+
+    act(() => edit().onToggle(0));
+    expect(within(bar()).getByText("2 selected")).toBeInTheDocument();
+
+    fireEvent.click(within(bar()).getByRole("button", { name: "Clear" }));
+    expect(within(bar()).getByText("0 selected")).toBeInTheDocument();
+    expect(edit().selected.size).toBe(0);
+  });
+
+  test("App_select_area_is_the_maps_button_and_the_map_has_what_it_says", async () => {
+    stubEditing();
+    stubLayout(100);
+    await intoEditMode();
+
+    act(() => edit().onAreaChange(true));
+
+    expect(edit().area).toBe(true);
+    act(() => edit().onAreaChange(false));
+    expect(edit().area).toBe(false);
+  });
+
+  test("App_removes_the_selected_points_by_device_and_time_and_says_so_in_a_toast_that_is_not_in_the_panel", async () => {
+    const calls = stubEditing({ "POST /api/points/remove": () => Response.json({ batch: "b-7", count: 2 }) });
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onSelect([0, 2]));
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove 2 points" }));
+
+    const toast = await screen.findByText("Removed 2 points");
+    expect(writesOf(calls)).toEqual([{ method: "POST", path: "/api/points/remove", body: { points: [{ device: "phone", t: T0 }, { device: "phone", t: T0 + 60_000_002 }] } }]);
+    expect(details()).not.toContainElement(toast); // the sheet may be collapsed or scrolled: the toast is the page's
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    expect(edit().selected.size).toBe(0); // done with them
+    expect(screen.getByRole("group", { name: "Edit points" })).toBeInTheDocument(); // and still in edit mode
+  });
+
+  test("App_undoes_the_removal_from_the_toast", async () => {
+    const calls = stubEditing({
+      "POST /api/points/remove": () => Response.json({ batch: "b-7", count: 2 }),
+      "DELETE /api/points/removed/b-7": () => new Response(null, { status: 204 }),
+    });
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onSelect([0, 2]));
+    fireEvent.click(screen.getByRole("button", { name: "Remove 2 points" }));
+    await screen.findByText("Removed 2 points");
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+
+    expect(await screen.findByText("Restored 2 points")).toBeInTheDocument();
+    expect(writesOf(calls).map((call) => `${call.method} ${call.path}`)).toEqual(["POST /api/points/remove", "DELETE /api/points/removed/b-7"]);
+  });
+
+  test("App_asks_for_the_day_and_the_points_again_after_a_removal", async () => {
+    const calls = stubEditing({ "POST /api/points/remove": () => Response.json({ batch: "b-7", count: 1 }) });
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onToggle(0));
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove 1 point" }));
+
+    await screen.findByText("Removed 1 point");
+    await waitFor(() => expect(calls.filter((call) => call.method === "GET" && call.path === "/api/day/2026-10-22/points")).toHaveLength(2));
+    expect(calls.filter((call) => call.method === "GET" && call.path === "/api/day/2026-10-22").length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("App_ends_edit_mode_when_the_owner_leaves_the_day_and_the_toast_stays_to_be_undone", async () => {
+    stubEditing({ "POST /api/points/remove": () => Response.json({ batch: "b-7", count: 1 }) });
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onToggle(0));
+    fireEvent.click(screen.getByRole("button", { name: "Remove 1 point" }));
+    await screen.findByText("Removed 1 point");
+
+    fireEvent.click(screen.getByRole("button", { name: "Week" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/week/2026-10-19"));
+    expect(mapProps().edit).toBeUndefined();
+    expect(mapProps().data.editPoints).toBeUndefined();
+    expect(screen.queryByRole("group", { name: "Edit points" })).not.toBeInTheDocument();
+    expect(screen.getByText("Removed 1 point")).toBeInTheDocument(); // the owner may still want it back
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+  });
+
+  test("App_ends_edit_mode_and_clears_the_selection_when_the_date_changes", async () => {
+    stubEditing();
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onToggle(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "Next day" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/day/2026-10-23"));
+    expect(mapProps().edit).toBeUndefined();
+    expect(screen.queryByRole("group", { name: "Edit points" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Previous day" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/day/2026-10-22"));
+    expect(mapProps().edit).toBeUndefined(); // back on the day: not in edit mode, and nothing is still selected
+    expect(await screen.findByRole("button", { name: "Edit points" })).toBeInTheDocument();
+  });
+
+  test("App_done_ends_edit_mode_and_the_focus_goes_back_to_the_edit_points_button", async () => {
+    stubEditing();
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onToggle(1));
+    act(() => edit().onAreaChange(true));
+
+    fireEvent.click(within(screen.getByRole("group", { name: "Edit points" })).getByRole("button", { name: "Done" }));
+
+    expect(mapProps().edit).toBeUndefined();
+    expect(mapProps().data.editPoints).toBeUndefined();
+    expect(screen.getByRole("button", { name: "Edit points" })).toHaveFocus();
+  });
+
+  test("App_has_the_edit_bar_in_the_sidebar_on_a_desktop", async () => {
+    stubDesktop(true);
+    stubEditing();
+    stubLayout(110);
+
+    await intoEditMode();
+
+    expect(within(sidebar()).getByRole("group", { name: "Edit points" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Details" })).not.toBeInTheDocument();
+  });
+
+  test("App_has_no_edit_points_button_on_the_other_views", async () => {
+    stubEditing();
+    window.history.replaceState(null, "", "/week/2026-10-19");
+    stubLayout(100);
+
+    renderApp();
+
+    await screen.findByText("No data for this period");
+    expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument();
+    expect(mapProps().edit).toBeUndefined();
+  });
+});

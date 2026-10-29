@@ -1,0 +1,70 @@
+{
+ "date": "2026-10-22",
+ "timeZone": "Europe/Oslo",
+ "state": "done",
+ "summary": {
+  "places": 2,
+  "distanceMeters": 161,
+  "movingSeconds": 240
+ },
+ "segments": [
+  {
+   "kind": "stay",
+   "id": 201,
+   "start": "2026-10-22T05:30:00Z",
+   "end": "2026-10-22T06:00:00Z",
+   "startTimeZone": "Europe/Oslo",
+   "endTimeZone": "Europe/Oslo",
+   "place": {
+    "id": 2,
+    "name": "Café",
+    "city": "Oslo",
+    "country": "Norway",
+    "lat": 59.9139,
+    "lon": 10.751
+   },
+   "home": false
+  },
+  {
+   "kind": "move",
+   "id": 202,
+   "start": "2026-10-22T06:00:00Z",
+   "end": "2026-10-22T06:04:00Z",
+   "startTimeZone": "Europe/Oslo",
+   "endTimeZone": "Europe/Oslo",
+   "mode": "walk",
+   "distanceMeters": 161,
+   "geometry": [
+    [
+     10.751,
+     59.9139
+    ],
+    [
+     10.7523,
+     59.9141
+    ],
+    [
+     10.7536,
+     59.9145
+    ]
+   ]
+  },
+  {
+   "kind": "stay",
+   "id": 203,
+   "start": "2026-10-22T06:04:00Z",
+   "end": "2026-10-22T07:00:00Z",
+   "startTimeZone": "Europe/Oslo",
+   "endTimeZone": "Europe/Oslo",
+   "place": {
+    "id": 3,
+    "name": "Office",
+    "city": "Oslo",
+    "country": "Norway",
+    "lat": 59.9145,
+    "lon": 10.7536
+   },
+   "home": false
+  }
+ ]
+}

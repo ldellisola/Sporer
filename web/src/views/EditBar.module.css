@@ -1,0 +1,46 @@
+/*
+ * The bar of edit mode, at the top of the day's panel: the first thing it has, so that it shows when the sheet is at its lowest, and it stays at
+ * the top of the panel where this scrolls. The buttons are those of the forms (Forms.module.css), and wrap under the count when the panel is narrow.
+ */
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 0 8px;
+  padding: 2px 0 6px;
+  background: var(--surface);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+
+.count {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+/* Three buttons and the count in the 358 px of a phone's sheet, in the one line that a sheet at its lowest shows: the buttons give up a little of their side padding. */
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.buttons > button {
+  padding-right: 10px;
+  padding-left: 10px;
+}
+
+.note {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}

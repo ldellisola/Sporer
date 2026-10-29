@@ -1,13 +1,15 @@
 import { useCallback, useMemo, useState } from "react";
 import { shownOf, useDay, useHeat, usePlace, useRange, useTrip, useTrips } from "../api/queries";
-import type { DayResponse, PlaceResponse, RangeResponse, TripResponse, TripsResponse } from "../api/types";
+import type { DayPointsResponse, DayResponse, PlaceResponse, RangeResponse, TripResponse, TripsResponse } from "../api/types";
 import {
   dayGeoJson,
+  editPointsGeoJson,
   heatGeoJson,
   placeGeoJson,
   rangeGeoJson,
   tripGeoJson,
   tripsGeoJson,
+  type EditPointCollection,
   type FitFeatures,
   type HeatCollection,
 } from "../map/layers";
@@ -254,6 +256,16 @@ function useHeatMap(period: Period | null, offered: boolean, on: boolean, ready:
   };
 }
 
+/**
+ * The raw points of edit mode as the map draws them: one feature for each, with its index as its id, made once for the points that there are (some forty
+ * thousand on a dense day, which are not made again when the day is refetched, nor sent to the map again). Only for the day that edit mode is on: the
+ * points of another day, and any view that is not a day, have none.
+ */
+function useEditPointsCollection(route: Route, points: DayPointsResponse | undefined): EditPointCollection | undefined {
+  const drawn = points !== undefined && route.view === "day" && points.date === route.date ? points : undefined;
+  return useMemo(() => (drawn === undefined ? undefined : editPointsGeoJson(drawn.points)), [drawn]);
+}
+
 /** Where the fit stands: for which route, whether it has been made, and what the map was last brought to. */
 interface Fit {
   key: string;
@@ -272,15 +284,22 @@ interface Fit {
  * prefetched needs no wait. The panel asks for the map to be moved to a row through `onFocus`, and that is a new array each time,
  * which moves it again. The route that is left takes what was asked for with it. What Recenter brings back is `home`, all of what is
  * drawn. The settings have no map of their own and leave the one before them as it is (see `useMapRoute`).
+ *
+ * `points` are the raw points of the day while the owner is editing them (see `useEditPoints`): they are drawn over the routes of that day, as dots, and
+ * are no part of what the map is brought to.
  */
-export function useViewMap(route: Route, heatOn: boolean): ViewMap {
+export function useViewMap(route: Route, heatOn: boolean, points?: DayPointsResponse): ViewMap {
   const mapRoute = useMapRoute(route);
   // Every kind of view is asked for on every route, and each one asks for nothing on a route that is not its own.
   const views = { day: useDayMap(mapRoute), period: usePeriodMap(mapRoute), place: usePlaceMap(mapRoute), trips: useTripsMap(mapRoute), trip: useTripMap(mapRoute) };
   const { drawn, period, offered } = viewOf(mapRoute, views);
   const { data: routes, features, ready } = drawn;
   const { heat, state } = useHeatMap(period, offered, heatOn, ready);
-  const data = useMemo(() => (heat === undefined ? routes : { ...routes, heat }), [routes, heat]);
+  const editPoints = useEditPointsCollection(mapRoute, points);
+  const data = useMemo(
+    () => (heat === undefined && editPoints === undefined ? routes : { ...routes, ...(heat === undefined ? {} : { heat }), ...(editPoints === undefined ? {} : { editPoints }) }),
+    [routes, heat, editPoints],
+  );
   const key = formatRoute(mapRoute);
   const [fit, setFit] = useState<Fit>({ key, fitted: false, to: null });
 

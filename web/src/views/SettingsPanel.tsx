@@ -96,7 +96,7 @@ function Failed({ ranges }: { ranges: readonly FailedRange[] }) {
         </>
       )}
       {retry.isError && <ErrorState message="Couldn't retry" error={retry.error} onRetry={() => retry.mutate()} />}
-      {retry.isSuccess && <Toast key={retry.submittedAt} message={retriedNote(retry.data)} onDismiss={retry.reset} />}
+      <Toast toast={retry.isSuccess ? { id: retry.submittedAt, message: retriedNote(retry.data) } : null} onDismiss={retry.reset} />
     </>
   );
 }

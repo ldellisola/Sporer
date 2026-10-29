@@ -1,0 +1,28 @@
+/*
+ * Over the map and under its buttons (which are above it, so that Select area can be turned off): the box has the size of the map and lets every
+ * touch through, but for the surface while Select area is on, which has them all and takes no pan or zoom of the browser's.
+ */
+.layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.surface {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: crosshair;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The rectangle that is being drawn: the accent of the app, faint inside. */
+.box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px dashed var(--control-focus, #007aff);
+  border-radius: 2px;
+  background: rgba(0, 122, 255, 0.14);
+  pointer-events: none;
+}

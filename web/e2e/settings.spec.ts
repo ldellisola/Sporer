@@ -141,8 +141,10 @@ test("retry_failed_lists_the_failed_periods_and_posts_an_empty_json_object", asy
 
   await processing(page).getByRole("button", { name: "Retry failed" }).click();
 
-  // The write was a POST that said it was JSON, with an empty object for a body, and what it did is said for a while.
-  await expect(processing(page).getByRole("status")).toHaveText("Retrying 2 periods");
+  // The write was a POST that said it was JSON, with an empty object for a body, and what it did is said for a while: in the note that is fixed to the
+  // page (the sheet moves, and a note in it would go with it), which is the status that was there before it said so.
+  await expect(page.getByRole("status").filter({ hasText: "Retrying 2 periods" })).toHaveText("Retrying 2 periods");
+  await expect(processing(page).getByText("Retrying 2 periods")).toHaveCount(0);
   expect(api.writes).toEqual([{ method: "POST", path: "/api/status/retry", contentType: "application/json", body: {} }]);
   // What is on screen was asked for again: the list of failed periods is gone, and so is the button.
   await expect(processing(page).getByText("Nothing has failed")).toBeVisible();
@@ -169,7 +171,7 @@ test("retry_failed_that_fails_says_so_with_a_retry_and_keeps_the_list", async ({
 
   await alert.getByRole("button", { name: "Retry" }).click();
 
-  await expect(processing(page).getByRole("status")).toHaveText("Retrying 2 periods");
+  await expect(page.getByRole("status").filter({ hasText: "Retrying 2 periods" })).toHaveText("Retrying 2 periods");
   await expect(alert).toHaveCount(0);
   expect(api.writes.map((write) => `${write.method} ${write.path}`)).toEqual(["POST /api/status/retry", "POST /api/status/retry"]);
 });

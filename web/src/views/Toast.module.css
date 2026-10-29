@@ -1,18 +1,48 @@
 /*
- * A note at the bottom of the panel, a little lifted off it like the notes over the map: the panel's own colour would hide it, so it is
- * the sunken one with a line and a shadow. Where the panel scrolls it stays at the bottom of what is shown, and where it does not it sits
- * after what the panel has.
+ * Fixed to the viewport, in the body of the page (see Toast.tsx): above the peek of the bottom sheet, the home indicator of a phone, and the
+ * attribution that the map keeps above the sheet, so that a note is never behind the sheet or under a thumb at the lowest point, and is still
+ * over the sheet at the others. The box lets every touch through to the map: only the cards take them. On a wide screen the panel is the
+ * sidebar, which the note stays clear of.
  */
+.region {
+  position: fixed;
+  z-index: 40;
+  right: max(16px, var(--safe-right));
+  bottom: calc(var(--sheet-peek) + var(--safe-bottom) + 48px);
+  left: max(16px, var(--safe-left));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+@media (min-width: 900px) {
+  .region {
+    bottom: calc(24px + var(--safe-bottom));
+    left: calc(var(--sidebar-width) + 16px);
+  }
+}
+
+/*
+ * The live region has no look of its own: the card is what is seen, and with none the box has no size. It is never `display: none`, which would
+ * take it out of what a screen reader has: it would not be there for the message to be announced in.
+ */
+.live {
+  display: flex;
+  justify-content: center;
+  max-width: 100%;
+}
+
+/* The note, a little lifted off the map like the notes over it: the panel's own colour would hide it, so it is the sunken one with a line and a shadow. */
 .toast {
-  position: sticky;
-  bottom: 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   box-sizing: border-box;
-  margin: 12px 0 0;
-  padding: 6px 6px 6px 12px;
+  max-width: min(420px, 100%);
+  padding: 6px 6px 6px 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface-sunken);
@@ -20,6 +50,7 @@
   color: var(--ink);
   font-size: 13px;
   font-weight: 600;
+  pointer-events: auto;
 }
 
 .message {
@@ -50,6 +81,11 @@
   .action:hover {
     background: var(--row-hover);
   }
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .action:focus-visible {
