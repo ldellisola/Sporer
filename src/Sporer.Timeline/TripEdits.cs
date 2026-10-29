@@ -33,7 +33,8 @@ public static class TripEdits
     /// <param name="edits">The owner's edits, one for each <see cref="TripEdit.DetectedId"/>.</param>
     /// <param name="zoneAt">
     /// The IANA zone the night of a date was read in, or null where it is not known (see <see cref="ZoneOfNearestNight"/>). It is asked for
-    /// the zone of the first and of the last night of a trip whose dates were edited, and where it says nothing the zone the trip was
+    /// the zone of the night on the start date and of the night on the end date of a trip whose dates were edited (the night of a date is
+    /// the one that begins its evening, and is read at 03:00 local time on the next), and where it says nothing the zone the trip was
     /// detected in is used.
     /// </param>
     /// <remarks>
@@ -46,10 +47,12 @@ public static class TripEdits
     /// </para>
     /// <para>
     /// <b>What an edit does.</b> A deleted trip is dropped. A name is carried. A start date makes the date of the trip's first night, and
-    /// its start the local midnight that begins that date, in the zone the night of the date was read in; an end date is the day the trip
-    /// is over, so that its last night is the one before and it ends at the local midnight that begins that date, in the zone of that last
-    /// night. The nights are those from the first to the last, and a trip that was ongoing and is given an end date no longer is. A date
-    /// the owner left out is as it was detected, so a start date alone leaves the end of the trip alone, ongoing or not.
+    /// its start the local midnight that begins that date, in the zone the night of the date was read in. An end date is the day the person
+    /// is back, which is a day of the trip: the trip ends at the local midnight that ends that date (the one after it, 17 September 00:00
+    /// for an end date of the 16th), in the zone the night of the date was read in, so the day of the journey home, its moves and its
+    /// stays, is inside the trip; its local end date is the end date itself; and its last night is the one before. The nights are those from
+    /// the first to the last, and a trip that was ongoing and is given an end date no longer is. A date the owner left out is as it was
+    /// detected, so a start date alone leaves the end of the trip alone, ongoing or not.
     /// </para>
     /// <para>
     /// <b>What an edit cannot do.</b> New dates are not applied (the name still is) when they would leave the trip with no night or end it
@@ -57,7 +60,7 @@ public static class TripEdits
     /// (the first nights) depend on. Detection can change what an edit was made against, so the owner's request was fine when it was made
     /// and is not any more. The trips that share a night in that way all go back to their detected dates, and that is repeated until none
     /// does: a trip whose dates were given up may now share a night with another. Trips that merely touch (one is over the day the next
-    /// begins) do not share a night.
+    /// begins) do not share a night, though both of them have that day in their spans: the rule is about nights alone.
     /// </para>
     /// </remarks>
     public static IReadOnlyList<EditedTrip> Apply(
@@ -203,9 +206,10 @@ public static class TripEdits
 
         if (edit.EndDate is { } end)
         {
-            var last = end.AddDays(-1);
-            var zone = zoneAt(last) ?? trip.EndZone;
-            moved = moved with { LastNight = last, EndUtc = MidnightUtc(end, zone), EndZone = zone, LocalEndDate = end };
+            // It ends where the end date ends: at the midnight after it, in the zone the night of that date was read in (which is read three
+            // hours after the instant). The local end date is the date itself, not what the instant gives (that is the day after).
+            var zone = zoneAt(end) ?? trip.EndZone;
+            moved = moved with { LastNight = end.AddDays(-1), EndUtc = MidnightUtc(end.AddDays(1), zone), EndZone = zone, LocalEndDate = end };
         }
 
         moved = moved with { Nights = moved.LastNight.DayNumber - moved.FirstNight.DayNumber + 1 };

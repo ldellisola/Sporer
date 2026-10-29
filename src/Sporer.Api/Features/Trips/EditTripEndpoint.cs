@@ -85,8 +85,10 @@ public sealed record EditTripResponse(string Id);
 /// <see cref="RenamePlaceEndpoint.MaxNameLength"/> characters, else 400.
 /// </para>
 /// <para>
-/// <b>The dates.</b> The start date is the day the trip begins and the end date the day it is over, so the trip's nights are from the evening
-/// of the first to the one before the second: the start date must be before the end date, else 400. A date is <c>yyyy-MM-dd</c> and no other
+/// <b>The dates.</b> The start date is the day the trip begins and the end date the day the person is back, so the trip's nights are from the
+/// evening of the first to the one before the second: the start date must be before the end date, else 400. The trip begins at midnight
+/// at the start of the start date and ends at midnight at the end of the end date (see <see cref="TripEdits"/>), so the day of the journey
+/// home is part of the trip. A date is <c>yyyy-MM-dd</c> and no other
 /// form, from <see cref="EarliestDate"/> to <see cref="LatestDate"/>, else 400. A date the trip has already, where the owner has not given
 /// it one (a form that is filled in with the trip's dates and sends them back as they are), is as detected: the trip keeps the moments detection
 /// found, and does not begin or end at midnight. With only one of the dates, the trip's other end is as detected, and the nights it would

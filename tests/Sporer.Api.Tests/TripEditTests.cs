@@ -213,11 +213,12 @@ public class TripEditTests(DatabaseFixture db)
         }
         Assert.Equal([new EditRow("2026-07-09", "2026-07-11", "Still in Lisbon", null, null, false, null)], await EditsAsync(cs));
 
-        // An end date of the owner's own ends it: at midnight, in the zone the last of its nights was in.
+        // An end date of the owner's own ends it: at the midnight after that date, in the zone the night of that date was read in (the nearest
+        // night there is, which is in Lisbon).
         using (var ended = await JsonOf(await PutAsync(client, "2026-07-09", "Still in Lisbon", null, "2026-07-14"))) { }
 
         using var over = await GetAsync(client, "/api/trips/2026-07-09");
-        Assert.Equal((false, "2026-07-13T23:00:00Z", "2026-07-14", 5), (
+        Assert.Equal((false, "2026-07-14T23:00:00Z", "2026-07-14", 5), (
             over.RootElement.GetProperty("ongoing").GetBoolean(), over.RootElement.GetProperty("end").GetString(),
             over.RootElement.GetProperty("localEndDate").GetString(), over.RootElement.GetProperty("nights").GetInt32()));
     }
@@ -251,14 +252,15 @@ public class TripEditTests(DatabaseFixture db)
         var t = trip.RootElement;
         Assert.Equal(("2026-07-08", "2026-07-12", 5), (t.GetProperty("firstNight").GetString(), t.GetProperty("lastNight").GetString(), t.GetProperty("nights").GetInt32()));
         Assert.Equal(("2026-07-08", "2026-07-13", false), (t.GetProperty("localStartDate").GetString(), t.GetProperty("localEndDate").GetString(), t.GetProperty("ongoing").GetBoolean()));
-        // Local midnights, in the zones of the nights: the one of the 8th (the night before it is at home), and the one of the 13th (the night of
-        // the 12th is at home too). Oslo is UTC+2 in July.
-        Assert.Equal(("2026-07-07T22:00:00Z", "2026-07-12T22:00:00Z"), (t.GetProperty("start").GetString(), t.GetProperty("end").GetString()));
+        // Local midnights, in the zones of the nights: the one that begins the 8th (the night of the 8th is at home), and the one that ends the
+        // 13th, the day the person is back (the night of the 13th is at home too), which is the 14th at 00:00. Oslo is UTC+2 in July.
+        Assert.Equal(("2026-07-07T22:00:00Z", "2026-07-13T22:00:00Z"), (t.GetProperty("start").GetString(), t.GetProperty("end").GetString()));
         Assert.Equal((Oslo, Oslo), (t.GetProperty("startTimeZone").GetString(), t.GetProperty("endTimeZone").GetString()));
         Assert.True(t.GetProperty("edited").GetBoolean());
         Assert.Equal("Lisbon & Oslo", t.GetProperty("name").GetString()); // not named by the owner: the nights are, and two of them are at home
 
-        // A day for every date from the 8th to the 13th, and the walk after the return is now part of the trip, with the home it began at.
+        // A day for every date from the 8th to the 13th, and the day of the journey home is inside the trip: the walk after the return is now
+        // part of it, with the home it began at.
         Assert.Equal(["2026-07-08", "2026-07-09", "2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13"],
             t.GetProperty("days").EnumerateArray().Select(d => d.GetProperty("date").GetString()));
         Assert.Equal(1_000, t.GetProperty("stats").GetProperty("groundDistanceMeters").GetDouble());
@@ -276,7 +278,7 @@ public class TripEditTests(DatabaseFixture db)
         Assert.Equal([new EditRow("2026-07-09", "2026-07-11", null, null, "2026-07-12", false, null)], await EditsAsync(cs));
         var last = Assert.Single(await StoredAsync(cs));
         Assert.Equal(("2026-07-09", "2026-07-11", 3, null), (last.Id, last.LastNight, last.Nights, last.DetectedId));
-        Assert.Equal((Utc(7, 9, 7), Utc(7, 11, 23)), (last.StartUtc, last.EndUtc)); // started as detected; ends at midnight of the 12th in Lisbon (UTC+1)
+        Assert.Equal((Utc(7, 9, 7), Utc(7, 12, 22)), (last.StartUtc, last.EndUtc)); // started as detected; ends at the midnight after the 12th, in Oslo: the night of the 12th is at home
     }
 
     [Fact]

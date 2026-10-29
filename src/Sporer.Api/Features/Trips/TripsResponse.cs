@@ -14,7 +14,8 @@ public sealed record TripsResponse(IReadOnlyList<TripDto> Trips);
 /// the person left and came back (ISO-8601 UTC, <c>Z</c>); <paramref name="End"/> is always there, and null while the trip is
 /// <paramref name="Ongoing"/>. The local dates are those of the start and end in <paramref name="StartTimeZone"/> and
 /// <paramref name="EndTimeZone"/>, the IANA zones they were in (for an ongoing trip the end date is the day after its last
-/// night). <paramref name="Name"/> is the owner's name for the trip where it has one, and made up when asked for where not (see
+/// night; for a trip whose end date the owner set, the trip ends at the midnight after that date, so the end date is the one the
+/// owner gave and not the date of <paramref name="End"/>). <paramref name="Name"/> is the owner's name for the trip where it has one, and made up when asked for where not (see
 /// <see cref="TripNaming"/>), as are <paramref name="Cities"/>. <paramref name="Edited"/> says the owner has edited the trip: named it,
 /// or changed its dates (an edit of the dates is why <paramref name="Id"/> may not be the night detection found it on).
 /// </summary>

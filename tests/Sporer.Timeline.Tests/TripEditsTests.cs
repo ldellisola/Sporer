@@ -67,14 +67,15 @@ public class TripEditsTests
     {
         var detected = Trip(D(9, 12), D(9, 13));
 
-        // From the 11th (the night of that date was read in Lisbon, UTC+1 in September) to the 16th: the last night is the 15th, read in
-        // Tokyo (UTC+9), and the trip is over when the 16th begins there.
+        // From the 11th (the night of that date was read in Lisbon, UTC+1 in September) to the 16th: the last night is the 15th. The 16th is the
+        // day the person is back, so the trip is over when it ends: at the midnight after it, in the zone the night of the 16th was read in
+        // (Tokyo, UTC+9). Its local end date is the 16th, not the 17th that the instant is on.
         var edited = Assert.Single(TripEdits.Apply([detected], [Edit(D(9, 12), D(9, 13), start: D(9, 11), end: D(9, 16))], ZoneAt));
 
         Assert.Equal(
             new DetectedTrip(
                 FirstNight: D(9, 11), LastNight: D(9, 15), Nights: 5,
-                StartUtc: Utc(9, 10, 23), EndUtc: Utc(9, 15, 15),
+                StartUtc: Utc(9, 10, 23), EndUtc: Utc(9, 16, 15),
                 StartZone: Lisbon, EndZone: Tokyo,
                 LocalStartDate: D(9, 11), LocalEndDate: D(9, 16)),
             edited.Trip);
@@ -88,7 +89,7 @@ public class TripEditsTests
 
         // An end date makes an ongoing trip one that is over.
         var ended = Assert.Single(TripEdits.Apply([ongoing], [Edit(D(9, 12), D(9, 13), end: D(9, 14))], ZoneAt));
-        Assert.Equal(Utc(9, 13, 23), ended.Trip.EndUtc); // 14 September 00:00 in Lisbon, one hour east of UTC
+        Assert.Equal(Utc(9, 14, 23), ended.Trip.EndUtc); // 15 September 00:00 in Lisbon (the night of the 14th was read there), one hour east of UTC
         Assert.Equal(Lisbon, ended.Trip.EndZone);
         Assert.Equal(D(9, 14), ended.Trip.LocalEndDate);
         Assert.Equal(D(9, 13), ended.Trip.LastNight);
@@ -112,7 +113,7 @@ public class TripEditsTests
 
         Assert.Equal((Oslo, Oslo), (edited.Trip.StartZone, edited.Trip.EndZone));
         Assert.Equal(Utc(9, 10, 22), edited.Trip.StartUtc); // Oslo is UTC+2 in September
-        Assert.Equal(Utc(9, 14, 22), edited.Trip.EndUtc);
+        Assert.Equal(Utc(9, 15, 22), edited.Trip.EndUtc); // 16 September 00:00
     }
 
     [Fact]
@@ -208,14 +209,17 @@ public class TripEditsTests
         var first = Trip(D(9, 12), D(9, 13));
         var second = Trip(D(9, 20), D(9, 22));
 
-        // One comes back on the 16th and the other leaves on the 16th: the first night of one is the day after the last of the other.
+        // One comes back on the 16th and the other leaves on the 16th: the first night of one is the day after the last of the other, and
+        // the 16th is a day of both of them.
         var edited = TripEdits.Apply(
             [first, second],
             [Edit(D(9, 12), D(9, 13), end: D(9, 16)), Edit(D(9, 20), D(9, 22), start: D(9, 16))],
             ZoneAt);
 
         Assert.Equal([(D(9, 12), D(9, 15)), (D(9, 16), D(9, 22))], edited.Select(e => (e.Trip.FirstNight, e.Trip.LastNight)));
-        Assert.True(edited[0].Trip.EndUtc <= edited[1].Trip.StartUtc); // the one is over when the other begins
+        Assert.Equal(D(9, 16), edited[0].Trip.LocalEndDate);
+        Assert.Equal(D(9, 16), edited[1].Trip.LocalStartDate);
+        Assert.Equal(TimeSpan.FromDays(1), edited[0].Trip.EndUtc - edited[1].Trip.StartUtc); // the day they share, which is in the span of both
     }
 
     [Fact]
