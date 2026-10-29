@@ -222,7 +222,7 @@ async function intoEditMode(page: Page, overrides: Overrides): Promise<{ project
         return { dpr: devicePixelRatio, canvas: canvas ? [canvas.width, canvas.height] : null, rect: rect ? [rect.x, rect.y, rect.width, rect.height] : null, inner: [innerWidth, innerHeight] };
       });
       const around: string[] = [];
-      for (const [dx, dy] of [[0, 0], [-2, 0], [2, 0], [0, -2], [0, 2], [-5, -5], [5, 5]]) around.push(`${dx},${dy}=${(await pixelAt(page, x + dx!, y + dy!)).join("/")}`);
+      for (const [dx, dy] of [[0, 0], [-2, 0], [2, 0], [0, -2], [0, 2], [4, 0], [-4, 0], [0, -4], [-5, -5], [5, 5]]) around.push(`${dx},${dy}=${(await pixelAt(page, x + dx!, y + dy!)).join("/")}`);
       console.log(`DIAG ${test.info().project.name} wait=${wait} at=${x.toFixed(1)},${y.toFixed(1)} ${JSON.stringify(info)} ${around.join(" ")}`);
     }
     console.log(`DIAGBAR ${test.info().project.name} ${JSON.stringify(await bar(page).innerText())}`);
