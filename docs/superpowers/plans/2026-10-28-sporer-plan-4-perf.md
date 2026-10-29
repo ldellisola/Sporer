@@ -21,17 +21,17 @@ too early by about 0.4 s (see "Web"), and was changed before any number was kept
 | **Backfill**, the whole history with **1,000 removed points** spread over it, to 100 % with nothing pending | ≤ +5 % on `main`'s mean, on this machine | `main` 119.9 / 113.4 s (mean 116.7), Plan 4 120.8 / 116.5 / 114.6 s (mean 117.3): **+0.6 %** on the means; the two back-to-back pairs +0.8 % and +2.7 %. (Plan 4 with no point removed: 113.4 s) | Met, 4.4 points under |
 | **`PUT /api/trips/{id}`** (rename), 20 in a running process | p95 ≤ 300 ms | p50 **18.2-31.1 ms**, p95 **23.0-33.7 ms** over three runs; the name taken back, p95 19.6-33.8 ms | Met, 9 to 13 times under |
 | **`POST /api/places/{id}/merge`** (the old home into the new home), 20 | p95 ≤ 300 ms | p50 25.7-38.9 ms, p95 **27.4-49.0 ms**; its `Separate`, p95 18.2-33.2 ms | Met, 6 to 11 times under |
-| **`PUT /api/settings`** (the trip distance 60 km), 20 | p95 ≤ 300 ms | p50 16.2-28.9 ms, p95 **17.7-44.3 ms**; and back to `null`, p95 17.6-32.0 ms | Met, 7 to 17 times under |
+| **`PUT /api/settings`** (the trip distance 60 km), 20 | p95 ≤ 300 ms | p50 16.2-28.9 ms, p95 **17.7-44.3 ms**; and back to `null`, p95 17.6-31.8 ms | Met, 7 to 17 times under |
 | *The first edit after a start*: the first round of a new process | read against the same | rename **232 ms** (and 259 ms, the max of a run with no warm-up), merge 89 ms, distance 42 ms (the JIT; in a warm process 22, 26 and 17 ms) | Inside 300 ms, by 14 % at worst: see "Edits" |
 | **`GET /api/day/{date}/points`**, every one of the 874 days once | p95 ≤ 400 ms | p50 15.9-17.8 ms, **p95 34.9-42.6 ms**, max 81.0 ms over three runs; 27 days have no points, the median day has 472,553 B raw | Met, 9 to 11 times under |
 | ... a typical day (2024-09-18, 11,585 points), 50 requests | ≤ 400 ms | p50 18.1-21.5 ms, **p95 24.6-27.9 ms**; 96,752 B Brotli, 472,553 B raw | Met |
 | ... **the heaviest day** (2025-06-28), **36,940 points**, 50 requests | ≤ 400 ms | p50 66.8-71.0 ms, **p95 80.3-86.0 ms**, max 95.9 ms; 320,612 B Brotli, 1,506,308 B raw | Met, 4.7 times under at the worst p95 |
-| **`GET /api/places/search`**, no `q`, and a `q` of three letters, 200 each | p95 ≤ 200 ms | no `q`: p50 5.4, p95 **6.2** ms; a `q` of 2-3 letters: p50 5.5, p95 **5.9** ms (unnamed: 6.5 and 2.6 ms, the `q` finds none). 252 B Brotli, 1,195 B raw (20 places) | Met, 32 times under |
+| **`GET /api/places/search`**, no `q`, and a `q` of three letters, 200 each | p95 ≤ 200 ms | named, over three runs: no `q`: p50 5.4-5.5, p95 **5.9-6.2** ms; a `q` of 2-3 letters: p50 5.5-5.7, p95 **5.8-5.9** ms (unnamed, one run: 6.5 and 2.6 ms, the `q` finds none). 252 B Brotli, 1,195 B raw (20 places) | Met, 32 times under |
 | **Plans** (`EXPLAIN (ANALYZE, BUFFERS)`) of the removal's anti-join, the day's points and the search | no query scans a large table | a week of 113,958 points with 9 of the 1,000 removals: 49.0 ms against 38.9 ms without the anti-join (a merge anti join against the removals, sorted: 0.23 ms); the same week's next point and a night's nearest point: 1.4 and 0.5 ms (probes of the removals' key); the heaviest day: 13.0 ms; the search: 6.7 and 4.1 ms, which reads the 7,607 segments twice | Met; the search is the one that grows with the history, see "Plans" |
 | **Web, edit mode: from the tap on Edit points to the points drawn**, the heaviest day, phone project, 4× CPU, 7 runs | ≤ 2 s | median **1,023 ms**, worst 1,269 ms (the answer is there at 84 / 89 ms; the map has the tiles of the points at 1,010 / 1,180 ms, and draws them in the same frame) | Met, 1.6 times under at the worst |
-| *Information:* the **reads that were there**, against `main` on this machine and history (named places, p50 / p95 ms) | Plan 3's targets | day 7.4 / 9.0 against 6.0-7.4 / 6.6-9.6; range 31 days 10.1 / 12.1 against 10.0 / 12.1-12.3; places 6.6 / 7.6 against 7.2-7.3 / 8.2-8.8; trips 4.6 / 6.1 against 4.8-5.0 / 5.2-7.1; trip of 25 nights 6.7 / 8.0 against 6.9-7.1 / 7.5-8.3 | The same, within the spread (about 1 ms); the trips' answers are 33 B larger (`ownName` and the edit flags) |
+| *Information:* the **reads that were there**, Plan 4 (three runs) against `main` on this machine and history (named places, p50 / p95 ms) | Plan 3's targets | day 6.0-7.4 / 6.6-9.6 against 7.4 / 9.0; range 31 days 10.0 / 12.1-12.3 against 10.1 / 12.1; places 7.2-7.3 / 8.2-8.8 against 6.6 / 7.6; trips 4.8-5.0 / 5.2-7.1 against 4.6 / 6.1; trip of 25 nights 6.9-7.1 / 7.5-8.3 against 6.7 / 8.0 | The same, within the spread (about 1 ms); the trips' answers are 33 B larger (`ownName` and the edit flags) |
 | *Information:* the **web app's start** | Plan 2's: main-thread JavaScript ≤ 450 kB gzip | 397.8 kB (Plan 3: 383.9): the page's own chunk 116.4 kB (102.6), MapLibre's chunk 281.4 kB (281.4) | Met, 52 kB under; the editing is 13.8 kB gzip of the page's chunk |
-| *Information:* the views that were there, **rows in the DOM against `main`'s** web app (median of 7, ms) | Plan 3's: ≤ 1 s / 2 s / 3 s | day 453 against 389, then in alternating pairs 395 / 407 against 394 / 439; year 411 against 526, then 504 / 485 against 511 / 535; the heaviest day, the months, the trips: −4 % to +5 % | The same, within the spread of the runs (the first pass had the day 16 % over and the year 22 % under: the pairs say neither) |
+| *Information:* the views that were there, **rows in the DOM, Plan 4 against `main`'s** web app (median of 7, ms) | Plan 3's: ≤ 1 s / 2 s / 3 s | day 453 against 389, then in alternating pairs 394 / 439 against 395 / 407; year 528 against 526, then 511 / 535 against 504 / 485; the heaviest day, the months, the trips: −4 % to +5 % | The same, within the spread of the runs (the first pass had the day 16 % over, which the pairs do not repeat: 0 % and +8 %) |
 
 Everything in the table is a number from the runs below.
 
@@ -169,10 +169,10 @@ compressing 1.5 MB. The removal's own limit is 50,000 points. A real day of long
 
 | | p50 | p95 | p99 | max | Brotli | Raw |
 | --- | --- | --- | --- | --- | --- | --- |
-| No `q`, named places | 5.4 | 6.2 | 8.0 | 8.6 | 252 | 1,195 |
-| A `q` of 2-3 letters, named places (all of them match: 20 places) | 5.5 | 5.9 | 6.6 | 10.0 | 252 | 1,195 |
-| No `q`, no place named | 6.0 | 6.5 | 9.2 | 13.8 | 153 | 981 |
-| A `q`, no place named (it finds none) | 2.4 | 2.6 | 2.8 | 4.5 | 6 | 2 |
+| No `q`, named places (three runs) | 5.4-5.5 | 5.9-6.2 | 6.5-8.0 | 7.3-8.6 | 252 | 1,195 |
+| A `q` of 2-3 letters, named places (three runs; all of them match: 20 places) | 5.5-5.7 | 5.8-5.9 | 5.9-6.6 | 6.7-10.0 | 252 | 1,195 |
+| No `q`, no place named (one run) | 6.0 | 6.5 | 9.2 | 13.8 | 153 | 981 |
+| A `q`, no place named (one run; it finds none) | 2.4 | 2.6 | 2.8 | 4.5 | 6 | 2 |
 
 The search is two reads of `segment` (7,607 rows) in one query (4 to 7 ms in the plans), which is all of the endpoint's time and does not depend
 on the `q`. It is also the one query here that grows with the history: ten times the segments would be about ten times as long, which is not
@@ -212,7 +212,7 @@ is the timeline and not the raw points. **No index and no migration was added.**
 
 The same as Plans 2 and 3's (`npm run perf:record`, then `npm run perf`), with edit mode added.
 
-1. **Record** (`web/scripts/perf/record.mjs`, extended): it also asks for the points of every day that has a timeline (874 requests, about half a
+1. **Record** (`web/scripts/perf/record.mjs`, extended): it also asks for the points of every day that has a timeline (816 requests, about half a
    minute) to find the day with the most, and records that day, its neighbours (which the app prefetches) and its points. The scenario is
    `edit-points`: 10 scenarios, 31 responses.
 2. **Play back** (`web/perf/web-timing.spec.ts`, extended): the cold navigation to the day as for the others, and then, with the page at rest, the
@@ -253,16 +253,16 @@ alternating runs (main, Plan 4, main, Plan 4), for the day and the year only. Ro
 | | Typical day | Heaviest day | Typical month | Heaviest month | Year | Trips | Trip, 25 nights |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `main` | 389 / 409 | 386 / 435 | 412 / 469 | 421 / 475 | 526 / 588 | 387 / 420 | 390 / 435 |
-| Plan 4 | 453 / 462 | 387 / 448 | 427 / 439 | 437 / 500 | 411 / 440 | 371 / 402 | 389 / 406 |
+| Plan 4 | 453 / 462 | 387 / 448 | 427 / 439 | 437 / 500 | 528 / 637 | 371 / 402 | 389 / 406 |
 
 | Alternating runs, the day 2025-12-05 and the year 2025 | Day, `main` | Day, Plan 4 | Year, `main` | Year, Plan 4 |
 | --- | --- | --- | --- | --- |
 | first pair | 395 / 436 | 394 / 419 | 504 / 612 | 511 / 588 |
 | second pair | 407 / 425 | 439 / 497 | 485 / 598 | 535 / 566 |
 
-The pairs disagree with the first pass (the day 16 % over, the year 22 % under) and not with each other: the day is 394-439 ms against 395-407
-(0 % and +8 % in the two pairs), the year 511-535 against 485-504 (+1 % and +10 %), which is what one run of seven shows of this machine.
-The heaviest day, the months and the trips are within −4 % and +5 % of `main`'s in the first pass. Plan 4 added edit mode to the shell and the
+In the first pass the year is the same as `main`'s (528 against 526 ms, +0.4 %) and the day is 16 % over (453 against 389 ms); the pairs do not
+repeat the day (394-439 ms against 395-407: 0 % and +8 % in the two pairs) and have the year at 511-535 against 485-504 (+1 % and +10 %), which is what one
+run of seven shows of this machine. The heaviest day, the months and the trips are within −4 % and +5 % of `main`'s in the first pass. Plan 4 added edit mode to the shell and the
 map and a button to the day; it changed nothing else of these views.
 
 **Bundle** (`npm run build`, `npm run perf:bundle`): the main-thread JavaScript is **397.8 kB** gzip (Plan 3: 383.9 kB), 52 kB under the 450 kB
@@ -328,13 +328,13 @@ tools/perf/api-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22          #
 docker exec -i sporer-perf-db psql -U postgres -d perf -X < tools/perf/name-places.sql
 tools/perf/api-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22
 tools/perf/points-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22       # about 30 seconds
-tools/perf/edit-latency.sh http://127.0.0.1:5100 20 3                          # about 10 seconds; start the API again first to see the first edit of a start
+tools/perf/edit-latency.sh http://127.0.0.1:5100 20 3                          # a few seconds; start the API again first to see the first edit of a start
 docker exec -i sporer-perf-db psql -U postgres -d perf -X -v from='2025-06-24 00:00:00+00' \
   -v day_from='2025-06-27 22:00:00+00' -v day_to='2025-06-28 22:00:00+00' < tools/perf/explain-edits.sql
 
 # --- The web: record once (the API running over the history), then measure (the API may be stopped) ---
 cd web
-npm run perf:record -- http://127.0.0.1:5100 2024-06-01 2026-10-22 2025       # web/perf/recorded/, not committed; 31 responses, about 25 seconds
+npm run perf:record -- http://127.0.0.1:5100 2024-06-01 2026-10-22 2025       # web/perf/recorded/, not committed; 31 responses, about half a minute
 npm run perf                      # builds, serves the build, 72 tests, about 4 minutes; PERF_RUNS=7 PERF_CPU=4 by default
 npm run perf -- --grep "edit-points|warm-up"                                   # the scenario of edit mode alone, with its screenshots in web/perf/results/
 npm run perf:bundle               # after `npm run build`

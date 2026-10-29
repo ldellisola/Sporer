@@ -225,7 +225,11 @@ test("fixTime_fixes_the_date_of_the_page_and_leaves_its_timers_and_frames_alone"
 
 // sheetAtRest (sheet.ts) is a helper of the specs, and its fault was a race that three full runs of the suite did not show (P3-R34b): after a goBack() the
 // view that comes back renders a moment later, and the sheet moves only then, so a look at once finds nothing moving. This puts the late render on a page of
-// its own, on a clock, so that it is the same every time: the row and the move of the sheet come 400 ms after the call, as a render that is slow would bring them.
+// its own, so that it is the same every time: the row comes 400 ms after the call, as a render that is slow would bring it, and the move of the sheet two
+// frames after the first look that the helper takes at the sheet once the row is there, which is what a view that renders in one commit and starts its
+// transition in the next gives (the move is tied to the look and not to the clock: a round trip of the test's own takes longer than two frames, so a move
+// started two frames after the row was already running when a helper that waits for the row first looked). A helper that waits for the row and then
+// looks for a move once is past it before the move begins, and returns; the three frames with nothing moving are what catch it.
 test("sheet_at_rest_given_the_content_of_a_restored_view_waits_for_it_and_for_the_move_it_starts", async ({ page }) => {
   await page.goto(BLANK);
   const wide = page.viewportSize()!.width >= 900; // the helper looks for the sheet as the layout names it (a page with no viewport tag is 980 wide on a phone)
@@ -237,16 +241,27 @@ test("sheet_at_rest_given_the_content_of_a_restored_view_waits_for_it_and_for_th
     const state = window as unknown as { rendered: boolean; moved: boolean };
     state.rendered = false;
     state.moved = false;
+    let begun = false;
+    const look = sheet.getAnimations.bind(sheet);
+    sheet.getAnimations = (...options) => {
+      const found = look(...options);
+      if (state.rendered && !begun) {
+        begun = true;
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            // The move that the render starts: 300 ms, a little longer than the sheet's own, so that it is plain when it is not waited for.
+            const move = sheet.animate([{ transform: "translateY(200px)" }, { transform: "translateY(0)" }], { duration: 300 });
+            void move.finished.then(() => (state.moved = true));
+          }),
+        );
+      }
+      return found; // what was there at the look: nothing, the first time
+    };
     setTimeout(() => {
       const row = document.createElement("button");
       row.textContent = "Open Thu 22 Oct";
       sheet.append(row);
       state.rendered = true;
-      requestAnimationFrame(() => {
-        // The move that the render starts: 300 ms, a little longer than the sheet's own, so that it is plain when it is not waited for.
-        const move = sheet.animate([{ transform: "translateY(200px)" }, { transform: "translateY(0)" }], { duration: 300 });
-        void move.finished.then(() => (state.moved = true));
-      });
     }, 400);
   }, wide);
 

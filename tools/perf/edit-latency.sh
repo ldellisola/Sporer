@@ -9,6 +9,10 @@
 #   PUT /api/trips/{id}          renames the trip, and then takes the name back (null: the automatic one)
 #   POST /api/places/{p}/merge   merges `other-place` into `place`, and then DELETE /api/places/{p}/merged/{o} separates it again
 #   PUT /api/settings            sets the trip distance to 60 km, and then back to null (the configured one)
+# What puts it back is "as detected", `null` and "not merged", and not what was there before, so the script assumes a history on which there is
+# nothing of the owner's to lose and checks it first: it refuses to run when the trip has an edit of the owner's (its `edited` is true), when
+# `other-place` is merged into `place` already, or when the trip distance is not the configured one (`GET /api/settings`). A distance that was
+# set to the very value that is configured cannot be told from none, and would be taken back to none.
 # `warmup` rounds come first and are not measured (the first requests of a process cost more, as the Plan 2 document found). The first round's
 # own times are printed, since that is what the owner's first edit after a start is; with `warmup` 0 that round is one of the measured. Then
 # `rounds` measured rounds. The time is curl's time_total in ms, over loopback, with a JSON body and `Content-Type: application/json` (a write
@@ -49,6 +53,14 @@ if [ -z "$other" ]; then
   other=$(get /api/places/search | jq -r --argjson p "$place" '[.[] | select(.id != $p)][0].id // empty')
 fi
 [ -n "$place" ] && [ -n "$other" ] || { echo "edit-latency.sh: the history has no two places to merge" >&2; exit 2; }
+
+# Nothing of the owner's is lost by what puts the stored edits back (see the header): refuse where there is something to lose.
+get "/api/trips/$trip" | jq -e '.edited == false' > /dev/null ||
+  { echo "edit-latency.sh: the trip $trip has an edit of the owner's, which the run would take back: use a history with none" >&2; exit 2; }
+get "/api/places/$place" | jq -e --argjson o "$other" '[.merged[].id] | index($o) == null' > /dev/null ||
+  { echo "edit-latency.sh: place $other is merged into place $place already: separate it, or give two other places" >&2; exit 2; }
+get /api/settings | jq -e '.tripMinDistanceKm == .tripMinDistanceKmDefault' > /dev/null ||
+  { echo "edit-latency.sh: the trip distance is set ($(get /api/settings | jq -c .)), which the run would take back: use a history with none" >&2; exit 2; }
 echo "trip $trip, merging place $other into place $place (the home when it has one)"
 
 # method path [json-body]: runs one write and appends "status seconds" to the file named by $label

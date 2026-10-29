@@ -135,8 +135,8 @@ test("rename_a_place_then_merge_another_into_it_and_both_show_in_the_place_and_t
 
   await back(page).click();
   await expect(page).toHaveURL(/\/day\/2026-10-22$/);
-  await sheetAtRest(page);
-  await expect(staysAt(page, "Corner Café")).toHaveCount(1); // the day was asked for again and has the new name
+  await sheetAtRest(page, staysAt(page, "Corner Café")); // the day comes back, asked for again, with the new name, and the sheet moves with it
+  await expect(staysAt(page, "Corner Café")).toHaveCount(1);
   await expect(staysAt(page, "Café")).toHaveCount(0);
   await expect(staysAt(page, "Office")).toHaveCount(1);
 
@@ -175,7 +175,7 @@ test("rename_a_place_then_merge_another_into_it_and_both_show_in_the_place_and_t
   // The day: both of its stays are at the one place now.
   await back(page).click();
   await expect(page).toHaveURL(/\/day\/2026-10-22$/);
-  await sheetAtRest(page);
+  await sheetAtRest(page, staysAt(page, "Corner Café").first());
   await expect(staysAt(page, "Corner Café")).toHaveCount(2);
   await expect(staysAt(page, "Office")).toHaveCount(0);
   expect(server.mergedIn()).toEqual([3]);
@@ -199,7 +199,7 @@ test("separate_gives_a_merged_place_back_its_name_in_the_place_and_the_day", asy
   await expect(details(page).locator("dl > div").nth(1)).toHaveText("Visits 3", { useInnerText: true }); // the café's own again
   expect(api.writes.at(-1)).toEqual({ method: "DELETE", path: "/api/places/2/merged/3", contentType: "application/json", body: null });
   await back(page).click();
-  await sheetAtRest(page);
+  await sheetAtRest(page, staysAt(page, "Office"));
   await expect(staysAt(page, "Office")).toHaveCount(1);
   await expect(staysAt(page, "Café")).toHaveCount(1);
 });

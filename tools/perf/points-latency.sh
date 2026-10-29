@@ -35,7 +35,7 @@ for ((k = 0; k < days; k++)); do
   curl -s -o /dev/null -H 'Accept-Encoding: identity' -w "$date %{http_code} %{time_total} %{size_download}\n" "$base/api/day/$date/points" >> "$workdir/sweep"
 done
 failed=$(awk '$2 != 200' "$workdir/sweep" | wc -l)
-# An empty day is {"date":"...","devices":[],"points":[]}, 51 bytes: those that have points are the days worth looking at.
+# An empty day is {"date":"...","devices":[],"points":[]}, 46 bytes: those that have points are the days worth looking at.
 awk '$4 > 100' "$workdir/sweep" | sort -k4,4n > "$workdir/withpoints"
 with=$(wc -l < "$workdir/withpoints")
 printf '%-34s %s  non-200=%d  raw: median %d B, p95 %d B, max %d B  (%d of %d days have points)\n' \
