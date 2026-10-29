@@ -1,30 +1,7 @@
-/* What there is to say when no trip is deleted: a line, which takes the focus when the last one is restored (it is not a control, and a ring round a line of text says nothing). */
-.none {
-  margin: 0 0 8px;
-  font-size: 14px;
-  color: var(--ink-muted);
-}
-
-.none:focus {
-  outline: none;
-}
-
-/* A deleted trip: what it was called, and the button at the right (the button is Forms.module.css's). */
-.deleted {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 44px;
-}
-
+/* A deleted trip: what it was called (the row, its button and the note that there is none are Rows.module.css's). */
 .deletedLabel {
   min-width: 0;
   font-size: 13.5px;
   font-weight: 600;
   overflow-wrap: anywhere;
-}
-
-.deleted button {
-  flex: none;
 }

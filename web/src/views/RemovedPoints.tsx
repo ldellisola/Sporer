@@ -69,7 +69,7 @@ export function RemovedPoints() {
       {removed === undefined ? (
         !query.isError && <Loading />
       ) : list.length === 0 ? (
-        <p ref={focus.fallback} tabIndex={-1} className={styles.none}>
+        <p ref={focus.fallback} tabIndex={-1} className={rows.none}>
           No removed points
         </p>
       ) : (
@@ -78,8 +78,8 @@ export function RemovedPoints() {
             const working = restore.isPending && restore.variables.batch === batch.batch;
             const when = `removed ${whenOf(batch.removedAt)}`;
             return (
-              <li key={batch.batch} className={styles.removed}>
-                <div className={styles.text}>
+              <li key={batch.batch} className={rows.item}>
+                <div className={rows.itemText}>
                   <span className={styles.dates}>{daysOf(batch)}</span>
                   <span className={styles.meta}>{`${formatCount(batch.count, "point")} · ${when}`}</span>
                 </div>

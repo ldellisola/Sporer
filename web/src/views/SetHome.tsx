@@ -45,7 +45,7 @@ interface HomeDatesProps {
 
 /**
  * What the place is to be home for, to be saved: the night it was home from, and the night it was home to when it was not for good (the nights are those the
- * owner slept at the place; a home that is set takes the place of what detection found for those dates). The question takes the focus when the form opens (it
+ * owner slept at the place). A home that is set takes the place of what detection found for those dates, which the form says before it is saved (P4-R44). The question takes the focus when the form opens (it
  * is read, and Escape is Cancel at once). A start date that is empty, or an end date before it, is told by the form (on Save, and not as the dates are typed,
  * which passes through such dates), with the focus on the field to put right; every other refusal is the server's, in its words with no Retry (`WriteError`),
  * and the form stays as it was to be put right: a 409 is another home of the owner's in these dates, and a 404 is a place that is gone, which another place
@@ -106,7 +106,8 @@ function HomeDates({ place, add, onChooseAnother, onClose }: HomeDatesProps) {
       <p ref={question} tabIndex={-1} className={forms.question}>
         {`Set ${place.name ?? UNNAMED} as home`}
       </p>
-      {place.address !== null && <p className={styles.place}>{place.address}</p>}
+      {place.address !== null && <p className={styles.detail}>{place.address}</p>}
+      <p className={styles.detail}>A home you set replaces what was detected for those dates.</p>
       <div className={forms.dates}>
         <div>
           <label className={forms.label} htmlFor={fromId}>
@@ -166,10 +167,17 @@ function HomeDates({ place, add, onChooseAnother, onClose }: HomeDatesProps) {
 
 /**
  * The form that sets a home: first the place, picked from all the places in use (`PlacePicker` with no place to start from: there may be none that was
- * detected, which is when this matters most), then the dates (`HomeDates`), with a way back to the picker. `add` is the write, which the section owns.
+ * detected, which is when this matters most), then the dates (`HomeDates`), with a way back to the picker, which drops what the write said of the place
+ * that was chosen. `add` is the write, which the section owns.
  */
 export function SetHome({ add, onClose }: { add: AddHome; onClose: () => void }) {
   const [place, setPlace] = useState<PlaceSearchResult | null>(null);
   if (place === null) return <PlacePicker onPick={setPlace} onCancel={onClose} />;
-  return <HomeDates place={place} add={add} onChooseAnother={() => setPlace(null)} onClose={onClose} />;
+  // The refusal that is on screen was of that place: it is forgotten with it, and not said again (a live region that is made with a message is announced)
+  // of the form for the next one.
+  const chooseAnother = () => {
+    add.reset();
+    setPlace(null);
+  };
+  return <HomeDates place={place} add={add} onChooseAnother={chooseAnother} onClose={onClose} />;
 }

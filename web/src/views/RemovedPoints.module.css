@@ -1,30 +1,4 @@
-/* What there is to say when no points are removed: a line, which takes the focus when the last removal is restored (it is not a control, and a ring round a line of text says nothing). */
-.none {
-  margin: 0 0 8px;
-  font-size: 14px;
-  color: var(--ink-muted);
-}
-
-.none:focus {
-  outline: none;
-}
-
-/* A removal: the days over what it holds and when it was made, at the left, and the button at the right (the button is Forms.module.css's). */
-.removed {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 44px;
-}
-
-.text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
+/* A removal: the days over what it holds and when it was made (the row, its text and its button are Rows.module.css's). */
 .dates {
   font-size: 13.5px;
   font-weight: 600;
@@ -35,8 +9,4 @@
   font-size: 12.5px;
   color: var(--ink-muted);
   font-variant-numeric: tabular-nums;
-}
-
-.removed button {
-  flex: none;
 }

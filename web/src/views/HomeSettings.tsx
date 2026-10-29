@@ -94,8 +94,8 @@ export function HomeSettings() {
           {periods.map((period) => {
             const working = remove.isPending && remove.variables.id === period.id;
             return (
-              <li key={period.id} className={styles.period}>
-                <div className={styles.text}>
+              <li key={period.id} className={`${rows.item} ${styles.period}`}>
+                <div className={rows.itemText}>
                   <span className={styles.place}>{nameOf(period)}</span>
                   <span className={styles.dates}>{datesOf(period)}</span>
                   <span className={styles.source}>{period.source === "user" ? "Set by you" : "Detected"}</span>

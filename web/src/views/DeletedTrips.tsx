@@ -54,7 +54,7 @@ export function DeletedTrips() {
       {deleted === undefined ? (
         !query.isError && <Loading />
       ) : list.length === 0 ? (
-        <p ref={focus.fallback} tabIndex={-1} className={styles.none}>
+        <p ref={focus.fallback} tabIndex={-1} className={rows.none}>
           No deleted trips
         </p>
       ) : (
@@ -62,7 +62,7 @@ export function DeletedTrips() {
           {list.map((trip) => {
             const working = restore.isPending && restore.variables.key === trip.key;
             return (
-              <li key={trip.key} className={styles.deleted}>
+              <li key={trip.key} className={rows.item}>
                 <span className={styles.deletedLabel}>{trip.label}</span>
                 <button
                   ref={focus.control(trip.key)}

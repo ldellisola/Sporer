@@ -304,6 +304,8 @@ describe("HomeSettings set home", () => {
 
     const question = within(section()).getByText("Set Lisbon flat as home");
     expect(question).toHaveFocus(); // it is read, and Escape is Cancel at once
+    // What saving does to what detection found is said before it is done (P4-R44): the server replaces it silently.
+    expect(within(section()).getByText("A home you set replaces what was detected for those dates.")).toBeInTheDocument();
     expect(from()).toHaveValue("");
     expect(to()).toHaveValue("");
     for (const field of [from(), to()]) {
@@ -414,6 +416,30 @@ describe("HomeSettings set home", () => {
     await waitFor(() => expect(within(section()).getByRole("alert")).toHaveTextContent("Could not save: That place no longer exists."));
     expect(within(section()).getByRole("button", { name: "Choose another place" })).toBeEnabled();
     expect(api.writes()).toHaveLength(2);
+  });
+
+  test("HomeSettings_forgets_a_refusal_when_another_place_is_chosen_and_shows_and_announces_nothing_of_it_for_the_next_place", async () => {
+    const { state, api } = server([OSLO]);
+    state.add = () => new Response("{}", { status: 404 });
+    mount();
+    await list();
+    await pick(/^Lisbon flat/);
+    type(from(), "2026-04-01");
+    fireEvent.click(saveButton());
+    expect(await within(section()).findByRole("alert")).toHaveTextContent("Could not save: That place no longer exists.");
+    expect(note()).toBe("");
+
+    fireEvent.click(within(section()).getByRole("button", { name: "Choose another place" }));
+    fireEvent.click(await within(section()).findByRole("button", { name: /^Oslo flat/ }));
+
+    // The form for the next place is a new one: what the last place was refused with is not said of it, and a live region that is made with a message
+    // is announced, so it must not be there.
+    expect(await within(section()).findByText("Set Oslo flat as home")).toHaveFocus();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(note()).toBe("");
+    expect(saveButton()).toBeEnabled();
+    expect(from()).toHaveValue("");
+    expect(api.writes()).toHaveLength(1); // nothing was sent for the next place
   });
 
   test("HomeSettings_offers_a_retry_for_a_failure_that_may_pass_and_sends_the_same_home_again", async () => {

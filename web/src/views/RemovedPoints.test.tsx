@@ -98,6 +98,36 @@ describe("RemovedPoints", () => {
     expect(api.reads("/api/points/removed")).toHaveLength(1);
   });
 
+  test("RemovedPoints_tells_a_removal_that_is_on_no_day_by_the_dates_of_its_first_and_last_point_on_the_clock_of_this_device", async () => {
+    // The server lists a removal on no day when its points are on none that has a segment: `localDates` is empty, and the dates come from the points.
+    const across: RemovedBatch = { ...TWO_DAYS, batch: "a0000000-0000-4000-8000-000000000001", count: 3, from: "2026-10-12T20:00:00Z", to: "2026-10-13T08:00:00Z", localDates: [] };
+    const within1: RemovedBatch = { ...ONE_POINT, batch: "a0000000-0000-4000-8000-000000000002", count: 2, from: "2026-10-12T20:30:00Z", to: "2026-10-12T23:00:00Z", localDates: [] };
+    const apart: RemovedBatch = { ...MANY, batch: "a0000000-0000-4000-8000-000000000003", count: 4, from: "2026-10-01T08:00:00Z", to: "2026-10-19T08:00:00Z", localDates: [] };
+    server([across, within1, apart]);
+
+    mount();
+
+    await within(section()).findByRole("list", { name: "Removed points" });
+    // The clock is Tokyo's: 20:00 UTC on the 12th is 05:00 on the 13th there, and 08:00 UTC on the 13th is 17:00 on the 13th.
+    expect(rowsOf().map((row) => row.querySelector("span")?.textContent)).toEqual([
+      "13 Oct 2026", // both points are on the 13th there: one day, not "13 – 13 Oct"
+      "13 Oct 2026",
+      "1 Oct 2026, 19 Oct 2026", // a day between is no span
+    ]);
+    expect(restoreButton(/^Restore 3 points from 13 Oct 2026, removed/)).toBeEnabled();
+    expect(restoreButton(/^Restore 4 points from 1 Oct 2026, 19 Oct 2026, removed/)).toBeEnabled();
+  });
+
+  test("RemovedPoints_makes_a_span_of_the_first_and_last_points_dates_when_they_are_on_adjacent_days_there", async () => {
+    const adjacent: RemovedBatch = { ...TWO_DAYS, count: 3, from: "2026-10-12T20:00:00Z", to: "2026-10-13T20:00:00Z", localDates: [] }; // 13th 05:00 and 14th 05:00 in Tokyo
+    server([adjacent]);
+
+    mount();
+
+    await within(section()).findByRole("list", { name: "Removed points" });
+    expect(rowsOf().map((row) => row.querySelector("span")?.textContent)).toEqual(["13 – 14 Oct 2026"]);
+  });
+
   test("RemovedPoints_says_none_were_removed_when_none_were", async () => {
     server([]);
 
