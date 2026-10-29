@@ -17,3 +17,8 @@
   color: var(--danger-ink);
   overflow-wrap: anywhere;
 }
+
+/* The button that goes back to the dates that detection found: a row of its own under the dates, which are not what it is about. */
+.detected {
+  margin: 0 0 8px;
+}

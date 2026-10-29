@@ -14,6 +14,7 @@
       "localEndDate": "2026-10-24",
       "ongoing": true,
       "edited": false,
+      "ownName": null,
       "cities": [{ "name": "New York", "country": "United States", "nights": 2, "lat": 40.755, "lon": -73.986 }],
       "thumbnail": [[10.75, 59.91], [-73.986, 40.755]]
     },
@@ -31,6 +32,7 @@
       "localEndDate": "2026-09-16",
       "ongoing": false,
       "edited": false,
+      "ownName": null,
       "cities": [
         { "name": "Lisbon", "country": "Portugal", "nights": 3, "lat": 38.72, "lon": -9.14 },
         { "name": "Sintra", "country": "Portugal", "nights": 1, "lat": 38.8, "lon": -9.38 }
@@ -51,6 +53,7 @@
       "localEndDate": "2026-08-03",
       "ongoing": false,
       "edited": false,
+      "ownName": null,
       "cities": [{ "name": "Copenhagen", "country": "Denmark", "nights": 2, "lat": 55.68, "lon": 12.57 }],
       "thumbnail": [[10.75, 59.91], [12.57, 55.68], [10.75, 59.91]]
     }

@@ -242,11 +242,13 @@ export interface TripSummary {
   localEndDate: string;
   ongoing: boolean;
   cities: TripCity[];
-  /**
-   * Whether the owner has edited the trip: given it a name, or changed its dates (which is why its `id` may not be the night that detection found it on).
-   * `name` is the owner's when they gave one and the made-up one when they did not, and nothing else here says which.
-   */
+  /** Whether the owner has edited the trip: given it a name, or changed its dates (which is why its `id` may not be the night that detection found it on). */
   edited: boolean;
+  /**
+   * The name the owner gave the trip, or null when they gave none (the field is there, and null): `name` is the owner's when this is not null and the
+   * made-up one when it is. A form that sends a name back sends this, so that a made-up name is never made the owner's.
+   */
+  ownName: string | null;
 }
 
 /** A trip of the list: its summary and the line to draw for it, home, the places it slept at, home (an ongoing trip has not come back, so it stops at the last place). */

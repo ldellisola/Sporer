@@ -4,6 +4,7 @@ import type { ReactElement } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import lisbonFixture from "../../e2e/fixtures/trip-2026-09-12.json";
 import type { TripDay, TripResponse } from "../api/types";
+import { takeHeadingFocus, wantHeadingFocus } from "../app/headingFocus";
 import { refusal, stubEdits } from "../test/stubEdits";
 import { TripPanel } from "./TripPanel";
 
@@ -50,6 +51,7 @@ const textsOf = (button: HTMLElement): string[] =>
 
 beforeEach(() => {
   window.history.replaceState(null, "", "/trip/2026-09-12");
+  takeHeadingFocus(); // what an earlier test asked for and did not take
 });
 
 describe("TripPanel", () => {
@@ -429,5 +431,52 @@ describe("TripPanel edits", () => {
 
     expect(screen.queryByRole("textbox", { name: "Name" })).not.toBeInTheDocument(); // what was typed for one trip is not for another
     expect(editButton()).toBeInTheDocument();
+  });
+});
+
+describe("TripPanel heading focus", () => {
+  test("TripPanel_puts_the_focus_on_its_heading_when_an_edit_took_the_owner_to_the_trip_once_the_trip_is_there", async () => {
+    // A trip that was re-dated: the page is the trip under its new id, and the focus was on the form that is gone.
+    stubApi({ "2026-09-12": LISBON });
+    wantHeadingFocus({ view: "trip", id: "2026-09-12" });
+
+    mount();
+
+    expect(document.body).toHaveFocus(); // while the trip is on its way there is no heading to have it
+    const heading = await screen.findByRole("heading", { level: 2, name: "Day by day" });
+    expect(heading).toHaveFocus();
+  });
+
+  test("TripPanel_puts_the_focus_on_the_note_that_a_trip_with_no_day_has_no_days_when_there_is_no_heading", async () => {
+    stubApi({ "2026-09-12": { ...LISBON, days: [] } });
+    wantHeadingFocus({ view: "trip", id: "2026-09-12" });
+
+    mount();
+
+    expect(await screen.findByText("No days to show for this trip")).toHaveFocus();
+  });
+
+  test("TripPanel_leaves_the_focus_alone_when_nothing_asked_for_it_and_forgets_a_request_for_another_trip", async () => {
+    stubApi({ "2026-09-12": LISBON });
+    wantHeadingFocus({ view: "trip", id: "2026-09-10" }); // the owner has gone to another trip since
+
+    mount();
+    await screen.findByRole("list", { name: "Day by day" });
+
+    expect(document.body).toHaveFocus();
+    expect(takeHeadingFocus()).toBe(false);
+  });
+
+  test("TripPanel_asks_for_the_focus_once_only_so_that_the_edit_that_follows_does_not_take_it_again", async () => {
+    stubEdits({ "GET /api/trips/2026-09-12": () => Response.json(LISBON) });
+    wantHeadingFocus({ view: "trip", id: "2026-09-12" });
+    mount();
+    const heading = await screen.findByRole("heading", { level: 2, name: "Day by day" });
+    expect(heading).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" })); // the owner is in the form now, and a refetch of the trip leaves them there
+    await act(async () => undefined);
+
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveFocus();
   });
 });

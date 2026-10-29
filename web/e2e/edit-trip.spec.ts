@@ -103,6 +103,7 @@ function tripServer() {
       Object.assign(trip, {
         id: start,
         name: name ?? trip.automatic,
+        ownName: name,
         firstNight: start,
         lastNight: last,
         nights: (Date.parse(end) - Date.parse(start)) / 86_400_000,
@@ -222,6 +223,7 @@ test("re_dating_a_trip_goes_to_the_trip_by_its_new_id_in_place_of_the_page_so_th
   await expect(title(page)).toHaveText(LISBON);
   await expect(page.getByText("10 – 18 Sep 2026")).toBeVisible();
   await expect(details(page).getByRole("list", { name: "Day by day" })).toBeVisible(); // the trip is there, under the new id
+  await expect(details(page).getByRole("heading", { name: "Day by day" })).toBeFocused(); // the form that had the focus is gone: the heading of the panel has it
   await expect(details(page).getByText("This trip no longer exists")).toHaveCount(0);
   expect(api.writes.map((write) => write.body)).toEqual([{ name: null, startDate: "2026-09-10", endDate: "2026-09-18" }]);
 
@@ -311,6 +313,7 @@ test("delete_a_trip_after_asking_goes_to_the_list_and_settings_has_it_to_restore
 
   await expect(page).toHaveURL(/\/trips$/);
   await sheetAtRest(page);
+  await expect(details(page).getByRole("heading", { name: "Trips" })).toBeFocused(); // the question that had the focus is gone: the heading of the list has it
   await expect(cards(page)).toHaveCount(2);
   await expect(cards(page).filter({ hasText: LISBON })).toHaveCount(0);
   expect(api.writes).toEqual([{ method: "DELETE", path: "/api/trips/2026-09-12", contentType: "application/json", body: null }]);
@@ -359,4 +362,58 @@ test("a_re_dated_trip_that_is_deleted_comes_back_with_the_dates_the_owner_gave_i
   await page.getByRole("button", { name: "Trips" }).click();
   await sheetAtRest(page);
   await expect(cards(page).filter({ hasText: "11 – 16 Sep 2026 · 5 nights" })).toHaveCount(1);
+});
+
+const detectedDates = (page: Page): Locator => details(page).getByRole("button", { name: "Use detected dates" });
+
+test("use_detected_dates_goes_back_to_the_dates_that_detection_found_and_keeps_the_name_the_owner_gave", async ({ page }) => {
+  const api = await openLisbon(page, tripServer());
+  await edit(page).click();
+  await expect(detectedDates(page)).toHaveCount(0); // nothing of the trip was edited
+
+  await nameField(page).fill("Portugal 2026");
+  await startField(page).fill("2026-09-10");
+  await save(page).click();
+  await expect(page).toHaveURL(/\/trip\/2026-09-10$/);
+  await expect(page.getByText("10 – 16 Sep 2026")).toBeVisible();
+  await sheetAtRest(page);
+
+  // The trip was edited now, and the form offers the way back for its dates: the name is the owner's and stays, whatever the form says of the dates.
+  await edit(page).click();
+  await expect(nameField(page)).toHaveValue("Portugal 2026");
+  await expect(startField(page)).toHaveValue("2026-09-10");
+  await endField(page).fill(""); // an empty date is refused by Save, and is not what this sends
+  await detectedDates(page).click();
+
+  await expect(page).toHaveURL(/\/trip\/2026-09-12$/); // the start is the night that detection gave the trip, which is its id again
+  await expect(title(page)).toHaveText("Portugal 2026");
+  await expect(page.getByText("12 – 16 Sep 2026")).toBeVisible();
+  await expect(details(page).getByRole("heading", { name: "Day by day" })).toBeFocused();
+  expect(api.writes.map((write) => write.body)).toEqual([
+    { name: "Portugal 2026", startDate: "2026-09-10", endDate: "2026-09-16" },
+    { name: "Portugal 2026", startDate: null, endDate: null },
+  ]);
+});
+
+test("a_trip_that_was_only_re_dated_has_no_name_of_the_owners_and_the_form_never_makes_the_automatic_one_theirs", async ({ page }) => {
+  // The trip was edited, and its name is still the made-up one: the field is empty and the name is its placeholder, and sending the dates again sends no name,
+  // so the name goes on being the one that is made from the nights the trip has.
+  const api = await openLisbon(page, tripServer());
+  await edit(page).click();
+  await endField(page).fill("2026-09-18");
+  await save(page).click();
+  await expect(page.getByText("12 – 18 Sep 2026")).toBeVisible();
+  await sheetAtRest(page);
+
+  await edit(page).click();
+  await expect(nameField(page)).toHaveValue("");
+  await expect(nameField(page)).toHaveAttribute("placeholder", LISBON);
+  await endField(page).fill("2026-09-19");
+  await save(page).click();
+
+  await expect(page.getByText("12 – 19 Sep 2026")).toBeVisible();
+  expect(api.writes.map((write) => write.body)).toEqual([
+    { name: null, startDate: "2026-09-12", endDate: "2026-09-18" },
+    { name: null, startDate: "2026-09-12", endDate: "2026-09-19" },
+  ]);
 });

@@ -3,15 +3,18 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import lisbonFixture from "../../e2e/fixtures/trip-2026-09-12.json";
-import type { TripResponse } from "../api/types";
 import { useTrip } from "../api/queries";
+import type { TripResponse } from "../api/types";
+import { takeHeadingFocus } from "../app/headingFocus";
 import { refusal, stubEdits } from "../test/stubEdits";
 import { DeleteTripConfirm, EditTripForm, TripEditActions } from "./TripEdits";
 
 // The forms of the edits of a trip, each on its own: the panel that composes them has its own tests (TripPanel.test.tsx).
 
 const LISBON = lisbonFixture as TripResponse; // 2026-09-12, nights up to the 15th, back on the 16th; named by the server ("Lisbon & Sintra"), not by the owner
-const EDITED: TripResponse = { ...LISBON, name: "Portugal 2026", edited: true };
+const EDITED: TripResponse = { ...LISBON, name: "Portugal 2026", ownName: "Portugal 2026", edited: true }; // named by the owner
+const DATES_EDITED: TripResponse = { ...LISBON, name: "Lisbon & Oslo", edited: true, localEndDate: "2026-09-18" }; // given other dates, and named by the server still
+const BOTH_EDITED: TripResponse = { ...EDITED, localEndDate: "2026-09-18" }; // named by the owner, and given other dates
 const PUT = "PUT /api/trips/2026-09-12";
 const DELETE = "DELETE /api/trips/2026-09-12";
 
@@ -31,6 +34,7 @@ function mount(ui: ReactElement, client: QueryClient = newClient()) {
 
 beforeEach(() => {
   window.history.replaceState(null, "", "/trip/2026-09-12");
+  takeHeadingFocus(); // what an earlier test asked for and did not take
 });
 
 describe("TripEditActions", () => {
@@ -92,14 +96,23 @@ describe("EditTripForm", () => {
     }
   });
 
-  test("EditTripForm_opens_with_the_name_of_a_trip_that_has_been_edited_and_says_what_an_empty_one_shows", () => {
-    // The trip says whether it was edited, not whether the name is the owner's: the name it shows is kept, and cleared to go back to the automatic one.
+  test("EditTripForm_opens_with_the_name_the_owner_gave_the_trip_and_says_what_an_empty_one_shows", () => {
     stubEdits({});
 
     mountEdit(EDITED);
 
-    expect(nameField()).toHaveValue("Portugal 2026");
+    expect(nameField()).toHaveValue("Portugal 2026"); // `ownName`: the owner's, which is cleared to go back to the automatic one, whose words are not known
     expect(nameField()).toHaveAttribute("placeholder", "Automatic name");
+  });
+
+  test("EditTripForm_opens_a_trip_that_was_edited_but_not_named_with_an_empty_name_that_shows_the_automatic_one", () => {
+    // The dates were edited and the name is still made up: it is the placeholder, and it is not in the field to be sent back as the owner's.
+    stubEdits({});
+
+    mountEdit(DATES_EDITED);
+
+    expect(nameField()).toHaveValue("");
+    expect(nameField()).toHaveAttribute("placeholder", "Lisbon & Oslo");
   });
 
   test("EditTripForm_cancel_and_escape_close_it_and_write_nothing", () => {
@@ -158,11 +171,11 @@ describe("EditTripForm", () => {
 
   test("EditTripForm_closes_without_a_write_when_nothing_was_changed", () => {
     // An edit that says what the trip is already would be stored as an edit, and the trip would count as edited.
-    for (const trip of [LISBON, EDITED]) {
+    for (const trip of [LISBON, EDITED, DATES_EDITED]) {
       const api = stubEdits({});
       const { onClose, unmount } = mountEdit(trip);
 
-      fireEvent.change(nameField(), { target: { value: ` ${trip.edited ? trip.name : ""} ` } });
+      fireEvent.change(nameField(), { target: { value: ` ${trip.ownName ?? ""} ` } });
       fireEvent.click(save());
 
       expect(onClose, trip.name).toHaveBeenCalledTimes(1);
@@ -171,27 +184,38 @@ describe("EditTripForm", () => {
     }
   });
 
-  test("EditTripForm_leaves_the_name_of_a_trip_that_has_none_to_the_server_when_only_the_dates_change", async () => {
-    // Sending the automatic name that the form shows would make it the owner's, and it would no longer follow the nights that the new dates make.
-    const api = stubEdits({ [PUT]: () => Response.json({ id: "2026-09-12" }) });
-    const { onClose } = mountEdit();
+  test("EditTripForm_sends_the_owners_name_as_it_is_when_only_the_dates_change_and_null_stays_null", async () => {
+    // Sending the automatic name that is shown would make it the owner's, and it would no longer follow the nights that the new dates make.
+    for (const [trip, sent] of [[LISBON, null], [DATES_EDITED, null], [EDITED, "Portugal 2026"], [BOTH_EDITED, "Portugal 2026"]] as const) {
+      const api = stubEdits({ [PUT]: () => Response.json({ id: "2026-09-12" }) });
+      const { onClose, unmount } = mountEdit(trip);
 
-    fireEvent.change(endField(), { target: { value: "2026-09-17" } });
-    fireEvent.click(save());
+      fireEvent.change(endField(), { target: { value: "2026-09-17" } });
+      fireEvent.click(save());
 
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(bodyOf(api)).toEqual([{ name: null, startDate: "2026-09-12", endDate: "2026-09-17" }]);
+      await waitFor(() => expect(onClose, trip.name).toHaveBeenCalledTimes(1));
+      expect(bodyOf(api), trip.name).toEqual([{ name: sent, startDate: trip.localStartDate, endDate: "2026-09-17" }]);
+      unmount();
+    }
   });
 
-  test("EditTripForm_keeps_the_name_of_a_trip_that_was_edited_when_only_the_dates_change", async () => {
+  test("EditTripForm_clears_the_name_of_the_owner_to_go_back_to_the_automatic_one_and_a_name_is_given_to_a_trip_that_has_none", async () => {
     const api = stubEdits({ [PUT]: () => Response.json({ id: "2026-09-12" }) });
-    const { onClose } = mountEdit(EDITED);
-
-    fireEvent.change(endField(), { target: { value: "2026-09-17" } });
+    const first = mountEdit(EDITED);
+    fireEvent.change(nameField(), { target: { value: "" } });
     fireEvent.click(save());
+    await waitFor(() => expect(first.onClose).toHaveBeenCalledTimes(1));
+    first.unmount();
 
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(bodyOf(api)).toEqual([{ name: "Portugal 2026", startDate: "2026-09-12", endDate: "2026-09-17" }]); // a name that is cleared is the way back, and this one was not
+    const second = mountEdit(DATES_EDITED);
+    fireEvent.change(nameField(), { target: { value: "Portugal 2026" } });
+    fireEvent.click(save());
+    await waitFor(() => expect(second.onClose).toHaveBeenCalledTimes(1));
+
+    expect(bodyOf(api)).toEqual([
+      { name: null, startDate: "2026-09-12", endDate: "2026-09-16" },
+      { name: "Portugal 2026", startDate: "2026-09-12", endDate: "2026-09-18" },
+    ]);
   });
 
   test("EditTripForm_goes_to_the_trip_by_its_new_id_in_place_of_the_page_when_the_start_date_moves", async () => {
@@ -205,6 +229,18 @@ describe("EditTripForm", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/trip/2026-09-10"));
     expect(window.history.length).toBe(entries); // replaced: Back does not return to a trip that has no such id any more
     expect(bodyOf(api)).toEqual([{ name: null, startDate: "2026-09-10", endDate: "2026-09-16" }]);
+    expect(takeHeadingFocus()).toBe(true); // the panel of the new address is to put the focus on its heading: the one that had it is gone
+  });
+
+  test("EditTripForm_asks_for_no_focus_on_a_heading_when_the_id_is_the_same_for_the_form_closes_and_the_focus_goes_back_to_its_button", async () => {
+    stubEdits({ [PUT]: () => Response.json({ id: "2026-09-12" }) });
+    const { onClose } = mountEdit();
+
+    fireEvent.change(nameField(), { target: { value: "Portugal 2026" } });
+    fireEvent.click(save());
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(takeHeadingFocus()).toBe(false);
   });
 
   test("EditTripForm_says_a_start_date_that_is_not_before_the_end_date_and_sends_nothing", () => {
@@ -262,6 +298,113 @@ describe("EditTripForm", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Enter an end date.");
     expect(endField()).toHaveFocus();
     expect(api.writes()).toEqual([]);
+  });
+
+  test("EditTripForm_offers_to_use_the_detected_dates_for_a_trip_that_was_edited_and_for_no_other", () => {
+    // `edited` is true for a name too, and says nothing of which was changed: the button is there for any trip that was edited.
+    for (const [trip, shown] of [[LISBON, false], [DATES_EDITED, true], [EDITED, true], [BOTH_EDITED, true]] as const) {
+      stubEdits({});
+      const { unmount } = mountEdit(trip);
+
+      expect(screen.queryByRole("button", { name: "Use detected dates" }) !== null, trip.name).toBe(shown);
+      unmount();
+    }
+  });
+
+  test("EditTripForm_use_detected_dates_sends_null_for_both_dates_with_the_name_the_owner_gave_and_not_what_is_typed", async () => {
+    const api = stubEdits({ [PUT]: () => Response.json({ id: "2026-09-12" }) });
+    const { onClose } = mountEdit(BOTH_EDITED);
+    fireEvent.change(startField(), { target: { value: "2026-09-01" } }); // dates typed, and the name changed: neither is what this does
+    fireEvent.change(nameField(), { target: { value: "Something else" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Use detected dates" }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(api.writes()).toEqual([
+      { method: "PUT", path: "/api/trips/2026-09-12", search: "", contentType: "application/json", body: { name: "Portugal 2026", startDate: null, endDate: null } },
+    ]);
+  });
+
+  test("EditTripForm_use_detected_dates_sends_a_null_name_for_a_trip_the_owner_has_not_named_and_ignores_an_empty_date", async () => {
+    const api = stubEdits({ [PUT]: () => Response.json({ id: "2026-09-12" }) });
+    const { onClose } = mountEdit(DATES_EDITED);
+    fireEvent.change(endField(), { target: { value: "" } }); // Save refuses an empty date; this does not send the dates
+
+    fireEvent.click(screen.getByRole("button", { name: "Use detected dates" }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(bodyOf(api)).toEqual([{ name: null, startDate: null, endDate: null }]);
+  });
+
+  test("EditTripForm_still_refuses_an_empty_date_on_save_for_a_trip_that_has_the_button", () => {
+    const api = stubEdits({});
+    mountEdit(DATES_EDITED);
+
+    fireEvent.change(endField(), { target: { value: "" } });
+    fireEvent.click(save());
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter an end date.");
+    expect(api.writes()).toEqual([]);
+  });
+
+  test("EditTripForm_use_detected_dates_shows_it_is_on_its_way_waits_for_the_answer_and_goes_to_the_new_id_when_the_start_moves_back", async () => {
+    let release: (response: Response) => void = () => undefined;
+    const api = stubEdits({ [PUT]: () => new Promise<Response>((resolve) => (release = resolve)) });
+    mountEdit({ ...DATES_EDITED, localStartDate: "2026-09-10" });
+    const entries = window.history.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Use detected dates" }));
+
+    expect(await screen.findByRole("button", { name: "Using detected dates…" })).toBeDisabled();
+    expect(save()).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(api.writes()).toHaveLength(1);
+
+    release(Response.json({ id: "2026-09-12" })); // the detected start is the trip's id again: here that is the id it has, so the form closes
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Using detected dates…" })).not.toBeInTheDocument());
+    expect(window.history.length).toBe(entries);
+  });
+
+  test("EditTripForm_use_detected_dates_goes_to_the_new_id_in_place_of_the_page_when_the_detected_start_is_another_night", async () => {
+    stubEdits({ [PUT]: () => Response.json({ id: "2026-09-13" }) });
+    mountEdit(DATES_EDITED);
+    const entries = window.history.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Use detected dates" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/trip/2026-09-13"));
+    expect(window.history.length).toBe(entries);
+    expect(takeHeadingFocus()).toBe(true);
+  });
+
+  test("EditTripForm_use_detected_dates_says_a_refusal_in_the_words_of_the_server_with_no_retry_and_a_failure_has_a_retry_that_sends_the_same_again", async () => {
+    let answer: () => Response = () => refusal(409, "The detected dates would share a night with another trip.");
+    const api = stubEdits({ [PUT]: () => answer() });
+    const { onClose } = mountEdit(BOTH_EDITED);
+
+    fireEvent.click(screen.getByRole("button", { name: "Use detected dates" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not save: The detected dates would share a night with another trip.");
+    expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use detected dates" })).toBeEnabled(); // the form stays
+
+    answer = () => new Response("{}", { status: 503 });
+    fireEvent.click(screen.getByRole("button", { name: "Use detected dates" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Couldn't save — Retry"));
+
+    // Retry sends what failed: the detected dates, and not what the form says now.
+    fireEvent.change(endField(), { target: { value: "2026-09-30" } });
+    answer = () => Response.json({ id: "2026-09-12" });
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(bodyOf(api)).toEqual([
+      { name: "Portugal 2026", startDate: null, endDate: null },
+      { name: "Portugal 2026", startDate: null, endDate: null },
+      { name: "Portugal 2026", startDate: null, endDate: null },
+    ]);
   });
 
   test("EditTripForm_says_a_400_in_the_words_of_the_server_with_no_retry_and_keeps_the_form_to_put_it_right", async () => {
@@ -417,6 +560,7 @@ describe("DeleteTripConfirm", () => {
 
     await waitFor(() => expect(window.location.pathname).toBe("/trips"));
     expect(client.getQueryState(["heat", "a", "b"])?.isInvalidated).toBe(true);
+    expect(takeHeadingFocus()).toBe(true); // the list is to put the focus on its heading: the trip that had it is gone
   });
 
   test("DeleteTripConfirm_says_a_404_with_no_retry_turns_delete_off_and_puts_the_focus_on_cancel", async () => {

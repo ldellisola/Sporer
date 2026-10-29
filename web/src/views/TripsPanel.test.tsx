@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import tripsFixture from "../../e2e/fixtures/trips.json";
 import type { TripListItem, TripsResponse } from "../api/types";
+import { takeHeadingFocus, wantHeadingFocus } from "../app/headingFocus";
 import { TripsPanel } from "./TripsPanel";
 
 const TRIPS = tripsFixture as TripsResponse; // newest first: 2026-10-22 (New York, ongoing), 2026-09-12 (Lisbon & Sintra), 2026-08-01 (Copenhagen)
@@ -40,6 +41,7 @@ const textsOf = (button: HTMLElement): string[] =>
 
 beforeEach(() => {
   window.history.replaceState(null, "", "/trips");
+  takeHeadingFocus(); // what an earlier test asked for and did not take
 });
 
 describe("TripsPanel", () => {
@@ -192,5 +194,44 @@ describe("TripsPanel states", () => {
 
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(cards(screen.getByRole("list", { name: "Trips" }))).toHaveLength(3);
+  });
+});
+
+describe("TripsPanel heading focus", () => {
+  test("TripsPanel_puts_the_focus_on_its_heading_when_an_edit_took_the_owner_here_and_only_once", async () => {
+    // A trip that was deleted: the page is the list now, and the focus was on what is gone.
+    stubApi(TRIPS);
+    wantHeadingFocus({ view: "trips" });
+
+    const { unmount } = mount();
+
+    expect(screen.getByRole("heading", { name: "Trips" })).toHaveFocus(); // at once: the heading is there before the list
+    await list();
+    expect(screen.getByRole("heading", { name: "Trips" })).toHaveFocus();
+    unmount();
+
+    mount(); // the list that is come to again is not asked to take it
+    await list();
+    expect(document.body).toHaveFocus();
+  });
+
+  test("TripsPanel_leaves_the_focus_alone_when_nothing_asked_for_it", async () => {
+    stubApi(TRIPS);
+
+    mount();
+    await list();
+
+    expect(document.body).toHaveFocus();
+  });
+
+  test("TripsPanel_forgets_a_request_that_was_for_another_view", async () => {
+    stubApi(TRIPS);
+    wantHeadingFocus({ view: "trip", id: "2026-09-12" }); // the owner has gone to the list instead
+
+    mount();
+    await list();
+
+    expect(document.body).toHaveFocus();
+    expect(takeHeadingFocus()).toBe(false);
   });
 });

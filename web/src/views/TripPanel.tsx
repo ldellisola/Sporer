@@ -1,6 +1,7 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { shownOf, useTrip } from "../api/queries";
 import type { TripDay, TripResponse } from "../api/types";
+import { takeHeadingFocus } from "../app/headingFocus";
 import { navigate } from "../app/router";
 import { shortDayLabel } from "../time/dates";
 import { formatCount, formatDistance } from "../time/format";
@@ -62,6 +63,13 @@ type Editing = "none" | "edit" | "delete";
 function Trip({ trip }: { trip: TripResponse }) {
   const daysHeading = useId();
   const { stats } = trip;
+  // An edit that took the owner to this trip (a new start date is a new address) asks for the focus to be on the heading of the panel: the form that had it is
+  // gone. A trip that has no days has no heading, and the note that says so has it.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const noDays = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (takeHeadingFocus()) (heading.current ?? noDays.current)?.focus();
+  }, []);
   const [editing, setEditing] = useState<Editing>("none");
   // The focus was in the form that is closed, which is gone: it goes back to the button that opened it.
   const [openedBy, setOpenedBy] = useState<"edit" | "delete">();
@@ -82,10 +90,10 @@ function Trip({ trip }: { trip: TripResponse }) {
         <Chip>{`${formatDistance(stats.groundDistanceMeters)} on the ground`}</Chip>
       </Chips>
       {trip.days.length === 0 ? (
-        <Empty message="No days to show for this trip" />
+        <Empty ref={noDays} tabIndex={-1} message="No days to show for this trip" />
       ) : (
         <div className={rows.section}>
-          <h2 id={daysHeading} className={rows.heading}>
+          <h2 ref={heading} tabIndex={-1} id={daysHeading} className={`${rows.heading} ${styles.landing}`}>
             Day by day
           </h2>
           <ul className={rows.list} aria-labelledby={daysHeading}>

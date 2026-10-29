@@ -1,6 +1,7 @@
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 import { useTrips } from "../api/queries";
 import type { TripListItem } from "../api/types";
+import { takeHeadingFocus } from "../app/headingFocus";
 import { navigate } from "../app/router";
 import { dateRangeLabel } from "../time/dates";
 import { formatCount } from "../time/format";
@@ -57,9 +58,14 @@ export function TripsPanel() {
   const trips = useTrips();
   const shown = useKeptData(trips.data);
   const heading = useId();
+  // An edit that took the owner to the list (a trip was deleted) asks for the focus to be on the heading: the question that had it is gone.
+  const title = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (takeHeadingFocus()) title.current?.focus();
+  }, []);
   return (
     <>
-      <h2 id={heading} className={rows.heading}>
+      <h2 ref={title} tabIndex={-1} id={heading} className={`${rows.heading} ${styles.landing}`}>
         Trips
       </h2>
       {trips.isError && <ErrorState error={trips.error} onRetry={() => void trips.refetch()} />}

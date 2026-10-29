@@ -41,3 +41,8 @@
   color: var(--ink-muted);
   overflow-wrap: anywhere;
 }
+
+/* The heading takes the focus when an edit brings the owner to the list (it is not a control, and a ring round a line of text says nothing). */
+.landing:focus {
+  outline: none;
+}
