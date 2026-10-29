@@ -2,7 +2,9 @@ import { useEffect, useState, type KeyboardEvent } from "react";
 import { useCandidates } from "../api/queries";
 import type { PlaceCandidate } from "../api/types";
 import { formatCount, formatDistance } from "../time/format";
+import forms from "./Forms.module.css";
 import styles from "./PlacePicker.module.css";
+import { UNNAMED } from "./placeNames";
 import rows from "./Rows.module.css";
 import { Shown } from "./Shown";
 import { Empty, ErrorState, Loading } from "./States";
@@ -26,7 +28,7 @@ function useDebounced<T>(value: T, ms: number): T {
  * row says, in the order it says it, so that its name holds the text that is on it (voice control says what it sees).
  */
 function CandidateRow({ candidate, onPick }: { candidate: PlaceCandidate; onPick: (candidate: PlaceCandidate) => void }) {
-  const name = candidate.name ?? "Unnamed place";
+  const name = candidate.name ?? UNNAMED;
   const address = candidate.address ?? "";
   const distance = formatDistance(candidate.distanceM);
   const visits = formatCount(candidate.visits, "visit");
@@ -73,7 +75,7 @@ export function PlacePicker({ placeId, onPick, onCancel }: PlacePickerProps) {
     <div className={styles.picker} onKeyDown={onKeyDown}>
       <input
         type="search"
-        className={styles.search}
+        className={forms.field}
         aria-label="Search places"
         placeholder="Search places"
         autoComplete="off"
@@ -98,7 +100,7 @@ export function PlacePicker({ placeId, onPick, onCancel }: PlacePickerProps) {
         !query.isError && <Loading />
       )}
       {onCancel !== undefined && (
-        <button type="button" className={styles.cancel} onClick={onCancel}>
+        <button type="button" className={`${forms.secondary} ${styles.cancel}`} onClick={onCancel}>
           Cancel
         </button>
       )}

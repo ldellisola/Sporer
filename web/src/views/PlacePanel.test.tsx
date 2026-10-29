@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { PlaceCandidate, PlaceResponse } from "../api/types";
-import { stubEdits, type Handler } from "../test/stubEdits";
+import { refusal, stubEdits, type Handler } from "../test/stubEdits";
 import cafe from "../../e2e/fixtures/place-cafe.json";
 import { navigate } from "../app/router";
 import { PlacePanel } from "./PlacePanel";
@@ -464,5 +464,147 @@ describe("PlacePanel merged places", () => {
 
     await waitFor(() => expect(screen.queryByRole("heading", { level: 2, name: "Merged places" })).not.toBeInTheDocument());
     expect(api.writes().map((call) => call.path)).toEqual(["/api/places/2/merged/7", "/api/places/2/merged/9"]);
+  });
+});
+
+describe("PlacePanel focus", () => {
+  const mergeButton = () => screen.getByRole("button", { name: "Merge with…" });
+
+  test("PlacePanel_puts_the_focus_back_on_rename_when_the_form_is_closed_by_cancel_by_escape_and_by_save", async () => {
+    let current = CAFE;
+    stubEdits({
+      "GET /api/places/2": () => Response.json(current),
+      "PUT /api/places/2/name": () => Response.json((current = { ...CAFE, name: "Bar" })),
+    });
+    mount();
+    expect(await screen.findByRole("heading", { level: 1 })).not.toHaveFocus(); // nothing takes the focus as the panel opens
+    expect(document.body).toHaveFocus();
+
+    fireEvent.click(rename());
+    expect(nameField()).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(rename()).toHaveFocus(); // the focus was in the form, which is gone
+
+    fireEvent.click(rename());
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(rename()).toHaveFocus();
+
+    fireEvent.click(rename());
+    fireEvent.change(nameField(), { target: { value: "Bar" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(heading()).toHaveTextContent("Bar"));
+    expect(rename()).toHaveFocus();
+  });
+
+  test("PlacePanel_puts_the_focus_back_on_merge_with_when_the_picker_or_the_confirm_is_closed_or_the_merge_is_made", async () => {
+    let merged = false;
+    stubEdits({
+      "GET /api/places/2": () => Response.json(merged ? { ...CAFE, merged: [{ id: 7, name: "Bistro" }] } : CAFE),
+      "GET /api/places/2/candidates": () => Response.json([BISTRO]),
+      "POST /api/places/2/merge": () => {
+        merged = true;
+        return Response.json({ ...CAFE, merged: [{ id: 7, name: "Bistro" }] });
+      },
+    });
+    mount();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Merge with…" }));
+    expect(screen.getByRole("searchbox", { name: "Search places" })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(mergeButton()).toHaveFocus();
+
+    fireEvent.click(mergeButton());
+    fireEvent.click(await screen.findByRole("button", { name: /^Bistro/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mergeButton()).toHaveFocus();
+
+    fireEvent.click(mergeButton());
+    fireEvent.click(await screen.findByRole("button", { name: /^Bistro/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+    await waitFor(() => expect(screen.queryByText("Merge Bistro into Café?")).not.toBeInTheDocument());
+    expect(mergeButton()).toHaveFocus();
+  });
+
+  test("PlacePanel_takes_the_focus_to_the_confirm_when_a_row_is_picked_so_that_escape_closes_it_in_a_browser", async () => {
+    const api = stubEdits({
+      "GET /api/places/2": () => Response.json(CAFE),
+      "GET /api/places/2/candidates": () => Response.json([BISTRO]),
+    });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Merge with…" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Bistro/ })); // the row that was pressed is gone, and with it the focus
+
+    const confirm = screen.getByRole("button", { name: "Merge" }).closest("form")!;
+    expect(confirm).toContainElement(document.activeElement as HTMLElement);
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" }); // the key goes to what has the focus, as the browser sends it
+
+    expect(screen.queryByText("Merge Bistro into Café?")).not.toBeInTheDocument();
+    expect(mergeButton()).toHaveFocus();
+    expect(api.writes()).toEqual([]);
+  });
+
+  test("PlacePanel_goes_back_to_the_picker_from_a_merge_that_the_server_refused", async () => {
+    const api = stubEdits({
+      "GET /api/places/2": () => Response.json(CAFE),
+      "GET /api/places/2/candidates": () => Response.json([BISTRO]),
+      "POST /api/places/2/merge": () => refusal(409, "No."),
+    });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Merge with…" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Bistro/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not merge: No.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose another place" }));
+
+    expect(screen.getByRole("searchbox", { name: "Search places" })).toHaveFocus();
+    expect(await screen.findByRole("button", { name: /^Bistro/ })).toBeInTheDocument();
+    expect(screen.queryByText("Merge Bistro into Café?")).not.toBeInTheDocument();
+    expect(api.writes()).toHaveLength(1);
+  });
+
+  test("PlacePanel_has_the_place_asked_for_again_when_a_write_to_it_is_answered_with_a_404_and_says_it_is_gone", async () => {
+    let gone = false;
+    stubEdits({
+      "GET /api/places/2": () => (gone ? new Response("{}", { status: 404 }) : Response.json(CAFE)),
+      "PUT /api/places/2/name": () => {
+        gone = true;
+        return new Response("{}", { status: 404 });
+      },
+    });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Rename" }));
+    fireEvent.change(nameField(), { target: { value: "Bar" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The panel is the one of a place that is gone, with no form and no Retry.
+    expect(await screen.findByText("This place no longer exists")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
+  test("PlacePanel_puts_the_focus_on_the_next_merged_place_after_a_separate_and_on_the_name_when_the_section_goes", async () => {
+    let current: PlaceResponse = { ...CAFE, merged: [{ id: 7, name: "Bistro" }, { id: 9, name: "Bar" }] };
+    stubEdits({
+      "GET /api/places/2": () => Response.json(current),
+      "DELETE /api/places/2/merged/7": () => {
+        current = { ...CAFE, merged: [{ id: 9, name: "Bar" }] };
+        return new Response(null, { status: 204 });
+      },
+      "DELETE /api/places/2/merged/9": () => {
+        current = { ...CAFE, merged: [] };
+        return new Response(null, { status: 204 });
+      },
+    });
+    mount();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Separate Bistro" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Separate Bar" })).toHaveFocus());
+
+    fireEvent.click(screen.getByRole("button", { name: "Separate Bar" }));
+    await waitFor(() => expect(screen.queryByRole("heading", { level: 2, name: "Merged places" })).not.toBeInTheDocument());
+    expect(heading()).toHaveFocus(); // the section is gone with its last row: the name of the place
   });
 });

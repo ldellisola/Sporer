@@ -36,18 +36,25 @@ const OFFICE: PlaceCandidate = { id: 3, name: "Office", address: "Karl Johans ga
 
 /**
  * A server that keeps what was written to it, so that the place and the day read it back as the real one would: the café, which is the place
- * 2 and that the owner renames, the Office, which is merged into it and separated from it again, and what each is called in the day.
+ * 2 and that the owner renames, the Office and the Bakery, which are merged into it and separated from it again (`mergedIn` are the ones that
+ * are to begin with), and what each is called in the day.
  */
-function placeServer(): { overrides: Overrides; mergedIn: () => number[]; rename: (request: Request) => Reply } {
+function placeServer(mergedIn: number[] = []): {
+  overrides: Overrides;
+  mergedIn: () => number[];
+  rename: (request: Request) => Reply;
+  /** The server has the place merged no more, whatever the page thinks: what a 404 on a separate says. */
+  forget: (id: number) => void;
+} {
   let cafeName: string | null = CAFE.name;
-  let mergedIn: number[] = [];
+  const around = [BAKERY, OFFICE];
 
   const detail = (): PlaceResponse => ({
     ...CAFE,
     name: cafeName,
     visits: CAFE.visits + (mergedIn.includes(OFFICE.id) ? OFFICE_VISITS : 0),
     totalSeconds: CAFE.totalSeconds + (mergedIn.includes(OFFICE.id) ? OFFICE_SECONDS : 0),
-    merged: mergedIn.map((id) => ({ id, name: OFFICE.name })),
+    merged: around.filter((place) => mergedIn.includes(place.id)).map((place) => ({ id: place.id, name: place.name })), // by name, as the server has them
   });
 
   // The day, as the server serves it: a stay at a place that was merged is at the one it was merged into.
@@ -73,7 +80,7 @@ function placeServer(): { overrides: Overrides; mergedIn: () => number[]; rename
     "places/2": (): Reply => ({ json: detail() }),
     "places/2/candidates": (request): Reply => {
       const q = new URL(request.url()).searchParams.get("q")?.toLowerCase() ?? "";
-      const found = [BAKERY, OFFICE]
+      const found = around
         .filter((place) => !mergedIn.includes(place.id)) // a place that is merged in is no candidate
         .filter((place) => q === "" || [place.name, place.address].some((part) => part?.toLowerCase().includes(q)));
       return { json: found };
@@ -91,7 +98,7 @@ function placeServer(): { overrides: Overrides; mergedIn: () => number[]; rename
       return { status: 204 };
     },
   };
-  return { overrides, mergedIn: () => mergedIn, rename };
+  return { overrides, mergedIn: () => mergedIn, rename, forget: (id) => (mergedIn = mergedIn.filter((merged) => merged !== id)) };
 }
 
 /** The stays of the day that are at the café (by the name it has now): as many buttons of that name, each opening the place. */
@@ -245,13 +252,13 @@ test("rename_that_fails_says_so_with_a_retry_that_sends_it_again", async ({ page
   expect(api.writes.map((write) => write.body)).toEqual([{ name: "Corner Café" }, { name: "Corner Café" }]);
 });
 
-test("merge_that_the_server_refuses_with_a_409_says_it_in_the_words_of_the_server_and_keeps_the_confirm", async ({ page }) => {
+test("merge_that_the_server_refuses_with_a_409_says_it_in_the_words_of_the_server_with_no_retry_and_goes_back_to_the_picker", async ({ page }) => {
   await fixToday(page);
   const server = placeServer();
   const SAME_PLACE = "The place is the one it is to be merged into, or is merged into it already.";
   const TOO_DEEP = "The place has places merged into it that are 32 merges deep already: one more would be more than the 32 that can be followed.";
   let message: string | null = SAME_PLACE;
-  await mockApi(page, {
+  const api = await mockApi(page, {
     ...server.overrides,
     "POST places/2/merge": (): Reply => ({
       status: 409,
@@ -265,21 +272,112 @@ test("merge_that_the_server_refuses_with_a_409_says_it_in_the_words_of_the_serve
 
   await details(page).getByRole("button", { name: "Merge", exact: true }).click();
 
-  // Whatever the server says is what is shown; the page does not read it to choose a message of its own.
+  // Whatever the server says is what is shown; the page does not read it to choose a message of its own. The same merge would be refused again: no Retry.
   const alert = details(page).getByRole("alert");
-  await expect(alert).toContainText("Couldn't merge");
-  await expect(alert).toContainText(`Could not merge: ${SAME_PLACE}`);
+  await expect(alert).toContainText("Could not merge");
+  await expect(alert).toContainText(SAME_PLACE);
+  await expect(alert.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(details(page).getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(details(page).getByRole("button", { name: "Merge", exact: true })).toBeDisabled();
   await expect(details(page).getByText("Merge Office into Café?")).toBeVisible();
 
+  // Another place can be chosen, and what it is refused with is said in the server's words too.
   message = TOO_DEEP;
-  await alert.getByRole("button", { name: "Retry" }).click();
-
+  await alert.getByRole("button", { name: "Choose another place" }).click();
+  await expect(details(page).getByRole("searchbox", { name: "Search places" })).toBeFocused();
+  await details(page).getByRole("button", { name: /^Bakery/ }).click();
+  await details(page).getByRole("button", { name: "Merge", exact: true }).click();
   await expect(alert).toContainText(`Could not merge: ${TOO_DEEP}`);
   await expect(alert).not.toContainText(SAME_PLACE);
+  expect(api.writes.map((write) => write.body)).toEqual([{ place: 3, name: "Café" }, { place: 6, name: "Café" }]);
 
   message = null; // a refusal with nothing to say
-  await alert.getByRole("button", { name: "Retry" }).click();
+  await alert.getByRole("button", { name: "Choose another place" }).click();
+  await details(page).getByRole("button", { name: /^Bakery/ }).click();
+  await details(page).getByRole("button", { name: "Merge", exact: true }).click();
+  await expect(alert).toContainText("Could not merge: The server refused it.");
 
-  await expect(alert).toContainText("Could not merge: the server refused it.");
-  await expect(alert).not.toContainText(TOO_DEEP);
+  // Cancel gives the buttons back, with the focus on the one that opened it.
+  await details(page).getByRole("button", { name: "Cancel" }).click();
+  await expect(details(page).getByRole("button", { name: "Merge with…" })).toBeFocused();
+});
+
+test("merge_confirm_takes_the_focus_so_that_escape_closes_it_and_the_focus_goes_back_to_the_button", async ({ page }) => {
+  await fixToday(page);
+  const api = await mockApi(page, placeServer().overrides);
+  await page.goto("/place/2");
+  await openSheet(page);
+  await details(page).getByRole("button", { name: "Merge with…" }).click();
+  await expect(details(page).getByRole("searchbox", { name: "Search places" })).toBeFocused();
+
+  await details(page).getByRole("button", { name: /^Office/ }).click();
+
+  await expect(details(page).getByText("Merge Office into Café?")).toBeFocused();
+  await page.keyboard.press("Escape"); // goes to what has the focus, as it does for the owner
+
+  await expect(details(page).getByText("Merge Office into Café?")).toHaveCount(0);
+  await expect(details(page).getByRole("button", { name: "Merge with…" })).toBeFocused();
+  expect(api.writes).toEqual([]);
+});
+
+test("rename_gives_the_focus_back_to_its_button_after_cancel_escape_and_save", async ({ page }) => {
+  await fixToday(page);
+  await mockApi(page, placeServer().overrides);
+  await page.goto("/place/2");
+  await openSheet(page);
+  const renameButton = details(page).getByRole("button", { name: "Rename" });
+  const field = details(page).getByRole("textbox", { name: "Name" });
+
+  await renameButton.click();
+  await details(page).getByRole("button", { name: "Cancel" }).click();
+  await expect(renameButton).toBeFocused();
+
+  await renameButton.click();
+  await expect(field).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(renameButton).toBeFocused();
+
+  await renameButton.click();
+  await field.fill("Corner Café");
+  await page.keyboard.press("Enter");
+  await expect(details(page).getByRole("heading", { level: 1, name: "Corner Café" })).toBeVisible();
+  await expect(renameButton).toBeFocused();
+});
+
+test("separate_of_a_place_that_is_no_longer_merged_says_so_with_no_retry_and_the_list_catches_up", async ({ page }) => {
+  await fixToday(page);
+  const server = placeServer([3, 6]);
+  const api = await mockApi(page, {
+    ...server.overrides,
+    "DELETE places/2/merged/3": (): Reply => {
+      server.forget(3); // merged no more, as it was found out elsewhere: the server says so
+      return { status: 404, json: { title: "Not Found" } };
+    },
+  });
+  await page.goto("/place/2");
+  await openSheet(page);
+  const merged = details(page).getByRole("region", { name: "Merged places" });
+  await expect(merged.getByRole("listitem")).toHaveText(["Bakery Separate", "Office Separate"], { useInnerText: true });
+
+  await merged.getByRole("button", { name: "Separate Office" }).click();
+
+  await expect(merged.getByRole("alert")).toContainText("Could not separate: It is not merged into this place any more.");
+  await expect(merged.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(merged.getByRole("listitem")).toHaveText(["Bakery Separate"], { useInnerText: true }); // the place was asked for again: the row that is gone goes
+  expect(api.writes).toHaveLength(1);
+});
+
+test("separate_gives_the_focus_to_the_next_row_and_when_the_section_goes_to_the_name", async ({ page }) => {
+  await fixToday(page);
+  await mockApi(page, placeServer([3, 6]).overrides);
+  await page.goto("/place/2");
+  await openSheet(page);
+  const merged = details(page).getByRole("region", { name: "Merged places" });
+
+  await merged.getByRole("button", { name: "Separate Bakery" }).click();
+  await expect(merged.getByRole("button", { name: "Separate Office" })).toBeFocused();
+
+  await merged.getByRole("button", { name: "Separate Office" }).click();
+  await expect(details(page).getByRole("heading", { level: 2, name: "Merged places" })).toHaveCount(0);
+  await expect(details(page).getByRole("heading", { level: 1, name: "Café" })).toBeFocused();
 });

@@ -39,6 +39,21 @@ describe("EditActions", () => {
   });
 });
 
+describe("EditActions focus", () => {
+  test("EditActions_puts_the_focus_on_the_button_that_opened_the_form_that_was_closed_and_nowhere_when_it_is_not_told", () => {
+    const { unmount } = render(<EditActions onRename={() => undefined} onMerge={() => undefined} />);
+    expect(document.body).toHaveFocus(); // as the panel opens: nothing was pressed
+    unmount();
+
+    const rename = render(<EditActions onRename={() => undefined} onMerge={() => undefined} focus="rename" />);
+    expect(screen.getByRole("button", { name: "Rename" })).toHaveFocus();
+    rename.unmount();
+
+    render(<EditActions onRename={() => undefined} onMerge={() => undefined} focus="merge" />);
+    expect(screen.getByRole("button", { name: "Merge with…" })).toHaveFocus();
+  });
+});
+
 describe("RenameForm", () => {
   const nameField = () => screen.getByRole("textbox", { name: "Name" });
 
@@ -160,14 +175,53 @@ describe("RenameForm", () => {
     expect(api.writes().map((call) => call.body)).toEqual([{ name: "Bar" }, { name: "Bar" }]); // the same again
   });
 
-  test("RenameForm_says_the_place_is_gone_when_the_server_says_so", async () => {
+  test("RenameForm_says_the_place_is_gone_when_the_server_says_so_with_no_retry_and_has_the_place_asked_for_again", async () => {
     stubEdits({ "PUT /api/places/2/name": () => new Response("{}", { status: 404 }) });
-    mountRename();
+    const { client } = mountRename();
+    client.setQueryData(["heat", "a", "b"], { cells: [] });
     fireEvent.change(nameField(), { target: { value: "Bar" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("This place no longer exists");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not rename: This place no longer exists.");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument(); // sent again it is refused again
+    await waitFor(() => expect(client.getQueryState(["heat", "a", "b"])?.isInvalidated).toBe(true)); // what is on screen is asked for again: the place is gone
+  });
+
+  test("RenameForm_says_a_400_in_the_words_of_the_server_with_no_retry_and_keeps_what_was_typed", async () => {
+    // A name of emoji can be within the limit of the field (WebKit counts characters) and not within the server's (UTF-16 units).
+    const api = stubEdits({ "PUT /api/places/2/name": () => refusal(400, "The name can be at most 100 characters.") });
+    const { onClose } = mountRename();
+    fireEvent.change(nameField(), { target: { value: "😀".repeat(60) } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not rename: The name can be at most 100 characters.");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(nameField()).toHaveValue("😀".repeat(60)); // the owner can shorten it, and save again
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(api.writes()).toHaveLength(1);
+  });
+
+  test("RenameForm_offers_a_retry_for_a_failure_that_may_pass_and_not_for_a_refusal", async () => {
+    let answer: () => Response | Promise<Response> = () => new Response("<html>", { status: 502 });
+    const api = stubEdits({ "PUT /api/places/2/name": () => answer() });
+    mountRename();
+    fireEvent.change(nameField(), { target: { value: "Bar" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't rename — Retry");
+
+    answer = () => Promise.reject(new TypeError("Failed to fetch")); // no answer at all
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(api.writes()).toHaveLength(2));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't rename — Retry");
+
+    answer = () => refusal(409, "No.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not rename: No."));
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 });
 
@@ -176,7 +230,8 @@ describe("MergeConfirm", () => {
 
   function mountConfirm(other: PlaceCandidate = BISTRO, place: PlaceResponse = CAFE) {
     const onClose = vi.fn();
-    return { onClose, ...mount(<MergeConfirm place={place} placeKey={KEY} other={other} onClose={onClose} />, place) };
+    const onChooseAnother = vi.fn();
+    return { onClose, onChooseAnother, ...mount(<MergeConfirm place={place} placeKey={KEY} other={other} onClose={onClose} onChooseAnother={onChooseAnother} />, place) };
   }
 
   const SURVIVOR = { ...CAFE, visits: 6, totalSeconds: 9_000, merged: [{ id: 7, name: "Bistro" }] };
@@ -260,43 +315,115 @@ describe("MergeConfirm", () => {
     expect(api.writes()[0]?.body).toEqual({ place: 8, name: "Café" });
   });
 
-  test("MergeConfirm_says_a_409_in_the_words_of_the_server_and_a_missing_place_and_keeps_the_confirm_open", async () => {
-    // The form never reads the server's words to decide what to say (P4-R26): a 409 is shown with whatever message the server gave.
-    let answer: () => Response = () => refusal(409, SAME_PLACE);
-    const api = stubEdits({ "POST /api/places/2/merge": () => answer() });
+  test("MergeConfirm_says_a_refusal_in_the_words_of_the_server_with_no_retry_and_offers_another_place_or_cancel", async () => {
+    // The form never reads the server's words to decide what to say (P4-R26), and a refusal is not offered a Retry (P4-R28): the same merge
+    // would be refused again. A 409 is shown with whatever message the server gave; a 404 says what is gone.
+    const cases: [number, Response, string][] = [
+      [409, refusal(409, SAME_PLACE), `Could not merge: ${SAME_PLACE}`],
+      [409, refusal(409, TOO_DEEP), `Could not merge: ${TOO_DEEP}`],
+      [409, refusal(409, "Whatever the server says next."), "Could not merge: Whatever the server says next."],
+      [409, new Response("<html>", { status: 409 }), "Could not merge: The server refused it."], // a 409 with no message to show
+      [404, new Response("{}", { status: 404 }), "Could not merge: One of the places no longer exists."],
+    ];
+    for (const [status, response, said] of cases) {
+      const api = stubEdits({ "POST /api/places/2/merge": () => response.clone() });
+      const { onClose, onChooseAnother, unmount } = mountConfirm();
+
+      fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+
+      const alert = await screen.findByRole("alert");
+      expect(alert, said).toHaveTextContent(said);
+      expect(alert).not.toHaveTextContent("Couldn't merge");
+      expect(screen.queryByRole("button", { name: "Retry" }), said).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Merge" }), said).toBeDisabled(); // it would send the same again
+      expect(screen.getByText("Merge Bistro into Café?")).toBeInTheDocument(); // the confirm stays
+      expect(onClose).not.toHaveBeenCalled();
+      expect(api.writes(), String(status)).toHaveLength(1);
+
+      fireEvent.click(within(alert).getByRole("button", { name: "Choose another place" }));
+      expect(onChooseAnother).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(onClose).toHaveBeenCalledTimes(1);
+      unmount();
+    }
+  });
+
+  test("MergeConfirm_says_a_400_in_the_words_of_the_server_with_no_retry_and_lets_the_other_name_be_kept", async () => {
+    // A name that is too long for the server (the place has only a long name of OpenStreetMap): keeping the other one can put it right.
+    const api = stubEdits({ "POST /api/places/2/merge": (call) => ((call.body as { name: string }).name === "Café" ? refusal(400, "The name can be at most 100 characters.") : Response.json(SURVIVOR)) });
     const { onClose } = mountConfirm();
 
     fireEvent.click(screen.getByRole("button", { name: "Merge" }));
 
     const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not merge: The name can be at most 100 characters.");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(within(alert).queryByRole("button", { name: "Choose another place" })).not.toBeInTheDocument(); // the places are not the trouble
+    expect(screen.getByRole("button", { name: "Merge" })).toBeEnabled();
+
+    fireEvent.click(within(keepNames()).getByRole("radio", { name: "Bistro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(api.writes().map((call) => call.body)).toEqual([{ place: 7, name: "Café" }, { place: 7, name: "Bistro" }]);
+  });
+
+  test("MergeConfirm_offers_a_retry_for_a_failure_that_may_pass_and_sends_the_same_merge_again", async () => {
+    let answer: () => Response | Promise<Response> = () => new Response("<html>", { status: 502 });
+    const api = stubEdits({ "POST /api/places/2/merge": () => answer() });
+    mountConfirm();
+    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+
+    const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Couldn't merge — Retry");
-    expect(alert).toHaveTextContent(`Could not merge: ${SAME_PLACE}`);
-    expect(screen.getByText("Merge Bistro into Café?")).toBeInTheDocument(); // the confirm stays
-    expect(onClose).not.toHaveBeenCalled();
+    expect(alert).toHaveTextContent("POST /api/places/2/merge failed with status 502");
+    expect(within(alert).queryByRole("button", { name: "Choose another place" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Merge" })).toBeEnabled();
 
-    answer = () => refusal(409, TOO_DEEP);
+    answer = () => Promise.reject(new TypeError("Failed to fetch")); // no answer at all
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(`Could not merge: ${TOO_DEEP}`));
-    expect(screen.getByRole("alert")).not.toHaveTextContent(SAME_PLACE);
+    await waitFor(() => expect(api.writes()).toHaveLength(2));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't merge — Retry");
 
-    answer = () => refusal(409, "Whatever the server says next.");
-    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not merge: Whatever the server says next."));
+    expect(api.writes().map((call) => call.body)).toEqual([{ place: 7, name: "Café" }, { place: 7, name: "Café" }]); // Retry sends the same again
+  });
 
-    answer = () => new Response("<html>", { status: 409 }); // a 409 with no message to show
-    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not merge: the server refused it."));
-    expect(screen.getByRole("alert")).not.toHaveTextContent("Whatever");
+  test("MergeConfirm_takes_the_focus_as_it_opens_on_the_question_so_that_escape_is_cancel_at_once", () => {
+    const api = stubEdits({});
+    const { onClose } = mountConfirm();
 
-    answer = () => new Response("{}", { status: 404 });
-    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("One of the places no longer exists."));
+    const form = screen.getByRole("button", { name: "Merge" }).closest("form")!;
+    expect(form).toContainElement(document.activeElement as HTMLElement);
+    expect(document.activeElement).toBe(screen.getByText("Merge Bistro into Café?")); // the question, which is read to whoever listens; no button: Enter would merge
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
 
-    answer = () => new Response("<html>", { status: 502 });
-    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("POST /api/places/2/merge failed with status 502")); // anything else: what failed
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(api.writes()).toEqual([]);
+  });
 
-    expect(api.writes().map((call) => call.body)).toEqual(Array.from({ length: 6 }, () => ({ place: 7, name: "Café" }))); // Retry sends the same again
+  test("MergeConfirm_offers_no_choice_of_name_for_two_places_of_the_same_name_and_says_it_is_the_other_one_that_is_merged_in", async () => {
+    const api = stubEdits({ "POST /api/places/2/merge": () => Response.json(SURVIVOR) });
+    const { onClose } = mountConfirm({ ...BISTRO, name: "Café" });
+
+    expect(screen.getByText("Merge the other “Café” into this one?")).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Name to keep" })).not.toBeInTheDocument(); // nothing to choose between
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(api.writes().map((call) => call.body)).toEqual([{ place: 7, name: "Café" }]);
+  });
+
+  test("MergeConfirm_offers_no_choice_for_two_places_that_have_no_name_and_sends_null", async () => {
+    const api = stubEdits({ "POST /api/places/2/merge": () => Response.json(SURVIVOR) });
+    mountConfirm(NAMELESS, { ...CAFE, name: null });
+
+    expect(screen.getByText("Merge the other “Unnamed place” into this one?")).toBeInTheDocument();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+
+    await waitFor(() => expect(api.writes()).toHaveLength(1));
+    expect(api.writes()[0]?.body).toEqual({ place: 8, name: null });
   });
 
   test("MergeConfirm_that_works_after_a_retry_closes_it_and_the_error", async () => {
@@ -319,14 +446,15 @@ describe("MergedPlaces", () => {
   const merged = () => screen.getByRole("region", { name: "Merged places" });
 
   /** The section as the panel has it: over the place that its query holds, which is what a write of the section changes. */
-  function Section() {
+  function Section({ onEmptied }: { onEmptied: () => void }) {
     const place = usePlace(2).data;
-    return place === undefined ? null : <MergedPlaces place={place} placeKey={KEY} />;
+    return place === undefined ? null : <MergedPlaces place={place} placeKey={KEY} onEmptied={onEmptied} />;
   }
 
   function mountSection(routes: Record<string, Handler>, place: PlaceResponse = MERGED) {
     const api = stubEdits({ "GET /api/places/2": () => Response.json(place), ...routes });
-    return { api, ...mount(<Section />, place) };
+    const onEmptied = vi.fn();
+    return { api, onEmptied, ...mount(<Section onEmptied={onEmptied} />, place) };
   }
 
   test("MergedPlaces_lists_the_places_merged_in_each_with_a_separate_button_that_says_whose_it_is", () => {
@@ -389,11 +517,71 @@ describe("MergedPlaces", () => {
     expect(api.writes().map((call) => call.path)).toEqual(["/api/places/2/merged/7", "/api/places/2/merged/7"]); // the same again
   });
 
-  test("MergedPlaces_separate_says_the_place_is_no_longer_merged_when_the_server_says_it_is_not", async () => {
-    mountSection({ "DELETE /api/places/2/merged/7": () => new Response("{}", { status: 404 }) });
+  test("MergedPlaces_separate_says_the_place_is_no_longer_merged_with_no_retry_and_has_the_place_asked_for_again", async () => {
+    // The refetch is what makes the row go: the server has it merged no more.
+    let current = MERGED;
+    const { api } = mountSection({
+      "GET /api/places/2": () => Response.json(current),
+      "DELETE /api/places/2/merged/7": () => {
+        current = { ...CAFE, merged: [{ id: 9, name: null }] };
+        return new Response("{}", { status: 404 });
+      },
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Separate Bistro" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("It is not merged into this place any more.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not separate: It is not merged into this place any more.");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    await waitFor(() => expect(api.reads("/api/places/2")).toHaveLength(1)); // the place was asked for again, which a 404 makes happen
+    await waitFor(() => expect(within(merged()).queryByText("Bistro")).not.toBeInTheDocument());
+    expect(within(merged()).getAllByRole("listitem")).toHaveLength(1);
+  });
+
+  test("MergedPlaces_separate_offers_a_retry_for_a_failure_that_may_pass_and_not_for_a_refusal", async () => {
+    let answer: () => Response = () => new Response("<html>", { status: 503 });
+    mountSection({ "DELETE /api/places/2/merged/7": () => answer() });
+    fireEvent.click(screen.getByRole("button", { name: "Separate Bistro" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't separate — Retry");
+
+    answer = () => refusal(409, "Not now.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not separate: Not now."));
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
+  test("MergedPlaces_puts_the_focus_on_the_next_row_when_one_is_separated_and_on_the_row_before_it_for_the_last", async () => {
+    const three = { ...CAFE, merged: [{ id: 5, name: "Bar" }, { id: 7, name: "Bistro" }, { id: 9, name: "Cafe" }] };
+    let current = three;
+    const { onEmptied } = mountSection(
+      {
+        "GET /api/places/2": () => Response.json(current),
+        "DELETE /api/places/2/merged/7": () => {
+          current = { ...CAFE, merged: [three.merged[0]!, three.merged[2]!] };
+          return new Response(null, { status: 204 });
+        },
+        "DELETE /api/places/2/merged/9": () => {
+          current = { ...CAFE, merged: [three.merged[0]!] };
+          return new Response(null, { status: 204 });
+        },
+      },
+      three,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Separate Bistro" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Separate Cafe" })).toHaveFocus()); // the focus was on the button that went: the next row's
+    fireEvent.click(screen.getByRole("button", { name: "Separate Cafe" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Separate Bar" })).toHaveFocus()); // the last: the one before it
+    expect(onEmptied).not.toHaveBeenCalled();
+  });
+
+  test("MergedPlaces_hands_the_focus_on_when_the_last_place_is_separated_and_the_section_goes", async () => {
+    const { onEmptied } = mountSection({ "DELETE /api/places/2/merged/7": () => new Response(null, { status: 204 }) }, { ...CAFE, merged: [{ id: 7, name: "Bistro" }] });
+
+    fireEvent.click(screen.getByRole("button", { name: "Separate Bistro" }));
+
+    await waitFor(() => expect(onEmptied).toHaveBeenCalledTimes(1)); // the section is gone with its last row: the panel says where the focus goes
   });
 });

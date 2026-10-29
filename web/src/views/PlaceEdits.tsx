@@ -1,42 +1,27 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useId, useState, type FormEvent, type KeyboardEvent } from "react";
-import { ApiError, deleteJson, isNotFound, postJson, putJson } from "../api/client";
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { deleteJson, isRefusal, postJson, putJson } from "../api/client";
 import { useWrite } from "../api/mutations";
 import type { PlaceCandidate, PlaceResponse } from "../api/types";
+import forms from "./Forms.module.css";
 import styles from "./PlaceEdits.module.css";
+import { UNNAMED } from "./placeNames";
 import rows from "./Rows.module.css";
-import { ErrorState } from "./States";
+import { WriteError } from "./WriteError";
 
 // What the owner can do to a place: rename it, merge another into it, and separate what was merged in. The panel of the place composes these.
 
-/** What a place is called where it has no name. */
-export const UNNAMED = "Unnamed place";
-
-/** The longest name the server takes, in characters as a text field counts them. */
+/**
+ * The longest name the server takes. The field counts what a text field counts (WebKit counts what a reader sees as one character, an emoji,
+ * as one; the server counts UTF-16 units, which make an emoji two), so a name can pass the field and be refused: that is a 400, which says so
+ * in the server's words (`WriteError`).
+ */
 const MAX_NAME_LENGTH = 100;
 
 /** The key handler of a form: Escape is Cancel, which every form of the panel takes it as. */
 const onEscape = (action: () => void) => (event: KeyboardEvent) => {
   if (event.key === "Escape") action();
 };
-
-/**
- * Why a write did not go through, for the line under its Retry: what is said for the status it was answered with, and for any other
- * failure the error itself (which names the method, the path and the status). A string is what the error line shows as it is.
- */
-const whyNot = (error: unknown, saidFor404: string): unknown => (isNotFound(error) ? saidFor404 : error);
-
-/**
- * Why a merge did not go through, for the line under its Retry. A 409 is shown in the server's own words (`detail`, which is the message of
- * the refusal): the web never reads those words to decide what to say (P4-R26), and a 409 that has none gets a generic line. A 404 is the
- * status's business: one of the two places is gone. Any other failure is the error itself, which names the method, the path and the status.
- */
-function whyMergeFailed(error: unknown): unknown {
-  if (!(error instanceof ApiError)) return error;
-  if (error.status === 404) return "One of the places no longer exists.";
-  if (error.status === 409) return `Could not merge: ${error.detail ?? "the server refused it."}`;
-  return error;
-}
 
 export interface EditProps {
   /** The place that is shown: its id is the one that every write is to (a place that was merged is served as the one it was merged into). */
@@ -71,12 +56,12 @@ export function RenameForm({ place, placeKey, onClose }: EditProps & { onClose: 
         save();
       }}
     >
-      <label className={styles.label} htmlFor={fieldId}>
+      <label className={forms.label} htmlFor={fieldId}>
         Name
       </label>
       <input
         id={fieldId}
-        className={styles.field}
+        className={forms.field}
         type="text"
         autoComplete="off"
         autoFocus
@@ -87,14 +72,14 @@ export function RenameForm({ place, placeKey, onClose }: EditProps & { onClose: 
         onChange={(event) => setText(event.target.value)}
       />
       <div className={styles.buttons}>
-        <button type="submit" className={styles.primary} disabled={rename.isPending}>
+        <button type="submit" className={forms.primary} disabled={rename.isPending}>
           {rename.isPending ? "Saving…" : "Save"}
         </button>
-        <button type="button" className={styles.secondary} onClick={onClose}>
+        <button type="button" className={forms.secondary} onClick={onClose}>
           Cancel
         </button>
       </div>
-      {rename.isError && <ErrorState message="Couldn't rename" error={whyNot(rename.error, "This place no longer exists")} onRetry={save} />}
+      {rename.isError && <WriteError what="rename" error={rename.error} onRetry={save} gone="This place no longer exists." />}
     </form>
   );
 }
@@ -103,15 +88,31 @@ export function RenameForm({ place, placeKey, onClose }: EditProps & { onClose: 
  * What the merge is going to do, to be confirmed: "Merge B into A?", A being the place that is open (it is the one that stays), and which of
  * the two names the place is to have. A's is chosen to begin with. Keeping A's sends the name that is shown (the place has it as its own from
  * then on), or null when A has none (null leaves the name as it is, and "Unnamed place" is no name to give it); keeping B's sends B's, and
- * a B with no name has none to keep.
+ * a B with no name has none to keep. Two places that have the same name have nothing to choose between: no choice is offered, and the
+ * question says it is the other one that is merged in.
+ *
+ * It takes the focus when it opens (on the question, which a screen reader reads, and not on a button: Enter held down on the row that was
+ * picked would merge), so that Escape is Cancel at once. A merge the server refuses (409, 404) would be refused again: no Retry, and Merge is
+ * off, but the owner can choose another place (`onChooseAnother`) or cancel.
  */
-export function MergeConfirm({ place, placeKey, other, onClose }: EditProps & { other: PlaceCandidate; onClose: () => void }) {
+export function MergeConfirm({
+  place,
+  placeKey,
+  other,
+  onClose,
+  onChooseAnother,
+}: EditProps & { other: PlaceCandidate; onClose: () => void; onChooseAnother: () => void }) {
   const client = useQueryClient();
   const group = useId();
+  const question = useRef<HTMLParagraphElement>(null);
   const [keep, setKeep] = useState<"here" | "there">("here");
   const merge = useWrite((name: string | null) => postJson<PlaceResponse>(`/api/places/${place.id}/merge`, { place: other.id, name }));
   const here = place.name ?? UNNAMED;
   const there = other.name ?? UNNAMED;
+  const same = here === there;
+  // A 400 can be put right (the other name may be shorter); a 404 or a 409 is about the two places, and not about what the form says.
+  const conflict = merge.isError && isRefusal(merge.error) && merge.error.status !== 400;
+  useEffect(() => question.current?.focus(), []);
   const submit = () =>
     merge.mutate(keep === "here" ? place.name : other.name, {
       onSuccess: (survivor) => {
@@ -128,42 +129,79 @@ export function MergeConfirm({ place, placeKey, other, onClose }: EditProps & { 
         submit();
       }}
     >
-      <p className={styles.question}>
-        Merge {there} into {here}?
+      <p ref={question} tabIndex={-1} className={styles.question}>
+        {same ? `Merge the other “${there}” into this one?` : `Merge ${there} into ${here}?`}
       </p>
-      <fieldset className={styles.choices}>
-        <legend className={styles.label}>Name to keep</legend>
-        <label className={styles.choice}>
-          <input type="radio" name={group} checked={keep === "here"} onChange={() => setKeep("here")} />
-          {here}
-        </label>
-        <label className={styles.choice}>
-          <input type="radio" name={group} checked={keep === "there"} disabled={other.name === null} onChange={() => setKeep("there")} />
-          {there}
-        </label>
-      </fieldset>
+      {!same && (
+        <fieldset className={styles.choices}>
+          <legend className={forms.label}>Name to keep</legend>
+          <label className={styles.choice}>
+            <input type="radio" name={group} checked={keep === "here"} onChange={() => setKeep("here")} />
+            {here}
+          </label>
+          <label className={styles.choice}>
+            <input type="radio" name={group} checked={keep === "there"} disabled={other.name === null} onChange={() => setKeep("there")} />
+            {there}
+          </label>
+        </fieldset>
+      )}
       <div className={styles.buttons}>
-        <button type="submit" className={styles.primary} disabled={merge.isPending}>
+        <button type="submit" className={forms.primary} disabled={merge.isPending || conflict}>
           {merge.isPending ? "Merging…" : "Merge"}
         </button>
-        <button type="button" className={styles.secondary} onClick={onClose}>
+        <button type="button" className={forms.secondary} onClick={onClose}>
           Cancel
         </button>
       </div>
-      {merge.isError && <ErrorState message="Couldn't merge" error={whyMergeFailed(merge.error)} onRetry={submit} />}
+      {merge.isError && (
+        <WriteError
+          what="merge"
+          error={merge.error}
+          onRetry={submit}
+          gone="One of the places no longer exists."
+          refusedActions={
+            conflict ? (
+              <button type="button" className={forms.secondary} onClick={onChooseAnother}>
+                Choose another place
+              </button>
+            ) : undefined
+          }
+        />
+      )}
     </form>
   );
 }
 
-/** The places that were merged into this one, each with the button that makes it a place of its own again (its stays and its name are its own). */
-export function MergedPlaces({ place, placeKey }: EditProps) {
+/**
+ * The places that were merged into this one, each with the button that makes it a place of its own again (its stays and its name are its own).
+ * The row that was separated is gone, and the focus was on its button: it goes to the button of the next row (the one before it for the last),
+ * and for the last of all, where the section goes with it, to `onEmptied` (the panel puts it on the name of the place).
+ */
+export function MergedPlaces({ place, placeKey, onEmptied }: EditProps & { onEmptied: () => void }) {
   const client = useQueryClient();
   const headingId = useId();
+  const buttons = useRef(new Map<number, HTMLButtonElement>());
+  const focusAfter = useRef<number | null>(null);
   const separate = useWrite((other: number) => deleteJson(`/api/places/${place.id}/merged/${other}`));
-  const run = (other: number) =>
+  // A button that is disabled cannot take the focus, and all of them are while a write is on its way: once the list is drawn without the row, try.
+  useEffect(() => {
+    const target = focusAfter.current;
+    const button = target === null ? undefined : buttons.current.get(target);
+    if (button === undefined || button.disabled) return;
+    focusAfter.current = null;
+    button.focus();
+  });
+  const run = (other: number) => {
+    const at = place.merged.findIndex((merged) => merged.id === other);
+    const next = place.merged[at + 1] ?? place.merged[at - 1];
     separate.mutate(other, {
-      onSuccess: () => client.setQueryData<PlaceResponse>(placeKey, (old) => old && { ...old, merged: old.merged.filter((merged) => merged.id !== other) }),
+      onSuccess: () => {
+        if (next === undefined) onEmptied();
+        else focusAfter.current = next.id;
+        client.setQueryData<PlaceResponse>(placeKey, (old) => old && { ...old, merged: old.merged.filter((merged) => merged.id !== other) });
+      },
     });
+  };
   return (
     <section className={rows.section} aria-labelledby={headingId}>
       <h2 id={headingId} className={rows.heading}>
@@ -177,8 +215,12 @@ export function MergedPlaces({ place, placeKey }: EditProps) {
             <li key={merged.id} className={styles.merged}>
               <span className={styles.mergedName}>{name}</span>
               <button
+                ref={(button) => {
+                  if (button === null) buttons.current.delete(merged.id);
+                  else buttons.current.set(merged.id, button);
+                }}
                 type="button"
-                className={styles.secondary}
+                className={forms.secondary}
                 aria-label={working ? undefined : `Separate ${name}`}
                 disabled={separate.isPending}
                 onClick={() => run(merged.id)}
@@ -190,24 +232,38 @@ export function MergedPlaces({ place, placeKey }: EditProps) {
         })}
       </ul>
       {separate.isError && (
-        <ErrorState
-          message="Couldn't separate"
-          error={whyNot(separate.error, "It is not merged into this place any more.")}
+        <WriteError
+          what="separate"
+          error={separate.error}
           onRetry={() => separate.variables !== undefined && run(separate.variables)}
+          gone="It is not merged into this place any more."
         />
       )}
     </section>
   );
 }
 
+export interface EditActionsProps {
+  onRename: () => void;
+  onMerge: () => void;
+  /** The button to put the focus on as the buttons come back, when a form that one of them opened was closed: the focus was in the form, which is gone. */
+  focus?: "rename" | "merge";
+}
+
 /** The buttons that open the forms, in the place where the forms will be: the two things that can be done to a place. */
-export function EditActions({ onRename, onMerge }: { onRename: () => void; onMerge: () => void }) {
+export function EditActions({ onRename, onMerge, focus }: EditActionsProps) {
+  const renameButton = useRef<HTMLButtonElement>(null);
+  const mergeButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (focus === "rename") renameButton.current?.focus();
+    if (focus === "merge") mergeButton.current?.focus();
+  }, [focus]);
   return (
     <div className={styles.actions}>
-      <button type="button" className={styles.secondary} onClick={onRename}>
+      <button ref={renameButton} type="button" className={forms.secondary} onClick={onRename}>
         Rename
       </button>
-      <button type="button" className={styles.secondary} onClick={onMerge}>
+      <button ref={mergeButton} type="button" className={forms.secondary} onClick={onMerge}>
         Merge with…
       </button>
     </div>

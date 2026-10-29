@@ -93,6 +93,41 @@ describe("useWrite", () => {
     expect(invalidate).not.toHaveBeenCalled(); // nothing changed on the server: what is on screen is still right
   });
 
+  test("useWrite_asks_for_what_is_on_screen_again_when_the_write_is_answered_with_a_404_and_for_no_other_failure", async () => {
+    // A 404 says that what the write was to is gone (or never was): what is on screen was drawn before that, and is asked for again. Any other
+    // failure changed nothing.
+    const { client, wrapper } = setup();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+
+    for (const [status, asked] of [[404, 1], [400, 0], [409, 0], [500, 0]] as const) {
+      invalidate.mockClear();
+      const { result } = renderHook(
+        () =>
+          useWrite(async () => {
+            throw new ApiError(status, "/api/places/7/merged/9", "DELETE");
+          }),
+        { wrapper },
+      );
+      act(() => result.current.mutate());
+
+      await waitFor(() => expect(result.current.isError).toBe(true));
+      expect(invalidate, String(status)).toHaveBeenCalledTimes(asked);
+      if (asked > 0) expect(invalidate.mock.calls[0]).toEqual([]); // with no filter, as after a write that went through
+    }
+
+    invalidate.mockClear();
+    const { result } = renderHook(
+      () =>
+        useWrite(async () => {
+          throw new TypeError("Failed to fetch");
+        }),
+      { wrapper },
+    );
+    act(() => result.current.mutate());
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(invalidate).not.toHaveBeenCalled(); // no answer is no news
+  });
+
   test("useWrite_tries_a_write_again_with_the_same_variables_and_clears_the_error_when_it_goes_through", async () => {
     const { wrapper } = setup();
     let fail = true;

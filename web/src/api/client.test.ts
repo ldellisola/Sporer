@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { ApiError, deleteJson, getJson, isNotFound, postJson, putJson } from "./client";
+import { ApiError, deleteJson, getJson, isNotFound, isRefusal, postJson, putJson } from "./client";
 
 function respond(status: number, body: unknown = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -176,7 +176,7 @@ describe("postJson, putJson and deleteJson", () => {
 });
 
 describe("ApiError detail", () => {
-  // The API's error body (FastEndpoints): what is wrong, by field. The first message is what a control can show or tell apart.
+  // The API's error body (FastEndpoints): what is wrong, by field. The first message is what a control shows as it is; it is never branched on.
   const refusal = { statusCode: 409, message: "One or more errors occurred!", errors: { place: ["The place is the one it is to be merged into."] } };
 
   test("a_read_and_every_write_that_the_API_refuses_carry_the_first_message_of_its_error_body", async () => {
@@ -264,5 +264,17 @@ describe("isNotFound", () => {
     expect(isNotFound(null)).toBe(false);
     expect(isNotFound(undefined)).toBe(false);
     expect(isNotFound({ status: 404 })).toBe(false);
+  });
+});
+
+describe("isRefusal", () => {
+  test("isRefusal_is_true_for_a_400_a_404_and_a_409_of_the_api_and_for_nothing_else", () => {
+    // The server refused the request itself: sent again it is refused again, so there is no use in offering to send it again.
+    for (const status of [400, 404, 409]) expect(isRefusal(new ApiError(status, "/api/places/9/merge", "POST")), String(status)).toBe(true);
+    for (const status of [401, 403, 415, 500, 502, 503]) expect(isRefusal(new ApiError(status, "/api/places/9/merge", "POST")), String(status)).toBe(false);
+    expect(isRefusal(new Error("POST /api/places/9/merge failed with status 409"))).toBe(false); // the words of a message are not a status
+    expect(isRefusal(new TypeError("Failed to fetch"))).toBe(false);
+    expect(isRefusal({ status: 409 })).toBe(false);
+    expect(isRefusal(null)).toBe(false);
   });
 });

@@ -3,24 +3,6 @@
   margin: 12px 0 18px;
 }
 
-/* 16 px, which is the size under which a phone zooms the page in on the field when it is tapped. */
-.search {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 40px;
-  margin: 0 0 8px;
-  padding: 6px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-  font-size: 16px;
-}
-
-.search:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
-}
-
 /* A place: the name over its address at the left, the distance over the number of stays at the right. */
 .candidate {
   grid-template-columns: minmax(0, 1fr) auto;
@@ -56,22 +38,7 @@
   white-space: nowrap;
 }
 
-/* The same button as the panel's Cancel: the colour of the bar's own buttons, made tall enough for a finger. */
+/* The way out under the list: a button of the forms (Forms.module.css), a little below it. */
 .cancel {
-  min-height: 36px;
   margin: 4px 0 0;
-  padding: 6px 14px;
-  border: 0;
-  border-radius: var(--radius-segment);
-  background: var(--segment-track);
-  color: var(--accent-ink);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.cancel:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
 }

@@ -1,12 +1,13 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { placeQueryOptions, shownOf, usePlace } from "../api/queries";
 import type { PlaceCandidate, PlaceResponse, PlaceVisit } from "../api/types";
 import { goBack, navigate } from "../app/router";
 import { dateLabel, dateOf } from "../time/dates";
 import { formatDuration, formatInteger, formatTime } from "../time/format";
-import { EditActions, MergeConfirm, MergedPlaces, RenameForm, UNNAMED, type EditProps } from "./PlaceEdits";
+import { EditActions, MergeConfirm, MergedPlaces, RenameForm, type EditProps } from "./PlaceEdits";
 import styles from "./PlacePanel.module.css";
 import { PlacePicker } from "./PlacePicker";
+import { UNNAMED } from "./placeNames";
 import rows from "./Rows.module.css";
 import { Empty, ErrorState, Loading } from "./States";
 
@@ -72,7 +73,13 @@ type Editing = { form: "none" } | { form: "rename" } | { form: "pick" } | { form
 function Place({ place, id }: { place: PlaceResponse; id: number }) {
   const visitsHeading = useId();
   const [editing, setEditing] = useState<Editing>({ form: "none" });
-  const close = () => setEditing({ form: "none" });
+  // The focus was in the form that is closed, which is gone: it goes back to the button that opened it (a merge is opened by "Merge with…" through its picker and its confirm).
+  const [openedBy, setOpenedBy] = useState<"rename" | "merge">();
+  const name = useRef<HTMLHeadingElement>(null);
+  const close = () => {
+    setOpenedBy(editing.form === "rename" ? "rename" : "merge");
+    setEditing({ form: "none" });
+  };
   // The answer of a write is the place as the address asks for it, so it goes in the query of the address (the panel's `id`), not of the place's own id.
   const edit: EditProps = { place, placeKey: placeQueryOptions(id).queryKey };
   const where = whereIs(place);
@@ -82,19 +89,21 @@ function Place({ place, id }: { place: PlaceResponse; id: number }) {
   const zone = place.recentVisits[0]?.timeZone ?? "UTC";
   return (
     <>
-      <h1 className={styles.name}>{place.name ?? UNNAMED}</h1>
+      <h1 ref={name} tabIndex={-1} className={styles.name}>
+        {place.name ?? UNNAMED}
+      </h1>
       {where !== null && <p className={styles.where}>{where}</p>}
-      {editing.form === "none" && <EditActions onRename={() => setEditing({ form: "rename" })} onMerge={() => setEditing({ form: "pick" })} />}
+      {editing.form === "none" && <EditActions focus={openedBy} onRename={() => setEditing({ form: "rename" })} onMerge={() => setEditing({ form: "pick" })} />}
       {editing.form === "rename" && <RenameForm {...edit} onClose={close} />}
       {editing.form === "pick" && <PlacePicker placeId={place.id} onPick={(other) => setEditing({ form: "merge", other })} onCancel={close} />}
-      {editing.form === "merge" && <MergeConfirm {...edit} other={editing.other} onClose={close} />}
+      {editing.form === "merge" && <MergeConfirm {...edit} other={editing.other} onClose={close} onChooseAnother={() => setEditing({ form: "pick" })} />}
       <dl className={styles.stats}>
         <Stat label="Total time" value={formatDuration(place.totalSeconds)} />
         <Stat label="Visits" value={formatInteger(place.visits)} />
         <Stat label="First visit" value={dateLabel(dateOf(place.firstVisit, zone))} />
         <Stat label="Last visit" value={dateLabel(dateOf(place.lastVisit, zone))} />
       </dl>
-      {place.merged.length > 0 && <MergedPlaces {...edit} />}
+      {place.merged.length > 0 && <MergedPlaces {...edit} onEmptied={() => name.current?.focus()} />}
       {place.recentVisits.length > 0 && (
         <div className={rows.section}>
           <h2 id={visitsHeading} className={rows.heading}>

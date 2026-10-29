@@ -2,9 +2,9 @@
 type Method = "GET" | "POST" | "PUT" | "DELETE";
 
 /**
- * A request the server answered with something other than success. Its message names the method and the path. `detail` is what the server
- * said was wrong, when its error body says it (see `detailOf`): a control that has to tell one refusal from another (a 409 that is two
- * different things) reads it; everything else shows the message.
+ * A request the server answered with something other than success. Its message names the method and the path, and is for whoever looks
+ * at a failure. `detail` is the server's own message about what was wrong, when its error body has one (see `detailOf`): it is for showing
+ * to the owner as it is, and is never branched on. What a failure is, is its status.
  */
 export class ApiError extends Error {
   readonly status: number;
@@ -77,6 +77,13 @@ export const putJson = <T = void>(path: string, body: unknown = {}): Promise<T> 
 
 /** DELETEs `path`: the API answers a delete with 204, so there is nothing to return. See `send`. */
 export const deleteJson = (path: string): Promise<void> => send<void>("DELETE", path);
+
+/**
+ * Whether `error` is the server refusing the request itself (a 400, a 404 or a 409): the same request would be refused again, so a control
+ * does not offer to send it again. A 5xx or a request that got no answer may pass, and is offered a Retry.
+ */
+export const isRefusal = (error: unknown): error is ApiError =>
+  error instanceof ApiError && (error.status === 400 || error.status === 404 || error.status === 409);
 
 /** Whether `error` is the server saying there is no such thing (a 404): a place that was merged away or never was. Asking again cannot help. */
 export const isNotFound = (error: unknown): boolean => error instanceof ApiError && error.status === 404;
