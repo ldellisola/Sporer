@@ -126,13 +126,13 @@ test("month_view_and_range_picker", async ({ page }) => {
   await expect(page).toHaveURL(/\/day\/2026-10-02$/);
   await page.goBack();
   await expect(page).toHaveURL(/\/month\/2026-10$/);
-  await sheetAtRest(page); // the sheet comes back with the list, and a row is clicked where it is going to be
+  await sheetAtRest(page, details(page).getByRole("button", { name: "Open Thu 22 Oct" })); // the sheet comes back with the list, and a row is clicked where it is going to be
   await details(page).getByRole("button", { name: "Open Thu 22 Oct" }).click();
   await expect(page).toHaveURL(/\/day\/2026-10-22$/);
   await expect(page.getByRole("heading", { name: "Thursday 22 October", level: 1 })).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(/\/month\/2026-10$/);
-  await sheetAtRest(page);
+  await sheetAtRest(page, details(page).getByRole("button", { name: "Open Gym" }));
   await details(page).getByRole("button", { name: "Open Gym" }).click();
   await expect(page).toHaveURL(/\/place\/6$/);
   await expect(details(page).getByRole("heading", { level: 1, name: "Gym" })).toBeVisible();

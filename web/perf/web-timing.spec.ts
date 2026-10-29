@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Request } from "@playwright/test";
 import { expect, test } from "../e2e/base";
 import config from "../e2e/fixtures/config.json" with { type: "json" };
 import { mockApi, type Reply } from "../e2e/mockApi";
@@ -13,8 +14,10 @@ declare const process: { env: Record<string, string | undefined> }; // this file
  * with the processor held back 4 times, against API answers recorded from a server over the synthetic history (`npm run perf:record`).
  * Run by `npm run perf`, not by `npm run e2e`: it is a measurement, and asserts only that it measured what it meant to (every run
  * reached the panel's rows and the map's idle, nothing outside the recording was asked for).
- * The method, what is measured and what is not, is in docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md, and for the trips in
- * docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md.
+ * The `edit-points` scenario is the day with the most raw points, opened cold, and then the tap on Edit points: it times what the owner waits for
+ * after that tap, the points on the map (the answer, the map having the tiles of its source of them, the first frame that draws them and the map's idle).
+ * The method, what is measured and what is not, is in docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md, for the trips in
+ * docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md and for editing in docs/superpowers/plans/2026-10-28-sporer-plan-4-perf.md.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -30,6 +33,8 @@ interface Scenario {
   request: string;
   file: string;
   bytes: number;
+  /** For the scenario of edit mode: the request for the points that the tap on Edit points makes, how many there are, and the size of the answer. */
+  edit?: { request: string; points: number; bytes: number };
 }
 interface Recording {
   recordedFrom: string;
@@ -49,6 +54,8 @@ function loadRecording(): Recording {
 }
 
 const recording = loadRecording();
+/** The paths of the recorded answers with the points of a day: the mock answers each by a key of its own. */
+const pointsPaths = Object.keys(recording.requests).filter((request) => request.endsWith("/points"));
 const bodies = new Map<string, unknown>(
   Object.entries(recording.requests).map(([request, file]) => [request, JSON.parse(readFileSync(join(RECORDED, file), "utf8")) as unknown]),
 );
@@ -64,10 +71,14 @@ interface Probe {
   /** When the map drew a frame, and when its routes source had its data (parsed in the worker and ready to draw). */
   renderAt: number[];
   routeLoads: number[];
+  /** When the map had every tile of its source of the raw points of edit mode (made in the worker from the data, and ready to draw). */
+  editLoads: number[];
   longTasks: Array<[start: number, duration: number]>;
   finished: boolean;
   /** The step to the next day or period, when the run makes one: the click, the new rows, the map idle after them. */
   step: { clickedAt: number | null; rowsAt: number | null; paintedAt: number | null; idleAt: number | null; finished: boolean };
+  /** The tap on Edit points, when the answer with the points was received, when the map had them, when it drew them, and the idle after. */
+  edit: { clickedAt: number | null; answerAt: number | null; loadedAt: number | null; drawnAt: number | null; idleAt: number | null; finished: boolean };
 }
 declare global {
   interface Window {
@@ -78,8 +89,9 @@ declare global {
 /** Installed before the page's own scripts. Everything it does is cheap: a counter, a timestamp, a listener. */
 function installProbe(): void {
   const probe: Probe = {
-    rows: [], rowsPainted: null, mapReady: null, mapHooked: false, idles: [], loads: [], renderAt: [], routeLoads: [], longTasks: [], finished: false,
+    rows: [], rowsPainted: null, mapReady: null, mapHooked: false, idles: [], loads: [], renderAt: [], routeLoads: [], editLoads: [], longTasks: [], finished: false,
     step: { clickedAt: null, rowsAt: null, paintedAt: null, idleAt: null, finished: false },
+    edit: { clickedAt: null, answerAt: null, loadedAt: null, drawnAt: null, idleAt: null, finished: false },
   };
   window.__probe = probe;
   const now = (): number => performance.now();
@@ -100,7 +112,7 @@ function installProbe(): void {
     type Hook = { memoizedState: unknown; next: Hook | null };
     type Fiber = { return: Fiber | null; alternate: Fiber | null; memoizedState: Hook | null };
     const owner = ((element as unknown as Record<string, Fiber>)[key] as Fiber).return;
-    type MapLike = { on: (type: string, listener: (event: { sourceId?: string; isSourceLoaded?: boolean }) => void) => void; getCanvas: unknown };
+    type MapLike = { on: (type: string, listener: (event: { sourceId?: string; isSourceLoaded?: boolean; tile?: unknown }) => void) => void; getCanvas: unknown };
     const isMap = (value: unknown): value is MapLike =>
       typeof value === "object" && value !== null && typeof (value as MapLike).on === "function" && typeof (value as MapLike).getCanvas === "function";
     for (const fiber of [owner, owner?.alternate ?? null]) {
@@ -113,6 +125,9 @@ function installProbe(): void {
         map.on("render", () => probe.renderAt.push(now()));
         map.on("sourcedata", (event) => {
           if (event.sourceId === "sporer-routes" && event.isSourceLoaded === true) probe.routeLoads.push(now());
+          // A tile of the points, with every tile of the source loaded: what the points are drawn from. (The event that comes when the worker has the
+          // data has no tile, and comes before the tiles are made: a frame after it does not have the points yet.)
+          if (event.sourceId === "sporer-edit-points" && event.isSourceLoaded === true && event.tile !== undefined) probe.editLoads.push(now());
         });
         probe.mapHooked = true;
         return;
@@ -173,7 +188,19 @@ interface Sample {
   stepPaintedMs: number | null;
   stepIdleMs: number | null;
   stepRoutesDrawnMs: number | null;
+  /**
+   * From a tap on "Edit points" to the answer with the points, to the map having the tiles of its source of them, to the first frame that draws them and to the map's idle
+   * after it. Null for every scenario but the one of edit mode.
+   */
+  editAnswerMs: number | null;
+  editLoadedMs: number | null;
+  editDrawnMs: number | null;
+  editIdleMs: number | null;
 }
+
+/** What a scenario that makes no step, or no edit, says of it. */
+const NO_STEP = { stepRowsMs: null, stepPaintedMs: null, stepIdleMs: null, stepRoutesDrawnMs: null };
+const NO_EDIT = { editAnswerMs: null, editLoadedMs: null, editDrawnMs: null, editIdleMs: null };
 
 const samples = new Map<string, Sample[]>();
 const probes: Record<string, unknown> = {};
@@ -209,6 +236,34 @@ function watchStep(): void {
   observer.observe(document, { childList: true, subtree: true, characterData: true });
 }
 
+/**
+ * Installed once the page is at rest: notes the tap on Edit points, and then, as the answer with the points is received, as the map has the tiles of its
+ * source of them and as the map draws its first frame after that (the points are on the screen), and the map's idle after it. The source is empty until
+ * the points are there, so the first tiles it has after the answer is received are the points': nothing but them is put in it.
+ */
+function watchEdit(pointsPath: string): void {
+  const probe = window.__probe;
+  const { edit } = probe;
+  document.addEventListener("click", () => (edit.clickedAt = performance.now()), { capture: true, once: true });
+  const poll = (): void => {
+    if (edit.clickedAt !== null) {
+      const answer = (performance.getEntriesByType("resource") as PerformanceResourceTiming[]).find((r) => r.name.endsWith(pointsPath));
+      edit.answerAt = answer?.responseEnd ?? null;
+      if (edit.answerAt !== null) {
+        edit.loadedAt = probe.editLoads.find((at) => at >= (edit.answerAt as number)) ?? null;
+        edit.drawnAt = edit.loadedAt === null ? null : (probe.renderAt.find((at) => at >= (edit.loadedAt as number)) ?? null);
+        edit.idleAt = edit.drawnAt === null ? null : (probe.idles.find((at) => at >= (edit.drawnAt as number)) ?? null);
+      }
+      if (edit.idleAt !== null) {
+        setTimeout(() => (edit.finished = true), 400);
+        return;
+      }
+    }
+    setTimeout(poll, 50);
+  };
+  poll();
+}
+
 async function run(page: import("@playwright/test").Page, scenario: Scenario, keep: boolean): Promise<Sample> {
   const unrecorded: string[] = [];
   await mockApi(page, {
@@ -218,6 +273,8 @@ async function run(page: import("@playwright/test").Page, scenario: Scenario, ke
     range: (request): Reply => answer(request.url(), unrecorded),
     trips: (request): Reply => answer(request.url(), unrecorded),
     "trips/*": (request): Reply => answer(request.url(), unrecorded),
+    // The points of a day, which a key of the day's own beats `day/*` (that one has the last segment of the path made `*`): one for each that was recorded.
+    ...Object.fromEntries(pointsPaths.map((path) => [path.slice("/api/".length), (request: Request): Reply => answer(request.url(), unrecorded)])),
   });
 
   const client = await page.context().newCDPSession(page);
@@ -227,7 +284,8 @@ async function run(page: import("@playwright/test").Page, scenario: Scenario, ke
   await page.goto(scenario.url, { waitUntil: "commit" });
   await page.waitForFunction(() => window.__probe.finished, null, { polling: 200, timeout: 90_000 });
 
-  const sample = await page.evaluate((request): Omit<Sample, "stepRowsMs" | "stepPaintedMs" | "stepIdleMs" | "stepRoutesDrawnMs"> => {
+  type Cold = Omit<Sample, "stepRowsMs" | "stepPaintedMs" | "stepIdleMs" | "stepRoutesDrawnMs" | "editAnswerMs" | "editLoadedMs" | "editDrawnMs" | "editIdleMs">;
+  const sample = await page.evaluate((request): Cold => {
     const probe = window.__probe;
     const firstFrameAfterRoutes = (loads: number[], frames: number[], since: number): number | null => {
       const loaded = loads.find((at) => at >= since);
@@ -265,7 +323,28 @@ async function run(page: import("@playwright/test").Page, scenario: Scenario, ke
   if (view === "trips" || view === "trip") {
     expect(unrecorded, "requests the recording has no answer for").toEqual([]);
     expect(sample.rowCount, "rows of the panel").toBeGreaterThan(0);
-    return { ...sample, stepRowsMs: null, stepPaintedMs: null, stepIdleMs: null, stepRoutesDrawnMs: null };
+    return { ...sample, ...NO_STEP, ...NO_EDIT };
+  }
+
+  // The tap on Edit points of the day with the most points, with the day open and at rest: the points answer is asked for then, and not before. It is
+  // timed to the first frame that draws them; the bar's note says that they are there (there are some) and nothing else of them is looked at.
+  if (scenario.edit !== undefined) {
+    await page.evaluate(watchEdit, scenario.edit.request);
+    await page.getByRole("button", { name: "Edit points" }).click();
+    await page.waitForFunction(() => window.__probe.edit.finished, null, { polling: 200, timeout: 90_000 });
+    const edit = await page.evaluate(() => window.__probe.edit);
+    expect(unrecorded, "requests the recording has no answer for").toEqual([]);
+    await expect(page.getByRole("group", { name: "Edit points" }).getByText("Tap a point, or use Select area on the map.")).toBeVisible();
+    if (keep) await page.screenshot({ path: join(RESULTS, `${scenario.id}-edit.png`) });
+    const clicked = edit.clickedAt as number;
+    return {
+      ...sample,
+      ...NO_STEP,
+      editAnswerMs: (edit.answerAt as number) - clicked,
+      editLoadedMs: (edit.loadedAt as number) - clicked,
+      editDrawnMs: (edit.drawnAt as number) - clicked,
+      editIdleMs: (edit.idleAt as number) - clicked,
+    };
   }
 
   // Then the step the spec means by "navigating": a tap on › with the page open and the next day or period already fetched (the app
@@ -283,6 +362,7 @@ async function run(page: import("@playwright/test").Page, scenario: Scenario, ke
   const clicked = step.clickedAt as number;
   return {
     ...sample,
+    ...NO_EDIT,
     stepRowsMs: (step.rowsAt as number) - clicked,
     stepPaintedMs: step.paintedAt === null ? null : step.paintedAt - clicked,
     stepIdleMs: (step.idleAt as number) - clicked,
@@ -358,14 +438,19 @@ test.describe("web timing", () => {
       ["stepPaintedMs", "STEP (tap next): rows painted"],
       ["stepRoutesDrawnMs", "STEP (tap next): routes drawn"],
       ["stepIdleMs", "STEP (tap next): map idle"],
+      ["editAnswerMs", "EDIT (tap Edit points): answer"],
+      ["editLoadedMs", "EDIT: the map has the points"],
+      ["editDrawnMs", "EDIT: points drawn"],
+      ["editIdleMs", "EDIT: map idle"],
     ] as const;
     const lines: string[] = [];
     lines.push(`CPU throttling ${CPU_RATE}x, ${RUNS} runs of each; ms from the start of the navigation; median / worst`);
     for (const scenario of recording.scenarios) {
       const list = samples.get(scenario.id) ?? [];
       if (list.length === 0) continue;
-      const summary: Record<string, unknown> = { scenario: scenario.id, url: scenario.url, bytes: scenario.bytes, runs: list.length, rowCount: list[0]?.rowCount };
-      lines.push(`${scenario.id.padEnd(12)} ${scenario.url.padEnd(20)} ${(scenario.bytes / 1000).toFixed(0)} kB, ${list[0]?.rowCount} rows`);
+      const summary: Record<string, unknown> = { scenario: scenario.id, url: scenario.url, bytes: scenario.bytes, runs: list.length, rowCount: list[0]?.rowCount, edit: scenario.edit };
+      const points = scenario.edit === undefined ? "" : `; ${scenario.edit.points} points, ${(scenario.edit.bytes / 1000).toFixed(0)} kB`;
+      lines.push(`${scenario.id.padEnd(12)} ${scenario.url.padEnd(20)} ${(scenario.bytes / 1000).toFixed(0)} kB, ${list[0]?.rowCount} rows${points}`);
       for (const [key, label] of metrics) {
         const values = list.map((s) => s[key]).filter((v): v is number => typeof v === "number");
         if (values.length === 0) continue;

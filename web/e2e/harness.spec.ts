@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./base";
 import { mockApi } from "./mockApi";
+import { sheetAtRest } from "./sheet";
 import { fixTime } from "./today";
 
 // These tests are of the harness itself (base.ts and mockApi.ts): what it lets through, and what it still reports. A test
@@ -220,4 +221,39 @@ test("fixTime_fixes_the_date_of_the_page_and_leaves_its_timers_and_frames_alone"
   expect(seen.isDate).toBe(true);
   expect(seen.elapsed).toBeGreaterThanOrEqual(45); // the timers run on the browser's own time, and the date stood still all the while
   expect(seen.native).toBe(true);
+});
+
+// sheetAtRest (sheet.ts) is a helper of the specs, and its fault was a race that three full runs of the suite did not show (P3-R34b): after a goBack() the
+// view that comes back renders a moment later, and the sheet moves only then, so a look at once finds nothing moving. This puts the late render on a page of
+// its own, on a clock, so that it is the same every time: the row and the move of the sheet come 400 ms after the call, as a render that is slow would bring them.
+test("sheet_at_rest_given_the_content_of_a_restored_view_waits_for_it_and_for_the_move_it_starts", async ({ page }) => {
+  await page.goto(BLANK);
+  const wide = page.viewportSize()!.width >= 900; // the helper looks for the sheet as the layout names it (a page with no viewport tag is 980 wide on a phone)
+  await page.evaluate((wide) => {
+    const sheet = document.createElement("div");
+    sheet.setAttribute("role", wide ? "complementary" : "region");
+    sheet.setAttribute("aria-label", "Details");
+    document.body.append(sheet);
+    const state = window as unknown as { rendered: boolean; moved: boolean };
+    state.rendered = false;
+    state.moved = false;
+    setTimeout(() => {
+      const row = document.createElement("button");
+      row.textContent = "Open Thu 22 Oct";
+      sheet.append(row);
+      state.rendered = true;
+      requestAnimationFrame(() => {
+        // The move that the render starts: 300 ms, a little longer than the sheet's own, so that it is plain when it is not waited for.
+        const move = sheet.animate([{ transform: "translateY(200px)" }, { transform: "translateY(0)" }], { duration: 300 });
+        void move.finished.then(() => (state.moved = true));
+      });
+    }, 400);
+  }, wide);
+
+  await sheetAtRest(page, page.getByRole("button", { name: "Open Thu 22 Oct" }));
+
+  // It came back after the row was there and the sheet had done moving: the click that follows is at the row's place.
+  expect(await page.evaluate(() => (window as unknown as { rendered: boolean; moved: boolean }).rendered)).toBe(true);
+  expect(await page.evaluate(() => (window as unknown as { rendered: boolean; moved: boolean }).moved)).toBe(true);
+  await expect(page.getByRole("button", { name: "Open Thu 22 Oct" })).toBeVisible();
 });

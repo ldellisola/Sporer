@@ -10,6 +10,8 @@
 //   - one year (the calendar year given, else the one whose answer is the largest),
 //   - the list of trips and every trip of it (there are few: the trip of /trip/{id} is asked for with the list, which the bar of a trip names
 //     its neighbours from, and the app prefetches the trips either side of the one on show, so all of them are needed whichever is opened),
+//   - the day with the most raw points, and its points (`/api/day/{date}/points`, which edit mode asks for when the owner taps Edit points):
+//     found by asking for the points of every day that has a timeline, so it takes a while (about a minute for 800 days),
 // and, for each day, month and year, what the app asks for on top of it: the status, and the two days or periods either side (it prefetches
 // the one before and the one after whatever is on show, so a step to the next one asks for the one after that).
 // Everything goes to perf/recorded/, as the server wrote it, with an index of the requests it answers. The directory is not
@@ -77,6 +79,13 @@ for (let k = 0; k < dayCount; k++) {
   if (json.segments.length === 0) continue;
   days.push({ date, bytes, segments: json.segments.length, weekday: new Date(parse(date)).getUTCDay() });
 }
+// The day with the most raw points, which is not the one with the biggest timeline: the points are what edit mode draws. Only the count is kept.
+let pointsDay = null;
+for (const day of days) {
+  const { bytes, json } = await peek(`/api/day/${day.date}/points`);
+  if (pointsDay === null || json.points.length > pointsDay.points) pointsDay = { date: day.date, points: json.points.length, bytes };
+}
+
 const weekdays = days.filter((d) => d.weekday >= 1 && d.weekday <= 5 && d.segments >= 5).sort((a, b) => a.bytes - b.bytes);
 const typicalDay = median(weekdays);
 const heavyDay = [...days].sort((a, b) => b.bytes - a.bytes)[0];
@@ -131,6 +140,19 @@ for (const [id, label, one] of [
 for (const y of [-2, -1, 0, 1, 2].map((k) => year + k)) await record(rangePath({ from: `${y}-01-01`, to: `${y}-12-31` }), `range-${y}`);
 scenarios.push({ id: "year", label: `the calendar year ${year}`, url: `/year/${year}`, request: rangePath({ from: `${year}-01-01`, to: `${year}-12-31` }) });
 
+// Edit mode on the day with the most points: the day (and the days either side, which the app prefetches), then its points once Edit points is tapped.
+if (pointsDay !== null) {
+  for (const date of [-2, -1, 0, 1, 2].map((k) => addDays(pointsDay.date, k))) await record(`/api/day/${date}`, `day-${date}`);
+  await record(`/api/day/${pointsDay.date}/points`, `points-${pointsDay.date}`);
+  scenarios.push({
+    id: "edit-points",
+    label: `edit mode on the day with the most points (${pointsDay.points.toLocaleString("en")})`,
+    url: `/day/${pointsDay.date}`,
+    request: `/api/day/${pointsDay.date}`,
+    edit: { request: `/api/day/${pointsDay.date}/points`, points: pointsDay.points },
+  });
+}
+
 await record("/api/trips", "trips");
 scenarios.push({ id: "trips", label: "the list of trips", url: "/trips", request: "/api/trips" });
 for (const trip of trips) {
@@ -149,6 +171,7 @@ for (const scenario of scenarios) {
   const file = index[scenario.request];
   scenario.file = file;
   scenario.bytes = files[file].bytes;
+  if (scenario.edit) scenario.edit.bytes = files[index[scenario.edit.request]].bytes;
 }
 writeFileSync(
   join(partial, "index.json"),
@@ -160,4 +183,7 @@ renameSync(partial, out);
 complete = true;
 
 console.log(`Recorded ${Object.keys(index).length} responses to ${out}`);
-for (const s of scenarios) console.log(`  ${s.id.padEnd(12)} ${s.url.padEnd(20)} ${s.label}: ${(s.bytes / 1000).toFixed(1)} kB`);
+for (const s of scenarios) {
+  const points = s.edit ? `, its points ${(s.edit.bytes / 1000).toFixed(0)} kB` : "";
+  console.log(`  ${s.id.padEnd(12)} ${s.url.padEnd(20)} ${s.label}: ${(s.bytes / 1000).toFixed(1)} kB${points}`);
+}

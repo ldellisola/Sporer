@@ -260,7 +260,7 @@ test("re_dating_a_trip_goes_to_the_trip_by_its_new_id_in_place_of_the_page_so_th
   await page.goBack(); // not to /trip/2026-09-12, which is no trip now
 
   await expect(page).toHaveURL(/\/trips$/);
-  await sheetAtRest(page);
+  await sheetAtRest(page, cards(page).first()); // the list comes back, and the sheet moves with it
   await expect(cards(page).filter({ hasText: "10 – 18 Sep 2026 · 8 nights" })).toHaveCount(1);
   await expect(cards(page)).toHaveCount(3);
 
