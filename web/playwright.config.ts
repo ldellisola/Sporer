@@ -22,6 +22,9 @@ export default defineConfig({
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
     baseURL: ORIGIN,
+    // The service worker is for its own spec (service-worker.spec.ts), which turns it on. Everywhere else it would stand between the page and the
+    // network and answer for files and pages itself, which `page.route` (what the API mocks and the guard of base.ts are made of) cannot see.
+    serviceWorkers: "block",
     trace: "retain-on-failure",
     launchOptions: { args: WEBGL_ARGS },
   },

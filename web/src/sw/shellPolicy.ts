@@ -75,8 +75,12 @@ export function isShellDocument(response: { ok: boolean; type: string; redirecte
 }
 
 // An attribute `src` or `href` and its value, quoted either way or not at all. (Not `data-src`: nothing before it that is part of a name.)
-const URL_ATTRIBUTE = /(?<![\w-])(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
-const ROOT_ELEMENT = /<div\b[^>]*?(?<![\w-])id\s*=\s*(?:"root"|'root'|root(?![\w-]))/i;
+// What comes before the name is consumed, the start of the string or one character that is no part of a name, and not looked behind
+// for: Safari takes a lookbehind only from 16.4, and a worker that does not parse does not install. So that the quote that ends one
+// attribute can be what comes before the next, a quoted value stops short of its closing quote (a lookahead, which every Safari has).
+const URL_ATTRIBUTE = /(?:^|[^\w-])(?:src|href)\s*=\s*(?:"([^"]*)(?=")|'([^']*)(?=')|([^\s"'>]+))/gi;
+// The same for the id of a div: `<div` is always before it, and a `>` ends the tag, so it is no character that may come before the name.
+const ROOT_ELEMENT = /<div\b[^>]*?[^\w>-]id\s*=\s*(?:"root"|'root'|root(?![\w-]))/i;
 
 /**
  * Whether `html` is the app's page of this build: it has the element the app mounts in, and every file it names under /assets/ is one of

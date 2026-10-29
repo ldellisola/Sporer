@@ -202,6 +202,26 @@ describe("isAppPage", () => {
     expect(isAppPage(`<div id="root"></div><link href='/assets/index-OTHER123.css'>`, FILES)).toBe(false);
   });
 
+  test("isAppPage_reads_an_attribute_at_the_very_start_of_the_page_and_ones_with_nothing_between", () => {
+    // Nothing before `src` at the start of the string, and a quote that closes one attribute is what comes before the next one's name.
+    expect(isAppPage('src="/assets/index-OTHER123.js"><div id="root"></div>', FILES)).toBe(false);
+    expect(isAppPage('href=/assets/index-OTHER123.css><div id="root"></div>', FILES)).toBe(false);
+    expect(isAppPage('src="/assets/index-BfJmJxUU.js"><div id="root"></div>', FILES)).toBe(true);
+    expect(isAppPage('<script src="/assets/index-BfJmJxUU.js"src="/assets/index-OTHER123.js"></script><div id="root"></div>', FILES)).toBe(false);
+    expect(isAppPage(`<link href='/assets/index-BfJmJxUU.js'href='/assets/index-OTHER123.js'><div id="root"></div>`, FILES)).toBe(false);
+  });
+
+  test("isAppPage_takes_only_the_attributes_src_and_href_and_the_id_of_a_div_for_what_they_are", () => {
+    // A name that merely ends in src, href or id is another attribute, and what follows `>` is no attribute of the div.
+    expect(isAppPage('<img data-src="/assets/index-OTHER123.js"><div id="root"></div>', FILES)).toBe(true);
+    expect(isAppPage('<img xsrc="/assets/index-OTHER123.js"><div id="root"></div>', FILES)).toBe(true);
+    expect(isAppPage('<a data-href=/assets/index-OTHER123.js></a><div id="root"></div>', FILES)).toBe(true);
+    expect(isAppPage('<div data-id="root"></div>', FILES)).toBe(false);
+    expect(isAppPage('<div class="x">id=root</div>', FILES)).toBe(false);
+    expect(isAppPage('<div class="x" id="root"></div>', FILES)).toBe(true);
+    expect(isAppPage('<div\nid=root></div>', FILES)).toBe(true);
+  });
+
   test("isAppPage_ignores_a_query_and_reads_an_encoded_name", () => {
     const files = new Set(["/assets/a%20b.js"]);
 
