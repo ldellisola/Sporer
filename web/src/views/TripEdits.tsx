@@ -4,7 +4,7 @@ import { useWrite } from "../api/mutations";
 import type { EditTripResponse, TripResponse } from "../api/types";
 import { wantHeadingFocus } from "../app/headingFocus";
 import { navigate } from "../app/router";
-import { MAX_NAME_LENGTH, onEscape } from "./editForms";
+import { focusLost, MAX_NAME_LENGTH, onEscape } from "./editForms";
 import forms from "./Forms.module.css";
 import styles from "./TripEdits.module.css";
 import { WriteError } from "./WriteError";
@@ -31,9 +31,6 @@ function problemOf(start: string, end: string): Problem | null {
   if (start >= end) return { field: "end", message: "The start date must be before the end date." };
   return null;
 }
-
-/** Whether the focus has been lost (it is on the page itself: what had it has gone or was turned off). */
-const focusLost = (): boolean => document.activeElement === null || document.activeElement === document.body;
 
 /** What a write of the trip's edit says: all three keys, which the server wants, and null for each of them is as detected. */
 interface EditBody {
@@ -247,32 +244,5 @@ export function DeleteTripConfirm({ trip, onClose }: { trip: TripResponse; onClo
       </div>
       {remove.isError && <WriteError what="delete" error={remove.error} onRetry={submit} gone="This trip no longer exists." />}
     </form>
-  );
-}
-
-export interface TripEditActionsProps {
-  onEdit: () => void;
-  onDelete: () => void;
-  /** The button to put the focus on as the buttons come back, when a form that one of them opened was closed: the focus was in the form, which is gone. */
-  focus?: "edit" | "delete";
-}
-
-/** The buttons that open the forms, in the place where the forms will be: the two things that can be done to a trip. */
-export function TripEditActions({ onEdit, onDelete, focus }: TripEditActionsProps) {
-  const editButton = useRef<HTMLButtonElement>(null);
-  const deleteButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (focus === "edit") editButton.current?.focus();
-    if (focus === "delete") deleteButton.current?.focus();
-  }, [focus]);
-  return (
-    <div className={forms.actions}>
-      <button ref={editButton} type="button" className={forms.secondary} onClick={onEdit}>
-        Edit
-      </button>
-      <button ref={deleteButton} type="button" className={forms.secondary} onClick={onDelete}>
-        Delete trip
-      </button>
-    </div>
   );
 }

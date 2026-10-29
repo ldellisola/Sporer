@@ -4,7 +4,8 @@ import type { PlaceCandidate, PlaceResponse, PlaceVisit } from "../api/types";
 import { goBack, navigate } from "../app/router";
 import { dateLabel, dateOf } from "../time/dates";
 import { formatDuration, formatInteger, formatTime } from "../time/format";
-import { EditActions, MergeConfirm, MergedPlaces, RenameForm, type EditProps } from "./PlaceEdits";
+import { EditActions } from "./editForms";
+import { MergeConfirm, MergedPlaces, RenameForm, type EditProps } from "./PlaceEdits";
 import styles from "./PlacePanel.module.css";
 import { PlacePicker } from "./PlacePicker";
 import { UNNAMED } from "./placeNames";
@@ -93,7 +94,15 @@ function Place({ place, id }: { place: PlaceResponse; id: number }) {
         {place.name ?? UNNAMED}
       </h1>
       {where !== null && <p className={styles.where}>{where}</p>}
-      {editing.form === "none" && <EditActions focus={openedBy} onRename={() => setEditing({ form: "rename" })} onMerge={() => setEditing({ form: "pick" })} />}
+      {editing.form === "none" && (
+        <EditActions
+          focus={openedBy}
+          actions={[
+            { key: "rename", label: "Rename", onClick: () => setEditing({ form: "rename" }) },
+            { key: "merge", label: "Merge with…", onClick: () => setEditing({ form: "pick" }) },
+          ]}
+        />
+      )}
       {editing.form === "rename" && <RenameForm {...edit} onClose={close} />}
       {editing.form === "pick" && <PlacePicker placeId={place.id} onPick={(other) => setEditing({ form: "merge", other })} onCancel={close} />}
       {editing.form === "merge" && <MergeConfirm {...edit} other={editing.other} onClose={close} onChooseAnother={() => setEditing({ form: "pick" })} />}

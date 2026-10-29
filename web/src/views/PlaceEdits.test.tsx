@@ -6,7 +6,7 @@ import cafe from "../../e2e/fixtures/place-cafe.json";
 import { usePlace } from "../api/queries";
 import type { PlaceCandidate, PlaceResponse } from "../api/types";
 import { refusal, stubEdits, type Handler } from "../test/stubEdits";
-import { EditActions, MergeConfirm, MergedPlaces, RenameForm } from "./PlaceEdits";
+import { MergeConfirm, MergedPlaces, RenameForm } from "./PlaceEdits";
 
 // The forms of the edits, each on its own: the panel that composes them has its own tests (PlacePanel.test.tsx).
 
@@ -25,34 +25,6 @@ function mount(ui: ReactElement, place: PlaceResponse = CAFE) {
   client.setQueryData(KEY, place);
   return { client, ...render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>) };
 }
-
-describe("EditActions", () => {
-  test("EditActions_has_a_button_for_each_form_and_says_which_was_pressed", () => {
-    const onRename = vi.fn();
-    const onMerge = vi.fn();
-    render(<EditActions onRename={onRename} onMerge={onMerge} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
-    expect([onRename.mock.calls.length, onMerge.mock.calls.length]).toEqual([1, 0]);
-    fireEvent.click(screen.getByRole("button", { name: "Merge with…" }));
-    expect([onRename.mock.calls.length, onMerge.mock.calls.length]).toEqual([1, 1]);
-  });
-});
-
-describe("EditActions focus", () => {
-  test("EditActions_puts_the_focus_on_the_button_that_opened_the_form_that_was_closed_and_nowhere_when_it_is_not_told", () => {
-    const { unmount } = render(<EditActions onRename={() => undefined} onMerge={() => undefined} />);
-    expect(document.body).toHaveFocus(); // as the panel opens: nothing was pressed
-    unmount();
-
-    const rename = render(<EditActions onRename={() => undefined} onMerge={() => undefined} focus="rename" />);
-    expect(screen.getByRole("button", { name: "Rename" })).toHaveFocus();
-    rename.unmount();
-
-    render(<EditActions onRename={() => undefined} onMerge={() => undefined} focus="merge" />);
-    expect(screen.getByRole("button", { name: "Merge with…" })).toHaveFocus();
-  });
-});
 
 describe("RenameForm", () => {
   const nameField = () => screen.getByRole("textbox", { name: "Name" });

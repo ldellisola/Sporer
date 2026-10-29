@@ -6,10 +6,11 @@ import { navigate } from "../app/router";
 import { shortDayLabel } from "../time/dates";
 import { formatCount, formatDistance } from "../time/format";
 import { Chip, Chips, ONGOING } from "./Chips";
+import { EditActions } from "./editForms";
 import rows from "./Rows.module.css";
 import { Empty, ErrorState, Loading } from "./States";
 import styles from "./TripPanel.module.css";
-import { DeleteTripConfirm, EditTripForm, TripEditActions } from "./TripEdits";
+import { DeleteTripConfirm, EditTripForm } from "./TripEdits";
 import { useKeptData } from "./useKeptData";
 
 export interface TripPanelProps {
@@ -79,7 +80,15 @@ function Trip({ trip }: { trip: TripResponse }) {
   };
   return (
     <>
-      {editing === "none" && <TripEditActions focus={openedBy} onEdit={() => setEditing("edit")} onDelete={() => setEditing("delete")} />}
+      {editing === "none" && (
+        <EditActions
+          focus={openedBy}
+          actions={[
+            { key: "edit", label: "Edit", onClick: () => setEditing("edit") },
+            { key: "delete", label: "Delete trip", onClick: () => setEditing("delete") },
+          ]}
+        />
+      )}
       {editing === "edit" && <EditTripForm trip={trip} onClose={close} />}
       {editing === "delete" && <DeleteTripConfirm trip={trip} onClose={close} />}
       <Chips>

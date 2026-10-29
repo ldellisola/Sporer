@@ -249,30 +249,3 @@ export function MergedPlaces({ place, placeKey, onEmptied }: EditProps & { onEmp
     </section>
   );
 }
-
-export interface EditActionsProps {
-  onRename: () => void;
-  onMerge: () => void;
-  /** The button to put the focus on as the buttons come back, when a form that one of them opened was closed: the focus was in the form, which is gone. */
-  focus?: "rename" | "merge";
-}
-
-/** The buttons that open the forms, in the place where the forms will be: the two things that can be done to a place. */
-export function EditActions({ onRename, onMerge, focus }: EditActionsProps) {
-  const renameButton = useRef<HTMLButtonElement>(null);
-  const mergeButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (focus === "rename") renameButton.current?.focus();
-    if (focus === "merge") mergeButton.current?.focus();
-  }, [focus]);
-  return (
-    <div className={forms.actions}>
-      <button ref={renameButton} type="button" className={forms.secondary} onClick={onRename}>
-        Rename
-      </button>
-      <button ref={mergeButton} type="button" className={forms.secondary} onClick={onMerge}>
-        Merge with…
-      </button>
-    </div>
-  );
-}

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { PointEditing } from "../app/useEditPoints";
 import { formatCount } from "../time/format";
+import { focusLost } from "./editForms";
 import forms from "./Forms.module.css";
 import styles from "./RemovedToast.module.css";
 import { Toast, type ToastData } from "./Toast";
@@ -28,7 +29,7 @@ function toastOf({ toast, undo }: PointEditing): ToastData | null {
 
 /** Puts the focus on the first button of `card` if it has been lost (it is on the page itself: what had it has gone), and leaves it where the owner put it otherwise. */
 function focusIfLost(card: HTMLElement | null): void {
-  if (document.activeElement === null || document.activeElement === document.body) card?.querySelector("button")?.focus();
+  if (focusLost()) card?.querySelector("button")?.focus();
 }
 
 /**

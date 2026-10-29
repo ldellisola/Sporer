@@ -7,7 +7,7 @@ import { useTrip } from "../api/queries";
 import type { TripResponse } from "../api/types";
 import { takeHeadingFocus } from "../app/headingFocus";
 import { refusal, stubEdits } from "../test/stubEdits";
-import { DeleteTripConfirm, EditTripForm, TripEditActions } from "./TripEdits";
+import { DeleteTripConfirm, EditTripForm } from "./TripEdits";
 
 // The forms of the edits of a trip, each on its own: the panel that composes them has its own tests (TripPanel.test.tsx).
 
@@ -35,32 +35,6 @@ function mount(ui: ReactElement, client: QueryClient = newClient()) {
 beforeEach(() => {
   window.history.replaceState(null, "", "/trip/2026-09-12");
   takeHeadingFocus(); // what an earlier test asked for and did not take
-});
-
-describe("TripEditActions", () => {
-  test("TripEditActions_has_a_button_for_each_form_and_says_which_was_pressed", () => {
-    const onEdit = vi.fn();
-    const onDelete = vi.fn();
-    render(<TripEditActions onEdit={onEdit} onDelete={onDelete} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    expect([onEdit.mock.calls.length, onDelete.mock.calls.length]).toEqual([1, 0]);
-    fireEvent.click(screen.getByRole("button", { name: "Delete trip" }));
-    expect([onEdit.mock.calls.length, onDelete.mock.calls.length]).toEqual([1, 1]);
-  });
-
-  test("TripEditActions_puts_the_focus_on_the_button_that_opened_the_form_that_was_closed_and_nowhere_when_it_is_not_told", () => {
-    const { unmount } = render(<TripEditActions onEdit={() => undefined} onDelete={() => undefined} />);
-    expect(document.body).toHaveFocus(); // as the panel opens: nothing was pressed
-    unmount();
-
-    const edit = render(<TripEditActions onEdit={() => undefined} onDelete={() => undefined} focus="edit" />);
-    expect(screen.getByRole("button", { name: "Edit" })).toHaveFocus();
-    edit.unmount();
-
-    render(<TripEditActions onEdit={() => undefined} onDelete={() => undefined} focus="delete" />);
-    expect(screen.getByRole("button", { name: "Delete trip" })).toHaveFocus();
-  });
 });
 
 describe("EditTripForm", () => {
