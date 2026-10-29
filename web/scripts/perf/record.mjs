@@ -12,8 +12,9 @@
 //     its neighbours from, and the app prefetches the trips either side of the one on show, so all of them are needed whichever is opened),
 //   - the day with the most raw points, and its points (`/api/day/{date}/points`, which edit mode asks for when the owner taps Edit points):
 //     found by asking for the points of every day that has a timeline, so it takes a while (about half a minute for 800 days),
-// and, for each day, month and year, what the app asks for on top of it: the status, and the two days or periods either side (it prefetches
-// the one before and the one after whatever is on show, so a step to the next one asks for the one after that).
+// and, for each day, month and year, what the app asks for on top of it: the status, and the days or periods either side (it prefetches
+// the one before and the one after whatever is on show, so a step to the next one asks for the one after that: the run taps › twice, for a day and
+// a month, to time a step that has nothing prefetched, so those have three either side, a year two).
 // Everything goes to perf/recorded/, as the server wrote it, with an index of the requests it answers. The directory is not
 // committed (a year of routes is half a megabyte): record again on the machine that measures. It is written to perf/recorded.partial/
 // first and takes the place of the old recording only when it is complete, so that a server that fails half-way (or a run that is
@@ -127,14 +128,14 @@ for (const [id, label, day] of [
   ["day", "a typical weekday", typicalDay],
   ["day-heavy", "the heaviest day", heavyDay],
 ]) {
-  for (const date of [-2, -1, 0, 1, 2].map((k) => addDays(day.date, k))) await record(`/api/day/${date}`, `day-${date}`);
+  for (const date of [-3, -2, -1, 0, 1, 2, 3].map((k) => addDays(day.date, k))) await record(`/api/day/${date}`, `day-${date}`);
   scenarios.push({ id, label, url: `/day/${day.date}`, request: `/api/day/${day.date}` });
 }
 for (const [id, label, one] of [
   ["month", "a typical month", typicalMonth],
   ["month-heavy", "the heaviest month", heavyMonth],
 ]) {
-  for (const month of [-2, -1, 0, 1, 2].map((k) => addMonths(one.month, k))) await record(rangePath(monthRange(month)), `range-${month}`);
+  for (const month of [-3, -2, -1, 0, 1, 2, 3].map((k) => addMonths(one.month, k))) await record(rangePath(monthRange(month)), `range-${month}`);
   scenarios.push({ id, label, url: `/month/${one.month}`, request: rangePath(monthRange(one.month)) });
 }
 for (const y of [-2, -1, 0, 1, 2].map((k) => year + k)) await record(rangePath({ from: `${y}-01-01`, to: `${y}-12-31` }), `range-${y}`);
