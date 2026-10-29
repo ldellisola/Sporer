@@ -44,7 +44,7 @@ public static class HomeDetector
     /// to about twice the radius apart: when a fragment of the new home lies within the radius of the old one, its group
     /// includes the old home and the rest of the new one, so it can be the best candidate every time and, being near the
     /// current home, never starts a period: the move is not detected. Trips are unaffected (that is far below
-    /// <see cref="DetectionOptions.TripMinDistanceKm"/>), and a home override (planned) will cover it.
+    /// <see cref="DetectionOptions.TripMinDistanceKm"/>), and a home the owner sets (<see cref="HomeOverrides"/>) covers it.
     /// </para>
     /// <para>
     /// The places near each other are worked out once, before the dates are walked, and not for each date.

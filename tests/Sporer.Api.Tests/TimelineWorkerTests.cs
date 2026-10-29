@@ -121,6 +121,8 @@ public class TimelineWorkerTests(DatabaseFixture db)
                 throw error;
             await inner.RefreshAsync(fromUtc, toUtc, ct);
         }
+
+        public Task RecomputeAsync(CancellationToken ct) => inner.RecomputeAsync(ct);
     }
 
     private sealed class Harness(WebApplicationFactory<Program> api) : IAsyncDisposable

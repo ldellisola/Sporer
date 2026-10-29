@@ -11,12 +11,14 @@ namespace Sporer.Api.Features.Trips;
 internal static class TripMapping
 {
     /// <summary>
-    /// The fields of <paramref name="trip"/> as a list item and the trip's page both have them, with its name and cities made
-    /// from its known <paramref name="nights"/> (see <see cref="TripNaming"/>).
+    /// The fields of <paramref name="trip"/> as a list item and the trip's page both have them, with its cities made from its known
+    /// <paramref name="nights"/> and its name the owner's (<paramref name="name"/>) or, where it has none, made from them too (see
+    /// <see cref="DisplayName"/>). <paramref name="edited"/> is whether the trip has an edit, and <paramref name="startEdited"/> and
+    /// <paramref name="endEdited"/> whether the edit has a start date, and an end date. The owner's name is the summary's <c>OwnName</c> as it is, null when there is none.
     /// </summary>
-    public static TripSummary Summary(DetectedTrip trip, IReadOnlyList<TripNight> nights) => new(
+    public static TripSummary Summary(DetectedTrip trip, IReadOnlyList<TripNight> nights, string? name, bool edited, bool startEdited, bool endEdited) => new(
         Text(trip.FirstNight),
-        TripNaming.Name([.. nights.Select(n => (n.Date, n.City, n.Country))]),
+        DisplayName(name, nights),
         Text(trip.FirstNight),
         Text(trip.LastNight),
         trip.Nights,
@@ -27,7 +29,36 @@ internal static class TripMapping
         Text(trip.LocalStartDate),
         Text(trip.LocalEndDate),
         trip.EndUtc is null,
-        [.. TripNaming.Cities(nights).Select(c => new TripCityDto(c.Name, c.Country, c.Nights, c.Latitude, c.Longitude))]);
+        [.. TripNaming.Cities(nights).Select(c => new TripCityDto(c.Name, c.Country, c.Nights, c.Latitude, c.Longitude))],
+        edited,
+        name,
+        startEdited,
+        endEdited);
+
+    /// <summary>
+    /// What a trip is called: the owner's <paramref name="name"/> for it, or, where it has none, the one made from its known
+    /// <paramref name="nights"/> (see <see cref="TripNaming.Name"/>). It is what the list and the trip's page show, and what a deleted trip
+    /// is remembered by.
+    /// </summary>
+    public static string DisplayName(string? name, IReadOnlyList<TripNight> nights)
+        => name ?? TripNaming.Name([.. nights.Select(n => (n.Date, n.City, n.Country))]);
+
+    /// <summary>
+    /// Two dates as one span, the way the web writes a trip's dates: "12 – 16 Sep 2026", "28 Sep – 3 Oct 2026" over a month end, "28 Dec 2026
+    /// – 3 Jan 2027" over a year end (an en dash with a space on each side), and "12 Sep 2026" for one date. English month names, whatever
+    /// the culture of the server is.
+    /// </summary>
+    public static string DateRange(DateOnly from, DateOnly to)
+    {
+        var culture = CultureInfo.InvariantCulture;
+        if (from == to)
+            return to.ToString("d MMM yyyy", culture);
+        if (from.Year != to.Year)
+            return $"{from.ToString("d MMM yyyy", culture)} – {to.ToString("d MMM yyyy", culture)}";
+        if (from.Month == to.Month)
+            return $"{from.Day.ToString(culture)} – {to.ToString("d MMM yyyy", culture)}";
+        return $"{from.ToString("d MMM", culture)} – {to.ToString("d MMM yyyy", culture)}";
+    }
 
     /// <summary>A date as the API writes it, <c>yyyy-MM-dd</c>.</summary>
     public static string Text(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);

@@ -2,18 +2,26 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import tripsFixture from "../../e2e/fixtures/trips.json";
-import type { TripListItem, TripsResponse } from "../api/types";
+import type { SettingsResponse, TripListItem, TripsResponse } from "../api/types";
+import { takeHeadingFocus, wantHeadingFocus } from "../app/headingFocus";
 import { TripsPanel } from "./TripsPanel";
 
 const TRIPS = tripsFixture as TripsResponse; // newest first: 2026-10-22 (New York, ongoing), 2026-09-12 (Lisbon & Sintra), 2026-08-01 (Copenhagen)
 
-/** Answers `/api/trips` with `answer` (a response, or a function that gives one); returns the paths asked for. */
-function stubApi(answer: TripsResponse | (() => Response | Promise<Response>)): string[] {
+/** What `GET /api/settings` says unless a test says otherwise: the distance that makes a trip, which only the empty list quotes. */
+const SETTINGS: SettingsResponse = { tripMinDistanceKm: 50, tripMinDistanceKmDefault: 50 };
+
+/**
+ * Answers `/api/trips` with `answer` (a response, or a function that gives one) and `/api/settings` with `settings` (a response, or the settings); returns the
+ * paths asked for.
+ */
+function stubApi(answer: TripsResponse | (() => Response | Promise<Response>), settings: SettingsResponse | Response = SETTINGS): string[] {
   const paths: string[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string) => {
       paths.push(path);
+      if (path === "/api/settings") return settings instanceof Response ? settings.clone() : Response.json(settings);
       return typeof answer === "function" ? answer() : Response.json(answer);
     }),
   );
@@ -40,6 +48,7 @@ const textsOf = (button: HTMLElement): string[] =>
 
 beforeEach(() => {
   window.history.replaceState(null, "", "/trips");
+  takeHeadingFocus(); // what an earlier test asked for and did not take
 });
 
 describe("TripsPanel", () => {
@@ -151,7 +160,7 @@ describe("TripsPanel states", () => {
     expect(screen.getByText("Loading…")).toBeInTheDocument();
     expect(screen.queryByRole("list")).not.toBeInTheDocument();
 
-    // Empty: the answer that has no trips says what a trip is.
+    // Empty: the answer that has no trips says what a trip is, by the distance that is in effect (the settings: see the tests below).
     release(Response.json({ trips: [] } satisfies TripsResponse));
     expect(await screen.findByText("No trips yet. A trip is a night spent 50 km or more from home.")).toBeInTheDocument();
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
@@ -173,6 +182,57 @@ describe("TripsPanel states", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  test("TripsPanel_says_in_the_empty_list_the_distance_that_is_in_effect_and_not_the_one_that_was_configured", async () => {
+    const paths = stubApi({ trips: [] }, { tripMinDistanceKm: 80, tripMinDistanceKmDefault: 50 });
+
+    mount();
+
+    expect(await screen.findByText("No trips yet. A trip is a night spent 80 km or more from home.")).toBeInTheDocument();
+    expect(paths.filter((path) => path === "/api/settings")).toHaveLength(1);
+  });
+
+  test("TripsPanel_says_the_distance_in_kilometres_as_the_settings_write_it", async () => {
+    stubApi({ trips: [] }, { tripMinDistanceKm: 7.5, tripMinDistanceKmDefault: 50 });
+
+    mount();
+
+    expect(await screen.findByText("No trips yet. A trip is a night spent 7.5 km or more from home.")).toBeInTheDocument();
+  });
+
+  test("TripsPanel_does_not_ask_for_the_settings_when_there_are_trips_to_list", async () => {
+    const paths = stubApi(TRIPS);
+
+    mount();
+    await list();
+
+    expect(paths).toEqual(["/api/trips"]);
+  });
+
+  test("TripsPanel_says_no_distance_in_the_empty_list_while_it_is_not_known_and_no_error_for_it", async () => {
+    // The distance is a detail of the message: a list of no trips is not a failure because the settings could not be had, and it does not guess.
+    let release: (response: Response) => void = () => undefined;
+    stubApi({ trips: [] }, new Response("{}", { status: 503 }));
+    const failed = mount();
+
+    expect(await screen.findByText("No trips yet. A trip is a night spent far from home.")).toBeInTheDocument();
+    await waitFor(() => expect(failed.client.isFetching()).toBe(0));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/50 km/)).not.toBeInTheDocument();
+    failed.unmount();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((path: string) =>
+        path === "/api/settings" ? new Promise<Response>((resolve) => (release = resolve)) : Promise.resolve(Response.json({ trips: [] })),
+      ),
+    );
+    mount();
+    expect(await screen.findByText("No trips yet. A trip is a night spent far from home.")).toBeInTheDocument(); // not held back for it
+
+    release(Response.json({ tripMinDistanceKm: 120, tripMinDistanceKmDefault: 50 } satisfies SettingsResponse));
+    expect(await screen.findByText("No trips yet. A trip is a night spent 120 km or more from home.")).toBeInTheDocument(); // and says it when it is there
+  });
+
   test("TripsPanel_keeps_the_list_it_has_under_an_error_with_a_retry", async () => {
     let failing = false;
     stubApi(() => (failing ? new Response("{}", { status: 500 }) : Response.json(TRIPS)));
@@ -192,5 +252,44 @@ describe("TripsPanel states", () => {
 
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(cards(screen.getByRole("list", { name: "Trips" }))).toHaveLength(3);
+  });
+});
+
+describe("TripsPanel heading focus", () => {
+  test("TripsPanel_puts_the_focus_on_its_heading_when_an_edit_took_the_owner_here_and_only_once", async () => {
+    // A trip that was deleted: the page is the list now, and the focus was on what is gone.
+    stubApi(TRIPS);
+    wantHeadingFocus({ view: "trips" });
+
+    const { unmount } = mount();
+
+    expect(screen.getByRole("heading", { name: "Trips" })).toHaveFocus(); // at once: the heading is there before the list
+    await list();
+    expect(screen.getByRole("heading", { name: "Trips" })).toHaveFocus();
+    unmount();
+
+    mount(); // the list that is come to again is not asked to take it
+    await list();
+    expect(document.body).toHaveFocus();
+  });
+
+  test("TripsPanel_leaves_the_focus_alone_when_nothing_asked_for_it", async () => {
+    stubApi(TRIPS);
+
+    mount();
+    await list();
+
+    expect(document.body).toHaveFocus();
+  });
+
+  test("TripsPanel_forgets_a_request_that_was_for_another_view", async () => {
+    stubApi(TRIPS);
+    wantHeadingFocus({ view: "trip", id: "2026-09-12" }); // the owner has gone to the list instead
+
+    mount();
+    await list();
+
+    expect(document.body).toHaveFocus();
+    expect(takeHeadingFocus()).toBe(false);
   });
 });

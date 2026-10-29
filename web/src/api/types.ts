@@ -122,6 +122,34 @@ export interface RangeDay {
   places: number;
 }
 
+// --- GET /api/day/{date}/points (Features/Points) and the removal of points ---
+
+/**
+ * One raw point of a day: `[t, lon, lat, device]`. `t` is the exact time in epoch microseconds, a whole number that a JavaScript number holds exactly:
+ * it is never rounded or turned into milliseconds, and is sent back as it came, for it is what the point is told from the others by. `device` is
+ * the index into `devices` of the answer.
+ */
+export type RawPoint = [t: number, lon: number, lat: number, device: number];
+
+/** The points of a day in time order, those removed earlier left out. A point may be on the neighbouring day too: a day spans the zones of its segments. */
+export interface DayPointsResponse {
+  date: string;
+  devices: string[];
+  points: RawPoint[];
+}
+
+/** A point to remove, as the server tells it: by the device and the exact time (epoch microseconds). */
+export interface PointRef {
+  device: string;
+  t: number;
+}
+
+/** The answer to `POST /api/points/remove`: the batch to restore it by, or null when nothing was removed (the points were removed already), and how many points it holds. */
+export interface RemovePointsResponse {
+  batch: string | null;
+  count: number;
+}
+
 // --- GET /api/heat?from=&to= (Features/Heat/HeatResponse.cs) ---
 
 /** `[lon, lat, seconds]`: the centre of a grid cell and the time spent in it. */
@@ -151,6 +179,42 @@ export interface PlaceResponse {
   lastVisit: string;
   /** The latest 50 stays, newest first. */
   recentVisits: PlaceVisit[];
+  /** The places merged directly into this one, by name (a place with none last); each can be separated again. Empty when there are none. */
+  merged: MergedPlace[];
+}
+
+/** A place that was merged into the one served: its own id (the one to separate it by) and its name, the owner's or else OpenStreetMap's, or null. */
+export interface MergedPlace {
+  id: number;
+  name: string | null;
+}
+
+// --- GET /api/places/{id}/candidates?q= (Features/Places/PlaceResponse.cs, PlaceCandidateDto) ---
+
+/**
+ * A place that a place can be merged with: the answer is a bare array of at most 20, nearest first, and never the place itself or one
+ * merged into it. `name` is null for a place with none (shown as "Unnamed place"), `address` until the place is named, `distanceM` is
+ * the distance in metres from the place asked about and `visits` the stays at it and at the places merged into it.
+ */
+export interface PlaceCandidate {
+  id: number;
+  name: string | null;
+  address: string | null;
+  distanceM: number;
+  visits: number;
+}
+
+// --- GET /api/places/search?q= (Features/Places/PlaceResponse.cs, PlaceSearchDto) ---
+
+/**
+ * A place in use, as the search with no place to start from finds it: the answer is a bare array of at most 20, the most visited first. `name` is null for a
+ * place with none (shown as "Unnamed place"), `address` until the place is named, and `visits` the stays at it and at the places merged into it.
+ */
+export interface PlaceSearchResult {
+  id: number;
+  name: string | null;
+  address: string | null;
+  visits: number;
 }
 
 export interface PlaceVisit {
@@ -191,6 +255,20 @@ export interface TripSummary {
   localEndDate: string;
   ongoing: boolean;
   cities: TripCity[];
+  /** Whether the owner has edited the trip: given it a name, or changed its dates (which is why its `id` may not be the night that detection found it on). */
+  edited: boolean;
+  /**
+   * The name the owner gave the trip, or null when they gave none (the field is there, and null): `name` is the owner's when this is not null and the
+   * made-up one when it is. A form that sends a name back sends this, so that a made-up name is never made the owner's.
+   */
+  ownName: string | null;
+  /**
+   * Whether the owner's edit of the trip has a start date, and an end date, each of its own: `edited` is true for a name alone too, and does not say this.
+   * A date that is not an edit is detection's and moves on (the end of a trip that is still going on does, every night), so a form sends back only the dates
+   * that are the owner's; and a trip that has either can be put back to the dates that detection found it with.
+   */
+  startEdited: boolean;
+  endEdited: boolean;
 }
 
 /** A trip of the list: its summary and the line to draw for it, home, the places it slept at, home (an ongoing trip has not come back, so it stops at the last place). */
@@ -239,6 +317,71 @@ export interface TripDay {
   flights: number;
 }
 
+// --- PUT /api/trips/{id}, GET /api/trips/deleted (Features/Trips/EditTripEndpoint.cs, DeletedTripsEndpoints.cs) ---
+
+/** The answer to the edit of a trip: its id now, which is the date of its first night and moves with its start date. */
+export interface EditTripResponse {
+  id: string;
+}
+
+/** A trip that the owner deleted, as the list of them has it: the `key` that restores it, what it was called and when it was (`yyyy-MM-dd`, "Lisbon · 12 – 16 Sep 2026", ISO-8601 UTC). */
+export interface DeletedTrip {
+  key: string;
+  label: string;
+  deletedAt: string;
+}
+
+// --- GET /api/homes, POST /api/homes, GET /api/settings, PUT /api/settings (Features/Homes, Features/Settings) ---
+
+/** Where a home period came from: found from the nights, or set by the owner. */
+export type HomeSource = "detected" | "user";
+
+/** A home period: the place that survives merges, and the night dates (`yyyy-MM-dd`) it was home from and to, both included; `to` is null for a period that goes on. */
+export interface HomePeriod {
+  /** What `DELETE /api/homes/{id}` takes: only the periods that are `user` can be deleted. */
+  id: number;
+  placeId: number;
+  placeName: string | null;
+  from: string;
+  to: string | null;
+  source: HomeSource;
+}
+
+/** The home periods that are stored, the detected and the owner's, in date order. */
+export interface HomesResponse {
+  periods: HomePeriod[];
+}
+
+/** The body of `POST /api/homes`: all three are there, and a null `to` is a home that goes on. */
+export interface AddHomeRequest {
+  placeId: number;
+  from: string;
+  to: string | null;
+}
+
+/**
+ * The settings: `tripMinDistanceKm` is the distance in kilometres from home that a night must be to be away, which makes a trip, as it is in effect
+ * (the owner's, else the default), and `tripMinDistanceKmDefault` the one that is configured, which a reset goes back to.
+ */
+export interface SettingsResponse {
+  tripMinDistanceKm: number;
+  tripMinDistanceKmDefault: number;
+}
+
+// --- GET /api/points/removed (Features/Points/GetRemovedPointsEndpoint.cs) ---
+
+/** A removal of points that was not restored: the `batch` that restores it, when it was made, how many points it holds, and the local dates they are on (oldest first). */
+export interface RemovedBatch {
+  batch: string;
+  removedAt: string;
+  count: number;
+  /** The times of the first and the last of the points. */
+  from: string;
+  to: string;
+  /** The dates `yyyy-MM-dd` of the days the points can be seen on; on a day of travel a point can be on two adjacent ones. */
+  localDates: string[];
+}
+
 // --- GET /api/status (Features/Status/StatusResponse.cs) ---
 
 export interface StatusResponse {
@@ -267,6 +410,11 @@ export interface FailedRange {
   to: string;
   attempts: number;
   lastError: string | null;
+}
+
+/** The answer to `POST /api/status/retry` (Features/Status/RetryFailedEndpoint.cs): how many failed ranges were made due, 0 when none had failed. */
+export interface RetryFailedResponse {
+  retried: number;
 }
 
 export interface PlaceStatus {

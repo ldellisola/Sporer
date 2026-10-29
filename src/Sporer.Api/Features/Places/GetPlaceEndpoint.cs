@@ -1,13 +1,14 @@
-using System.Globalization;
 using FastEndpoints;
 using Sporer.Api.Features.Timeline;
+using Sporer.Api.Http;
 
 namespace Sporer.Api.Features.Places;
 
 /// <summary>
 /// <c>GET /api/places/{id}</c>: a place and the time spent at it, for the place view. An id that is not a positive whole number
 /// is a 400; one that is no place of the timeline (it does not exist, or is not in use, see <see cref="PlaceStore.FindDetailAsync"/>)
-/// is a 404. A place merged into another is served as the one it was merged into. Reads only.
+/// is a 404. A place merged into another is served as the one it was merged into, so the id of the answer is that of the survivor,
+/// whichever id was asked for; <c>merged</c> lists the places merged directly into it. Reads only.
 /// </summary>
 internal sealed class GetPlaceEndpoint(PlaceStore places) : EndpointWithoutRequest<PlaceResponse>
 {
@@ -19,11 +20,9 @@ internal sealed class GetPlaceEndpoint(PlaceStore places) : EndpointWithoutReque
 
     public override async Task HandleAsync(CancellationToken ct)
     {
-        var text = Route<string>("id", isRequired: false);
-        // Digits only: no sign, no space, no exponent. An id too big for a long is no id either.
-        if (!long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var id) || id <= 0)
+        if (!PositiveId.TryParse(Route<string>("id", isRequired: false), out var id))
         {
-            ValidationFailures.Add(new("id", "The id must be a positive whole number."));
+            ValidationFailures.Add(new("id", PositiveId.InvalidMessage));
             await Send.ErrorsAsync(400, ct);
             return;
         }
@@ -35,9 +34,6 @@ internal sealed class GetPlaceEndpoint(PlaceStore places) : EndpointWithoutReque
             return;
         }
 
-        await Send.OkAsync(new PlaceResponse(
-            place.Id, place.Name, place.Address, place.City, place.Country, place.Latitude, place.Longitude,
-            place.TotalSeconds, place.Visits, place.FirstVisit, place.LastVisit,
-            [.. place.RecentVisits.Select(v => new PlaceVisitDto(v.StartUtc, v.EndUtc, v.Date, v.TimeZone))]), ct);
+        await Send.OkAsync(PlaceResponse.From(place), ct);
     }
 }

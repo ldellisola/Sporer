@@ -3,8 +3,9 @@
 Sporer is a (very) simple alternative to Google Timelines. It receives GPS points from the
 [Overland](https://overland.p3k.app/) iOS app, stores them in TimescaleDB, and turns them into a timeline of
 **stays** (matched to named places), **moves** (walk, cycle, drive or flight) and **gaps**, each with its IANA time zone
-and local date. The raw points are the source of truth and are never modified; the timeline is derived from them and can
-be rebuilt at any time.
+and local date. The raw points are the source of truth and are never modified or deleted; the timeline is derived from them and can
+be rebuilt at any time. What you correct by hand in the app (place names and merges, points you remove, trips, homes and the trip distance, see
+"Editing") is kept apart from what is derived and survives every rebuild.
 
 The server is a .NET 10 API, and it also serves the web app that shows the timeline (see "The web app" below). It exposes:
 
@@ -12,13 +13,34 @@ The server is a .NET 10 API, and it also serves the web app that shows the timel
 | --- | --- |
 | `POST /api/overland` | Receives Overland batches. Answers `{"result":"ok"}` once the points are stored. |
 | `GET /api/day/{yyyy-MM-dd}` | One local day of the timeline. A stay at the home in effect on that day, or at a place within `Detection__HomeRadiusMeters` of it (see "Trips and home"), has `"home": true`. `state` is `pending` while work that affects that day is still waiting. |
+| `GET /api/day/{yyyy-MM-dd}/points` | The raw points of a local day that are not removed, for edit mode to draw: `{"date", "devices": [...], "points": [[t, lon, lat, deviceIndex], ...]}`, in time order. `t` is the time in **microseconds** since the epoch, exact, and with the device it is what a removal names a point by; `deviceIndex` is a place in `devices`. The day is the one the day view shows, in every zone its segments are in (from the earliest local midnight to the latest next one), so on a day of travel the points of the days next to it overlap and no point is on no day. A day with no points has an empty list (a day can have tens of thousands). `400` for a date that is not `yyyy-MM-dd`. |
 | `GET /api/range?from=yyyy-MM-dd&to=yyyy-MM-dd` | A stretch of local days (at most 400, both ends counted) in one answer: every move with its line (simplified further if there would be more than 50 000 vertices), the places with the time spent there inside the range, and a list of the days. `state` is `pending` while work that affects the range is still waiting. |
 | `GET /api/heat?from=yyyy-MM-dd&to=yyyy-MM-dd` | Where the time of a range (the same dates, the same limit as `/api/range`) was spent, for a heat layer: `cells` are `[lon, lat, seconds]`, the most seconds first, one per cell of a grid of 0.001 degrees (about 111 m of latitude; a degree of longitude is shorter the further you are from the equator, so a cell is narrower than it is tall), weighted by the time of the stays in it, not by points; `maxSeconds` is the first one's weight (0 when there are none). |
-| `GET /api/places/{id}` | A place and the time spent at it: name, address, centre, total seconds, number of visits, first and last visit, and the latest 50 stays (`start`, `end`, local `date`, `timeZone`), newest first. A place merged into another is served as the one it was merged into, with the time of both. `404` for an id that is no place of the timeline (unknown, or no stay names the place it leads to or any place merged into it), `400` for one that is not a positive whole number. |
-| `GET /api/trips` | The trips, newest first, as `{"trips": [...]}` (an empty list when there are none). Each has its `id` (the date of its first away night, `yyyy-MM-dd`), a `name` (`"Lisbon"`, `"Lisbon & Porto"`; `"Trip"` until its places are named), `firstNight`, `lastNight` and `nights` (every night from the first to the last, those with no known position too), `start` and `end` (when you left and came back, UTC; `end` is `null` while the trip is `ongoing`), `startTimeZone`, `endTimeZone`, `localStartDate` and `localEndDate`, its `cities` (name, country, nights and mean position of each city slept in), and a `thumbnail`: the line `[[lon, lat], ...]` of home, the places it slept at and home again (it stops at the last place while the trip is ongoing). There is no `state`: the trips are worked out after the timeline, once per pass of the background worker, so a trip can follow new points by a moment. |
+| `GET /api/places/{id}` | A place and the time spent at it: name, address, centre, total seconds, number of visits, first and last visit, and the latest 50 stays (`start`, `end`, local `date`, `timeZone`), newest first. A place merged into another is served as the one it was merged into, with the time of both. `404` for an id that is no place of the timeline (unknown, or no stay names the place it leads to or any place merged into it), `400` for one that is not a positive whole number. `merged` lists the places merged directly into it (`id`, `name`). |
+| `GET /api/places/search?q=` | The places in use (not merged into another), the most visited first, at most 20, as `[{"id", "name", "address", "visits"}]` (the name is yours, else OpenStreetMap's, else `null`; the visits include those of the places merged into it). With a `q`, those whose name or address contains it, whatever the case and taken as text (`%` and `_` mean themselves); with none, or an empty one, the most visited of all. It serves the home picker in Settings. |
+| `GET /api/places/{id}/candidates?q=` | The places the place can be merged with, the nearest first, at most 20, as `[{"id", "name", "address", "distanceM", "visits"}]`: the places in use that survive merges, except the place itself (and so not one merged into it). `q` filters by name or address as for the search. `404` for an id that is no place of the timeline, `400` for one that is not a positive whole number. |
+| `PUT /api/places/{id}/name` | Names a place yourself: body `{"name": "Gym"}`. Your name is shown in place of OpenStreetMap's wherever the place is named (the day, the range, the place view and the highlights of a trip's days). It is trimmed, at most 100 characters (`400` otherwise), and `null` or an empty one brings back the automatic name; a body with no `name` in it is a `400`, as is an id that is not a positive whole number; `404` for an id that is no place of the timeline. A place merged into another is the one it was merged into, and that is the one named. Answers `200` with the place, as `GET /api/places/{id}`. Nothing is reprocessed. |
+| `POST /api/places/{id}/merge` | Merges the place `{"place": 7}` into the place `id`: the place you are on survives, and everything spent at the other is spent at it from now on, in the day, the range, the place and the trips. An optional `name` becomes the survivor's name (trimmed, at most 100 characters); an empty one clears the survivor's own name, so that OpenStreetMap's shows again, and `null` or none leaves it as it is. The homes and trips are worked out again from the stored nights before the answer. `200` with the survivor, as `GET /api/places/{id}`, merged places and all. `400` for an `id` or a `place` that is missing or not a positive whole number, or a name over 100 characters; `404` for a place that is no place of the timeline; `409` for two that are the same place once their merges are followed (merging a place into itself, or into one it was merged into), or for a merge that would chain more than 32 merges. |
+| `DELETE /api/places/{id}/merged/{other}` | Separates `other`, which must have been merged directly into the place `id`, so that it is a place of its own again, with its own stays; what was merged into it goes with it. The name given to the survivor at the merge stays with the survivor. The homes and trips are worked out again before the answer. `204`; `404` for an `id` that is no place of the timeline or an `other` that is not merged directly into it; `400` for an id that is not a positive whole number. |
+| `GET /api/trips` | The trips, newest first, as `{"trips": [...]}` (an empty list when there are none). Each has its `id` (the date of its first away night, `yyyy-MM-dd`), a `name` (`"Lisbon"`, `"Lisbon & Porto"`; `"Trip"` until its places are named), `firstNight`, `lastNight` and `nights` (every night from the first to the last, those with no known position too), `start` and `end` (when you left and came back, UTC; `end` is `null` while the trip is `ongoing`), `startTimeZone`, `endTimeZone`, `localStartDate` and `localEndDate`, its `cities` (name, country, nights and mean position of each city slept in), and a `thumbnail`: the line `[[lon, lat], ...]` of home, the places it slept at and home again (it stops at the last place while the trip is ongoing). `edited` says you have changed the trip; `ownName` is the name you gave it (`null` when it is the made-up one), and `startEdited` and `endEdited` say that the start and the end date are yours and not detected. There is no `state`: the trips are worked out after the timeline, once per pass of the background worker, so a trip can follow new points by a moment. |
 | `GET /api/trips/{id}` | One trip, `id` being the date of its first away night. The fields of the list (without the thumbnail), its `stats` (`flights`, `cities`, `places`, and `groundDistanceMeters`, the distance of the moves that are not flights), its `moves` (`id`, `mode`, `distanceMeters` and the `geometry` of each, simplified further if all of them together would have more than 50 000 vertices) and its `days`: for each local day of the trip a `description` (`"Oslo → Lisbon"`), up to three `highlights` (the named places with the most time that day, not counting the place slept at the night before or the place slept at that night), `groundDistanceMeters` and `flights`. `404` for an id that is no stored trip (unknown, or not a date). There is no `state`, as for the list. |
+| `PUT /api/trips/{id}` | Says what the trip is, which replaces whatever you said before: body `{"name": "Lisbon", "startDate": "2026-09-10", "endDate": "2026-09-18"}`. All three must be in the body, and `null` for each means as detected (`"name": null` is the automatic name). The start date is the day the trip begins and the end date the day you are back, so its nights run from the evening of the first to the one before the second; the trip begins at midnight at the start of the first date and ends at midnight at the end of the last, so the journey home is in the trip. The edit is kept and put on the trip again whenever the trips are worked out. The trips are worked out again before the answer. `200` with `{"id": "2026-09-10"}`, the trip's id now (its first night, which a new start date moves). `400` for a name over 100 characters, a date that is not `yyyy-MM-dd` (from 1970 to 2099) or a start that is not before the end; `404` for an id that is no stored trip; `409` when the nights it would have are another trip's. |
+| `DELETE /api/trips/{id}` | Says the trip is none. It stays gone when the trips are worked out again, from new data or a rebuild, until it is brought back. `204`; `404` for an id that is no stored trip, or one that is deleted already. |
+| `GET /api/trips/deleted` | The trips you deleted and have not brought back, the one deleted last first, as `[{"key", "label", "deletedAt"}]`: `key` is what restores it (`yyyy-MM-dd`), `label` is what it was shown under (`Lisbon · 12 – 16 Sep 2026`). |
+| `POST /api/trips/deleted/{key}/restore` | Brings a deleted trip back, as detection finds it, with the name and dates you had given it. The trips are worked out again before the answer. Takes no body (an empty one, or `{}`). `204`; `404` for a key that is no deleted trip. |
+| `POST /api/points/remove` | Removes points from the timeline: body `{"points": [{"device": "iPhone", "t": 1790000000000000}, ...]}`, each by its device and its time in microseconds, as `GET /api/day/{date}/points` gives them, at most 50 000. The raw points are **not deleted**: they are left out of every rebuild of the timeline, and the stretch they are in is rebuilt at once. One request is one removal (a batch), which `DELETE /api/points/removed/{batch}` undoes. A point that does not exist, or that is removed already, is ignored and not counted. `200` with `{"batch": "<id>", "count": 3}`; when none was removed `batch` is `null` and nothing is rebuilt. `400` for no `points`, more than 50 000, or a point without a `device` or a `t` that is a time. |
+| `GET /api/points/removed` | The removals you have made and not restored, the newest first: `[{"batch", "removedAt", "count", "from", "to", "localDates"}]`, `from` and `to` being the times of the first and last point and `localDates` the local dates (`yyyy-MM-dd`) the points are on. |
+| `DELETE /api/points/removed/{batch}` | Restores the points of one removal and has the stretch rebuilt at once. `204`; `404` for a batch there is none of, which includes one that was restored already; `400` for a batch that is not the id a removal gave. |
+| `GET /api/homes` | The home periods as they are stored, those detection found and those you set, in date order: `{"periods": [{"id", "placeId", "placeName", "from", "to", "source"}]}`. `from` and `to` are night dates, both counted, `to` is `null` for a home that goes on, and `source` is `detected` or `user`. Where yours covers a detected one both are listed, and yours wins. |
+| `POST /api/homes` | Says a place was home from one night to another, which replaces what detection found for those dates (see "Editing"): body `{"placeId": 53, "from": "2025-10-18", "to": null}`. `from` and `to` are night dates, `yyyy-MM-dd`; `to` must be in the body, and `null` is a home that goes on. A place that was merged into another is the place it was merged into. The trips are worked out again before the answer. `201` with the period, as `GET /api/homes` lists it. `400` for a missing place, a bad date or a `from` after the `to`; `404` for a place that is no place of the timeline; `409` when a night is one of another period you set. |
+| `DELETE /api/homes/{id}` | Takes back a home you set; what detection found for those dates is the home again. The trips are worked out again before the answer. `204`; `404` for an id that is no period; `409` for a detected period, which the next refresh would find again (set a home for its dates instead); `400` for an id that is not a positive whole number. |
+| `GET /api/settings` | Your settings: `{"tripMinDistanceKm": 50, "tripMinDistanceKmDefault": 50}`, the distance from home that makes a night away, in effect and as configured (`Detection__TripMinDistanceKm`). |
+| `PUT /api/settings` | Sets the trip distance: body `{"tripMinDistanceKm": 80}`, from 5 to 1000 (`400` otherwise), or `null` to take your setting back and use `Detection__TripMinDistanceKm`. It must be in the body. The trips are worked out again from the stored nights before the answer: **nothing is rebuilt**. `200` with the settings, as `GET /api/settings`. |
 | `GET /api/status` | Processing health: algorithm version, backfill progress, pending and failed work, place naming progress, warnings. |
+| `POST /api/status/retry` | Makes every failed range of the processing queue due now, instead of when its backoff is over: the ranges that failed on their own and the backfill steps that were set aside, which are what `GET /api/status` lists as failed. The worker takes them on its next pass. Takes no body (an empty one, or `{}`). `200` with `{"retried": n}`, 0 when none had failed. |
 | `GET /api/config` | What the web app needs to know before it can draw: the map styles for the light and the dark colour scheme (`Map__StyleLight`, `Map__StyleDark`, see below). |
+
+**Writes.** Every write (`POST`, `PUT`, `DELETE`) takes and answers JSON. A `POST`, `PUT` or `PATCH` under `/api` whose `Content-Type` is not `application/json`, with a body or without one, is answered `415` and never reaches an endpoint (`POST /api/overland` is the exception, and has its token); a write that takes no body is sent with an empty body or `{}`. Errors: `400` for a value that is not valid, `404` for an id that is unknown, `409` for a conflict (merging a place into itself, trips or home periods that would share a night); a `400` has the usual errors body, `{"statusCode", "message", "errors": {field: [reason]}}`.
 
 ## The web app
 
@@ -27,7 +49,8 @@ month, year or range of the timeline on a map with a panel beside it (a sidebar 
 on a phone), and a place with the time you have spent at it. The address says what is shown, so a view can be bookmarked
 and the Back button works: `/day/2026-10-22`, `/week/2026-10-19`, `/month/2026-10`, `/year/2026`,
 `/range/2026-10-01..2026-10-22`, `/place/7`, `/trips` (the list of your trips, opened by the Trips button of the card at the top of the
-map) and `/trip/2026-09-12` (one trip, named by the date of its first night; see "Trips and home"). Anything else opens today. The map
+map), `/trip/2026-09-12` (one trip, named by the date of its first night; see "Trips and home") and `/settings` (the gear: processing,
+your homes, the trip distance, and what you deleted or removed, see "Editing"). Anything else opens today. The map
 follows the light or dark setting of the device, and the ◐ button of the map draws where the time of a period was spent as a heat layer.
 
 **On an iPhone**, open `https://sporer.lud.ar` in Safari, tap Share, then **Add to Home Screen**. It opens from the home
@@ -52,9 +75,10 @@ worked out again with it, so nothing here has to be entered or kept up to date b
   current home never starts a new home, so the home does not flip between the fragments of one house. Two homes closer than that are one
   home, and so can two homes up to about twice that apart (about 500 m), when a place of the new one lies within 250 m of the old one: a
   move that small may not be noticed as a move. That is harmless for trips, as it is far below the 50 km of a trip. On the Day view the
-  stays at the new home's places more than 250 m from the old home then show numbers, not a house, until a home override (planned for
-  Plan 4) covers it.
-- **Away** means sleeping at least **50 km** from the home you had that night. While there is no home, no night is away.
+  stays at the new home's places more than 250 m from the old home then show numbers, not a house, until a home you set in Settings
+  covers it.
+- **Away** means sleeping at least **50 km** from the home you had that night (`Detection__TripMinDistanceKm`, or the distance you set in
+  Settings, which is used in its place; see "Editing"). While there is no home, no night is away.
 - **A trip** is a run of away nights in a row. Unknown nights between two of them belong to it, and an unknown night never starts or ends
   one. It starts when you left (the end of the last stay within 50 km of home) and ends when you came back (the start of the first one).
   A trip whose last away night is the last night that is stored is **ongoing**, and has no end yet. Its id is the date of its first away
@@ -69,7 +93,51 @@ same house. A café, a shop or a gym next door is never where you slept, however
 other stays that have a place. (A day with stays at two places of the same home shows two houses near each other.) The thresholds are the
 `Detection__*` settings below: `Detection__TripMinDistanceKm`, `Detection__HomeMinNights`, `Detection__HomeWindowNights`,
 `Detection__HomeRadiusMeters`, `Detection__NightHour` and `Detection__NightPointWindow`. Changing one rebuilds the whole timeline, as
-changing any of them does.
+changing any of them does. (The trip distance you set in the app is not one of them: it changes the trips alone, and rebuilds nothing.)
+What you set by hand, the homes and the trips you edited, is put over what is detected whenever it is worked out.
+
+## Editing
+
+The timeline is worked out by the server, and what it gets wrong you put right in the app. Every edit is **yours**: it is kept in tables of
+its own, and nothing the server works out again overwrites it. The edits are made in the places they are about; each shows that it is on its
+way, and when it fails says why, with a Retry only where asking again can help.
+
+- **Rename a place** (the place view, Rename). Your name is shown in place of OpenStreetMap's wherever the place is named (the day, the range, the
+  place view and the highlights of a trip's days). An empty name brings OpenStreetMap's back. Nothing is reprocessed.
+- **Merge two places** (the place view, Merge with…). Pick the other place from the nearest ones, or search by name, and choose which of the two
+  names to keep. The place you are on survives; everything spent at the other is spent at it from now on, in every view, and the homes and
+  trips are worked out again, so a home that GPS drift split over two places becomes one, and a home may be one of the two. **Separate**
+  (listed under the place, for each place merged into it) makes a place of its own again, with its own stays; it is the undo of a merge.
+- **Remove points** (the day view, Edit points). The raw points of the day are drawn on the map; tap one, or turn on Select area on the map
+  and drag a box (or hold Shift on a desktop), then Remove. The day is rebuilt at once, and the toast has **Undo**. A removal is a batch, and
+  Settings lists the batches (Removed points) with a **Restore** for each, so a removal is never final: the raw points are **never deleted**,
+  only left out of the timeline.
+- **Edit a trip** (the trip view, Edit): a name and the dates it begins and ends on (the day you are back is the end date; the journey home is in
+  the trip). Use detected dates puts the dates detection found back. **Delete trip** says the trip is none, and Settings lists the deleted
+  trips (Deleted trips) with a **Restore** for each.
+- **Set a home** (Settings, Home, Set home). Pick a place and the nights it was home, from a date to a date or still; that replaces what was
+  detected for those dates, the trips follow it at once, and Remove takes it back. Use it when a move was not noticed, or was noticed late or
+  early. Detected periods are listed with yours but cannot be removed: they are found again.
+- **The trip distance** (Settings, Trips): how far from home a night has to be to be away, from 5 to 1000 km. It is a setting of the app and
+  overrides `Detection__TripMinDistanceKm`; Reset to default goes back to that. It changes the trips and **does not rebuild the timeline**,
+  because it is no part of the algorithm's version (the `Detection__*` thresholds are, and changing one rebuilds everything).
+
+**What survives.** Every edit survives new data, reprocessing and a rebuild of the whole timeline, such as the one an algorithm or a
+`Detection__*` change makes: the place names and merges (`place.user_name`, `place.merged_into_id`), the removed points (`excluded_point`),
+the edits of trips (`trip_edit`), the homes you set (the rows of `home_period` with `source = 'user'`) and the settings (`app_setting`) are
+owner data, and a rebuild keeps all of them. The detected homes and trips are derived and are worked out again, with your edits put over them.
+A trip you edited keeps its name and dates and one you deleted stays deleted; an edit finds its trip again when new data moves a night of it
+(the trip that shares most nights with it), and when there is none it waits and changes nothing until there is.
+
+**Raw points are never deleted.** `locationLog` is never written to by the timeline or by an edit. Remove adds the point's device and exact
+time to `excluded_point`, and every read of points that the timeline is made from leaves those out (the segmenter's, and the nearest point to
+a night); Restore deletes the row. A removal rebuilds the stretch it is in at once (the worker takes it on its next pass, within about
+five seconds).
+
+**Writes accept only JSON.** An edit is a `POST`, `PUT` or `DELETE`, and a `POST`, `PUT` or `PATCH` that is not sent as
+`application/json` gets `415` and is never run, whether or not it has a body. A page of another site can make a browser send a form, or
+a request with no `Content-Type`, but not JSON without asking first (a `DELETE` is no simple request either), and the API serves no CORS;
+so once Authentik's cookies sit in front of Sporer a page of another site cannot edit anything with the owner's login.
 
 ## Running it
 
@@ -189,7 +257,7 @@ start (see "First start" below).
 | `Detection__HomeWindowNights` | `90` | A new home is judged over this many consecutive calendar nights. |
 | `Detection__HomeMinNights` | `60` | A place becomes home once it is where you slept on at least this many of the last `Detection__HomeWindowNights` nights; unknown nights count against it. Keep it above half the window, so that only one home can qualify at a time. |
 | `Detection__HomeRadiusMeters` | `250` | Places within this distance of each other count as one home, because GPS drift can split a home into several places a hundred metres or so apart: the nights at all of them count for the home, and a stay at any of them is shown at home on the Day view. Two homes closer than this are one home, and so can two homes up to about twice this apart, when a place of the new one lies within this distance of the old one: a move next door is not detected (harmless for trips: far below the trip threshold). |
-| `Detection__TripMinDistanceKm` | `50` | A night is away, and part of a trip, when its place is at least this far from the home you had that night. |
+| `Detection__TripMinDistanceKm` | `50` | A night is away, and part of a trip, when its place is at least this far from the home you had that night. The distance you set in the app (Settings, Trips; 5 to 1000 km) is used in its place while it is set, and changing it does not rebuild the timeline. |
 
 ## Overland
 
@@ -246,17 +314,17 @@ once, and the home periods and trips appear when it has finished.
 After the first backfill of your real history has finished (`backfill.percent` is 100 at `https://sporer.lud.ar/api/status`), open the app on
 the phone, over the VPN, and check:
 
-- [ ] **The home periods look right, including any move.** There is no screen for the periods yet: open a day well before and a day well
-  after a move you remember, and look for the house on the stays at home (it is where the number would be). It should be at the old place
+- [ ] **The home periods look right, including any move.** Settings (the gear) lists the periods, detected and yours: open a day well before and a day well
+  after a move you remember too, and look for the house on the stays at home (it is where the number would be). It should be at the old place
   before the move and the new one after it. A move is noticed once the new home has 60 nights of the last 90, but it is dated from the
   first of them. Places within 250 m of each other count as one home (`Detection__HomeRadiusMeters`), so a home that GPS drift split
   over several places is still one, and a day at two of them shows two houses close together; the synthetic history's move, split over
   four places, is found that way. A home that is still not found would show as **no trips at all** (with no home, no night is away), or,
-  after a move that was not noticed, as **one long trip** that does not end. If you see either, say so, and with where
-  the home is. (The periods are in the `home_period` table: `select * from home_period order by from_date`.)
+  after a move that was not noticed, as **one long trip** that does not end. If you see either, set the home yourself (see the checklist
+  of "Editing" below), and say so, with where the home is.
 - [ ] **A short move may not show as a move.** A move of less than about twice the home radius (about 500 m) may not show as a new home.
   When it does not, the stays at the new home's places that are more than 250 m from the old home show numbers, not a house. Trips are
-  unaffected. Plan 4's home override will cover it; say if you moved that little and it bothers you.
+  unaffected. A home you set in Settings covers it; do that if you moved that little and it bothers you.
 - [ ] **Each trip you remember is listed**, at `/trips`, with sensible dates, a name and a number of nights. Look for a trip that is missing
   (it was nearer than 50 km) and for one that is not a trip.
 - [ ] **A long stay is not mistaken for a move.** A month or two away from home is one trip, and when you are back the house is still at
@@ -272,7 +340,37 @@ the phone, over the VPN, and check:
 
 If a trip is missing or wrongly there, or a home is wrong, the settings are `Detection__TripMinDistanceKm`, `Detection__HomeMinNights`,
 `Detection__HomeWindowNights` and `Detection__HomeRadiusMeters` (see "Detection thresholds"); changing one rebuilds the timeline, which
-takes a few minutes for years of history.
+takes a few minutes for years of history. The trip distance can also be changed in the app, without a rebuild (see below).
+
+## Owner's checklist: editing
+
+On the phone, over the VPN, with the real history. None of these touches the raw points, each can be undone, and none needs a rebuild of the
+timeline (an algorithm change, or any `Detection__*` change, makes one, and your edits survive it):
+
+- [ ] **Rename a place.** Open a place from the Day view, tap Rename, type a name, Save. The new name is on the place and on its stays in the
+  day and the other views that name places, and, for a place in a trip, in the highlights of the trip's days on which you were there and did not
+  sleep there (a trip is named by its cities, and no place name changes that). A day's highlights are the three named places where you spent
+  the most time that day, so a short stop may not appear among them; an empty name brings OpenStreetMap's back.
+- [ ] **Merge two places, one of them home.** Open the place that is to stay, tap Merge with…, pick the other from the nearest (or search for it), choose
+  the name to keep, Merge. Do it for the two places GPS drift made of your own house, so that one of them is home. The stays of both are at
+  the one place in the day, its time and visits add up, **the trips and the house on the Day view follow at once**, and the place lists the
+  other under it with a **Separate**. Separate it to see it undone, and merge again if you want it merged.
+- [ ] **Remove a GPS spike, and undo it.** Open a day with a point far from where you were, tap Edit points, select the spike by tapping it or
+  with Select area, Remove. The day is rebuilt within a few seconds (the day says Updating… meanwhile) and the spike's distance is gone from
+  it. Tap **Undo** in the toast: the points are back and the day as it was. Then remove it again and leave it: Settings, Removed points, lists
+  it with a Restore, and it stays out of the day after the timeline is rebuilt too. (Edit points on a day with tens of thousands of points
+  draws them all; say how long it takes on the phone, the target is two seconds.)
+- [ ] **Re-date and rename a trip, delete one and restore it.** Open a trip, tap Edit, give it a name and another start or end date (the day you
+  are back is the end date), Save. The trip, its days and the trips list show the new name and dates, and the address follows a new start
+  date. **Use detected dates** puts the detected ones back. Delete another trip (Delete trip): it leaves the list, and is listed under Settings,
+  Deleted trips, where **Restore** brings it back.
+- [ ] **Set a home override and see the trips follow.** In Settings, Home, tap Set home, pick a place (search by name), and the dates it was home
+  (leave the end empty for a home that goes on), Save. Trips that were away from the detected home are worked out against yours for those
+  dates, so a trip appears, goes, or changes its nights; Remove takes your home back.
+- [ ] **Change the trip distance.** In Settings, Trips, set 100 km, Save: the trips list shows only the trips that far from home, within a
+  moment and with no rebuild (`/api/status` shows no backfill). Reset to default goes back to 50 km (or `Detection__TripMinDistanceKm`).
+- [ ] **The edits stay.** After the next release, or any restart of the container (the timeline is only rebuilt when an algorithm or a
+  `Detection__*` setting changed), your names, merges, removed points, trips, homes and distance are as you left them.
 
 ## Releases
 
@@ -338,8 +436,8 @@ access gets a plain background instead of a map; the rest of the page works.
 | `npm run typecheck` | `tsc --noEmit`, with `strict` on, for the app and, as a project of its own (`web/perf/tsconfig.json`), for the performance run. |
 | `npm test` | The unit and component tests (Vitest, jsdom). |
 | `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. |
-| `npm run perf` | The web performance run (spec §8): times the panel's rows and the map's idle for a day, a month and a year, for the list of trips and for each trip, on a phone-sized page with the processor held back 4 times, against API answers recorded by `npm run perf:record` from a server over the synthetic history. Not part of `npm run e2e` or CI; takes about six minutes (65 tests for the synthetic history's three trips). How to run it, and its results, are in `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md` and, for the trips, `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md`. |
-| `npm run perf:record` | Records those API answers, the trips' among them (`node scripts/perf/record.mjs <api-url> <first-date> <last-date>`), into `web/perf/recorded/`, which git ignores. |
+| `npm run perf` | The web performance run (spec §8): times the panel's rows and the map's idle for a day, a month and a year, for the list of trips and for each trip, and, for edit mode, the time from the tap on Edit points to the points drawn on the day with the most points, on a phone-sized page with the processor held back 4 times, against API answers recorded by `npm run perf:record` from a server over the synthetic history. Not part of `npm run e2e` or CI; takes about four minutes (72 tests for the synthetic history's three trips). How to run it, and its results, are in `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md` and, for the trips and for editing, `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md` and `docs/superpowers/plans/2026-10-28-sporer-plan-4-perf.md`. |
+| `npm run perf:record` | Records those API answers, the trips' and the points of the day with the most of them among them (`node scripts/perf/record.mjs <api-url> <first-date> <last-date>`; it asks for the points of every day, which takes about half a minute), into `web/perf/recorded/`, which git ignores. |
 | `npm run perf:bundle` | After a build: the size of each JavaScript file of the production bundle, gzipped and Brotli-compressed. |
 | `npm run build` | Type checks and builds the web app into `src/Sporer.Api/wwwroot`, which the API serves (and git ignores). |
 | `npm run icons` | Draws the PNG icons in `public/icons/` again from `icon.svg`. Only when the icon changes. |
@@ -360,7 +458,11 @@ dotnet run --project tools/Sporer.SyntheticData -c Release -- --connection "<Npg
 time the day view and ingest, `tools/perf/api-latency.sh` the range, heat, place and trips endpoints too, and `tools/perf/explain.sql` and
 `tools/perf/explain-trips.sql` show the plans of their queries. `tools/perf/backfill-time.sh` times the first backfill,
 `tools/perf/refresh-latency.sh` the refresh of the homes and trips after new points, and `tools/perf/name-places.sql` names the generated
-places the way Nominatim would. The measurements at 10 million rows, and how to repeat them, are in
+places the way Nominatim would. For editing, `tools/perf/edit-latency.sh` times the edits that recompute the homes and trips,
+`tools/perf/points-latency.sh` the points of a day, `tools/perf/exclude-points.sql` removes a thousand points spread over the history (to time a
+backfill with removals) and `tools/perf/explain-edits.sql` shows the plans of the removal's anti-join, the day's points and the place search.
+The measurements at 10 million rows, and how to repeat them, are in
 `docs/superpowers/plans/2026-10-23-sporer-plan-1-perf.md` (server), `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md` (range, heat,
-place, the web app) and `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md` (the nights, homes and trips: the backfill, the refresh,
-the trips endpoints and views).
+place, the web app), `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md` (the nights, homes and trips: the backfill, the refresh,
+the trips endpoints and views) and `docs/superpowers/plans/2026-10-28-sporer-plan-4-perf.md` (editing: the backfill with removed points,
+the edits, the day's points, the place search and edit mode on a phone).

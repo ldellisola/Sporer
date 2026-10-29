@@ -14,7 +14,15 @@ public sealed record TripsResponse(IReadOnlyList<TripDto> Trips);
 /// the person left and came back (ISO-8601 UTC, <c>Z</c>); <paramref name="End"/> is always there, and null while the trip is
 /// <paramref name="Ongoing"/>. The local dates are those of the start and end in <paramref name="StartTimeZone"/> and
 /// <paramref name="EndTimeZone"/>, the IANA zones they were in (for an ongoing trip the end date is the day after its last
-/// night). <paramref name="Name"/> is made up when asked for (see <see cref="TripNaming"/>), as are <paramref name="Cities"/>.
+/// night; for a trip whose end date the owner set, the trip ends at the midnight after that date, so the end date is the one the
+/// owner gave and not the date of <paramref name="End"/>). <paramref name="Name"/> is the owner's name for the trip where it has one, and made up when asked for where not (see
+/// <see cref="TripNaming"/>), as are <paramref name="Cities"/>. <paramref name="Edited"/> says the owner has edited the trip: named it,
+/// or changed its dates (an edit of the dates is why <paramref name="Id"/> may not be the night detection found it on).
+/// <paramref name="OwnName"/> is the owner's name alone: <c>null</c> (present in the JSON, and null) when the owner has given none, so that
+/// <paramref name="Name"/> is made up. <paramref name="Name"/> does not say which it is, and a form that sends a name back must know, or it
+/// would make the made-up one the owner's. <paramref name="StartEdited"/> and <paramref name="EndEdited"/> say that the owner's edit has a start
+/// date, and an end date, each of its own, which <paramref name="Edited"/> does not (a name is an edit too): a date that is not an edit is detection's
+/// and may move on (the end of a trip that is still going on does), and a trip that has either can be put back to the dates that detection found it with.
 /// </summary>
 /// <remarks>
 /// Not abstract, so that <see cref="TripMapping.Summary"/> can make one to build the others from; what the others add to it is
@@ -33,7 +41,11 @@ public record TripSummary(
     string LocalStartDate,
     string LocalEndDate,
     bool Ongoing,
-    IReadOnlyList<TripCityDto> Cities);
+    IReadOnlyList<TripCityDto> Cities,
+    bool Edited,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? OwnName,
+    bool StartEdited,
+    bool EndEdited);
 
 /// <summary>
 /// A trip of the list: its <see cref="TripSummary"/>, and its <see cref="Thumbnail"/>, the line to draw for the trip,

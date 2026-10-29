@@ -180,12 +180,34 @@ function Suitcase() {
   );
 }
 
+/** The gear of the Settings button, drawn in place: it takes the colour of the button's text. */
+function Gear() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M10.08 4.85L10.5 2.52L13.5 2.52L13.92 4.85A7.4 7.4 0 0 1 15.7 5.59L17.64 4.23L19.77 6.36L18.41 8.3A7.4 7.4 0 0 1 19.15 10.08L21.48 10.5L21.48 13.5L19.15 13.92A7.4 7.4 0 0 1 18.41 15.7L19.77 17.64L17.64 19.77L15.7 18.41A7.4 7.4 0 0 1 13.92 19.15L13.5 21.48L10.5 21.48L10.08 19.15A7.4 7.4 0 0 1 8.3 18.41L6.36 19.77L4.23 17.64L5.59 15.7A7.4 7.4 0 0 1 4.85 13.92L2.52 13.5L2.52 10.5L4.85 10.08A7.4 7.4 0 0 1 5.59 8.3L4.23 6.36L6.36 4.23L8.3 5.59A7.4 7.4 0 0 1 10.08 4.85Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
 /**
- * The card that floats at the top of the map: the views as a segmented control with the Trips button after it, for a range its two
+ * The card that floats at the top of the map: the views as a segmented control with the Trips and Settings buttons after it, for a range its two
  * dates, and the period with ‹ › to step it. Switching view keeps the date (see `anchorOf`; `lastDay` is the day shown last). Stepping is
  * also a swipe along the period, or ← and → on the keyboard unless the focus is in a field or on the map. A place has no period to step: its
  * bar has the views to go to, and none is shown as current. The trips are the same: the list has a title in the place of the period, and a
- * trip its name and dates, with ‹ › to step to the trips either side of it (see `TripRow`); the Trips button is the one that is pressed.
+ * trip its name and dates, with ‹ › to step to the trips either side of it (see `TripRow`); the Trips button is the one that is pressed. The
+ * settings are the same as the list: a title in the place of the period, and the Settings button pressed.
  */
 export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: string | null }) {
   const period = isPeriodRoute(route) ? route : null;
@@ -221,12 +243,21 @@ export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: stri
         </div>
         <button
           type="button"
-          className={styles.trips}
+          className={styles.iconButton}
           aria-label="Trips"
           aria-pressed={route.view === "trips" || route.view === "trip"}
           onClick={() => navigate({ view: "trips" })}
         >
           <Suitcase />
+        </button>
+        <button
+          type="button"
+          className={styles.iconButton}
+          aria-label="Settings"
+          aria-pressed={route.view === "settings"}
+          onClick={() => navigate({ view: "settings" })}
+        >
+          <Gear />
         </button>
       </div>
       {route.view === "range" && (
@@ -263,6 +294,11 @@ export function TopBar({ route, lastDay = null }: { route: Route; lastDay?: stri
       {route.view === "trips" && (
         <div className={styles.titleRow}>
           <h1 className={styles.label}>Trips</h1>
+        </div>
+      )}
+      {route.view === "settings" && (
+        <div className={styles.titleRow}>
+          <h1 className={styles.label}>Settings</h1>
         </div>
       )}
       {route.view === "trip" && <TripRow id={route.id} />}

@@ -4,6 +4,11 @@
   color: var(--ink-muted);
 }
 
+/* What is given the focus by a panel (a `tabIndex` of -1) is no control, and a ring round a line of text says nothing. */
+.state[tabindex]:focus {
+  outline: none;
+}
+
 .error {
   margin: 0 0 12px;
   padding: 10px 12px;

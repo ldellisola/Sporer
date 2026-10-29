@@ -1,4 +1,25 @@
 /*
+ * The header: the chips, and at the right of them the button that turns edit mode on. The chips take the room that is left and wrap in it; the button
+ * keeps its size, and the margin under it is the chips' (they are 12px above the timeline).
+ */
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.head > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.edit {
+  flex: none;
+  margin: 0 0 12px;
+}
+
+/*
  * The timeline: a line down the middle of the first column, which the pins and the dots are drawn over (they have a ring of the
  * panel's colour to cut it), one row to a segment. Each tappable row has a button laid over the whole of it.
  */

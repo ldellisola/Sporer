@@ -1,0 +1,113 @@
+/*
+ * What the forms of the app have in common: the buttons (a button is made taller than its text to be a target for a finger, in the colour of
+ * the bar's own buttons; the primary one of a form, Save or Merge, has the accent for its background), the label over a field, and the field
+ * (16 px, which is the size under which a phone zooms the page in on the field when it is tapped); and the places that an edit has in a panel: the
+ * buttons that open its forms, the form, the row of its buttons, and the question of a confirm.
+ */
+.secondary,
+.primary {
+  min-height: 36px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: var(--radius-segment);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.secondary {
+  background: var(--segment-track);
+  color: var(--accent-ink);
+}
+
+.primary {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.secondary:focus-visible,
+.primary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.secondary:disabled,
+.primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.label {
+  display: block;
+  margin: 0 0 4px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.field {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  margin: 0 0 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 16px;
+}
+
+.field:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* Two dates side by side (the labels, the fields and the buttons are the ones above), a date field as wide as its column and no wider, whatever the picker of the device makes of its own width, and what the form says is wrong with them, under them. */
+.dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.date {
+  min-width: 0;
+}
+
+.problem {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--danger-ink);
+  overflow-wrap: anywhere;
+}
+
+/* The buttons that open the forms of the edits of what the panel shows, and the form that takes their place. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.form {
+  margin: 12px 0 0;
+}
+
+.buttons {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+/* The question of a confirm takes the focus as it opens (it is not a control, and a ring round a line of text says nothing). */
+.question {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.question:focus {
+  outline: none;
+}

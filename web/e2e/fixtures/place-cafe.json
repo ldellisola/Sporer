@@ -14,5 +14,6 @@
     { "start": "2026-10-22T06:46:00Z", "end": "2026-10-22T07:10:00Z", "date": "2026-10-22", "timeZone": "Europe/Oslo" },
     { "start": "2026-10-15T15:30:00Z", "end": "2026-10-15T16:45:00Z", "date": "2026-10-15", "timeZone": "Europe/Oslo" },
     { "start": "2026-09-29T21:30:00Z", "end": "2026-09-29T22:15:00Z", "date": "2026-09-29", "timeZone": "Europe/Oslo" }
-  ]
+  ],
+  "merged": []
 }

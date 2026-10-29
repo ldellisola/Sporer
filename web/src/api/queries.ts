@@ -1,13 +1,20 @@
 import { keepPreviousData, QueryClient, queryOptions, skipToken, useQuery } from "@tanstack/react-query";
-import { MAX_RANGE_DAYS, step, periodDays, periodRange, today } from "../time/dates";
+import { addDays, MAX_RANGE_DAYS, step, periodDays, periodRange, today } from "../time/dates";
 import { isPeriodRoute, type Route } from "../app/router";
 import { ApiError, getJson, isNotFound } from "./client";
 import type {
   ConfigResponse,
+  DayPointsResponse,
   DayResponse,
+  DeletedTrip,
   HeatResponse,
+  HomesResponse,
+  PlaceCandidate,
   PlaceResponse,
+  PlaceSearchResult,
   RangeResponse,
+  RemovedBatch,
+  SettingsResponse,
   StatusResponse,
   TripResponse,
   TripsResponse,
@@ -19,17 +26,51 @@ const POLL_MS = 30_000;
 const TODAY_POLL_MS = 60_000;
 
 /**
+ * After an edit of the points of a day its rebuild is queued due at once, and the worker has it done within seconds: the day that is pending
+ * then is asked for every 3 seconds, for up to two minutes after the edit, and after that as every pending day is (`POLL_MS`).
+ */
+const EDIT_POLL_MS = 3_000;
+const EDIT_POLL_WINDOW_MS = 120_000;
+
+/** When each day was last edited, by date, in the page's own time (`Date.now()`): what `pendingInterval` reads. It is the page's, as the cache is. */
+const editedAt = new Map<string, number>();
+
+/**
+ * Notes that the points of `date` were edited just now (a removal or its Undo), so that the day, which is pending until the worker has
+ * rebuilt it, is asked for every 3 seconds (`pendingInterval`). The days either side are noted too: a day spans into the zones of its
+ * neighbours, so a point of it may be one of theirs, and the owner may step there at once.
+ */
+export function noteDayEdited(date: string): void {
+  const now = Date.now();
+  for (const edited of [addDays(date, -1), date, addDays(date, 1)]) editedAt.set(edited, now);
+}
+
+/** Forgets every day that was noted as edited; for the tests, which share the module. */
+export function forgetEditedDays(): void {
+  editedAt.clear();
+}
+
+/**
+ * How long until a pending day is asked for again: every 3 seconds while it is within two minutes of an edit of its points (`edited` is the
+ * time of the edit, in `Date.now()` terms, or undefined for a day that was not edited), else every 30 seconds. The one place that says it.
+ */
+export function pendingInterval(edited: number | undefined, now: number = Date.now()): number {
+  return edited !== undefined && now - edited < EDIT_POLL_WINDOW_MS ? EDIT_POLL_MS : POLL_MS;
+}
+
+/**
  * How long until a day or a period (`from` to `to`, both dates included) is asked for again, or false for never. A period that is still
- * being processed ("pending") may change as its points are processed, so it is asked for every 30 seconds until it is "done". Today may
- * change whatever its state says, for points keep arriving while the app is open (spec 4.2: today refreshes as new data is processed),
- * so a period that holds it (`now`, a date of the browser's own zone) is asked for every minute, and every 30 seconds when it is pending
- * as well, as soon as it is processed. A period that is over is asked for no more once it is done. Nothing is asked for while there is no
- * period. `state` is that of what has been answered so far, if anything: today that could not be loaded is tried again too, which is how
+ * being processed ("pending") may change as its points are processed, so it is asked for every 30 seconds until it is "done"; a day that
+ * was just edited, every 3 seconds for the first two minutes (`pendingInterval`: a period of one date is a day, and the edits are noted by date).
+ * Today may change whatever its state says, for points keep arriving while the app is open (spec 4.2: today refreshes as new data is
+ * processed), so a period that holds it (`now`, a date of the browser's own zone) is asked for every minute, and every 30 seconds when it is
+ * pending as well, as soon as it is processed. A period that is over is asked for no more once it is done. Nothing is asked for while there
+ * is no period. `state` is that of what has been answered so far, if anything: today that could not be loaded is tried again too, which is how
  * an app opened before the VPN was up finds its day.
  */
 export function refreshInterval(from: string | null, to: string | null, state: string | undefined, now: string = today()): number | false {
   if (from === null || to === null) return false;
-  if (state === "pending") return POLL_MS;
+  if (state === "pending") return pendingInterval(from === to ? editedAt.get(from) : undefined); // one date: a day, which may have been edited
   return from <= now && now <= to ? TODAY_POLL_MS : false;
 }
 
@@ -46,6 +87,21 @@ export function dayQueryOptions(date: string | null, keepPrevious = true) {
     staleTime: STALE_MS,
     placeholderData: keepPrevious ? keepPreviousData : undefined,
     refetchInterval: (query) => refreshInterval(date, date, query.state.data?.state),
+  });
+}
+
+/**
+ * The raw points of a day, for edit mode: `[time, lon, lat, device]` in time order, those removed earlier left out. Nothing is asked for while
+ * `date` is null. No previous day's points stay for the day that loads: the dots of one day under another would be wrong, not just old.
+ * They are heavy (some 40,000 on a dense day), so they are asked for only when the caller says so (`useDayPoints`): they are no part of any
+ * view but edit mode, and after a removal or its Undo they are asked for again like every query that is on screen.
+ */
+export function dayPointsQueryOptions(date: string | null) {
+  return queryOptions({
+    queryKey: ["points", date] as const,
+    queryFn: date === null ? skipToken : ({ signal }) => getJson<DayPointsResponse>(`/api/day/${date}/points`, signal),
+    staleTime: STALE_MS,
+    gcTime: 0, // not kept once nothing shows them: tens of thousands of points, and the points of a day that was edited since would be old
   });
 }
 
@@ -87,6 +143,69 @@ export function placeQueryOptions(id: number | null) {
   });
 }
 
+/**
+ * The places that the place `placeId` (as `GET /api/places/{id}` serves it) can be merged with: the nearest first when `q` is empty, else those
+ * whose name or address has `q` in it. `q` is as it is to be sent: the caller trims it. The list that was on screen stays while another search is on
+ * its way (`placeholderData`: the owner is typing, and the list does not blink to "Loading…" at every pause), which `isPlaceholderData` says. Nothing
+ * is asked for while `placeId` is null (the picker is of the places in use, which is `placeSearchQueryOptions`).
+ */
+export function candidatesQueryOptions(placeId: number | null, q: string) {
+  return queryOptions({
+    queryKey: ["candidates", placeId, q] as const,
+    queryFn:
+      placeId === null
+        ? skipToken
+        : ({ signal }) =>
+            getJson<PlaceCandidate[]>(`/api/places/${placeId}/candidates${q === "" ? "" : `?q=${encodeURIComponent(q)}`}`, signal),
+    staleTime: STALE_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * The places in use with no place to start from (`GET /api/places/search`): the most visited first when `q` is empty, else those whose name or address
+ * has `q` in it. Nothing is asked for while `q` is null (the picker is of the places near one, which is `candidatesQueryOptions`). `q` is as it is to be
+ * sent: the caller trims it. The list that was on screen stays while another search is on its way, as for the candidates.
+ */
+export function placeSearchQueryOptions(q: string | null) {
+  return queryOptions({
+    queryKey: ["place-search", q] as const,
+    queryFn:
+      q === null
+        ? skipToken
+        : ({ signal }) => getJson<PlaceSearchResult[]>(`/api/places/search${q === "" ? "" : `?q=${encodeURIComponent(q)}`}`, signal),
+    staleTime: STALE_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** The home periods, detected and the owner's, in date order: what the Home section of Settings lists. */
+export function homesQueryOptions() {
+  return queryOptions({
+    queryKey: ["homes"] as const,
+    queryFn: ({ signal }) => getJson<HomesResponse>("/api/homes", signal),
+    staleTime: STALE_MS,
+  });
+}
+
+/** The settings: the distance that makes a trip, which the Trips section of Settings sets and the empty list of trips quotes. */
+export function settingsQueryOptions() {
+  return queryOptions({
+    queryKey: ["settings"] as const,
+    queryFn: ({ signal }) => getJson<SettingsResponse>("/api/settings", signal),
+    staleTime: STALE_MS,
+  });
+}
+
+/** The removals of points that were not restored, the one made last first: what the Removed points section of Settings lists, each with the batch that restores it. */
+export function removedPointsQueryOptions() {
+  return queryOptions({
+    queryKey: ["removed-points"] as const,
+    queryFn: ({ signal }) => getJson<RemovedBatch[]>("/api/points/removed", signal),
+    staleTime: STALE_MS,
+  });
+}
+
 /** The trips, newest first: what the trips list shows, and the order that ‹ and › on a trip step by. */
 export function tripsQueryOptions() {
   return queryOptions({
@@ -103,6 +222,15 @@ export function tripQueryOptions(id: string | null) {
     queryFn: id === null ? skipToken : ({ signal }) => getJson<TripResponse>(`/api/trips/${id}`, signal),
     staleTime: STALE_MS,
     // No keepPreviousData: another trip's name and days under this trip's heading would be wrong, not just old.
+  });
+}
+
+/** The trips the owner deleted and has not brought back, the one deleted last first: what Settings lists, each with the key that restores it. */
+export function deletedTripsQueryOptions() {
+  return queryOptions({
+    queryKey: ["deleted-trips"] as const,
+    queryFn: ({ signal }) => getJson<DeletedTrip[]>("/api/trips/deleted", signal),
+    staleTime: STALE_MS,
   });
 }
 
@@ -125,6 +253,9 @@ export function configQueryOptions() {
 
 export const useDay = (date: string | null, keepPrevious = true) => useQuery(dayQueryOptions(date, keepPrevious));
 
+/** The points of a day for edit mode; nothing is asked for while `enabled` is false, or while there is no date. */
+export const useDayPoints = (date: string | null, enabled = true) => useQuery({ ...dayPointsQueryOptions(date), enabled });
+
 export const useRange = (from: string | null, to: string | null, keepPrevious = true) => useQuery(rangeQueryOptions(from, to, keepPrevious));
 
 /** The heat of a period; nothing is asked for while `enabled` is false, or while there are no dates. */
@@ -132,6 +263,18 @@ export const useHeat = (from: string | null, to: string | null, enabled: boolean
   useQuery({ ...heatQueryOptions(from, to, keepPrevious), enabled });
 
 export const usePlace = (id: number | null) => useQuery(placeQueryOptions(id));
+
+/** The places near the place `placeId`; nothing is asked for while it is null. */
+export const useCandidates = (placeId: number | null, q: string) => useQuery(candidatesQueryOptions(placeId, q));
+
+/** The places in use by name or address, with no place to start from; nothing is asked for while `q` is null. */
+export const usePlaceSearch = (q: string | null) => useQuery(placeSearchQueryOptions(q));
+
+export const useHomes = () => useQuery(homesQueryOptions());
+
+export const useSettings = () => useQuery(settingsQueryOptions());
+
+export const useRemovedPoints = () => useQuery(removedPointsQueryOptions());
 
 /**
  * What a query of a thing that can go (a place, a trip) shows, for the panel, the bar and the map alike so that they never disagree: `shown` is
@@ -150,6 +293,8 @@ export function shownOf<T>(query: { data?: T; error: Error | null }): { gone: bo
 export const useTrips = (enabled = true) => useQuery({ ...tripsQueryOptions(), enabled });
 
 export const useTrip = (id: string | null) => useQuery(tripQueryOptions(id));
+
+export const useDeletedTrips = () => useQuery(deletedTripsQueryOptions());
 
 /**
  * The trips either side of the trip `id` in `trips`, which is newest first: the older one is the next in the list and the newer one the

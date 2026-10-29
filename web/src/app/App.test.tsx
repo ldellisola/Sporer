@@ -3,7 +3,18 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { StrictMode, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MapPadding, MapViewProps } from "../map/MapView";
-import type { DayResponse, HeatResponse, PlaceResponse, RangeResponse, StatusResponse, StaySegment, TripResponse, TripsResponse } from "../api/types";
+import type {
+  DayResponse,
+  HeatResponse,
+  HomesResponse,
+  PlaceResponse,
+  RangeResponse,
+  SettingsResponse,
+  StatusResponse,
+  StaySegment,
+  TripResponse,
+  TripsResponse,
+} from "../api/types";
 import { dayGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripGeoJson, tripsGeoJson } from "../map/layers";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
 import cafe from "../../e2e/fixtures/place-cafe.json";
@@ -98,16 +109,20 @@ function emptyPlace(path: string): PlaceResponse {
     firstVisit: "2026-10-01T08:00:00Z",
     lastVisit: "2026-10-01T08:00:00Z",
     recentVisits: [],
+    merged: [],
   };
 }
 
 type Answer = (path: string) => Response | Promise<Response>;
 
-/** Answers a day with a day, a period with a period and a place with a place, none of them with anything in it; no trips, and no trip. */
+/** Answers a day with a day, a period with a period and a place with a place, none of them with anything in it; no trips, and no trip; no homes, the settings as they are configured, and no removed points. */
 const answerEmpty: Answer = (path) => {
   if (path.startsWith("/api/range")) return Response.json(emptyRange(path));
   if (path.startsWith("/api/places/")) return Response.json(emptyPlace(path));
   if (path === "/api/trips") return Response.json({ trips: [] } satisfies TripsResponse);
+  if (path === "/api/homes") return Response.json({ periods: [] } satisfies HomesResponse);
+  if (path === "/api/settings") return Response.json({ tripMinDistanceKm: 50, tripMinDistanceKmDefault: 50 } satisfies SettingsResponse);
+  if (path === "/api/points/removed") return Response.json([]);
   if (path.startsWith("/api/trips/")) return new Response("{}", { status: 404 });
   return Response.json(day(path.split("/").pop()!));
 };
@@ -338,6 +353,12 @@ describe("App layout", () => {
   });
 });
 
+/**
+ * The note over the map, which is a status: the page has another, the one that a toast is said in, which is there on every day and says nothing until it
+ * has something to say.
+ */
+const mapNote = () => screen.getAllByRole("status").find((status) => status.textContent !== "")!;
+
 describe("App map note", () => {
   test("App_notes_that_the_map_is_unavailable_until_a_style_loads", () => {
     stubApi();
@@ -345,7 +366,7 @@ describe("App map note", () => {
     expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
 
     act(() => mapProps().onStyleError?.(new Error("blocked"), false));
-    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable");
+    expect(mapNote()).toHaveTextContent("Map unavailable");
 
     act(() => mapProps().onStyleError?.(new Error("blocked again"), false));
     expect(screen.getAllByText(/Map unavailable/)).toHaveLength(1);
@@ -359,15 +380,15 @@ describe("App map note", () => {
     renderApp();
 
     act(() => mapProps().onStyleError?.(new Error("dark style blocked"), true)); // the system went dark with the network down
-    expect(screen.getByRole("status")).toHaveTextContent("Couldn't switch the map style — Retry");
+    expect(mapNote()).toHaveTextContent("Couldn't switch the map style — Retry");
     expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(map.retries).toBe(1);
 
     act(() => mapProps().onStyleError?.(new Error("still blocked"), true)); // the attempt failed again: still one note, still this one
-    expect(screen.getAllByRole("status")).toHaveLength(1);
-    expect(screen.getByRole("status")).toHaveTextContent("Couldn't switch the map style — Retry");
+    expect(screen.getAllByRole("status").filter((status) => status.textContent !== "")).toHaveLength(1);
+    expect(mapNote()).toHaveTextContent("Couldn't switch the map style — Retry");
 
     act(() => mapProps().onStyleLoad?.());
     expect(screen.queryByText(/Couldn't switch the map style/)).not.toBeInTheDocument();
@@ -379,15 +400,15 @@ describe("App map note", () => {
     renderApp();
 
     act(() => mapProps().onStyleError?.(new Error("no style"), false)); // MapLibre, or the first style
-    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable — Retry");
+    expect(mapNote()).toHaveTextContent("Map unavailable — Retry");
     expect(screen.queryByText(/Couldn't switch/)).not.toBeInTheDocument();
 
     act(() => mapProps().onStyleError?.(new Error("the switch"), true)); // the map came up, and then a switch failed
-    expect(screen.getByRole("status")).toHaveTextContent("Couldn't switch the map style");
+    expect(mapNote()).toHaveTextContent("Couldn't switch the map style");
     expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
 
     act(() => mapProps().onStyleError?.(new Error("gone"), false)); // and the map went wrong again, with no basemap
-    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable");
+    expect(mapNote()).toHaveTextContent("Map unavailable");
   });
 
   test("App_offers_a_Retry_with_the_map_note_that_asks_the_map_to_try_again_once_for_each_press", () => {
@@ -396,12 +417,12 @@ describe("App map note", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
 
     act(() => mapProps().onStyleError?.(new Error("blocked"), false));
-    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable — Retry");
+    expect(mapNote()).toHaveTextContent("Map unavailable — Retry");
     expect(map.retries).toBe(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(map.retries).toBe(1);
-    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable"); // the note stays until the map says that it has a style
+    expect(mapNote()).toHaveTextContent("Map unavailable"); // the note stays until the map says that it has a style
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(map.retries).toBe(2);
 
@@ -602,6 +623,7 @@ describe("App day panel", () => {
       { view: "place", id: 3 },
       { view: "trips" },
       { view: "trip", id: "2026-09-12" },
+      { view: "settings" },
     ] as const) {
       act(() => navigate(route));
       expect(screen.getByRole("region", { name: "Details" })).not.toBeEmptyDOMElement();
@@ -1317,5 +1339,444 @@ describe("App trips", () => {
     expect(periodRequests(paths)).toEqual([]);
     expect(screen.getByRole("button", { name: "Older trip" })).toBeDisabled(); // the trip is not in it: no trip is older or newer than it
     expect(screen.getByRole("button", { name: "Newer trip" })).toBeDisabled();
+  });
+});
+
+describe("App settings", () => {
+  const OSLO_DAY = flightDay as DayResponse;
+  const answerWithTheFlight: Answer = (path) =>
+    path.startsWith("/api/heat") ? Response.json({ maxSeconds: 0, cells: [] } satisfies HeatResponse) : path.endsWith("2026-10-22") ? Response.json(OSLO_DAY) : answerEmpty(path);
+  const details = () => screen.getByRole("region", { name: "Details" });
+  /** What the app asks for that is a period: a day, a range, a heat. */
+  const periodRequests = (paths: string[]) => paths.filter((path) => /^\/api\/(day|range|heat)/.test(path));
+
+  // The heat is on, as the owner left it: the map of the view that the settings were opened from has its glow, which stays.
+  beforeEach(() => {
+    window.localStorage.setItem("heat", "true");
+  });
+  afterEach(() => {
+    window.localStorage.removeItem("heat");
+  });
+
+  test("App_opens_the_settings_with_the_gear_shows_processing_and_about_and_leaves_the_map_as_it_was", async () => {
+    const paths = stubApi(answerWithTheFlight);
+    renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    await waitFor(() => expect(paths).toContain("/api/heat?from=2026-10-22&to=2026-10-22"));
+    await waitFor(() => expect(mapProps().data.heat).toBeDefined());
+    const { data, fitTo, home } = mapProps();
+    const before = periodRequests(paths).length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(window.location.pathname).toBe("/settings");
+    expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument(); // in the bar, in the place of the date
+    expect(within(details()).getByRole("region", { name: "Processing" })).toBeInTheDocument();
+    expect(within(details()).getByRole("region", { name: "About" })).toBeInTheDocument();
+    expect(await within(details()).findByText("Nothing has failed")).toBeInTheDocument();
+    // The map is the day's still: the same collections, nothing to bring it anywhere, and its heat button.
+    expect(mapProps().data).toBe(data);
+    expect(mapProps().fitTo).toBe(fitTo);
+    expect(mapProps().home).toBe(home);
+    expect(mapProps().heatToggle).toBeDefined();
+    expect(periodRequests(paths)).toHaveLength(before);
+  });
+
+  test("App_back_from_the_settings_is_the_day_it_was_opened_from_with_the_map_where_it_was", async () => {
+    stubApi(answerWithTheFlight);
+    renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    const { data, fitTo } = mapProps();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(window.location.pathname).toBe("/settings");
+
+    act(() => window.history.back()); // the browser's own Back
+
+    await waitFor(() => expect(window.location.pathname).toBe("/day/2026-10-22"));
+    expect(await screen.findByText("5 places")).toBeInTheDocument();
+    expect(mapProps().data).toBe(data); // never cleared, so nothing to draw again
+    expect(mapProps().fitTo).toBe(fitTo); // and not brought to the day again
+  });
+
+  test("App_draws_nothing_and_asks_for_no_period_for_settings_that_were_opened_as_a_page", async () => {
+    window.history.replaceState(null, "", "/settings");
+    const paths = stubApi(answerWithTheFlight);
+
+    renderApp();
+
+    expect(await within(details()).findByText("Nothing has failed")).toBeInTheDocument();
+    expect(mapProps().data).toEqual({ routes: { type: "FeatureCollection", features: [] } });
+    expect(mapProps().fitTo).toBeNull();
+    expect(mapProps().heatToggle).toBeUndefined(); // there is no period to show the heat of
+    expect(periodRequests(paths)).toEqual([]);
+  });
+
+  test("App_goes_from_the_settings_to_a_view_of_time_that_has_its_map_and_its_heat_button_again", async () => {
+    stubApi(answerWithTheFlight);
+    renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Week" })); // at the day that was shown last
+
+    expect(window.location.pathname).toBe("/week/2026-10-19");
+    expect(screen.getByRole("button", { name: "Settings", pressed: false })).toBeInTheDocument();
+    expect(mapProps().heatToggle).toBeDefined();
+    await screen.findByText("No data for this period");
+  });
+});
+
+describe("App edit points", () => {
+  const T0 = 1_761_120_000_123_456;
+  const POINTS = {
+    date: "2026-10-22",
+    devices: ["phone"],
+    points: [
+      [T0, 10.0, 59.0, 0],
+      [T0 + 30_000_001, 10.001, 59.001, 0],
+      [T0 + 60_000_002, 10.002, 59.002, 0],
+      [T0 + 90_000_003, 10.003, 59.003, 0],
+    ],
+  };
+  const details = () => screen.getByRole("region", { name: "Details" });
+  const sidebar = () => screen.getByRole("complementary", { name: "Details" });
+  const edit = () => mapProps().edit!;
+
+  /** The API with a day to edit, its points, and the writes of edit mode; returns what was asked for (a write with its body). */
+  function stubEditing(writes: Record<string, () => Response> = {}) {
+    const calls: { method: string; path: string; body: unknown }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        calls.push({ method, path, body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined });
+        if (method !== "GET") return (writes[`${method} ${path}`] ?? (() => new Response("{}", { status: 501 })))();
+        if (path === "/api/status") return Response.json(STATUS);
+        if (path.endsWith("/points")) return Response.json(POINTS);
+        return path.endsWith("2026-10-22") ? Response.json(flightDay) : answerEmpty(path);
+      }),
+    );
+    return calls;
+  }
+  const writesOf = <T extends { method: string }>(calls: T[]): T[] => calls.filter((call) => call.method !== "GET");
+
+  async function intoEditMode() {
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit points" }));
+    await waitFor(() => expect(mapProps().data.editPoints).toBeDefined());
+  }
+
+  test("App_is_not_in_edit_mode_to_begin_with_the_map_has_no_edit_and_no_points_are_asked_for", async () => {
+    const calls = stubEditing();
+    stubLayout(100);
+
+    renderApp();
+
+    expect(await screen.findByRole("button", { name: "Edit points" })).toBeInTheDocument();
+    expect(mapProps().edit).toBeUndefined();
+    expect(mapProps().data.editPoints).toBeUndefined();
+    expect(calls.some((call) => call.path.endsWith("/points"))).toBe(false);
+    expect(screen.queryByRole("group", { name: "Edit points" })).not.toBeInTheDocument();
+  });
+
+  test("App_edit_points_turns_edit_mode_on_for_the_panel_and_the_map_which_draws_the_points_of_the_day", async () => {
+    const calls = stubEditing();
+    stubLayout(100);
+
+    await intoEditMode();
+
+    expect(screen.getByRole("group", { name: "Edit points" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument();
+    expect(mapProps().edit).toEqual({ selected: new Set(), area: false, onAreaChange: expect.any(Function), onToggle: expect.any(Function), onSelect: expect.any(Function) });
+    expect(mapProps().data.editPoints?.features).toHaveLength(4);
+    expect(mapProps().data.routes).toEqual(dayGeoJson(flightDay as DayResponse).routes); // over the day's routes
+    expect(calls.filter((call) => call.path.endsWith("/points")).map((call) => call.path)).toEqual(["/api/day/2026-10-22/points"]);
+  });
+
+  test("App_brings_a_sheet_that_is_up_down_to_its_peek_when_edit_mode_begins_for_the_map_is_what_is_edited_on", async () => {
+    stubEditing();
+    stubLayout(100);
+    renderApp();
+    const button = await screen.findByRole("button", { name: "Edit points" });
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" })); // half
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" })); // full
+    expect(details()).toHaveAttribute("data-snap", "full");
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(details()).toHaveAttribute("data-snap", "peek"));
+    expect(screen.getByRole("group", { name: "Edit points" })).toBeInTheDocument(); // and the bar is what a peek shows
+  });
+
+  test("App_selects_what_the_map_says_is_tapped_or_drawn_and_the_bar_counts_it", async () => {
+    stubEditing();
+    stubLayout(100);
+    await intoEditMode();
+    const bar = () => screen.getByRole("group", { name: "Edit points" });
+    expect(within(bar()).getByText("0 selected")).toBeInTheDocument();
+
+    act(() => edit().onToggle(1));
+    expect(within(bar()).getByText("1 selected")).toBeInTheDocument();
+    expect(edit().selected).toEqual(new Set([1]));
+
+    act(() => edit().onSelect([0, 1, 3]));
+    expect(within(bar()).getByText("3 selected")).toBeInTheDocument();
+    expect(edit().selected).toEqual(new Set([0, 1, 3]));
+
+    act(() => edit().onToggle(0));
+    expect(within(bar()).getByText("2 selected")).toBeInTheDocument();
+
+    fireEvent.click(within(bar()).getByRole("button", { name: "Clear" }));
+    expect(within(bar()).getByText("0 selected")).toBeInTheDocument();
+    expect(edit().selected.size).toBe(0);
+  });
+
+  test("App_select_area_is_the_maps_button_and_the_map_has_what_it_says", async () => {
+    stubEditing();
+    stubLayout(100);
+    await intoEditMode();
+
+    act(() => edit().onAreaChange(true));
+
+    expect(edit().area).toBe(true);
+    act(() => edit().onAreaChange(false));
+    expect(edit().area).toBe(false);
+  });
+
+  test("App_removes_the_selected_points_by_device_and_time_and_says_so_in_a_toast_that_is_not_in_the_panel", async () => {
+    const calls = stubEditing({ "POST /api/points/remove": () => Response.json({ batch: "b-7", count: 2 }) });
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onSelect([0, 2]));
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove 2 points" }));
+
+    const toast = await screen.findByText("Removed 2 points");
+    expect(writesOf(calls)).toEqual([{ method: "POST", path: "/api/points/remove", body: { points: [{ device: "phone", t: T0 }, { device: "phone", t: T0 + 60_000_002 }] } }]);
+    expect(details()).not.toContainElement(toast); // the sheet may be collapsed or scrolled: the toast is the page's
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    expect(edit().selected.size).toBe(0); // done with them
+    expect(screen.getByRole("group", { name: "Edit points" })).toBeInTheDocument(); // and still in edit mode
+  });
+
+  test("App_undoes_the_removal_from_the_toast", async () => {
+    const calls = stubEditing({
+      "POST /api/points/remove": () => Response.json({ batch: "b-7", count: 2 }),
+      "DELETE /api/points/removed/b-7": () => new Response(null, { status: 204 }),
+    });
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onSelect([0, 2]));
+    fireEvent.click(screen.getByRole("button", { name: "Remove 2 points" }));
+    await screen.findByText("Removed 2 points");
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+
+    expect(await screen.findByText("Restored 2 points")).toBeInTheDocument();
+    expect(writesOf(calls).map((call) => `${call.method} ${call.path}`)).toEqual(["POST /api/points/remove", "DELETE /api/points/removed/b-7"]);
+  });
+
+  test("App_asks_for_the_day_and_the_points_again_after_a_removal", async () => {
+    const calls = stubEditing({ "POST /api/points/remove": () => Response.json({ batch: "b-7", count: 1 }) });
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onToggle(0));
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove 1 point" }));
+
+    await screen.findByText("Removed 1 point");
+    await waitFor(() => expect(calls.filter((call) => call.method === "GET" && call.path === "/api/day/2026-10-22/points")).toHaveLength(2));
+    expect(calls.filter((call) => call.method === "GET" && call.path === "/api/day/2026-10-22").length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("App_ends_edit_mode_when_the_owner_leaves_the_day_and_the_toast_stays_to_be_undone", async () => {
+    stubEditing({ "POST /api/points/remove": () => Response.json({ batch: "b-7", count: 1 }) });
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onToggle(0));
+    fireEvent.click(screen.getByRole("button", { name: "Remove 1 point" }));
+    await screen.findByText("Removed 1 point");
+
+    fireEvent.click(screen.getByRole("button", { name: "Week" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/week/2026-10-19"));
+    expect(mapProps().edit).toBeUndefined();
+    expect(mapProps().data.editPoints).toBeUndefined();
+    expect(screen.queryByRole("group", { name: "Edit points" })).not.toBeInTheDocument();
+    expect(screen.getByText("Removed 1 point")).toBeInTheDocument(); // the owner may still want it back
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+  });
+
+  test("App_ends_edit_mode_and_clears_the_selection_when_the_date_changes", async () => {
+    stubEditing();
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onToggle(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "Next day" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/day/2026-10-23"));
+    expect(mapProps().edit).toBeUndefined();
+    expect(screen.queryByRole("group", { name: "Edit points" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Previous day" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/day/2026-10-22"));
+    expect(mapProps().edit).toBeUndefined(); // back on the day: not in edit mode, and nothing is still selected
+    expect(await screen.findByRole("button", { name: "Edit points" })).toBeInTheDocument();
+  });
+
+  test("App_done_ends_edit_mode_and_the_focus_goes_back_to_the_edit_points_button", async () => {
+    stubEditing();
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onToggle(1));
+    act(() => edit().onAreaChange(true));
+
+    fireEvent.click(within(screen.getByRole("group", { name: "Edit points" })).getByRole("button", { name: "Done" }));
+
+    expect(mapProps().edit).toBeUndefined();
+    expect(mapProps().data.editPoints).toBeUndefined();
+    expect(screen.getByRole("button", { name: "Edit points" })).toHaveFocus();
+  });
+
+  test("App_has_the_edit_bar_in_the_sidebar_on_a_desktop", async () => {
+    stubDesktop(true);
+    stubEditing();
+    stubLayout(110);
+
+    await intoEditMode();
+
+    expect(within(sidebar()).getByRole("group", { name: "Edit points" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Details" })).not.toBeInTheDocument();
+  });
+
+  test("App_keeps_a_status_for_the_toast_on_the_day_view_so_that_a_removal_that_finishes_after_done_is_announced_in_it", async () => {
+    let release: (response: Response) => void = () => undefined;
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? "GET"} ${path}`);
+        if (init?.method === "POST") return new Promise<Response>((resolve) => (release = resolve));
+        if (path === "/api/status") return Response.json(STATUS);
+        if (path.endsWith("/points")) return Response.json(POINTS);
+        return path.endsWith("2026-10-22") ? Response.json(flightDay) : answerEmpty(path);
+      }),
+    );
+    stubLayout(100);
+    renderApp();
+    await screen.findByRole("button", { name: "Edit points" });
+
+    // There before edit mode, and empty: it is what the message is put into, whenever it comes.
+    const empty = screen.getAllByRole("status").filter((status) => status.textContent === "");
+    expect(empty).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit points" }));
+    await waitFor(() => expect(mapProps().data.editPoints).toBeDefined());
+    act(() => edit().onToggle(1));
+    fireEvent.click(screen.getByRole("button", { name: "Remove 1 point" }));
+    await waitFor(() => expect(calls).toContain("POST /api/points/remove"));
+    fireEvent.click(within(screen.getByRole("group", { name: "Edit points" })).getByRole("button", { name: "Done" })); // the removal is still on its way
+    expect(screen.queryByRole("group", { name: "Edit points" })).not.toBeInTheDocument();
+
+    await act(async () => release(Response.json({ batch: "b-9", count: 1 })));
+
+    await waitFor(() => expect(empty[0]).toHaveTextContent("Removed 1 point")); // the one that was there: a region is announced when what is in it changes
+    expect(screen.getAllByRole("status").filter((status) => status.textContent === "")).toHaveLength(0);
+  });
+
+  test("App_tells_a_removal_that_fails_after_done_in_the_toast_in_the_words_of_the_server_and_not_in_the_bar_of_the_next_edit_mode", async () => {
+    // P4-R32: the owner pressed Done and began again, and the removal that was on its way fails.
+    const waiting: ((response: Response) => void)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, init?: RequestInit) => {
+        if (init?.method === "POST") return new Promise<Response>((resolve) => waiting.push(resolve));
+        if (path === "/api/status") return Response.json(STATUS);
+        if (path.endsWith("/points")) return Response.json(POINTS);
+        return path.endsWith("2026-10-22") ? Response.json(flightDay) : answerEmpty(path);
+      }),
+    );
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onSelect([0, 1]));
+    fireEvent.click(screen.getByRole("button", { name: "Remove 2 points" }));
+    await waitFor(() => expect(waiting).toHaveLength(1));
+    fireEvent.click(within(screen.getByRole("group", { name: "Edit points" })).getByRole("button", { name: "Done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit points" })); // and again, with the removal still on its way
+    await waitFor(() => expect(mapProps().data.editPoints).toBeDefined());
+
+    await act(async () =>
+      waiting[0]!(Response.json({ statusCode: 400, message: "One or more errors occurred!", errors: { points: ["At most 50000 points can be removed at once."] } }, { status: 400 })),
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not remove 2 points: At most 50000 points can be removed at once.");
+    expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(details()).not.toContainElement(alert); // the page's, as the toast is
+    const bar = screen.getByRole("group", { name: "Edit points" });
+    expect(within(bar).queryByRole("alert")).not.toBeInTheDocument(); // the new session did not send it
+    act(() => edit().onToggle(2)); // and its taps work
+    expect(within(bar).getByText("1 selected")).toBeInTheDocument();
+    expect(within(bar).getByRole("button", { name: "Remove 1 point" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  test("App_keeps_the_toast_for_a_failed_removal_when_the_owner_has_left_the_day_and_sends_the_same_points_again_on_retry", async () => {
+    const waiting: { body: unknown; answer: (response: Response) => void }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, init?: RequestInit) => {
+        if (init?.method === "POST") return new Promise<Response>((resolve) => waiting.push({ body: JSON.parse(init.body as string), answer: resolve }));
+        if (path === "/api/status") return Response.json(STATUS);
+        if (path.endsWith("/points")) return Response.json(POINTS);
+        return path.endsWith("2026-10-22") ? Response.json(flightDay) : answerEmpty(path);
+      }),
+    );
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onSelect([0, 3]));
+    fireEvent.click(screen.getByRole("button", { name: "Remove 2 points" }));
+    await waitFor(() => expect(waiting).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Week" })); // gone from the day
+    await waitFor(() => expect(window.location.pathname).toBe("/week/2026-10-19"));
+
+    await act(async () => waiting[0]!.answer(new Response("{}", { status: 503 })));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't remove 2 points — Retry");
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(waiting).toHaveLength(2));
+    expect(waiting[1]!.body).toEqual(waiting[0]!.body); // the same two points
+    expect(await screen.findByText("Removing 2 points…")).toBeInTheDocument();
+
+    await act(async () => waiting[1]!.answer(Response.json({ batch: "b-3", count: 2 })));
+
+    expect(await screen.findByText("Removed 2 points")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  test("App_has_no_status_for_toasts_on_the_other_views_until_there_is_a_toast", async () => {
+    stubEditing();
+    window.history.replaceState(null, "", "/week/2026-10-19");
+    stubLayout(100);
+
+    renderApp();
+
+    await screen.findByText("No data for this period");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  test("App_has_no_edit_points_button_on_the_other_views", async () => {
+    stubEditing();
+    window.history.replaceState(null, "", "/week/2026-10-19");
+    stubLayout(100);
+
+    renderApp();
+
+    await screen.findByText("No data for this period");
+    expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument();
+    expect(mapProps().edit).toBeUndefined();
   });
 });

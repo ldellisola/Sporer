@@ -5,6 +5,7 @@ import type {
   Mode,
   PlaceRef,
   RangeResponse,
+  RawPoint,
   TripResponse,
   TripsResponse,
 } from "../api/types";
@@ -48,6 +49,13 @@ export type LabelSide = "west" | "east";
 export type PlaceProperties = { id: number; radius: number; label?: string; side?: LabelSide };
 export type HeatProperties = { weight: number };
 
+/**
+ * A raw point of the day in edit mode: nothing but where it is, and its `id`, which is its index into the day's points (`editPointsGeoJson`) and
+ * is what a selection is made of. The map's feature state is keyed by it, and a tap finds it as the `id` of the feature.
+ */
+export type EditPointFeature = Feature<Point, Record<string, never>> & { id: number };
+export type EditPointCollection = { type: "FeatureCollection"; features: EditPointFeature[] };
+
 export type RouteCollection = FeatureCollection<LineString, RouteProperties>;
 export type StopCollection = FeatureCollection<Point, StopProperties>;
 export type PlaceCollection = FeatureCollection<Point, PlaceProperties>;
@@ -63,6 +71,8 @@ export const MODE_COLORS: Record<Mode, string> = {
 };
 const UNKNOWN_MODE_COLOR = "#8E8E93";
 export const PIN_COLOR = "#FF375F";
+/** What a selected point of edit mode is drawn in. */
+export const EDIT_SELECTED_COLOR = "#FF3B30";
 const WHITE = "#FFFFFF";
 
 /** The colour a move is drawn in on the map and in the timeline; a move whose mode the server could not tell is grey. */
@@ -267,6 +277,21 @@ export function tripGeoJson(trip: TripResponse): { routes: RouteCollection; plac
   return { routes, places: withSides(routes, places) };
 }
 
+/** What every point of edit mode says of itself: nothing, so that one object does, and the worker is sent it once. */
+const NO_PROPERTIES: Record<string, never> = {};
+
+/**
+ * A point for each raw point of a day, for edit mode: at `[lon, lat]`, with the index of the point in `points` as its numeric `id` (a selection is a
+ * set of those, and the map's feature state, which is what draws a point as selected, is keyed by it) and no properties. The time and the device
+ * stay in `points`: the map has no use for them, and a dense day has some 40,000 points.
+ */
+export function editPointsGeoJson(points: readonly RawPoint[]): EditPointCollection {
+  return {
+    type: "FeatureCollection",
+    features: points.map(([, lon, lat], id) => ({ type: "Feature", id, properties: NO_PROPERTIES, geometry: { type: "Point", coordinates: [lon, lat] } })),
+  };
+}
+
 /** A point for each cell of the heat, weighing what share of the most time spent in any cell its time is (0 to 1). */
 export function heatGeoJson(heat: HeatResponse): HeatCollection {
   const { maxSeconds } = heat;
@@ -284,6 +309,7 @@ export const SOURCE_IDS = {
   stops: "sporer-stops",
   places: "sporer-places",
   heat: "sporer-heat",
+  editPoints: "sporer-edit-points",
 } as const;
 
 /** The ids of the layers, in the order they are drawn: the first is at the bottom. */
@@ -294,6 +320,8 @@ export const LAYER_IDS = {
   dayFlight: "sporer-day-flight",
   rangeRoute: "sporer-range-route",
   rangeFlight: "sporer-range-flight",
+  editPointHalos: "sporer-edit-point-halos",
+  editPoints: "sporer-edit-points",
   places: "sporer-places",
   placeLabelsWest: "sporer-place-labels-west",
   placeLabelsEast: "sporer-place-labels-east",
@@ -411,9 +439,19 @@ function placeLabels(id: string, filter: FilterSpecification, anchors: Anchors, 
   };
 }
 
+/** Whether a feature of the edit points is selected: the map's feature state, set by id (a feature that has none is not). */
+const IS_SELECTED: CircleRadius = ["boolean", ["feature-state", "selected"], false];
+
+/** The edit points are drawn small, and a selected one larger and red: 4 and 7 pixels of radius. */
+const EDIT_POINT_RADIUS = 4;
+const EDIT_POINT_SELECTED_RADIUS = 7;
+/** The edge of a dot, in pixels: its halo reaches this far beyond it. */
+const EDIT_POINT_HALO_WIDTH = 1;
+
 /**
- * Every layer the map draws, from the bottom up: the heat, the routes, the place dots with their labels, the stop pins with their
- * names and their numbers (or the house, on the pin of home). Layers of the routes of the other views are there but hidden, so that going
+ * Every layer the map draws, from the bottom up: the heat, the routes, the points of edit mode (their halos, then the dots), the place dots with their labels, the stop pins with their
+ * names and their numbers (or the house, on the pin of home). The points are over the routes and under the pins: they are
+ * drawn in edit mode only (the source of every other view is empty). Layers of the routes of the other views are there but hidden, so that going
  * from a day to a month, or back, only changes their visibility: a day's routes (bold, over a casing) are shown for a day and for a trip, a
  * period's (faint) for a period, and the list of trips shows no routes at all. The dots, their labels and the pins are not hidden by any
  * view; the source of the ones that a view does not draw is empty. `dark` is for the text on the map, which is dark on a light map and
@@ -488,6 +526,29 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
         "line-width": RANGE_ROUTE_WIDTH,
         "line-opacity": RANGE_ROUTE_OPACITY,
         "line-dasharray": FLIGHT_DASH,
+      },
+    },
+    {
+      // The halos of the raw points of the day in edit mode, a layer of their own under the dots: a halo drawn as each dot's own stroke would paint over the dots
+      // before it, and a dense track would read as a white band. Here every dot is over every halo, so a dense track is dark dots with a light edge. The halo
+      // is as far as the dot's edge would have been (its radius and a pixel), so a dot that stands alone looks as if it had a stroke.
+      id: LAYER_IDS.editPointHalos,
+      type: "circle",
+      source: SOURCE_IDS.editPoints,
+      paint: {
+        "circle-radius": ["case", IS_SELECTED, EDIT_POINT_SELECTED_RADIUS + EDIT_POINT_HALO_WIDTH, EDIT_POINT_RADIUS + EDIT_POINT_HALO_WIDTH],
+        "circle-color": halo,
+      },
+    },
+    {
+      // The raw points of the day in edit mode: dots in the ink of the scheme with a halo of the other (the layer under this), so that they read on a light map and on a dark
+      // one, and over a route of any colour. A selected one is bigger and red, by the feature state of its id (never by new data: a tap would redraw 40,000).
+      id: LAYER_IDS.editPoints,
+      type: "circle",
+      source: SOURCE_IDS.editPoints,
+      paint: {
+        "circle-radius": ["case", IS_SELECTED, EDIT_POINT_SELECTED_RADIUS, EDIT_POINT_RADIUS],
+        "circle-color": ["case", IS_SELECTED, EDIT_SELECTED_COLOR, ink],
       },
     },
     {

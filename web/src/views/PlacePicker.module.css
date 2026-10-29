@@ -1,0 +1,56 @@
+/* The picker: the field over the list, and the way out under it. */
+.picker {
+  margin: 12px 0 18px;
+}
+
+/* A place: the name over its address at the left, the distance over the number of stays at the right. */
+.candidate {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "name distance"
+    "address visits";
+}
+
+/* A place found with no place to measure from: the name over its address at the left, the number of stays at the right, in the middle of the two lines. */
+.found {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "name visits"
+    "address visits";
+}
+
+.found .visits {
+  align-self: center;
+}
+
+.name {
+  grid-area: name;
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.address {
+  grid-area: address;
+  font-size: 12px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.distance {
+  grid-area: distance;
+  justify-self: end;
+}
+
+.visits {
+  grid-area: visits;
+  justify-self: end;
+  font-size: 12px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+/* The way out under the list: a button of the forms (Forms.module.css), a little below it. */
+.cancel {
+  margin: 4px 0 0;
+}

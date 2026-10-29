@@ -9,6 +9,12 @@ namespace Sporer.Timeline;
 /// order the places were added in. A place exactly <c>radiusMeters</c> away still matches.
 /// </para>
 /// <para>
+/// The matcher knows nothing of merges. It is given every place there is, the ones that were merged into another too, and
+/// answers the id of the place whose centre is nearest, which is that place's own: a stay keeps the place it was given, and
+/// whatever reads it follows the merges to the survivor. (Were the survivor's id stored, separating the two places could not
+/// give the stays back, and a rebuild would move all of the merged place's history to the survivor.)
+/// </para>
+/// <para>
 /// Places are kept in a grid only to narrow the candidates; the haversine distance (<see cref="Geo.DistanceMeters"/>)
 /// is the sole test of whether a place matches. The grid is built in latitude bands <c>radiusMeters</c> tall, and each
 /// band is cut into as many longitude cells as fit a full circle of latitude at least <c>radiusMeters</c> wide, so

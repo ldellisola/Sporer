@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { formatCount, formatDistance, formatDuration, formatInteger, formatTime } from "./format";
+import { formatCount, formatDistance, formatDuration, formatInteger, formatKm, formatTime } from "./format";
 
 describe("formatTime", () => {
   test("formatTime_uses_segment_zone", () => {
@@ -42,6 +42,13 @@ describe("formatDuration", () => {
     expect(formatDistance(850)).toBe("850 m");
     expect(formatDistance(1100)).toBe("1.1 km");
     expect(formatDistance(412_000)).toBe("412 km");
+  });
+
+  test("formatKm_writes_the_kilometres_of_a_setting_whole_or_with_up_to_two_decimals", () => {
+    expect(formatKm(50)).toBe("50 km");
+    expect(formatKm(7.5)).toBe("7.5 km");
+    expect(formatKm(7.25)).toBe("7.25 km");
+    expect(formatKm(1000)).toBe("1,000 km");
   });
 
   test("formatDuration_edges", () => {

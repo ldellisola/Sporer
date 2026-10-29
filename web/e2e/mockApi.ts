@@ -21,13 +21,29 @@ export type Override = ((request: Request) => Reply | Promise<Reply>) | object;
 
 /**
  * Overrides by API path, without the `/api/` prefix and without the query: `"day/2026-10-22"`, `"range"`, `"places/7"`, `"trips"`.
- * A key ending in `/*` matches every path below it (`"day/*"`); an exact key wins over it.
+ * A key ending in `/*` matches every path below it (`"day/*"`); an exact key wins over it, in either spelling. A key is a read (`GET`) unless it starts with
+ * another method and a space: `"POST status/retry"`, `"PUT trips/*"`, `"DELETE homes/3"`; a read may be written with its method too
+ * (`"GET status"`), and the bare path wins over it. A write has no default: one that no test has mocked gets the 501 of the guard, and
+ * fails the test.
  */
 export type Overrides = Record<string, Override>;
+
+/** A write that the page made, as the server would have seen it. */
+export interface Write {
+  method: string;
+  /** The path and the query: `/api/status/retry`. */
+  path: string;
+  /** What the request said its body was; the API refuses a write that does not say JSON. */
+  contentType: string | undefined;
+  /** The body as JSON, or null when there was none. */
+  body: unknown;
+}
 
 export interface MockApi {
   /** Every request to the API made so far, mocked or not, as path and query: `/api/day/2026-10-22`. */
   readonly requests: string[];
+  /** Every write (a request that is not a `GET`) made so far, in order, mocked or not. */
+  readonly writes: Write[];
 }
 
 interface ApiState {
@@ -77,6 +93,13 @@ const defaults: Record<string, Override> = {
   status,
   heat,
   trips,
+  // No trip is deleted. An exact key beats the wildcard below, which would take "deleted" for the id of a trip.
+  "trips/deleted": [],
+  // What Settings lists besides: no home (detected or set), the distance that makes a trip as it is configured (50 km, and the owner has not changed it), and
+  // no removed points.
+  homes: { periods: [] },
+  settings: { tripMinDistanceKm: 50, tripMinDistanceKmDefault: 50 },
+  "points/removed": [],
   // The page of a trip: the fixture's own for the one that has days and moves, the summary of the list (with nothing in it) for the other
   // trips of the list, and the 404 that the server gives for an id that is not a stored trip.
   "trips/*": (request): Reply => {
@@ -107,11 +130,25 @@ const defaults: Record<string, Override> = {
   },
 };
 
-function find(table: Record<string, Override>, path: string): Override | undefined {
-  if (Object.hasOwn(table, path)) return table[path];
-  const wildcard = `${path.slice(0, Math.max(path.lastIndexOf("/"), 0))}/*`;
-  return path.includes("/") && Object.hasOwn(table, wildcard) ? table[wildcard] : undefined;
+function exact(table: Record<string, Override>, key: string): Override | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
 }
+
+/** The override of the key with its last segment made `*` (`"day/2026-10-22"` is answered by `"day/*"`), if there is one. */
+function wildcard(table: Record<string, Override>, key: string): Override | undefined {
+  const pattern = `${key.slice(0, Math.max(key.lastIndexOf("/"), 0))}/*`;
+  return key.includes("/") && Object.hasOwn(table, pattern) ? table[pattern] : undefined;
+}
+
+/** The override of a write (or of any key spelt out): the exact key, else the wildcard. */
+const find = (table: Record<string, Override>, key: string): Override | undefined => exact(table, key) ?? wildcard(table, key);
+
+/**
+ * The override of a read: an exact key beats a wildcard, in either spelling, and where both are the same kind the bare path beats the one with
+ * `GET ` (`"places/2"`, `"GET places/2"`, `"places/*"`, `"GET places/*"`, in that order).
+ */
+const findRead = (table: Record<string, Override>, path: string): Override | undefined =>
+  exact(table, path) ?? exact(table, `GET ${path}`) ?? wildcard(table, path) ?? wildcard(table, `GET ${path}`);
 
 /**
  * Answers every `/api/*` request of `page` from the fixtures in `e2e/fixtures/` (empty days and ranges are made up from the
@@ -123,14 +160,25 @@ export async function mockApi(page: Page, overrides: Overrides = {}): Promise<Mo
   await guardApi(page);
   const state = states.get(page) as ApiState;
   const requests: string[] = [];
+  const writes: Write[] = [];
 
   await page.route(isApiUrl, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     requests.push(url.pathname + url.search);
+    const method = request.method();
+    if (method !== "GET") {
+      let body: unknown = null;
+      try {
+        body = request.postDataJSON();
+      } catch {
+        body = request.postData(); // not JSON: said as it was sent
+      }
+      writes.push({ method, path: url.pathname + url.search, contentType: request.headers()["content-type"], body });
+    }
 
     const path = url.pathname.slice("/api/".length);
-    const override = request.method() === "GET" ? (find(overrides, path) ?? find(defaults, path)) : undefined;
+    const override = method === "GET" ? (findRead(overrides, path) ?? find(defaults, path)) : find(overrides, `${method} ${path}`);
     if (override === undefined) {
       await route.fallback(); // to the guard, which records it and answers 501
       return;
@@ -139,7 +187,8 @@ export async function mockApi(page: Page, overrides: Overrides = {}): Promise<Mo
     const reply: Reply = typeof override === "function" ? await override(request) : { json: override };
     const status = reply.status ?? 200;
     if (status >= 400) state.deliberateErrors.add(request.url());
-    await route.fulfill({ status, json: reply.json ?? {} });
+    // A 204 has no body, and a write that says so (a delete) is answered with none.
+    await (status === 204 ? route.fulfill({ status }) : route.fulfill({ status, json: reply.json ?? {} }));
   });
-  return { requests };
+  return { requests, writes };
 }

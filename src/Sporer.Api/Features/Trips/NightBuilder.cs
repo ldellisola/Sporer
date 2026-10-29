@@ -22,17 +22,18 @@ public sealed class NightBuilder(PointStore points, SegmentStore segments, Place
     /// <remarks>
     /// A night is read at <see cref="DetectionOptions.NightHour"/> local time on the day after its date. Where it is located:
     /// the stay that covers that instant (its place and its centre), else the nearest raw point within
-    /// <see cref="DetectionOptions.NightPointWindow"/> (the nearest active place within
-    /// <see cref="DetectionOptions.PlaceRadiusMeters"/>, or none), else the night is unknown and has no position. The place of
-    /// a stay is the one the stay has, merged into another or not: the night keeps it as it is, and its reader
-    /// (<c>TripRefresher</c>) resolves it to the survivor through <see cref="PlaceStore.LoadSurvivorsAsync"/>.
+    /// <see cref="DetectionOptions.NightPointWindow"/> (the nearest place within <see cref="DetectionOptions.PlaceRadiusMeters"/>,
+    /// merged places included, as a stay is matched, which is that place itself and not the one it was merged into; or none), else
+    /// the night is unknown and has no position. The place of a stay is the one the stay has, merged into another or not: the night
+    /// keeps it as it is, and its reader (<c>TripRefresher</c>) resolves it to the survivor through
+    /// <see cref="PlaceStore.LoadSurvivorsAsync"/>.
     /// <para>
     /// A night is left out when it cannot be built: when it has not happened yet (its instant is after the end of the last
     /// stored segment, so nothing is known about it), and when no segment is near enough to say which zone the person was in,
     /// so there is no instant to read it at. A date with no night counts as an unknown night to the detectors.
     /// </para>
     /// <para>
-    /// The segments are loaded once, and the active places once; only a night that no stay covers asks for a point.
+    /// The segments are loaded once, and the places once; only a night that no stay covers asks for a point.
     /// </para>
     /// </remarks>
     public async Task<(DateOnly From, DateOnly To, IReadOnlyList<(Night Night, string Source)> Nights)> BuildAsync(
@@ -55,7 +56,7 @@ public sealed class NightBuilder(PointStore points, SegmentStore segments, Place
         var covering = await segments.FindCoveringAsync(
             firstDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),
             lastDate.AddDays(3).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc), ct);
-        var matcher = new PlaceMatcher(await places.LoadActiveAsync(ct), options.PlaceRadiusMeters);
+        var matcher = new PlaceMatcher(await places.LoadMatchableAsync(ct), options.PlaceRadiusMeters);
 
         Func<DateTime, string?> zoneAt = at => ZoneAt(covering, at);
         var nights = new List<(Night Night, string Source)>();

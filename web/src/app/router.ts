@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { addDays, isDate, isMonth, MAX_RANGE_DAYS, periodDays, today as todayInBrowser, weekStart } from "../time/dates";
 
-// The URL is the only view state, and there are only eight kinds of it, so this is all the router there is:
+// The URL is the only view state, and there are only nine kinds of it, so this is all the router there is:
 //   /day/2026-10-22   /week/2026-10-19   /month/2026-10   /year/2026   /range/2026-10-19..2026-10-25   /place/42
-//   /trips   /trip/2026-09-12
+//   /trips   /trip/2026-09-12   /settings
 // The server answers each of them with index.html (see Program.cs).
 
 export type Route =
@@ -15,9 +15,11 @@ export type Route =
   | { view: "place"; id: number }
   | { view: "trips" }
   /** A trip, by its id: the date of its first away night, which is what the API names it by. */
-  | { view: "trip"; id: string };
+  | { view: "trip"; id: string }
+  /** The one page of the owner's settings, with no argument. */
+  | { view: "settings" };
 
-/** A route that covers a stretch of time: the day, the week, the month, the year and the range. A place, the trips and a trip do not. */
+/** A route that covers a stretch of time: the day, the week, the month, the year and the range. A place, the trips, a trip and the settings do not. */
 export type PeriodRoute = Extract<Route, { view: "day" | "week" | "month" | "year" | "range" }>;
 
 const PERIOD_VIEWS: ReadonlySet<string> = new Set<PeriodRoute["view"]>(["day", "week", "month", "year", "range"]);
@@ -47,7 +49,11 @@ export function parseRoute(pathname: string, today: string): Route | null {
 
   const trimmed = pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
   const segments = trimmed.split("/"); // "", view, argument
-  if (segments.length === 2) return segments[1] === "trips" ? { view: "trips" } : null; // the list is the one view that has no argument
+  if (segments.length === 2) {
+    // The list of trips and the settings are the views that have no argument.
+    if (segments[1] === "trips") return { view: "trips" };
+    return segments[1] === "settings" ? { view: "settings" } : null;
+  }
   if (segments.length !== 3) return null;
   const [, view, arg] = segments as [string, string, string];
 
@@ -106,6 +112,8 @@ export function formatRoute(route: Route): string {
       return "/trips";
     case "trip":
       return `/trip/${route.id}`;
+    case "settings":
+      return "/settings";
   }
 }
 

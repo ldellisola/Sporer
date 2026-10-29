@@ -1,0 +1,7 @@
+/* A deleted trip: what it was called (the row, its button and the note that there is none are Rows.module.css's). */
+.deletedLabel {
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}

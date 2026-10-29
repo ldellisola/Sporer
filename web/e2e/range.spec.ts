@@ -68,6 +68,7 @@ const GYM = {
   firstVisit: "2026-10-05T16:00:00Z",
   lastVisit: "2026-10-22T16:00:00Z",
   recentVisits: [],
+  merged: [],
 };
 
 /** The month of the fixture, the range that is picked, and nothing for any other dates (the periods either side are asked for too). */
@@ -125,13 +126,13 @@ test("month_view_and_range_picker", async ({ page }) => {
   await expect(page).toHaveURL(/\/day\/2026-10-02$/);
   await page.goBack();
   await expect(page).toHaveURL(/\/month\/2026-10$/);
-  await sheetAtRest(page); // the sheet comes back with the list, and a row is clicked where it is going to be
+  await sheetAtRest(page, details(page).getByRole("button", { name: "Open Thu 22 Oct" })); // the sheet comes back with the list, and a row is clicked where it is going to be
   await details(page).getByRole("button", { name: "Open Thu 22 Oct" }).click();
   await expect(page).toHaveURL(/\/day\/2026-10-22$/);
   await expect(page.getByRole("heading", { name: "Thursday 22 October", level: 1 })).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(/\/month\/2026-10$/);
-  await sheetAtRest(page);
+  await sheetAtRest(page, details(page).getByRole("button", { name: "Open Gym" }));
   await details(page).getByRole("button", { name: "Open Gym" }).click();
   await expect(page).toHaveURL(/\/place\/6$/);
   await expect(details(page).getByRole("heading", { level: 1, name: "Gym" })).toBeVisible();
@@ -220,6 +221,7 @@ const HOME = {
   firstVisit: "2026-10-01T05:00:00Z",
   lastVisit: "2026-10-22T20:00:00Z",
   recentVisits: [],
+  merged: [],
 };
 
 // Spec 4.6: a place is reached by tapping it anywhere, the dots of the map too. The map is brought to the month in 600 ms, and a dot is

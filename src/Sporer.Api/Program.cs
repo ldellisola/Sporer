@@ -7,8 +7,11 @@ using Microsoft.Extensions.Options;
 using Npgsql;
 using Sporer.Api.Configuration;
 using Sporer.Api.Database;
+using Sporer.Api.Features.Homes;
 using Sporer.Api.Features.Places;
+using Sporer.Api.Features.Points;
 using Sporer.Api.Features.Range;
+using Sporer.Api.Features.Settings;
 using Sporer.Api.Features.Timeline;
 using Sporer.Api.Features.Trips;
 using Sporer.Api.Http;
@@ -24,14 +27,19 @@ builder.Services.AddSingleton<DatabaseWarnings>();
 builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConfiguration>().GetSection("Detection").Get<DetectionOptions>() ?? new DetectionOptions());
 builder.Services.AddSingleton<PointStore>();
+builder.Services.AddSingleton<ExcludedPointStore>();
 builder.Services.AddSingleton<PlaceStore>();
 builder.Services.AddSingleton<SegmentStore>();
 builder.Services.AddSingleton<RangeStore>();
 builder.Services.AddSingleton<NightStore>();
 builder.Services.AddSingleton<NightBuilder>();
 builder.Services.AddSingleton<TripStore>();
+builder.Services.AddSingleton<TripEditStore>();
+builder.Services.AddSingleton<HomeStore>();
+builder.Services.AddSingleton<SettingsStore>();
 builder.Services.AddSingleton<TripRefresher>();
 builder.Services.AddSingleton<ITripRefresher>(sp => sp.GetRequiredService<TripRefresher>());
+builder.Services.AddSingleton<EditRecompute>();
 builder.Services.AddSingleton<ITimelineProcessor, TimelineProcessor>();
 builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConfiguration>().GetSection("Processing").Get<ProcessingOptions>() ?? new ProcessingOptions());
@@ -121,12 +129,14 @@ if (string.IsNullOrEmpty(app.Services.GetRequiredService<IOptions<OverlandOption
 // The order is the design. Forwarded headers first, so that everything after sees the client's address and scheme.
 // Compression wraps the rest, so the tag that conditional GET makes is over the uncompressed body, and a 304 needs no encoding.
 // The exception handler wraps conditional GET, which holds a body back and so leaves the response clean for the handler.
+// A write that is not sent as JSON, with a body or without, is turned away before any endpoint sees it, so it sits inside the exception handler and ahead of them.
 app.UseForwardedHeaders();
 // Compression is for what is read. A write's answer, above all Overland's {"result":"ok"}, goes out as it is.
 app.UseWhen(
     context => HttpMethods.IsGet(context.Request.Method) || HttpMethods.IsHead(context.Request.Method),
     reads => reads.UseResponseCompression());
 app.UseDefaultExceptionHandler();
+app.UseMiddleware<JsonWritesMiddleware>();
 app.UseMiddleware<ConditionalGetMiddleware>();
 app
     .UseFastEndpoints(t=>

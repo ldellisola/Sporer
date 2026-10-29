@@ -10,6 +10,8 @@ import { DayPanel } from "../views/DayPanel";
 import { Notice } from "../views/Notice";
 import { PlacePanel } from "../views/PlacePanel";
 import { RangePanel } from "../views/RangePanel";
+import { RemovedToast } from "../views/RemovedToast";
+import { SettingsPanel } from "../views/SettingsPanel";
 import { StatusBanner } from "../views/StatusBanner";
 import { TopBar } from "../views/TopBar";
 import { TripPanel } from "../views/TripPanel";
@@ -18,6 +20,7 @@ import styles from "./App.module.css";
 import { navigate, useRoute, type Route } from "./router";
 import { useBottomEdge } from "./useBottomEdge";
 import { useDayRollover } from "./useDayRollover";
+import { useEditPoints, type PointEditing } from "./useEditPoints";
 import { useLastDay } from "./useLastDay";
 import { useMediaQuery } from "./useMediaQuery";
 import { useSideInsets } from "./useSideInsets";
@@ -32,16 +35,17 @@ const DESKTOP_QUERY = "(min-width: 900px)";
 const AIR = 16;
 
 /**
- * The panel of the view of the route. The day, the place, the trips and a trip have their own, and the week, the month, the year and the
+ * The panel of the view of the route. The day, the place, the trips, a trip and the settings have their own, and the week, the month, the year and the
  * range share one (the period they cover is what differs). A place is a panel of its own, made again for another place (`key`), so that
  * nothing of one place is ever under the name of another; so is a trip. `onFocus` is how a panel asks for the map to be brought to
- * something (a row tapped): the map is the shell's, and the one.
+ * something (a row tapped): the map is the shell's, and the one. `edit` is edit mode for the points of a day, which the map shares with the panel of the day.
  */
-function Panel({ route, onFocus }: { route: Route; onFocus: (features: FitFeatures) => void }) {
-  if (route.view === "day") return <DayPanel date={route.date} onFocus={onFocus} />;
+function Panel({ route, onFocus, edit }: { route: Route; onFocus: (features: FitFeatures) => void; edit: PointEditing }) {
+  if (route.view === "day") return <DayPanel date={route.date} onFocus={onFocus} edit={edit} />;
   if (route.view === "place") return <PlacePanel key={route.id} id={route.id} />;
   if (route.view === "trips") return <TripsPanel />;
   if (route.view === "trip") return <TripPanel key={route.id} id={route.id} />;
+  if (route.view === "settings") return <SettingsPanel />;
   const { from, to } = periodRange(route);
   return <RangePanel from={from} to={to} />;
 }
@@ -52,7 +56,8 @@ function Panel({ route, onFocus }: { route: Route; onFocus: (features: FitFeatur
  * what it shows lies in the part that is free. What the map draws and where it is brought to come from the route (`useViewMap`),
  * and a panel asks the shell to move it (`onFocus`). Whether the heat is on is the owner's to set with the map's button, and is
  * remembered; it holds for every view that has a period to show it for. A day that was today moves on to the new today when the page is
- * brought back after midnight (`useDayRollover`).
+ * brought back after midnight (`useDayRollover`). Edit mode for the points of a day is held here (`useEditPoints`), since the map is what is edited
+ * on and the panel has its bar: it ends with the day, and the toast that says what was removed, with its Undo, is the shell's too (`RemovedToast`).
  */
 export function App() {
   const route = useRoute();
@@ -62,7 +67,8 @@ export function App() {
   const viewportHeight = useViewportHeight();
   const lastDay = useLastDay(route);
   const [heatOn, setHeatOn] = useStoredFlag("heat", false);
-  const map = useViewMap(route, heatOn);
+  const edit = useEditPoints(route);
+  const map = useViewMap(route, heatOn, edit.points);
   const sheetRef = useRef<BottomSheetHandle>(null);
   const mapRef = useRef<MapViewHandle>(null);
   /**
@@ -120,7 +126,15 @@ export function App() {
     if (placeId !== null) sheetRef.current?.lowerTo("half");
   }, [placeId]);
 
-  const panel = <Panel route={route} onFocus={onFocus} />;
+  // Edit mode is for the map: a sheet that is up is brought down to its peek, which still shows the bar of it, so that the map is what is seen and tapped.
+  const panelEdit: PointEditing = {
+    ...edit,
+    start: () => {
+      edit.start();
+      sheetRef.current?.lowerTo("peek");
+    },
+  };
+  const panel = <Panel route={route} onFocus={onFocus} edit={panelEdit} />;
   return (
     <main className={styles.shell} data-layout={desktop ? "desktop" : "phone"}>
       {/* Take no room and show nothing: their widths are the left and right safe areas, which only the style sheet can say. */}
@@ -134,6 +148,11 @@ export function App() {
           home={map.home}
           padding={padding}
           heatToggle={map.heat.available ? { on: heatOn, onChange: setHeatOn } : undefined}
+          edit={
+            edit.active
+              ? { selected: edit.selected, area: edit.area, onAreaChange: edit.setArea, onToggle: edit.toggle, onSelect: edit.select }
+              : undefined
+          }
           onPlaceTap={(id) => navigate({ view: "place", id })}
           onStyleError={(_error, basemapKept) => setMapNote(basemapKept ? "switch" : "unavailable")}
           onStyleLoad={() => setMapNote(null)}
@@ -164,6 +183,8 @@ export function App() {
           {panel}
         </BottomSheet>
       )}
+      {/* There on every day, empty, so that what it says is announced whenever it comes (a removal can finish after Done); and for as long as it has something to say (a removal can fail after the owner has left the day). */}
+      {(route.view === "day" || edit.toast !== null || edit.failedRemoval !== null) && <RemovedToast edit={edit} />}
     </main>
   );
 }

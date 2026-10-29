@@ -5,7 +5,11 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { ApiError } from "./client";
 import {
   createQueryClient,
+  dayPointsQueryOptions,
   dayQueryOptions,
+  forgetEditedDays,
+  noteDayEdited,
+  pendingInterval,
   prefetchNeighbours,
   rangeQueryOptions,
   refreshInterval,
@@ -15,14 +19,33 @@ import {
   tripsQueryOptions,
   useConfig,
   useDay,
+  useDayPoints,
+  useCandidates,
+  useDeletedTrips,
   useHeat,
+  useHomes,
   usePlace,
+  usePlaceSearch,
   useRange,
+  useRemovedPoints,
+  useSettings,
   useStatus,
   useTrip,
   useTrips,
 } from "./queries";
-import type { DayResponse, LoadState, PlaceResponse, RangeResponse, TripListItem, TripResponse, TripsResponse } from "./types";
+import type {
+  DayResponse,
+  DeletedTrip,
+  HomesResponse,
+  LoadState,
+  PlaceResponse,
+  RangeResponse,
+  RemovedBatch,
+  SettingsResponse,
+  TripListItem,
+  TripResponse,
+  TripsResponse,
+} from "./types";
 
 const SUMMARY = { places: 0, distanceMeters: 0, movingSeconds: 0 };
 
@@ -49,6 +72,10 @@ function listed(id: string, nights = 2): TripListItem {
     localStartDate: id,
     localEndDate: id,
     ongoing: false,
+    edited: false,
+    ownName: null,
+    startEdited: false,
+    endEdited: false,
     cities: [{ name: "Lisbon", country: "Portugal", nights, lat: 38.72, lon: -9.14 }],
     thumbnail: [
       [10.75, 59.91],
@@ -100,6 +127,7 @@ const tick = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
 
 afterEach(() => {
   vi.useRealTimers();
+  forgetEditedDays();
 });
 
 describe("query hooks", () => {
@@ -110,6 +138,7 @@ describe("query hooks", () => {
     const { result } = renderHook(
       () => ({
         day: useDay("2026-10-22"),
+        points: useDayPoints("2026-10-22"),
         range: useRange("2026-10-19", "2026-10-25"),
         heat: useHeat("2026-10-19", "2026-10-25", true),
         place: usePlace(7),
@@ -128,6 +157,7 @@ describe("query hooks", () => {
       [
         "/api/config",
         "/api/day/2026-10-22",
+        "/api/day/2026-10-22/points",
         "/api/heat?from=2026-10-19&to=2026-10-25",
         "/api/places/7",
         "/api/range?from=2026-10-19&to=2026-10-25",
@@ -136,6 +166,38 @@ describe("query hooks", () => {
         "/api/trips/2026-09-12",
       ].sort(),
     );
+  });
+
+  test("useDayPoints_asks_for_nothing_without_a_date_or_while_it_is_not_enabled_even_when_everything_is_refetched", async () => {
+    const urls = stubApi(() => json({ date: "2026-10-22", devices: [], points: [] }));
+    const client = newClient();
+    const { result, rerender } = renderHook(({ date, enabled }: { date: string | null; enabled: boolean }) => useDayPoints(date, enabled), {
+      wrapper: wrapperFor(client),
+      initialProps: { date: null as string | null, enabled: true },
+    });
+
+    await act(() => client.refetchQueries());
+    expect(urls).toEqual([]); // no day: nothing is asked for
+    rerender({ date: "2026-10-22", enabled: false });
+    await act(() => client.refetchQueries());
+    expect(urls).toEqual([]); // not in edit mode: the points of a day are heavy, and only edit mode has a use for them
+
+    rerender({ date: "2026-10-22", enabled: true });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(urls).toEqual(["/api/day/2026-10-22/points"]);
+  });
+
+  test("useDayPoints_keeps_the_points_of_no_other_day_for_the_day_that_loads", async () => {
+    stubApi((url) => (url.includes("2026-10-23") ? new Promise<Response>(() => undefined) : json({ date: "2026-10-22", devices: ["a"], points: [[1, 10, 59, 0]] })));
+    const { result, rerender } = renderHook(({ date }: { date: string }) => useDayPoints(date), {
+      wrapper: wrapperFor(newClient()),
+      initialProps: { date: "2026-10-22" },
+    });
+    await waitFor(() => expect(result.current.data?.date).toBe("2026-10-22"));
+
+    rerender({ date: "2026-10-23" });
+
+    expect(result.current.data).toBeUndefined(); // the dots of one day under another would be wrong, not just old
   });
 
   test("useDay_keeps_the_previous_day_while_the_next_loads", async () => {
@@ -284,6 +346,65 @@ describe("query hooks", () => {
 
     await tick(120_000);
     expect(urls).toHaveLength(3); // done: nothing more is asked
+  });
+
+  // Plan 4: an edit of the points queues the rebuild of the day at once, and the worker has it done within seconds: a day that is pending
+  // after an edit is asked for every 3 seconds for two minutes, and after that as every pending day is.
+  test("useDay_refetches_every_3_seconds_while_pending_for_two_minutes_after_an_edit_and_every_30_after_that", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-12-01T12:00:00Z")); // a day that is not today
+    const edited = Date.now();
+    const asked: number[] = []; // when each request was made, in seconds after the edit
+    stubApi(() => {
+      asked.push((Date.now() - edited) / 1000);
+      return json(day("2026-10-22", "pending"));
+    });
+    noteDayEdited("2026-10-22");
+    renderHook(() => useDay("2026-10-22"), { wrapper: wrapperFor(newClient()) });
+
+    await tick(240_000);
+
+    const gaps = asked.slice(1).map((at, i) => Math.round(at - asked[i]!));
+    const inTheWindow = asked.filter((at) => at < 120).length;
+    expect(gaps.slice(0, inTheWindow - 1)).toEqual(Array.from({ length: inTheWindow - 1 }, () => 3)); // one every 3 s...
+    expect(inTheWindow).toBeGreaterThanOrEqual(40);
+    expect(gaps.slice(inTheWindow)).toEqual(Array.from({ length: gaps.length - inTheWindow }, () => 30)); // ...then one every 30 s
+    expect(asked.length - inTheWindow).toBeGreaterThanOrEqual(3);
+    expect(asked.length - inTheWindow).toBeLessThanOrEqual(5);
+  });
+
+  test("useDay_that_is_pending_with_no_edit_is_still_asked_for_every_30_seconds", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-12-01T12:00:00Z"));
+    const urls = stubApi(() => json(day("2026-10-22", "pending")));
+    noteDayEdited("2026-10-25"); // two days on: not this one, nor a neighbour of it
+    renderHook(() => useDay("2026-10-22"), { wrapper: wrapperFor(newClient()) });
+    await tick(1);
+
+    await tick(29_000);
+    expect(urls).toHaveLength(1);
+    await tick(2_000);
+    expect(urls).toHaveLength(2);
+  });
+
+  test("useDay_stops_asking_every_3_seconds_when_the_rebuilt_day_comes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-12-01T12:00:00Z"));
+    let state: LoadState = "pending";
+    const urls = stubApi(() => json(day("2026-10-22", state)));
+    noteDayEdited("2026-10-22");
+    const { result } = renderHook(() => useDay("2026-10-22"), { wrapper: wrapperFor(newClient()) });
+    await tick(1);
+    await tick(3_000);
+    expect(urls).toHaveLength(2);
+
+    state = "done";
+    await tick(3_000);
+    await tick(1);
+    expect(result.current.data?.state).toBe("done");
+    const done = urls.length;
+    await tick(120_000);
+    expect(urls).toHaveLength(done); // done: nothing more is asked
   });
 
   test("useRange_refetches_every_30_seconds_only_while_pending", async () => {
@@ -541,6 +662,69 @@ describe("query hooks", () => {
     expect(result.current.data?.trips.map((t) => t.id)).toEqual(["2026-10-20", "2026-09-12"]);
   });
 
+  test("useDeletedTrips_reads_the_trips_the_owner_deleted_with_the_key_that_restores_each", async () => {
+    const deleted: DeletedTrip[] = [{ key: "2026-09-12", label: "Lisbon · 12 – 16 Sep 2026", deletedAt: "2026-10-24T08:15:00Z" }];
+    const urls = stubApi(() => json(deleted));
+    const { result } = renderHook(() => useDeletedTrips(), { wrapper: wrapperFor(newClient()) });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(urls).toEqual(["/api/trips/deleted"]);
+    expect(result.current.data).toEqual(deleted);
+  });
+
+  test("usePlaceSearch_asks_for_the_most_visited_places_with_no_q_and_escapes_the_q_it_is_given", async () => {
+    const urls = stubApi(() => json([{ id: 7, name: "Bistro", address: null, visits: 3 }]));
+    const client = newClient();
+
+    const all = renderHook(() => usePlaceSearch(""), { wrapper: wrapperFor(client) });
+    await waitFor(() => expect(all.result.current.isSuccess).toBe(true));
+    const found = renderHook(() => usePlaceSearch("Café & Co"), { wrapper: wrapperFor(client) });
+    await waitFor(() => expect(found.result.current.isSuccess).toBe(true));
+
+    expect(urls).toEqual(["/api/places/search", "/api/places/search?q=Caf%C3%A9%20%26%20Co"]);
+    expect(found.result.current.data).toEqual([{ id: 7, name: "Bistro", address: null, visits: 3 }]);
+  });
+
+  test("usePlaceSearch_and_useCandidates_with_nothing_to_ask_for_ask_for_nothing_even_when_every_query_is_refetched", async () => {
+    const urls = stubApi(() => json([]));
+    const client = newClient();
+    const search = renderHook(() => usePlaceSearch(null), { wrapper: wrapperFor(client) });
+    const near = renderHook(() => useCandidates(null, ""), { wrapper: wrapperFor(client) });
+
+    await act(async () => undefined);
+    await act(async () => {
+      await client.invalidateQueries();
+      await client.refetchQueries();
+    });
+
+    expect(urls).toEqual([]); // the picker of the places near one is not the search, and neither asks as `/api/places/null/candidates`
+    expect(search.result.current.fetchStatus).toBe("idle");
+    expect(near.result.current.fetchStatus).toBe("idle");
+  });
+
+  test("useHomes_useSettings_and_useRemovedPoints_read_what_the_server_has", async () => {
+    const homes: HomesResponse = {
+      periods: [{ id: 3, placeId: 7, placeName: "Oslo", from: "2026-01-01", to: null, source: "detected" }],
+    };
+    const settings: SettingsResponse = { tripMinDistanceKm: 80, tripMinDistanceKmDefault: 50 };
+    const removed: RemovedBatch[] = [
+      { batch: "3f2504e0-4f89-11d3-9a0c-0305e82c3301", removedAt: "2026-10-24T08:15:00Z", count: 4, from: "2026-10-22T08:00:00Z", to: "2026-10-22T08:03:00Z", localDates: ["2026-10-22"] },
+    ];
+    const urls = stubApi((url) => json(url === "/api/homes" ? homes : url === "/api/settings" ? settings : removed));
+    const client = newClient();
+
+    const home = renderHook(() => useHomes(), { wrapper: wrapperFor(client) });
+    const setting = renderHook(() => useSettings(), { wrapper: wrapperFor(client) });
+    const points = renderHook(() => useRemovedPoints(), { wrapper: wrapperFor(client) });
+    await waitFor(() => expect(home.result.current.isSuccess && setting.result.current.isSuccess && points.result.current.isSuccess).toBe(true));
+
+    expect([...urls].sort()).toEqual(["/api/homes", "/api/points/removed", "/api/settings"]);
+    expect(home.result.current.data).toEqual(homes);
+    expect(setting.result.current.data).toEqual(settings);
+    expect(points.result.current.data).toEqual(removed);
+  });
+
   test("useTrip_with_no_id_asks_for_nothing_even_when_every_trip_is_refetched", async () => {
     const urls = stubApi(() => json(trip("2026-09-12")));
     const client = newClient();
@@ -661,6 +845,81 @@ describe("refreshInterval", () => {
     expect(interval(rangeQueryOptions("2026-09-01", "2026-09-30"), "done")).toBe(false);
     expect(interval(rangeQueryOptions("2026-09-01", "2026-09-30"), "pending")).toBe(30_000);
     expect(interval(rangeQueryOptions(null, null), undefined)).toBe(false);
+  });
+});
+
+describe("pendingInterval", () => {
+  const EDITED = Date.parse("2026-12-01T12:00:00Z");
+
+  test.each([
+    // [ms since the edit, interval, what it says]
+    [0, 3_000, "at the edit"],
+    [2_999, 3_000, "just under a second of the first poll"],
+    [60_000, 3_000, "a minute after"],
+    [119_999, 3_000, "the last ms of the two minutes"],
+    [120_000, 30_000, "when the two minutes are up"],
+    [600_000, 30_000, "long after"],
+  ])("pendingInterval_%i_ms_after_an_edit_is_%i_(%s)", (since, interval) => {
+    expect(pendingInterval(EDITED, EDITED + since)).toBe(interval);
+  });
+
+  test("pendingInterval_is_30_seconds_for_a_day_that_was_not_edited", () => {
+    expect(pendingInterval(undefined, EDITED)).toBe(30_000);
+  });
+
+  test("pendingInterval_reads_the_time_of_now_when_it_is_not_told", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(EDITED);
+    noteDayEdited("2026-10-22");
+    expect(refreshInterval("2026-10-22", "2026-10-22", "pending", "2026-12-01")).toBe(3_000);
+    vi.setSystemTime(EDITED + 120_000);
+    expect(refreshInterval("2026-10-22", "2026-10-22", "pending", "2026-12-01")).toBe(30_000);
+  });
+
+  test("refreshInterval_is_3_seconds_for_an_edited_pending_day_and_for_no_other_state_or_period", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(EDITED);
+    noteDayEdited("2026-10-22");
+    const now = "2026-12-01";
+    expect(refreshInterval("2026-10-22", "2026-10-22", "pending", now)).toBe(3_000);
+    expect(refreshInterval("2026-10-22", "2026-10-22", "done", now)).toBe(false); // rebuilt: nothing more to wait for
+    expect(refreshInterval("2026-10-19", "2026-10-25", "pending", now)).toBe(30_000); // a period is not a day that was edited
+  });
+
+  test("noteDayEdited_starts_the_two_minutes_again_for_a_second_edit_within_them", () => {
+    // Remove, and Undo a minute and a half later, or a second removal: the day is rebuilt again, and is asked for every 3 seconds for two minutes after the last.
+    vi.useFakeTimers();
+    vi.setSystemTime(EDITED);
+    noteDayEdited("2026-10-22");
+    vi.setSystemTime(EDITED + 100_000);
+    noteDayEdited("2026-10-22");
+    const asked = (since: number) => {
+      vi.setSystemTime(EDITED + since);
+      return refreshInterval("2026-10-22", "2026-10-22", "pending", "2026-12-01");
+    };
+
+    expect(asked(200_000)).toBe(3_000); // 200 s after the first edit, which on its own would be over: 100 s after the second
+    expect(asked(219_999)).toBe(3_000);
+    expect(asked(220_000)).toBe(30_000); // two minutes after the second
+    expect(asked(110_000)).toBe(3_000);
+  });
+
+  test("noteDayEdited_marks_the_days_either_side_too_as_a_day_spans_into_them", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(EDITED);
+    noteDayEdited("2026-10-31");
+    const now = "2026-12-01";
+    for (const date of ["2026-10-30", "2026-10-31", "2026-11-01"]) expect(refreshInterval(date, date, "pending", now), date).toBe(3_000);
+    for (const date of ["2026-10-29", "2026-11-02"]) expect(refreshInterval(date, date, "pending", now), date).toBe(30_000);
+  });
+
+  test("the_query_options_of_a_day_read_the_edits_and_the_points_have_their_own_key", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(EDITED);
+    noteDayEdited("2026-10-22");
+    const read = dayQueryOptions("2026-10-22").refetchInterval as (query: { state: { data: { state: LoadState } } }) => number | false;
+    expect(read({ state: { data: { state: "pending" } } })).toBe(3_000);
+    expect(dayPointsQueryOptions("2026-10-22").queryKey).toEqual(["points", "2026-10-22"]);
   });
 });
 

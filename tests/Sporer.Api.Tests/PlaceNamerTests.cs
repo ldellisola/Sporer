@@ -7,6 +7,7 @@ using Microsoft.Extensions.Time.Testing;
 using Sporer.Api.Configuration;
 using Sporer.Api.Database;
 using Sporer.Api.Features.Places;
+using Sporer.Api.Features.Timeline;
 using Sporer.Testing;
 using Sporer.Timeline;
 
@@ -505,6 +506,62 @@ public class PlaceNamerTests(DatabaseFixture db)
         Assert.True(await h.Namer.RunOnceAsync(Ct));
         Assert.Equal(2, h.Nominatim.Calls);
         Assert.Equal("done", (await PlaceAsync(h.Cs, orphan)).GeocodeState);
+    }
+
+    [Fact]
+    public async Task Survivor_without_own_segments_is_still_named_and_counted()
+    {
+        await using var h = await StartAsync();
+        // A place that lost its own stays to a reprocessing, and the places merged into it, one of them in two steps: the stays of the
+        // places merged into a place are shown at it, so it is on the timeline, and it is the one that is named and counted.
+        var survivor = await AddPlaceAsync(h.Cs, Spots.Home, referenced: false);
+        var merged = await AddPlaceAsync(h.Cs, Spots.Cafe, referenced: false, mergedInto: survivor);
+        var viaMerged = await AddPlaceAsync(h.Cs, Spots.Office, mergedInto: merged);
+        var orphan = await AddPlaceAsync(h.Cs, Spots.Gym, referenced: false); // nothing shows this one, and nothing is merged into it
+        var orphanSurvivor = await AddPlaceAsync(h.Cs, Spots.Lisbon, referenced: false); // nor this one, though a place is merged into it
+        await AddPlaceAsync(h.Cs, Spots.Tokyo, referenced: false, mergedInto: orphanSurvivor);
+        h.Nominatim.ReplyJson(CafeJson);
+
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+        h.Clock.Advance(Interval);
+        Assert.False(await h.Namer.RunOnceAsync(Ct)); // the survivor was the one
+
+        Assert.Equal("done", (await PlaceAsync(h.Cs, survivor)).GeocodeState);
+        Assert.Equal("pending", (await PlaceAsync(h.Cs, merged)).GeocodeState);
+        Assert.Equal("pending", (await PlaceAsync(h.Cs, viaMerged)).GeocodeState);
+        Assert.Equal("pending", (await PlaceAsync(h.Cs, orphan)).GeocodeState);
+        Assert.Equal("pending", (await PlaceAsync(h.Cs, orphanSurvivor)).GeocodeState);
+        Assert.Equal(1, h.Nominatim.Calls);
+
+        // The status counts the same places: the survivor, named now, and no other.
+        var counts = await h.Api.Services.GetRequiredService<PlaceStore>().CountInUseAsync(Ct);
+        Assert.Equal(new PlaceCounts(1, 0, 0), counts);
+    }
+
+    [Fact]
+    public async Task A_place_separated_from_the_one_it_was_merged_into_is_named()
+    {
+        await using var h = await StartAsync();
+        var survivor = await AddPlaceAsync(h.Cs, Spots.Home);
+        var merged = await AddPlaceAsync(h.Cs, Spots.Cafe, mergedInto: survivor); // it was never named: it is no place of its own, so none asks
+        h.Nominatim.ReplyJson(CafeJson);
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+        h.Clock.Advance(Interval);
+        Assert.False(await h.Namer.RunOnceAsync(Ct));
+        Assert.Equal("pending", (await PlaceAsync(h.Cs, merged)).GeocodeState);
+        Assert.Equal(new PlaceCounts(1, 0, 0), await h.Api.Services.GetRequiredService<PlaceStore>().CountInUseAsync(Ct));
+
+        using var separated = await h.Api.CreateClient().DeleteAsync($"/api/places/{survivor}/merged/{merged}", Ct);
+        Assert.Equal(HttpStatusCode.NoContent, separated.StatusCode);
+
+        // It is a place of the timeline again: counted, waiting for its name, and the next one the namer asks about.
+        Assert.Equal(new PlaceCounts(2, 1, 0), await h.Api.Services.GetRequiredService<PlaceStore>().CountInUseAsync(Ct));
+        h.Nominatim.ReplyJson(HouseJson);
+        Assert.True(await h.Namer.RunOnceAsync(Ct));
+        Assert.Equal("done", (await PlaceAsync(h.Cs, merged)).GeocodeState);
+        Assert.Equal("Storgata 5", (await PlaceAsync(h.Cs, merged)).OsmName);
+        Assert.Equal(2, h.Nominatim.Calls);
+        Assert.Equal(new PlaceCounts(2, 0, 0), await h.Api.Services.GetRequiredService<PlaceStore>().CountInUseAsync(Ct));
     }
 
     // --- When naming is off -----------------------------------------------------------------------------------------

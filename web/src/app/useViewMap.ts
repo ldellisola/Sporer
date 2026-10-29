@@ -1,13 +1,15 @@
 import { useCallback, useMemo, useState } from "react";
 import { shownOf, useDay, useHeat, usePlace, useRange, useTrip, useTrips } from "../api/queries";
-import type { DayResponse, PlaceResponse, RangeResponse, TripResponse, TripsResponse } from "../api/types";
+import type { DayPointsResponse, DayResponse, PlaceResponse, RangeResponse, TripResponse, TripsResponse } from "../api/types";
 import {
   dayGeoJson,
+  editPointsGeoJson,
   heatGeoJson,
   placeGeoJson,
   rangeGeoJson,
   tripGeoJson,
   tripsGeoJson,
+  type EditPointCollection,
   type FitFeatures,
   type HeatCollection,
 } from "../map/layers";
@@ -214,7 +216,23 @@ function viewOf(route: Route, views: { day: Drawn; period: Drawn; place: Drawn; 
       return { drawn: views.trips, period: null, offered: false };
     case "trip":
       return { drawn: views.trip.drawn, period: views.trip.period, offered: !views.trip.gone };
+    case "settings":
+      return { drawn: NOTHING, period: null, offered: false }; // only where there is no view behind it to keep (see `useMapRoute`)
   }
+}
+
+/**
+ * The route whose map is on show. It is the route itself, except for the settings, which have no map of their own: they leave the one that
+ * was on show as it was, which is the map of the last route before them (a day, a place, the trips...). It stays as it is drawn, and its
+ * data goes on being asked for as the view it belongs to asks for it, so that it is no flicker to open the settings over the map and
+ * come back: nothing is cleared, nothing is sent to the map, and the map is not brought anywhere (the fit below is for the same route
+ * all along, and what the owner did to the map stays). Settings that were opened as a page have none before them, and draw nothing.
+ */
+function useMapRoute(route: Route): Route {
+  const [last, setLast] = useState(route);
+  // Adjusting state while rendering, as React documents it: this render is thrown away and made again with `last` set.
+  if (route.view !== "settings" && route !== last) setLast(route);
+  return route.view === "settings" ? last : route;
 }
 
 /**
@@ -238,6 +256,16 @@ function useHeatMap(period: Period | null, offered: boolean, on: boolean, ready:
   };
 }
 
+/**
+ * The raw points of edit mode as the map draws them: one feature for each, with its index as its id, made once for the points that there are (some forty
+ * thousand on a dense day, which are not made again when the day is refetched, nor sent to the map again). Only for the day that edit mode is on: the
+ * points of another day, and any view that is not a day, have none.
+ */
+function useEditPointsCollection(route: Route, points: DayPointsResponse | undefined): EditPointCollection | undefined {
+  const drawn = points !== undefined && route.view === "day" && points.date === route.date ? points : undefined;
+  return useMemo(() => (drawn === undefined ? undefined : editPointsGeoJson(drawn.points)), [drawn]);
+}
+
 /** Where the fit stands: for which route, whether it has been made, and what the map was last brought to. */
 interface Fit {
   key: string;
@@ -255,16 +283,24 @@ interface Fit {
  * back to, or come back to from another view) is fitted again. It is fitted in the render that has its data, so one that was
  * prefetched needs no wait. The panel asks for the map to be moved to a row through `onFocus`, and that is a new array each time,
  * which moves it again. The route that is left takes what was asked for with it. What Recenter brings back is `home`, all of what is
- * drawn.
+ * drawn. The settings have no map of their own and leave the one before them as it is (see `useMapRoute`).
+ *
+ * `points` are the raw points of the day while the owner is editing them (see `useEditPoints`): they are drawn over the routes of that day, as dots, and
+ * are no part of what the map is brought to.
  */
-export function useViewMap(route: Route, heatOn: boolean): ViewMap {
+export function useViewMap(route: Route, heatOn: boolean, points?: DayPointsResponse): ViewMap {
+  const mapRoute = useMapRoute(route);
   // Every kind of view is asked for on every route, and each one asks for nothing on a route that is not its own.
-  const views = { day: useDayMap(route), period: usePeriodMap(route), place: usePlaceMap(route), trips: useTripsMap(route), trip: useTripMap(route) };
-  const { drawn, period, offered } = viewOf(route, views);
+  const views = { day: useDayMap(mapRoute), period: usePeriodMap(mapRoute), place: usePlaceMap(mapRoute), trips: useTripsMap(mapRoute), trip: useTripMap(mapRoute) };
+  const { drawn, period, offered } = viewOf(mapRoute, views);
   const { data: routes, features, ready } = drawn;
   const { heat, state } = useHeatMap(period, offered, heatOn, ready);
-  const data = useMemo(() => (heat === undefined ? routes : { ...routes, heat }), [routes, heat]);
-  const key = formatRoute(route);
+  const editPoints = useEditPointsCollection(mapRoute, points);
+  const data = useMemo(
+    () => (heat === undefined && editPoints === undefined ? routes : { ...routes, ...(heat === undefined ? {} : { heat }), ...(editPoints === undefined ? {} : { editPoints }) }),
+    [routes, heat, editPoints],
+  );
+  const key = formatRoute(mapRoute);
   const [fit, setFit] = useState<Fit>({ key, fitted: false, to: null });
 
   // Adjusting state while rendering, as React documents it: this render is thrown away and made again with `fit` set.

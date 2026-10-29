@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./base";
 import { mockApi } from "./mockApi";
+import { sheetAtRest } from "./sheet";
 import { fixTime } from "./today";
 
 // These tests are of the harness itself (base.ts and mockApi.ts): what it lets through, and what it still reports. A test
@@ -81,6 +82,84 @@ test("unmocked_api_call_is_still_reported", async ({ page, guard }) => {
   expect(found.externalRequests).toEqual([]);
 });
 
+test("write_is_answered_by_the_override_of_its_method_and_recorded_with_what_it_said_it_sent", async ({ page, guard }) => {
+  const api = await mockApi(page, {
+    "POST status/retry": { retried: 2 },
+    "PUT trips/*": (request) => ({ json: { seen: request.method() } }),
+    "DELETE homes/3": () => ({ status: 204 }),
+  });
+  await page.goto(BLANK);
+
+  const answers = await page.evaluate(async () => {
+    const json = { "Content-Type": "application/json" };
+    const post = await fetch("/api/status/retry", { method: "POST", headers: json, body: "{}" });
+    const put = await fetch("/api/trips/2026-09-12", { method: "PUT", headers: json, body: JSON.stringify({ name: "Lisbon" }) });
+    const del = await fetch("/api/homes/3", { method: "DELETE", headers: json });
+    return { post: [post.status, await post.json()], put: [put.status, await put.json()], del: [del.status, await del.text()] };
+  });
+
+  expect(answers).toEqual({ post: [200, { retried: 2 }], put: [200, { seen: "PUT" }], del: [204, ""] });
+  expect(api.writes).toEqual([
+    { method: "POST", path: "/api/status/retry", contentType: "application/json", body: {} },
+    { method: "PUT", path: "/api/trips/2026-09-12", contentType: "application/json", body: { name: "Lisbon" } },
+    { method: "DELETE", path: "/api/homes/3", contentType: "application/json", body: null },
+  ]);
+  expect(guard.take()).toEqual({ consoleErrors: [], externalRequests: [], unmockedApiRequests: [] });
+});
+
+test("read_is_answered_by_an_override_written_with_its_method_too_and_the_bare_path_wins", async ({ page, guard }) => {
+  await mockApi(page, {
+    "GET status": { from: "GET status" },
+    "GET places/*": { from: "GET places/*" },
+    "places/2": { from: "bare places/2" },
+  });
+  await page.goto(BLANK);
+
+  const answers = await page.evaluate(async () => {
+    const read = async (path: string) => (await (await fetch(path)).json()) as unknown;
+    return [await read("/api/status"), await read("/api/places/3"), await read("/api/places/2")];
+  });
+
+  expect(answers).toEqual([{ from: "GET status" }, { from: "GET places/*" }, { from: "bare places/2" }]);
+  expect(guard.take()).toEqual({ consoleErrors: [], externalRequests: [], unmockedApiRequests: [] });
+});
+
+test("read_override_with_the_exact_path_wins_over_a_wildcard_in_either_spelling", async ({ page, guard }) => {
+  await mockApi(page, {
+    "places/*": { from: "places/*" },
+    "GET places/*": { from: "GET places/*" },
+    "GET places/2": { from: "GET places/2" }, // exact, though a bare wildcard is there
+    "places/3": { from: "places/3" },
+    "GET day/*": { from: "GET day/*" },
+    "day/2026-10-22": { from: "day/2026-10-22" }, // exact bare, over the wildcard that has the method
+  });
+  await page.goto(BLANK);
+
+  const answers = await page.evaluate(async () => {
+    const read = async (path: string) => (await (await fetch(path)).json()) as unknown;
+    return [await read("/api/places/2"), await read("/api/places/3"), await read("/api/places/4"), await read("/api/day/2026-10-22"), await read("/api/day/2026-10-23")];
+  });
+
+  expect(answers).toEqual([
+    { from: "GET places/2" },
+    { from: "places/3" },
+    { from: "places/*" }, // both are wildcards: the bare one wins
+    { from: "day/2026-10-22" },
+    { from: "GET day/*" },
+  ]);
+  expect(guard.take()).toEqual({ consoleErrors: [], externalRequests: [], unmockedApiRequests: [] });
+});
+
+test("write_with_no_override_of_its_method_is_reported_even_where_a_read_of_the_path_is_mocked", async ({ page, guard }) => {
+  const api = await mockApi(page, { "status/retry": { retried: 9 } }); // a GET override: it answers no POST
+  await page.goto(BLANK);
+
+  await untilConsoleError(page, () => page.evaluate(() => fetch("/api/status/retry", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })));
+
+  expect(guard.take().unmockedApiRequests).toEqual(["POST /api/status/retry"]);
+  expect(api.writes).toHaveLength(1); // and it was recorded all the same
+});
+
 test("api_call_in_a_spec_without_mockApi_is_refused_and_reported", async ({ page, guard }) => {
   // No mockApi here: whatever listens on the API's port on this machine must not be reached.
   await page.goto(BLANK);
@@ -142,4 +221,54 @@ test("fixTime_fixes_the_date_of_the_page_and_leaves_its_timers_and_frames_alone"
   expect(seen.isDate).toBe(true);
   expect(seen.elapsed).toBeGreaterThanOrEqual(45); // the timers run on the browser's own time, and the date stood still all the while
   expect(seen.native).toBe(true);
+});
+
+// sheetAtRest (sheet.ts) is a helper of the specs, and its fault was a race that three full runs of the suite did not show (P3-R34b): after a goBack() the
+// view that comes back renders a moment later, and the sheet moves only then, so a look at once finds nothing moving. This puts the late render on a page of
+// its own, so that it is the same every time: the row comes 400 ms after the call, as a render that is slow would bring it, and the move of the sheet two
+// frames after the first look that the helper takes at the sheet once the row is there, which is what a view that renders in one commit and starts its
+// transition in the next gives (the move is tied to the look and not to the clock: a round trip of the test's own takes longer than two frames, so a move
+// started two frames after the row was already running when a helper that waits for the row first looked). A helper that waits for the row and then
+// looks for a move once is past it before the move begins, and returns; the three frames with nothing moving are what catch it.
+test("sheet_at_rest_given_the_content_of_a_restored_view_waits_for_it_and_for_the_move_it_starts", async ({ page }) => {
+  await page.goto(BLANK);
+  const wide = page.viewportSize()!.width >= 900; // the helper looks for the sheet as the layout names it (a page with no viewport tag is 980 wide on a phone)
+  await page.evaluate((wide) => {
+    const sheet = document.createElement("div");
+    sheet.setAttribute("role", wide ? "complementary" : "region");
+    sheet.setAttribute("aria-label", "Details");
+    document.body.append(sheet);
+    const state = window as unknown as { rendered: boolean; moved: boolean };
+    state.rendered = false;
+    state.moved = false;
+    let begun = false;
+    const look = sheet.getAnimations.bind(sheet);
+    sheet.getAnimations = (...options) => {
+      const found = look(...options);
+      if (state.rendered && !begun) {
+        begun = true;
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            // The move that the render starts: 300 ms, a little longer than the sheet's own, so that it is plain when it is not waited for.
+            const move = sheet.animate([{ transform: "translateY(200px)" }, { transform: "translateY(0)" }], { duration: 300 });
+            void move.finished.then(() => (state.moved = true));
+          }),
+        );
+      }
+      return found; // what was there at the look: nothing, the first time
+    };
+    setTimeout(() => {
+      const row = document.createElement("button");
+      row.textContent = "Open Thu 22 Oct";
+      sheet.append(row);
+      state.rendered = true;
+    }, 400);
+  }, wide);
+
+  await sheetAtRest(page, page.getByRole("button", { name: "Open Thu 22 Oct" }));
+
+  // It came back after the row was there and the sheet had done moving: the click that follows is at the row's place.
+  expect(await page.evaluate(() => (window as unknown as { rendered: boolean; moved: boolean }).rendered)).toBe(true);
+  expect(await page.evaluate(() => (window as unknown as { rendered: boolean; moved: boolean }).moved)).toBe(true);
+  await expect(page.getByRole("button", { name: "Open Thu 22 Oct" })).toBeVisible();
 });

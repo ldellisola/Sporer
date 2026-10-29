@@ -11,12 +11,17 @@ namespace Sporer.Api.Features.Trips;
 /// <summary>
 /// A stored trip with what a list of trips is drawn from. <paramref name="Nights"/> are its nights with a known position, in
 /// date order, each with the city and country of its surviving place (see <see cref="TripStore.ListAsync"/>);
-/// <paramref name="HomeAtStart"/> and <paramref name="HomeAtEnd"/> are the home in effect on its first and on its last night,
-/// null where no home period covers the night. The trip's own fields are those the detector found, and its id is its first
-/// night.
+/// <paramref name="HomeAtStart"/> and <paramref name="HomeAtEnd"/> are the home in effect on its first night and on the night after its last,
+/// null where no home period covers the night: the home it left from and the one it came back to, which is another when the person moved
+/// house while away (a new home is in effect from the night after the trip, as <see cref="TripDetector"/> measures the return). The
+/// trip's own fields are those the detector found, with the dates of the owner's edit where it has given it any, and its id is its
+/// first night. <paramref name="Name"/> is the owner's name for it, null for the automatic one, <paramref name="Edited"/> says that
+/// the trip has an edit, and <paramref name="StartEdited"/> and <paramref name="EndEdited"/> that the edit has a start date, and an end date (see
+/// <see cref="TripStore.ListAsync"/>).
 /// </summary>
 public sealed record StoredTrip(
-    DetectedTrip Trip, IReadOnlyList<TripNight> Nights, GeoPoint? HomeAtStart, GeoPoint? HomeAtEnd);
+    DetectedTrip Trip, IReadOnlyList<TripNight> Nights, GeoPoint? HomeAtStart, GeoPoint? HomeAtEnd, string? Name = null, bool Edited = false,
+    bool StartEdited = false, bool EndEdited = false);
 
 /// <summary>
 /// The home in effect on a date: the place that survives merges (the id the day and range views give a stay at it) and that
@@ -49,15 +54,17 @@ public sealed record TripMove(
 /// nights of the trip that have a position, as in <see cref="StoredTrip"/>. <paramref name="SleepPlaces"/> says, for the nights
 /// from the one before the trip's first day to the one of its last, the surviving place each was spent at (a night that has
 /// none is not in it). <paramref name="Stays"/> and <paramref name="Moves"/> are those that overlap the span, earliest first.
+/// <paramref name="Name"/>, <paramref name="Edited"/>, <paramref name="StartEdited"/> and <paramref name="EndEdited"/> are as in <see cref="StoredTrip"/>.
 /// </summary>
 public sealed record TripDetail(
     DetectedTrip Trip, DateTime SpanEndUtc, IReadOnlyList<TripNight> Nights, IReadOnlyDictionary<DateOnly, long> SleepPlaces,
-    IReadOnlyList<TripStay> Stays, IReadOnlyList<TripMove> Moves);
+    IReadOnlyList<TripStay> Stays, IReadOnlyList<TripMove> Moves, string? Name = null, bool Edited = false,
+    bool StartEdited = false, bool EndEdited = false);
 
 /// <summary>
 /// The homes and trips (<c>home_period</c>, <c>trip</c>) and the window of the timeline that has been rebuilt since they were
-/// last worked out (<c>night_refresh</c>). Everything in them is derived, and is rewritten as a whole from the nights by
-/// <see cref="TripRefresher"/>; this class writes them and reads them back.
+/// last worked out (<c>night_refresh</c>). Everything in them is derived, and is rewritten as a whole from the nights, and from the
+/// owner's edits of the trips (<see cref="TripEditStore"/>), by <see cref="TripRefresher"/>; this class writes them and reads them back.
 /// </summary>
 public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore)
 {
@@ -105,8 +112,10 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     /// <summary>
     /// Replaces every detected home period and every trip by <paramref name="homes"/> and <paramref name="trips"/>. The home
     /// periods the owner set (<c>user</c>) are not touched. One transaction: readers see the old rows or the new ones, and a
-    /// failure leaves the old ones. Internal: the app writes them only together with the nights (<see cref="ReplaceAllAsync"/>);
-    /// this is for the tests, which pin what the homes and trips tables hold without building nights first.
+    /// failure leaves the old ones. Internal: the app writes them in the transaction of <see cref="TripRefresher"/>, with the nights
+    /// (<see cref="ReplaceAllAsync(NpgsqlConnection, NpgsqlTransaction, DateOnly, DateOnly, IReadOnlyList{ValueTuple{Night, string}}, IReadOnlyList{HomePeriod}, IReadOnlyList{DetectedTrip}, CancellationToken)"/>)
+    /// or without them (<see cref="ReplaceDetectedAsync(NpgsqlConnection, NpgsqlTransaction, IReadOnlyList{HomePeriod}, IReadOnlyList{DetectedTrip}, CancellationToken)"/>);
+    /// this is for the tests, which pin what the homes and trips tables hold without a refresh.
     /// </summary>
     internal async Task ReplaceDetectedAsync(
         IReadOnlyList<HomePeriod> homes, IReadOnlyList<DetectedTrip> trips, CancellationToken ct = default)
@@ -114,7 +123,7 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
-        await ReplaceDetectedAsync(connection, transaction, homes, trips, ct);
+        await ReplaceDetectedAsync(connection, transaction, homes, [.. trips.Select(EditedTrip.Unedited)], ct);
 
         await transaction.CommitAsync(ct);
     }
@@ -124,25 +133,44 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     /// <see cref="NightStore"/> does) and every detected home period and trip by <paramref name="homes"/> and
     /// <paramref name="trips"/>, all in one transaction. The homes and trips are worked out from the nights, so a reader must
     /// never find new nights with the old trips, which two transactions would allow for as long as it took the second to run
-    /// or, after a failure between them, for good: a failure leaves all of it as it was. This is the only way the app writes
-    /// them.
+    /// or, after a failure between them, for good: a failure leaves all of it as it was. The app writes them through the overload that
+    /// takes the caller's transaction (<see cref="TripRefresher"/>, whose transaction holds the lock that serializes whatever writes them);
+    /// this one takes no lock, and is internal, for the tests, which pin what the tables hold without a refresh.
     /// </summary>
-    public async Task ReplaceAllAsync(
+    internal async Task ReplaceAllAsync(
         DateOnly from, DateOnly to, IReadOnlyList<(Night Night, string Source)> nights,
         IReadOnlyList<HomePeriod> homes, IReadOnlyList<DetectedTrip> trips, CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
-        await nightStore.ReplaceAsync(connection, transaction, from, to, nights, ct);
-        await ReplaceDetectedAsync(connection, transaction, homes, trips, ct);
+        await ReplaceAllAsync(connection, transaction, from, to, nights, homes, [.. trips.Select(EditedTrip.Unedited)], ct);
 
         await transaction.CommitAsync(ct);
     }
 
-    private static async Task ReplaceDetectedAsync(
+    /// <summary>
+    /// The same, in the caller's transaction, which commits it or not: it is how <see cref="TripRefresher"/> writes after it has taken
+    /// its lock, in the transaction that holds it.
+    /// </summary>
+    internal async Task ReplaceAllAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, DateOnly from, DateOnly to,
+        IReadOnlyList<(Night Night, string Source)> nights, IReadOnlyList<HomePeriod> homes, IReadOnlyList<EditedTrip> trips,
+        CancellationToken ct = default)
+    {
+        await nightStore.ReplaceAsync(connection, transaction, from, to, nights, ct);
+        await ReplaceDetectedAsync(connection, transaction, homes, trips, ct);
+    }
+
+    /// <summary>
+    /// The same as <see cref="ReplaceDetectedAsync(IReadOnlyList{HomePeriod}, IReadOnlyList{DetectedTrip}, CancellationToken)"/>, in the
+    /// caller's transaction: it is how the homes and trips are written without the nights (<see cref="ITripRefresher.RecomputeAsync"/>).
+    /// The trips are those detected with the owner's edits put on them (<see cref="TripEdits.Apply"/>): a trip is stored with the owner's
+    /// name (<c>name</c>), if it has one, and with the first night its edit is keyed by (<c>detected_id</c>) where that is not its own.
+    /// </summary>
+    internal static async Task ReplaceDetectedAsync(
         NpgsqlConnection connection, NpgsqlTransaction transaction,
-        IReadOnlyList<HomePeriod> homes, IReadOnlyList<DetectedTrip> trips, CancellationToken ct)
+        IReadOnlyList<HomePeriod> homes, IReadOnlyList<EditedTrip> trips, CancellationToken ct)
     {
         await connection.ExecuteAsync(new CommandDefinition(
             "delete from home_period where source = 'detected'; delete from trip;", transaction: transaction, cancellationToken: ct));
@@ -159,20 +187,22 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
         {
             await connection.ExecuteAsync(new CommandDefinition(
                 """
-                insert into trip (id, last_night, nights, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date)
-                values (@Id, @LastNight, @Nights, @StartUtc, @EndUtc, @StartZone, @EndZone, @LocalStartDate, @LocalEndDate)
+                insert into trip (id, last_night, nights, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date, name, detected_id)
+                values (@Id, @LastNight, @Nights, @StartUtc, @EndUtc, @StartZone, @EndZone, @LocalStartDate, @LocalEndDate, @Name, @DetectedId)
                 """,
-                trips.Select(t => new
+                trips.Select(e => new
                 {
-                    Id = t.FirstNight,
-                    t.LastNight,
-                    t.Nights,
-                    StartUtc = AsUtc(t.StartUtc),
-                    EndUtc = t.EndUtc is { } end ? AsUtc(end) : (DateTime?)null,
-                    t.StartZone,
-                    t.EndZone,
-                    t.LocalStartDate,
-                    t.LocalEndDate,
+                    Id = e.Trip.FirstNight,
+                    e.Trip.LastNight,
+                    e.Trip.Nights,
+                    StartUtc = AsUtc(e.Trip.StartUtc),
+                    EndUtc = e.Trip.EndUtc is { } end ? AsUtc(end) : (DateTime?)null,
+                    e.Trip.StartZone,
+                    e.Trip.EndZone,
+                    e.Trip.LocalStartDate,
+                    e.Trip.LocalEndDate,
+                    e.Name,
+                    DetectedId = e.DetectedId == e.Trip.FirstNight ? (DateOnly?)null : e.DetectedId,
                 }).ToList(),
                 transaction, cancellationToken: ct));
         }
@@ -183,7 +213,12 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
         """
         to_char(id, 'YYYY-MM-DD') as FirstNight, to_char(last_night, 'YYYY-MM-DD') as LastNight, nights as Nights,
         start_utc as StartUtc, end_utc as EndUtc, start_tz as StartZone, end_tz as EndZone,
-        to_char(local_start_date, 'YYYY-MM-DD') as LocalStartDate, to_char(local_end_date, 'YYYY-MM-DD') as LocalEndDate
+        to_char(local_start_date, 'YYYY-MM-DD') as LocalStartDate, to_char(local_end_date, 'YYYY-MM-DD') as LocalEndDate,
+        name as Name,
+        (name is not null or detected_id is not null
+         or exists (select 1 from trip_edit e where e.detected_id = coalesce(trip.detected_id, trip.id) and not e.deleted)) as Edited,
+        exists (select 1 from trip_edit e where e.detected_id = coalesce(trip.detected_id, trip.id) and not e.deleted and e.start_date is not null) as StartEdited,
+        exists (select 1 from trip_edit e where e.detected_id = coalesce(trip.detected_id, trip.id) and not e.deleted and e.end_date is not null) as EndEdited
         """;
 
     /// <summary>
@@ -203,6 +238,13 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     /// The home in effect on a night is the home period that covers it, resolved to its surviving place. Periods should not
     /// overlap; where they do, the one the owner set (<c>user</c>) wins over a detected one, and the one that began later wins
     /// over an earlier one.
+    /// </para>
+    /// <para>
+    /// <c>Name</c> is the owner's name for the trip (<c>trip.name</c>), null for the automatic one. A trip is <c>Edited</c> when it has an
+    /// edit: it has the owner's name, or the first night its edit is keyed by is not its own (<c>detected_id</c>), or a stored edit
+    /// is keyed by it (<c>trip_edit</c>). The last is the only thing that says that the dates were changed, because the trip row does not
+    /// keep the dates it was detected with: <c>StartEdited</c> and <c>EndEdited</c> are that edit having a start date, and an end date. The edit of a deleted trip is the
+    /// edit of no trip.
     /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<StoredTrip>> ListAsync(CancellationToken ct = default)
@@ -246,7 +288,9 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
                 var known = nightsOf[t.FirstNight]
                     .Select(n => new TripNight(ParseDate(n.Date), n.City, n.Country, new GeoPoint(n.Latitude, n.Longitude)));
 
-                return new StoredTrip(trip, [.. known], HomeOn(trip.FirstNight, homeList)?.Position, HomeOn(trip.LastNight, homeList)?.Position);
+                return new StoredTrip(
+                    trip, [.. known], HomeOn(trip.FirstNight, homeList)?.Position, HomeOn(trip.LastNight.AddDays(1), homeList)?.Position, t.Name, t.Edited,
+                    t.StartEdited, t.EndEdited);
             }),
         ];
     }
@@ -458,7 +502,11 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
                 .. segments.Where(s => s.Kind == "move").Select(s => new TripMove(
                     s.Id, s.Mode, ParseDate(s.LocalStartDate), ParseDate(s.LocalEndDate), s.DistanceM ?? 0,
                     RangeStore.ParseLine(s.GeometryCoarseJson))),
-            ]);
+            ],
+            row.Name,
+            row.Edited,
+            row.StartEdited,
+            row.EndEdited);
     }
 
     private static DetectedTrip ToTrip(TripRow row) => new(
@@ -500,6 +548,10 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
         public string EndZone { get; set; } = string.Empty;
         public string LocalStartDate { get; set; } = string.Empty;
         public string LocalEndDate { get; set; } = string.Empty;
+        public string? Name { get; set; }
+        public bool Edited { get; set; }
+        public bool StartEdited { get; set; }
+        public bool EndEdited { get; set; }
     }
 
     private sealed class TripNightRow

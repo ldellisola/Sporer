@@ -103,7 +103,7 @@ public class MigrationTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task Migration_0005_creates_the_trip_tables_and_leaves_locationLog_alone()
+    public async Task Migration_0005_creates_the_trip_tables_and_leaves_locationlog_alone()
     {
         // A database as the owner has it before any migration, with rows in it: the snapshot is taken from that table, as
         // Migrates_existing_database_keeping_rows does, and not from one that 0005 has already been through once.
@@ -165,13 +165,99 @@ public class MigrationTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task Migration_0006_creates_its_tables_and_leaves_locationlog_alone()
+    {
+        // A database as the owner has it before any migration, with rows in it, as the 0005 test starts.
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await Sql.ExecAsync(cs, OldCreateTableScript, ct: Ct);
+        await Sql.ExecAsync(cs, """
+            insert into locationlog (time, longitude, latitude, device, speed, altitude) values
+              ('2026-01-01T08:00:00Z', 10.10, 59.10, 'phone-a', 1.5, 11),
+              ('2026-02-03T09:00:00Z', 10.30, 59.30, 'phone-b', 0, 13)
+            """, ct: Ct);
+        var columnsBefore = await Columns(cs, "locationlog");
+        var indexesBefore = await Indexes(cs, "locationlog");
+        var rowsBefore = await Rows(cs);
+        Assert.Equal(2, rowsBefore.Count);
+
+        await using (var first = new ApiFactory(cs))
+            _ = first.Services;
+        var tripColumnsBefore = await Columns(cs, "trip");
+        Assert.Contains(("name", "text", "YES"), tripColumnsBefore);
+        Assert.Contains(("detected_id", "date", "YES"), tripColumnsBefore);
+
+        // Take 0006 back out, as it is on a database that has not seen it yet (a trip row from before it has no such columns), and let
+        // the app apply it to one that has data.
+        await Sql.ExecAsync(cs,
+            """
+            insert into trip (id, last_night, nights, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date)
+            values ('2026-01-05', '2026-01-06', 2, '2026-01-05T10:00:00Z', null, 'Europe/Oslo', 'Europe/Oslo', '2026-01-05', '2026-01-07');
+            drop table excluded_point, trip_edit, app_setting;
+            alter table trip drop column name, drop column detected_id;
+            """, ct: Ct);
+        Assert.Equal(1, await Sql.ScalarAsync<int>(cs, "delete from schemaversions where scriptname like '%0006_edits.sql' returning 1", ct: Ct));
+        await using var api = new ApiFactory(cs);
+        _ = api.Services;
+
+        Assert.Equal(
+            new[]
+            {
+                ("device", "text", "NO"), ("time", "timestamp with time zone", "NO"), ("batch_id", "uuid", "NO"),
+                ("excluded_at", "timestamp with time zone", "NO"),
+            },
+            await Columns(cs, "excluded_point"));
+        Assert.Equal(
+            new[]
+            {
+                ("detected_id", "date", "NO"), ("detected_last_night", "date", "NO"), ("name", "text", "YES"), ("start_date", "date", "YES"),
+                ("end_date", "date", "YES"), ("deleted", "boolean", "NO"), ("deleted_label", "text", "YES"),
+                ("updated_at", "timestamp with time zone", "NO"),
+            },
+            await Columns(cs, "trip_edit"));
+        Assert.Equal(
+            new[] { ("key", "text", "NO"), ("value", "jsonb", "NO"), ("updated_at", "timestamp with time zone", "NO") },
+            await Columns(cs, "app_setting"));
+        Assert.Equal(tripColumnsBefore, await Columns(cs, "trip")); // the two nullable columns, back at the end
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from trip where id = '2026-01-05' and name is null and detected_id is null", ct: Ct));
+        Assert.Contains("ix_excluded_point_batch", (await Indexes(cs, "excluded_point")).Select(i => i.Name));
+
+        // What the tables default to, and what keys them.
+        await Sql.ExecAsync(cs,
+            """
+            insert into excluded_point (device, time, batch_id) values ('phone-a', '2026-01-01T08:00:00Z', '3b1d8e0a-6f35-4c43-9e0c-2f6a7d1a9c11');
+            insert into trip_edit (detected_id, detected_last_night) values ('2026-01-05', '2026-01-06');
+            insert into app_setting (key, value) values ('tripMinDistanceKm', '80');
+            """, ct: Ct);
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from excluded_point where excluded_at is not null", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from trip_edit where deleted = false and name is null and start_date is null and end_date is null and deleted_label is null", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from app_setting where key = 'tripMinDistanceKm' and updated_at is not null", ct: Ct));
+        foreach (var duplicate in new[]
+        {
+            "insert into excluded_point (device, time, batch_id) values ('phone-a', '2026-01-01T08:00:00Z', '4c2e9f1b-7a46-4d54-8f1d-3a7b8e2bad22')",
+            "insert into trip_edit (detected_id, detected_last_night) values ('2026-01-05', '2026-01-07')",
+            "insert into app_setting (key, value) values ('tripMinDistanceKm', '90')",
+        })
+        {
+            var error = await Assert.ThrowsAsync<PostgresException>(() => Sql.ExecAsync(cs, duplicate, ct: Ct));
+            Assert.Equal(PostgresErrorCodes.UniqueViolation, error.SqlState);
+        }
+
+        Assert.Equal(
+            columnsBefore.Concat(new[] { ("horizontal_accuracy", "double precision", "YES"), ("motion", "ARRAY", "YES") }),
+            await Columns(cs, "locationlog")); // the two columns of 0002, and nothing from 0006
+        Assert.Equal(indexesBefore, await Indexes(cs, "locationlog"));
+        Assert.Equal(rowsBefore, await Rows(cs));
+        Assert.Empty(Warnings(api).Items);
+    }
+
+    [Fact]
     public async Task Second_startup_does_not_run_migrations_again()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using (var first = new ApiFactory(cs))
             _ = first.Services;
         var applied = await Sql.ScalarAsync<int>(cs, "select count(*) from schemaversions", ct: Ct);
-        Assert.Equal(5, applied);
+        Assert.Equal(6, applied);
 
         await using var second = new ApiFactory(cs);
         _ = second.Services;
@@ -203,11 +289,15 @@ public class MigrationTests(DatabaseFixture db)
             insert into trip (id, last_night, nights, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date)
             values ('2026-01-05', '2026-01-06', 2, '2026-01-05T10:00:00Z', null, 'Europe/Oslo', 'Europe/Oslo', '2026-01-05', '2026-01-07');
             update night_refresh set from_utc = '2026-01-01T00:00:00Z', to_utc = '2026-01-02T00:00:00Z';
+            update trip set name = 'My trip', detected_id = '2026-01-05';
+            insert into excluded_point (device, time, batch_id) values ('phone', '2026-01-01T08:00:00Z', '3b1d8e0a-6f35-4c43-9e0c-2f6a7d1a9c11');
+            insert into trip_edit (detected_id, detected_last_night, name) values ('2026-01-05', '2026-01-06', 'My trip');
+            insert into app_setting (key, value) values ('tripMinDistanceKm', '80'::jsonb);
             """, new { placeId }, Ct);
         var tables = new[]
         {
             "locationlog", "dirty_range", "place", "segment", "geocode_cache", "processing_state",
-            "night", "home_period", "trip", "night_refresh",
+            "night", "home_period", "trip", "night_refresh", "excluded_point", "trip_edit", "app_setting",
         };
         var columns = new Dictionary<string, IReadOnlyList<(string, string, string)>>();
         var indexes = new Dictionary<string, IReadOnlyList<(string, string)>>();
@@ -221,7 +311,7 @@ public class MigrationTests(DatabaseFixture db)
         await using var second = new ApiFactory(cs);
         _ = second.Services; // does not throw
 
-        Assert.Equal(5, await Sql.ScalarAsync<int>(cs, "select count(*) from schemaversions", ct: Ct));
+        Assert.Equal(6, await Sql.ScalarAsync<int>(cs, "select count(*) from schemaversions", ct: Ct));
         foreach (var table in tables)
         {
             Assert.Equal(columns[table], await Columns(cs, table));
@@ -233,7 +323,10 @@ public class MigrationTests(DatabaseFixture db)
         Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from dirty_range", ct: Ct));
         Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from night", ct: Ct));
         Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from home_period", ct: Ct));
-        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from trip", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from trip where name = 'My trip' and detected_id = '2026-01-05'", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from excluded_point", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from trip_edit where name = 'My trip'", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from app_setting where value = '80'::jsonb", ct: Ct));
         var refresh = await Sql.SingleAsync(cs, "select count(*) over () as n, from_utc, to_utc from night_refresh", ct: Ct);
         Assert.Equal((1L, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc)),
             ((long)refresh.n, ((DateTime)refresh.from_utc).ToUniversalTime(), ((DateTime)refresh.to_utc).ToUniversalTime())); // still the one row, not reset
@@ -335,29 +428,6 @@ public class MigrationTests(DatabaseFixture db)
 
         Assert.ThrowsAny<Exception>(() => api.Services); // the app does not start
 
-        Assert.Contains(log.Messages, m => m.Contains("retention", StringComparison.OrdinalIgnoreCase));
-    }
-
-    private sealed class CapturingLoggerProvider : ILoggerProvider
-    {
-        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _messages = new();
-
-        public IEnumerable<string> Messages => _messages;
-
-        public ILogger CreateLogger(string categoryName) => new Capture(_messages);
-
-        public void Dispose()
-        {
-        }
-
-        private sealed class Capture(System.Collections.Concurrent.ConcurrentQueue<string> messages) : ILogger
-        {
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-                => messages.Enqueue(formatter(state, exception));
-        }
+        Assert.Contains(log.Entries, e => e.Message.Contains("retention", StringComparison.OrdinalIgnoreCase));
     }
 }

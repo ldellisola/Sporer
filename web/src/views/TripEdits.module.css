@@ -1,0 +1,6 @@
+/* What is the trip's own in the form of its edit (the dates, and what is said of them, are Forms.module.css's: the form of a home has them too). */
+
+/* The button that goes back to the dates that detection found: a row of its own under the dates, which are not what it is about. */
+.detected {
+  margin: 0 0 8px;
+}

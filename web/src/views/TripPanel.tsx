@@ -1,13 +1,16 @@
-import { useId } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { shownOf, useTrip } from "../api/queries";
 import type { TripDay, TripResponse } from "../api/types";
+import { takeHeadingFocus } from "../app/headingFocus";
 import { navigate } from "../app/router";
 import { shortDayLabel } from "../time/dates";
 import { formatCount, formatDistance } from "../time/format";
 import { Chip, Chips, ONGOING } from "./Chips";
+import { EditActions, focusLost } from "./editForms";
 import rows from "./Rows.module.css";
 import { Empty, ErrorState, Loading } from "./States";
 import styles from "./TripPanel.module.css";
+import { DeleteTripConfirm, EditTripForm } from "./TripEdits";
 import { useKeptData } from "./useKeptData";
 
 export interface TripPanelProps {
@@ -54,12 +57,40 @@ function DayRow({ day }: { day: TripDay }) {
   );
 }
 
-/** What is on screen of a trip that is there: its figures as chips ("Ongoing" among them), and its days one by one. */
+/** What an edit is doing to the trip: nothing, or the one form that is open (the forms are in the panel, and only one is open at a time). */
+type Editing = "none" | "edit" | "delete";
+
+/** What is on screen of a trip that is there: what can be done to it, its figures as chips ("Ongoing" among them), and its days one by one. */
 function Trip({ trip }: { trip: TripResponse }) {
   const daysHeading = useId();
   const { stats } = trip;
+  // An edit that took the owner to this trip (a new start date is a new address) asks for the focus to be on the heading of the panel: the form that had it is
+  // gone. A trip that has no days has no heading, and the note that says so has it.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const noDays = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (takeHeadingFocus()) (heading.current ?? noDays.current)?.focus();
+  }, []);
+  const [editing, setEditing] = useState<Editing>("none");
+  // The focus was in the form that is closed, which is gone: it goes back to the button that opened it.
+  const [openedBy, setOpenedBy] = useState<"edit" | "delete">();
+  const close = () => {
+    if (editing !== "none") setOpenedBy(editing);
+    setEditing("none");
+  };
   return (
     <>
+      {editing === "none" && (
+        <EditActions
+          focus={openedBy}
+          actions={[
+            { key: "edit", label: "Edit", onClick: () => setEditing("edit") },
+            { key: "delete", label: "Delete trip", onClick: () => setEditing("delete") },
+          ]}
+        />
+      )}
+      {editing === "edit" && <EditTripForm trip={trip} onClose={close} />}
+      {editing === "delete" && <DeleteTripConfirm trip={trip} onClose={close} />}
       <Chips>
         {trip.ongoing && <Chip>{ONGOING}</Chip>}
         <Chip>{formatCount(stats.flights, "flight")}</Chip>
@@ -68,10 +99,10 @@ function Trip({ trip }: { trip: TripResponse }) {
         <Chip>{`${formatDistance(stats.groundDistanceMeters)} on the ground`}</Chip>
       </Chips>
       {trip.days.length === 0 ? (
-        <Empty message="No days to show for this trip" />
+        <Empty ref={noDays} tabIndex={-1} message="No days to show for this trip" />
       ) : (
         <div className={rows.section}>
-          <h2 id={daysHeading} className={rows.heading}>
+          <h2 ref={heading} tabIndex={-1} id={daysHeading} className={`${rows.heading} ${styles.landing}`}>
             Day by day
           </h2>
           <ul className={rows.list} aria-labelledby={daysHeading}>
@@ -86,9 +117,9 @@ function Trip({ trip }: { trip: TripResponse }) {
 }
 
 /**
- * The panel of a trip: its figures as chips (flights, cities, places, and the distance on the ground, which a flight is not part of, and "Ongoing"
- * while it has not come home) and its days, one row for each, which open the Day view. The trip is the one that the map draws, and the bar names,
- * from the same query (one request).
+ * The panel of a trip: what the owner can do to it (name it, give it other dates, delete it: see `TripEdits`), its figures as chips (flights, cities,
+ * places, and the distance on the ground, which a flight is not part of, and "Ongoing" while it has not come home) and its days, one row for each, which
+ * open the Day view. The trip is the one that the map draws, and the bar names, from the same query (one request).
  *
  * A trip that is no longer there (a 404) says so, with the way out to the list of trips and no Retry (asking again cannot help), and nothing of
  * what it showed before. A failure of another kind is an error with its Retry, and the trip stays under it if it was on screen
@@ -99,18 +130,26 @@ export function TripPanel({ id }: TripPanelProps) {
   const { gone, shown: found } = shownOf(trip);
   const kept = useKeptData(found, !gone);
   const shown = kept?.id === id ? kept : undefined;
+  // A trip that turns gone under a form or a question that has the focus (a 404 to a write, which has the trip asked for again): the focus was in what is
+  // gone with it, and goes to the way out. A trip that was never there (a page opened on it) is a page like any other, and takes nothing.
+  const toTrips = useRef<HTMLButtonElement>(null);
+  const wasShown = useRef(false);
+  useEffect(() => {
+    if (gone && wasShown.current && focusLost()) toTrips.current?.focus();
+    wasShown.current = shown !== undefined;
+  }, [gone, shown]);
   return (
     <>
       {gone && (
         <>
           <Empty message="This trip no longer exists" />
-          <button type="button" className={`${rows.tap} ${styles.toTrips}`} onClick={() => navigate({ view: "trips" })}>
+          <button ref={toTrips} type="button" className={`${rows.tap} ${styles.toTrips}`} onClick={() => navigate({ view: "trips" })}>
             See all trips
           </button>
         </>
       )}
       {!gone && trip.isError && <ErrorState error={trip.error} onRetry={() => void trip.refetch()} />}
-      {shown !== undefined ? <Trip trip={shown} /> : !gone && !trip.isError && <Loading />}
+      {shown !== undefined ? <Trip key={shown.id} trip={shown} /> : !gone && !trip.isError && <Loading />}
     </>
   );
 }

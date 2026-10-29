@@ -838,6 +838,40 @@ public class DayEndpointTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task Day_marks_a_near_place_as_home_by_the_nights_of_the_period_the_owner_set()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var ownersAt = Geo.Offset(Spots.Home, 7000, 0);
+        var detected = await InsertPlaceAsync(cs, userName: "Home", city: "Oslo", country: "Norway");
+        var owners = await InsertPlaceAsync(cs, userName: "Flat", city: "Oslo", country: "Norway", lat: ownersAt.Latitude, lon: ownersAt.Longitude);
+        // Two more places of the owner's flat, as GPS drift makes them: one was where a night was spent in August, the other in July, before the
+        // owner's period.
+        var fragment = await InsertPlaceAsync(cs, osmName: "Storgata 5", city: "Oslo", country: "Norway",
+            lat: Geo.Offset(ownersAt, 0, 120).Latitude, lon: Geo.Offset(ownersAt, 0, 120).Longitude);
+        var earlier = await InsertPlaceAsync(cs, osmName: "Storgata 7", city: "Oslo", country: "Norway",
+            lat: Geo.Offset(ownersAt, 150, 0).Latitude, lon: Geo.Offset(ownersAt, 150, 0).Longitude);
+        await InsertHomePeriodAsync(cs, detected, D(1, 1), null);
+        await InsertHomePeriodAsync(cs, owners, D(8, 1), D(8, 31), "user"); // wins over the detected one on its dates
+        await InsertNightAsync(cs, D(7, 10), earlier);
+        await InsertNightAsync(cs, D(8, 10), fragment);
+        foreach (var (day, hour, place) in new[]
+        {
+            (D(8, 15), 10, owners), (D(8, 15), 12, fragment), (D(8, 15), 14, earlier), (D(9, 15), 10, owners), (D(9, 15), 12, detected),
+        })
+            await InsertSegmentAsync(cs, "stay", Utc(day.Month, day.Day, hour), Utc(day.Month, day.Day, hour + 1), day, day, placeId: place);
+
+        using var august = await GetDayAsync(client, "2026-08-15");
+        using var september = await GetDayAsync(client, "2026-09-15");
+
+        // In August the owner's flat is home, and so is the fragment whose night was in the period; the other one's night was before it.
+        Assert.Equal([(owners, true), (fragment, true), (earlier, false)], HomesOf(august));
+        // In September the detected home is: the owner's flat is a place like another then.
+        Assert.Equal([(owners, false), (detected, true)], HomesOf(september));
+    }
+
+    [Fact]
     public async Task Day_takes_the_night_places_of_a_merged_fragment_as_the_place_it_was_merged_into()
     {
         var cs = await db.CreateDatabaseAsync(Ct);

@@ -32,6 +32,17 @@ describe("States", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
+  test("ErrorState_says_what_failed_when_it_is_not_a_load_and_the_failure_is_named_by_its_method", () => {
+    // A write that failed (a button that was pressed) is not "Couldn't load": the control says what it could not do.
+    const onRetry = vi.fn();
+    render(<ErrorState message="Couldn't retry" error={new ApiError(500, "/api/status/retry", "POST")} onRetry={onRetry} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't retry — Retry");
+    expect(screen.getByText("POST /api/status/retry failed with status 500")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
   test("ErrorState_copes_with_an_error_that_is_not_an_Error", () => {
     render(<ErrorState error="boom" onRetry={() => undefined} />);
 

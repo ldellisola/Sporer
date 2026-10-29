@@ -1,0 +1,45 @@
+/* What is the place's own in the forms of its edits: the two names to keep one of, and the places that were merged in (the buttons, the fields and the forms are Forms.module.css's). */
+
+/* The two names to keep one of, one to a line. */
+.choices {
+  min-width: 0;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.choice input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+/* A place that was merged in: its name, and the button at the right. */
+.merged {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+}
+
+.mergedName {
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.merged button {
+  flex: none;
+}

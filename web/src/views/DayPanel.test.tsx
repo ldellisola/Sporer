@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { DayResponse, DaySegment, LonLat, MoveSegment, PlaceRef, StaySegment } from "../api/types";
 import { dayGeoJson, placePoint } from "../map/layers";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
+import type { PointEditing } from "../app/useEditPoints";
+import { pointEditing } from "../test/pointEditing";
 import { DayPanel } from "./DayPanel";
 
 // The day of the fixture: from Oslo (on UTC+2 that day) to New York (UTC-4), the way the API would send it.
@@ -592,5 +594,150 @@ describe("DayPanel taps", () => {
 
     expect(within(rows()[1]!).queryByRole("button")).not.toBeInTheDocument(); // one point is not a line, and the map draws none
     expect(parts(rows()[1]!)[0]).toBe("Walk · 1.0 km");
+  });
+});
+
+describe("DayPanel edit points", () => {
+  /** The panel of a day over an edit mode that a test controls: `rerender` changes what the shell says of it. */
+  function mountEditing(date: string, edit: PointEditing) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const ui = (shown: PointEditing | undefined, shownDate = date) => (
+      <QueryClientProvider client={client}>
+        <DayPanel date={shownDate} onFocus={vi.fn()} edit={shown} />
+      </QueryClientProvider>
+    );
+    const view = render(ui(edit));
+    return { client, rerender: (next: PointEditing | undefined, shownDate = date) => view.rerender(ui(next, shownDate)) };
+  }
+  const editButton = () => screen.getByRole("button", { name: "Edit points" });
+  const bar = () => screen.getByRole("group", { name: "Edit points" });
+
+  test("DayPanel_has_an_edit_points_button_in_its_header_on_a_day_with_data_that_starts_edit_mode", async () => {
+    stubApi({ "2026-10-22": FLIGHT_DAY });
+    const edit = pointEditing({ active: false });
+
+    mountEditing("2026-10-22", edit);
+
+    await screen.findByText("5 places");
+    expect(editButton()).toHaveTextContent("Edit points");
+    expect(editButton().parentElement).toContainElement(screen.getByText("5 places")); // in the header, with the chips
+    expect(screen.queryByRole("group", { name: "Edit points" })).not.toBeInTheDocument();
+    fireEvent.click(editButton());
+    expect(edit.start).toHaveBeenCalledTimes(1);
+  });
+
+  test("DayPanel_has_no_edit_points_button_for_a_day_with_no_data_while_it_loads_or_where_it_cannot_be_edited", async () => {
+    stubApi({ "2026-10-22": day([]), "2026-10-23": FLIGHT_DAY });
+    const { rerender } = mountEditing("2026-10-22", pointEditing({ active: false }));
+
+    expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument(); // loading
+    await screen.findByText("No data for this day");
+    expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument(); // nothing to edit
+
+    rerender(undefined, "2026-10-23"); // a panel that is given no edit mode (a day with nobody to edit it)
+    await screen.findByText("5 places");
+    expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument();
+  });
+
+  test("DayPanel_does_not_offer_edit_points_for_the_day_that_was_on_screen_while_the_one_asked_for_loads", async () => {
+    let release: (day: DayResponse) => void = () => undefined;
+    stubApi({ "2026-10-22": FLIGHT_DAY, "2026-10-23": () => new Promise<Response>((resolve) => (release = (answer) => resolve(Response.json(answer)))) });
+    const { rerender } = mountEditing("2026-10-22", pointEditing({ active: false }));
+    await screen.findByText("5 places");
+
+    rerender(pointEditing({ active: false }), "2026-10-23"); // the day before is still shown, fainter: edit mode would be for the day asked for
+
+    expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument();
+    release({ ...FLIGHT_DAY, date: "2026-10-23" });
+    expect(await screen.findByRole("button", { name: "Edit points" })).toBeInTheDocument();
+  });
+
+  test("DayPanel_shows_the_edit_bar_at_the_top_in_edit_mode_in_place_of_the_button", async () => {
+    stubApi({ "2026-10-22": FLIGHT_DAY });
+    mountEditing("2026-10-22", pointEditing({ selected: new Set([0, 1]) }));
+
+    await screen.findByText("5 places");
+
+    expect(within(bar()).getByText("2 selected")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument(); // the group has the name, and no button has it
+    expect(bar().compareDocumentPosition(screen.getByText("5 places")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // first: it shows at the lowest point of a sheet
+    expect(rows()).toHaveLength(10); // and the timeline is there under it
+  });
+
+  test("DayPanel_shows_the_edit_bar_for_a_day_that_has_become_empty_so_that_edit_mode_can_be_left", async () => {
+    stubApi({ "2026-10-22": day([]) });
+    mountEditing("2026-10-22", pointEditing());
+
+    await screen.findByText("No data for this day");
+
+    expect(bar()).toBeInTheDocument(); // every point was removed, and the rebuilt day has none: Undo is on the toast, and Done is here
+    expect(within(bar()).getByRole("button", { name: "Done" })).toBeInTheDocument();
+  });
+
+  test("DayPanel_done_ends_edit_mode_and_puts_the_focus_back_on_the_button_that_began_it", async () => {
+    stubApi({ "2026-10-22": FLIGHT_DAY });
+    let edit = pointEditing();
+    const done = vi.fn(() => undefined);
+    edit = { ...edit, done };
+    const { rerender } = mountEditing("2026-10-22", edit);
+    await screen.findByText("5 places");
+    within(bar()).getByRole("button", { name: "Done" }).focus();
+
+    fireEvent.click(within(bar()).getByRole("button", { name: "Done" }));
+    expect(done).toHaveBeenCalledTimes(1);
+    rerender({ ...edit, active: false }); // the shell has ended it
+
+    expect(editButton()).toHaveFocus();
+  });
+
+  test("DayPanel_done_on_a_day_that_has_no_data_now_puts_the_focus_on_what_the_panel_says_of_it_and_not_on_nothing", async () => {
+    // Every point was removed and the day was rebuilt empty: there is no button to go back to, and the one that was pressed is gone with the bar.
+    stubApi({ "2026-10-22": day([]) });
+    const done = vi.fn(() => undefined);
+    const edit = { ...pointEditing(), done };
+    const { rerender } = mountEditing("2026-10-22", edit);
+    await screen.findByText("No data for this day");
+    within(bar()).getByRole("button", { name: "Done" }).focus();
+
+    fireEvent.click(within(bar()).getByRole("button", { name: "Done" }));
+    rerender({ ...edit, active: false });
+
+    expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument();
+    expect(screen.getByText("No data for this day")).toHaveFocus(); // read to whoever listens, and the next Tab goes on from there
+    expect(document.body).not.toHaveFocus();
+  });
+
+  test("DayPanel_does_not_take_the_focus_for_the_button_when_edit_mode_ends_for_another_reason", async () => {
+    // The owner went to another day, or left the day: the focus is wherever they put it, and not on a button they did not press.
+    stubApi({ "2026-10-22": FLIGHT_DAY });
+    const edit = pointEditing();
+    const { rerender } = mountEditing("2026-10-22", edit);
+    await screen.findByText("5 places");
+
+    rerender({ ...edit, active: false });
+
+    expect(editButton()).not.toHaveFocus();
+    expect(document.body).toHaveFocus();
+  });
+
+  test("DayPanel_does_not_take_the_focus_as_the_edit_bar_appears", async () => {
+    stubApi({ "2026-10-22": FLIGHT_DAY });
+    const { rerender } = mountEditing("2026-10-22", pointEditing({ active: false }));
+    await screen.findByText("5 places");
+    editButton().focus();
+
+    fireEvent.click(editButton());
+    rerender(pointEditing()); // the shell turned it on
+
+    expect(bar()).toBeInTheDocument();
+    expect(bar()).not.toContainElement(document.activeElement as HTMLElement); // the map has it, as the owner who pressed the button left it
+  });
+
+  test("DayPanel_edit_bar_says_the_points_are_loading", async () => {
+    stubApi({ "2026-10-22": FLIGHT_DAY });
+    mountEditing("2026-10-22", pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } }));
+    await screen.findByText("5 places");
+
+    expect(within(bar()).getByText("Loading points…")).toBeInTheDocument();
   });
 });

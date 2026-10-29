@@ -8,6 +8,7 @@
 #   GET /api/range?from&to, and /api/heat    `months` random windows of 31 days, `years` random windows of 365 days
 #   GET /api/places/{id}                     `places` requests for the places the busiest year has
 #   GET /api/trips                           `trips` requests, and GET /api/trips/{id} `trips` requests for each trip the list has
+#   GET /api/places/search                   `places` requests with no `q`, and `places` with a `q` of two or three letters (the home picker's)
 # The windows start on a random date, so they are not the calendar months and years the web app asks for; a window of 31 or
 # 365 days is the longest of them. Everything is picked with a generator of the script's own (see RNG below), so that a seed gives the
 # same dates and windows every time and on every awk, and two runs can be compared on the same requests.
@@ -107,6 +108,9 @@ paths() { # kind
     range-year) random_windows $((warmup + year_count)) 365 "$seed" | awk '{print "/api/range?from=" $1 "&to=" $2}' ;;
     heat) random_windows $((warmup + month_count)) 31 "$seed" | awk '{print "/api/heat?from=" $1 "&to=" $2}' ;;
     heat-year) random_windows $((warmup + year_count)) 365 "$seed" | awk '{print "/api/heat?from=" $1 "&to=" $2}' ;;
+    search) for ((i = 0; i < warmup + place_count; i++)); do echo /api/places/search; done ;;
+    search-q) awk -v n=$((warmup + place_count)) -v seed="$seed" \
+      "$RNG"' BEGIN { seed_rnd(seed); split("pla str ace pl tre ee", q, " "); for (i = 0; i < n; i++) print "/api/places/search?q=" q[int(rnd() * 6) + 1] }' ;;
   esac
 }
 
@@ -160,3 +164,8 @@ else
     trip_run "GET /api/trips/$id ($trip_count, $nights nights)" "/api/trips/$id"
   done < "$workdir/trips"
 fi
+
+# The place search of the home picker: the 20 most visited places, and the places a short `q` finds in a name or an address (the terms are
+# the ones of `name-places.sql`'s "Place 12" and "Street 12"; a history with no names finds none, which is the same work to a smaller answer).
+run "GET /api/places/search ($place_count)" search
+run "GET /api/places/search?q= ($place_count)" search-q

@@ -198,6 +198,9 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
         await transaction.CommitAsync(ct);
     }
 
+    /// <summary>The segments that touch the local day <c>@Date</c>, as <c>s</c>: those that start on or before it and end on or after it (uses <c>ix_segment_local_dates</c>).</summary>
+    private const string DayFilter = "s.local_start_date <= @Date and s.local_end_date >= @Date";
+
     /// <summary>
     /// The segments that touch the local calendar day <paramref name="date"/> (the one the segment's own zone says), in
     /// time order: those that start on or before it and end on or after it, so a stay that crosses midnight is on both
@@ -226,9 +229,8 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
                 )
                 select * from chain where merged_into_id is null
             ) p on true
-            where s.local_start_date <= @Date and s.local_end_date >= @Date
-            order by s.start_utc, s.id
-            """,
+            where
+            """ + " " + DayFilter + " order by s.start_utc, s.id",
             new { Date = date }, cancellationToken: ct));
 
         return rows.Select(r => new DaySegment(
@@ -236,6 +238,21 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
             r.PlaceId is { } id && r.PlaceLatitude is { } lat && r.PlaceLongitude is { } lon
                 ? new DayPlace(id, r.PlaceName, r.PlaceCity, r.PlaceCountry, lat, lon)
                 : null)).ToList();
+    }
+
+    /// <summary>
+    /// The zones the segments of the local day <paramref name="date"/> (the same segments as <see cref="FindDayAsync"/>) start or end in, each
+    /// once, in no order; none when the day has no segments. A day shown in several zones (a flight crosses them) is that many local days
+    /// at once, which is what the raw points of the day are worked out from (see <c>DayZone</c>). Only the zones are read: the day's segments
+    /// carry their geometry, and a reader who wants no more than the zones does not load it.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> FindDayZonesAsync(DateOnly date, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var zones = await connection.QueryAsync<string>(new CommandDefinition(
+            "select s.start_tz from segment s where " + DayFilter + " union select s.end_tz from segment s where " + DayFilter,
+            new { Date = date }, cancellationToken: ct));
+        return zones.AsList();
     }
 
     /// <summary>

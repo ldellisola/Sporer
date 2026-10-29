@@ -14,6 +14,8 @@ import {
 } from "react";
 import { useConfig } from "../api/queries";
 import { boundsOf, type Bounds } from "./bounds";
+import { EditControls } from "./EditControls";
+import { editPointAt, type MapEdit } from "./editPoints";
 import { addHomeImage } from "./house";
 import {
   LAYER_IDS,
@@ -21,6 +23,7 @@ import {
   ROUTE_LAYERS,
   routeOpacity,
   SOURCE_IDS,
+  type EditPointCollection,
   type Feature,
   type Geometry,
   type HeatCollection,
@@ -32,6 +35,9 @@ import {
 import { loadMapLibre, type MapLibreLoader, type MapLibreModule } from "./maplibre";
 import styles from "./MapView.module.css";
 import { loadStyle, type StyleSpecification } from "./style";
+import { nearestTapped } from "./taps";
+
+export type { MapEdit } from "./editPoints";
 
 /**
  * What the map draws. Routes are drawn as a day (bold, with a casing) when `stops` is given, else as part of a period (faint), unless
@@ -45,6 +51,11 @@ export interface MapData {
   view?: RouteView;
   /** Drawn as a heat layer while given, under the routes, which fade (to a fifth) for as long as there is a glow to show through. */
   heat?: HeatCollection;
+  /**
+   * The raw points of the day in edit mode, one feature for each with its index as its numeric `id` (see `editPointsGeoJson`): drawn as small dots over
+   * the routes, in one `setData` as they come. What is selected is not here: a tap would redraw them all. It is `MapEdit`'s, and is the map's feature state.
+   */
+  editPoints?: EditPointCollection;
 }
 
 /** The map's heat button: whether the heat is on, and the way to ask for the other. The parent holds the state (and remembers it). */
@@ -119,6 +130,8 @@ export interface MapViewProps {
    * city of the trips, whose `id` is 0) is not tapped, and has no pointer over it.
    */
   onPlaceTap?: (id: number) => void;
+  /** Edit mode for points, while the owner is in it (see `MapEdit`): the map's own taps and drags are the points', and the Select area button is there. */
+  edit?: MapEdit;
   /**
    * Called once for each style that cannot be loaded (the request fails, it is not a style, MapLibre will not take it), and for
    * a map that cannot start (no WebGL, or MapLibre itself could not be fetched), and again for each attempt that fails once more
@@ -138,12 +151,6 @@ export interface MapViewProps {
 
 /** The layers of the dots of a period, and of the pins of a day with the house or the numbers on them: what a tap opens the place of. */
 const TAPPABLE_LAYERS = [LAYER_IDS.places, LAYER_IDS.stops, LAYER_IDS.stopHome, LAYER_IDS.stopNumbers];
-
-/**
- * How far from a dot or a pin a tap still opens it, in pixels. A finger is some 40 px wide and the smallest dot is 8 px across, so a tap
- * is looked for in a box of this much round the point, which is also what the pointer over the map asks.
- */
-const TAP_SLOP_PX = 12;
 
 const NO_PADDING: MapPadding = { top: 0, right: 0, bottom: 0, left: 0 };
 
@@ -173,6 +180,8 @@ const FIT_DURATION_MS = 600;
 const EMPTY_STOPS: StopCollection = { type: "FeatureCollection", features: [] };
 const EMPTY_PLACES: PlaceCollection = { type: "FeatureCollection", features: [] };
 const EMPTY_HEAT: HeatCollection = { type: "FeatureCollection", features: [] };
+const EMPTY_EDIT_POINTS: EditPointCollection = { type: "FeatureCollection", features: [] };
+const NO_SELECTION: ReadonlySet<number> = new Set();
 
 type MapState = "loading" | "ready" | "unavailable";
 
@@ -213,7 +222,7 @@ const usePrefersDark = (): boolean => useSyncExternalStore(subscribeToScheme, pr
 
 // --- Keeping the sources and layers of the map up to date ---
 
-const SOURCE_KEYS = ["heat", "routes", "places", "stops"] as const;
+const SOURCE_KEYS = ["heat", "routes", "places", "stops", "editPoints"] as const;
 type SourceKey = (typeof SOURCE_KEYS)[number];
 
 /** What has been given to the map since its style last loaded: a new style has none of it, and its routes are as the specs have them. */
@@ -222,24 +231,41 @@ interface Pushed {
   view?: RouteView;
   /** Whether the routes have been faded for a heat layer. */
   underHeat: boolean;
+  /** The ids that have the feature state `selected` in the map: a style has none of it, and a new set of points has had it taken away. */
+  selected: ReadonlySet<number>;
 }
 
-const newPushed = (): Pushed => ({ collections: {}, underHeat: false });
+const newPushed = (): Pushed => ({ collections: {}, underHeat: false, selected: NO_SELECTION });
+
+/**
+ * Sets the feature state `selected` of the edit points that are in `selected` and were not, and takes it off those that were and are not: only the
+ * ones that changed, never all of them, so that a tap costs one point and not forty thousand. A source that has other points (`setData`) has no
+ * state kept for them (the ids are indices into the old ones), and a style that has just loaded has none at all: `pushed` says what the map has.
+ */
+function syncSelection(map: MapLibreMap, selected: ReadonlySet<number>, pushed: Pushed): void {
+  if (pushed.selected === selected) return;
+  const source = SOURCE_IDS.editPoints;
+  for (const id of pushed.selected) if (!selected.has(id)) map.removeFeatureState({ source, id }, "selected");
+  for (const id of selected) if (!pushed.selected.has(id)) map.setFeatureState({ source, id }, { selected: true });
+  pushed.selected = selected;
+}
 
 /**
  * Brings the sources and layers of `map` up to date with `data`, doing only what is needed: a source that is not there yet (a
  * style has just loaded) is added with its data, one that is gets `setData` if its data is not the one it has; layers are added
  * once, only their visibility changes when the view changes between a day and a period, and only their opacity when a heat layer
- * comes or goes (a heat with no cell in it has no glow, so it does not fade them). Call it once a style has loaded, with a fresh
- * `pushed` for it, and again whenever the data changes.
+ * comes or goes (a heat with no cell in it has no glow, so it does not fade them). The points of edit mode are one source like the others, set
+ * in one `setData` as they come; which are selected is the feature state of their ids (`syncSelection`), re-applied when a style has loaded. Call it
+ * once a style has loaded, with a fresh `pushed` for it, and again whenever the data or the selection changes.
  */
-function syncData(map: MapLibreMap, data: MapData, dark: boolean, pushed: Pushed): void {
+function syncData(map: MapLibreMap, data: MapData, dark: boolean, pushed: Pushed, selected: ReadonlySet<number>): void {
   const view: RouteView = data.view ?? (data.stops === undefined ? "range" : "day");
   const collections = {
     routes: data.routes,
     stops: data.stops ?? EMPTY_STOPS,
     places: data.places ?? EMPTY_PLACES,
     heat: data.heat ?? EMPTY_HEAT,
+    editPoints: data.editPoints ?? EMPTY_EDIT_POINTS,
   };
   for (const key of SOURCE_KEYS) {
     const collection = collections[key];
@@ -248,6 +274,10 @@ function syncData(map: MapLibreMap, data: MapData, dark: boolean, pushed: Pushed
     if (source === undefined) map.addSource(SOURCE_IDS[key], { type: "geojson", data: collection });
     else source.setData(collection);
     pushed.collections[key] = collection;
+    if (key === "editPoints" && pushed.selected.size > 0) {
+      map.removeFeatureState({ source: SOURCE_IDS.editPoints }); // other points: the state was of the ids of the ones that went
+      pushed.selected = NO_SELECTION;
+    }
   }
   if (pushed.view !== view) {
     for (const spec of layerSpecs(view, dark)) {
@@ -261,6 +291,7 @@ function syncData(map: MapLibreMap, data: MapData, dark: boolean, pushed: Pushed
     for (const id of ROUTE_LAYERS) map.setPaintProperty(id, "line-opacity", routeOpacity(id, underHeat));
     pushed.underHeat = underHeat;
   }
+  syncSelection(map, selected, pushed);
 }
 
 /**
@@ -303,32 +334,18 @@ function fit(map: MapLibreMap, bounds: Bounds, padding: MapPadding, data: MapDat
 }
 
 /**
- * The place that a tap at `point` (pixels of the map) opens: the dot or the pin nearest to it, of those that are drawn within
- * `TAP_SLOP_PX` of it, or undefined when there is none. Near is by the position of the place (where its dot or pin is centred), not by
- * how much of a feature lies in the box: a big dot's edge is near where its middle is not. The dot says the place as its `id`; a pin's `id`
- * is a stay's (the first of them), so it says it as `placeId`. A feature that says no place is passed over: one with no id, and one whose id
- * is not a place's (0 or less: the dots of the cities of the trips are `id: 0`), so that the place next to such a dot is the one that is
- * found, and a tap on a dot of a city, or the pointer over it, is a tap on the map. Only layers that the style has are looked in: MapLibre
- * reports an error for one that it has not (before the style has loaded, say), and finds nothing there.
+ * The place that a tap at `point` (pixels of the map) opens: the dot or the pin nearest to it, of those that are drawn within the slop of it (`taps`),
+ * or undefined when there is none. The dot says the place as its `id`; a pin's `id` is a stay's (the first of them), so it says it as `placeId`. A
+ * feature that says no place is passed over: one with no id, and one whose id is not a place's (0 or less: the dots of the cities of the trips are
+ * `id: 0`), so that the place next to such a dot is the one that is found, and a tap on a dot of a city, or the pointer over it, is a tap on the map.
  */
-function placeAt(map: MapLibreMap, { x, y }: { x: number; y: number }): number | undefined {
-  const layers = TAPPABLE_LAYERS.filter((id) => map.getLayer(id) !== undefined);
-  if (layers.length === 0) return undefined;
-  const box: [[number, number], [number, number]] = [[x - TAP_SLOP_PX, y - TAP_SLOP_PX], [x + TAP_SLOP_PX, y + TAP_SLOP_PX]];
-  let nearest: number | undefined;
-  let nearestDistance = Infinity;
-  for (const feature of map.queryRenderedFeatures(box, { layers })) {
+function placeAt(map: MapLibreMap, point: { x: number; y: number }): number | undefined {
+  return nearestTapped(map, point, TAPPABLE_LAYERS, (feature) => {
     const id: unknown = feature.properties[feature.layer.id === LAYER_IDS.places ? "id" : "placeId"];
-    if (typeof id !== "number" || id <= 0 || feature.geometry.type !== "Point") continue;
+    if (typeof id !== "number" || id <= 0 || feature.geometry.type !== "Point") return undefined;
     const [lon, lat] = feature.geometry.coordinates;
-    const at = map.project([lon!, lat!]);
-    const distance = Math.hypot(at.x - x, at.y - y);
-    if (distance < nearestDistance) {
-      nearest = id;
-      nearestDistance = distance;
-    }
-  }
-  return nearest;
+    return { value: id, at: [lon!, lat!] };
+  });
 }
 
 /** What `foldCreditEarly` gives back: `arm` for when the map first shows its real style, `stop` for when the map goes. */
@@ -410,6 +427,7 @@ function MapSurface({
   home,
   padding = NO_PADDING,
   heatToggle,
+  edit,
   onPlaceTap,
   onStyleError,
   onStyleLoad,
@@ -432,11 +450,12 @@ function MapSurface({
   const [mapAttempts, setMapAttempts] = useState(0);
   const [styleAttempts, setStyleAttempts] = useState(0);
 
-  const { routes, stops, places, heat, view } = data;
+  const { routes, stops, places, heat, view, editPoints } = data;
+  const selected = edit?.selected ?? NO_SELECTION;
   const bounds = useMemo(() => (fitTo === null ? null : boundsOf(fitTo)), [fitTo]);
   const homeBounds = useMemo(() => (home === undefined ? bounds : home === null ? null : boundsOf(home)), [home, bounds]);
 
-  const latest = useLatest({ data, dark, padding, onPlaceTap, onStyleError, onStyleLoad, source, retrySource, bounds, homeBounds, load });
+  const latest = useLatest({ data, dark, padding, edit, selected, onPlaceTap, onStyleError, onStyleLoad, source, retrySource, bounds, homeBounds, load });
   const styleUrl = source !== null && "url" in source ? source.url : null;
   const styleFailed = source !== null && "error" in source;
 
@@ -536,7 +555,7 @@ function MapSurface({
         // of an earlier failure): it stays, and draws what comes, instead of being swapped for a blank map.
         readyRef.current = true;
         try {
-          syncData(map, latest.current.data, latest.current.dark, pushedRef.current);
+          syncData(map, latest.current.data, latest.current.dark, pushedRef.current, latest.current.selected);
         } catch {
           readyRef.current = false; // the context was lost meanwhile: MapLibre sets its style again, and that loads (`styleLoaded`)
         }
@@ -564,7 +583,7 @@ function MapSurface({
       showState(rootRef.current, phase === "failed" ? "unavailable" : "ready");
       pushedRef.current = newPushed();
       addHomeImage(map); // each style has its own images: the house comes before the layer that draws it
-      syncData(map, latest.current.data, latest.current.dark, pushedRef.current);
+      syncData(map, latest.current.data, latest.current.dark, pushedRef.current, latest.current.selected);
       if (phase !== "failed") latest.current.onStyleLoad?.();
     };
     // MapLibre reports a style it will not take, and every problem in it, as error events and never loads it. Errors of a
@@ -606,19 +625,28 @@ function MapSurface({
     };
   }, [map, styleUrl, styleFailed, dark, latest, styleAttempts]);
 
-  // A tap on a place opens it. The listeners are the map's, not the style's: they are made once for each map and stay through every
-  // style (a theme switch drops the layers, and they are looked for by id at the time of a click). `click` is MapLibre's, which is not
-  // fired for a drag that ends where it began (a pan that happens to end over a dot) and is what a tap is to it. The pointer over a
-  // place asks what a click would find, so that it says what a click would do.
+  // A tap on a place opens it, and in edit mode a tap on a point selects it (or takes it off): the points are what a tap is for then, and no place
+  // is opened. The listeners are the map's, not the style's: they are made once for each map and stay through every style (a theme switch drops
+  // the layers, and they are looked for by id at the time of a click). `click` is MapLibre's, which is not fired for a drag that ends where it
+  // began (a pan that happens to end over a dot) and is what a tap is to it. The pointer over a place, or over a point in edit mode, asks what a
+  // click would find, so that it says what a click would do.
   useEffect(() => {
     if (map === null) return;
     const canvas = map.getCanvas();
     const onClick = ({ point }: MapMouseEvent): void => {
+      const { edit: editing, data: current } = latest.current;
+      if (editing !== undefined) {
+        const id = editPointAt(map, point, current.editPoints);
+        if (id !== undefined) editing.onToggle(id);
+        return;
+      }
       const id = placeAt(map, point);
       if (id !== undefined) latest.current.onPlaceTap?.(id);
     };
     const onMove = ({ point }: MapMouseEvent): void => {
-      const cursor = placeAt(map, point) === undefined ? "" : "pointer";
+      const { edit: editing, data: current } = latest.current;
+      const over = editing !== undefined ? editPointAt(map, point, current.editPoints) : placeAt(map, point);
+      const cursor = over === undefined ? "" : "pointer";
       if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
     };
     const onOut = (): void => {
@@ -666,9 +694,9 @@ function MapSurface({
   // the latest data by itself.
   useEffect(() => {
     if (map !== null && readyRef.current) {
-      syncData(map, { routes, stops, places, heat, view }, latest.current.dark, pushedRef.current);
+      syncData(map, { routes, stops, places, heat, view, editPoints }, latest.current.dark, pushedRef.current, selected);
     }
-  }, [map, routes, stops, places, heat, view, latest]);
+  }, [map, routes, stops, places, heat, view, editPoints, selected, latest]);
 
   // A map that was not there yet when `fitTo` was given is brought to it, with the padding of now, the moment it is there.
   useEffect(() => {
@@ -714,6 +742,7 @@ function MapSurface({
             </svg>
           </button>
         )}
+        {edit !== undefined && <EditControls edit={edit} map={map} points={editPoints} host={rootRef} within={padding} />}
       </div>
     </div>
   );

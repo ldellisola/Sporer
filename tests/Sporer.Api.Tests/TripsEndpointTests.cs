@@ -269,7 +269,7 @@ public class TripsEndpointTests(DatabaseFixture db)
     // ---- the home of the thumbnail ---------------------------------------------------------------------------------
 
     [Fact]
-    public async Task Trips_thumbnail_starts_at_the_home_of_the_first_night_and_ends_at_the_home_of_the_last()
+    public async Task Thumbnail_of_a_trip_ending_at_a_new_home_ends_there()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
@@ -279,9 +279,11 @@ public class TripsEndpointTests(DatabaseFixture db)
         var oldHome = await PlaceAsync(cs, oldHomeAt);
         var newHome = await PlaceAsync(cs, newHomeAt);
         var lisbon = await PlaceAsync(cs, Spots.Lisbon, "Lisbon", "Portugal");
+        // The old home covers every night of the trip, the first to the last (the 12th to the 14th), and the new one is in effect from the
+        // night after the last: how detection backdates a home that is moved into on the way back. The line starts at the first and ends at the second.
         await StoreAsync(api,
             [Stay(D(9, 12), lisbon, Spots.Lisbon), Stay(D(9, 13), lisbon, Spots.Lisbon), Stay(D(9, 14), lisbon, Spots.Lisbon)],
-            [new HomePeriod(oldHome, D(1, 1), D(9, 12)), new HomePeriod(newHome, D(9, 13), null)], // the old home covers the first night only
+            [new HomePeriod(oldHome, D(1, 1), D(9, 14)), new HomePeriod(newHome, D(9, 15), null)],
             Trip(D(9, 12), D(9, 14), Utc(9, 12, 7), Utc(9, 15, 12)));
 
         using var body = await GetTripsAsync(client);
@@ -303,7 +305,7 @@ public class TripsEndpointTests(DatabaseFixture db)
                 Stay(D(9, 12), lisbon, Spots.Lisbon), Stay(D(9, 13), lisbon, Spots.Lisbon),
                 Stay(D(10, 12), lisbon, Spots.Lisbon), Stay(D(10, 13), lisbon, Spots.Lisbon),
             ],
-            [new HomePeriod(home, D(9, 12), D(9, 12)), new HomePeriod(home, D(10, 13), null)], // the home covers the first night of one, the last of the other
+            [new HomePeriod(home, D(9, 12), D(9, 12)), new HomePeriod(home, D(10, 13), null)], // the home covers the first night of one, and the night after the last of the other
             Trip(D(9, 12), D(9, 13), Utc(9, 12, 7), Utc(9, 14, 12)),
             Trip(D(10, 12), D(10, 13), Utc(10, 12, 7), Utc(10, 14, 12)));
 
@@ -311,7 +313,7 @@ public class TripsEndpointTests(DatabaseFixture db)
 
         var trips = TripsOf(body);
         Assert.Equal([LonLat(Spots.Lisbon), LonLat(Spots.Home)], Line(trips[0].GetProperty("thumbnail"))); // October: no home on the 12th
-        Assert.Equal([LonLat(Spots.Home), LonLat(Spots.Lisbon)], Line(trips[1].GetProperty("thumbnail"))); // September: none on the 13th
+        Assert.Equal([LonLat(Spots.Home), LonLat(Spots.Lisbon)], Line(trips[1].GetProperty("thumbnail"))); // September: none on the 14th, the night after the last
     }
 
     [Fact]

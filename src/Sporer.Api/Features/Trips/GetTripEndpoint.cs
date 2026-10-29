@@ -1,4 +1,3 @@
-using System.Globalization;
 using FastEndpoints;
 using Sporer.Api.Features.Range;
 
@@ -22,8 +21,7 @@ internal sealed class GetTripEndpoint(TripStore store) : EndpointWithoutRequest<
     public override async Task HandleAsync(CancellationToken ct)
     {
         // Exactly yyyy-MM-dd, as the ids are written: no other form of a date names a trip.
-        var text = Route<string>("id", isRequired: false);
-        if (!DateOnly.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var id))
+        if (!TripId.TryParse(Route<string>("id", isRequired: false), out var id))
         {
             await Send.NotFoundAsync(ct);
             return;
@@ -43,7 +41,7 @@ internal sealed class GetTripEndpoint(TripStore store) : EndpointWithoutRequest<
         var lines = VertexBudget.Fit([.. detail.Moves.Select(m => m.Line)]);
 
         await Send.OkAsync(new TripResponse(
-            TripMapping.Summary(trip, nights),
+            TripMapping.Summary(trip, nights, detail.Name, detail.Edited, detail.StartEdited, detail.EndEdited),
             new TripStatsDto(stats.Flights, stats.Cities, stats.Places, stats.GroundDistanceMeters),
             [.. detail.Moves.Select((m, k) => new TripMoveDto(m.Id, m.Mode, m.DistanceM, TripMapping.LonLat(lines[k])))],
             [.. TripDays.Days(detail).Select(d => new TripDayDto(TripMapping.Text(d.Date), d.Description, d.Highlights, d.GroundDistanceMeters, d.Flights))]), ct);

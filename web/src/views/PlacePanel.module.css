@@ -23,6 +23,11 @@
   overflow-wrap: anywhere;
 }
 
+/* The name takes the focus when what was below it is gone (the last place that was separated): it is not a control, and has no ring. */
+.name:focus {
+  outline: none;
+}
+
 .where {
   margin: 2px 0 0;
   font-size: 12.5px;

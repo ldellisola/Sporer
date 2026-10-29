@@ -17,15 +17,57 @@ public sealed record PlaceCounts(long Total, long Unnamed, long Failed);
 /// </summary>
 public sealed record PlaceVisit(DateTime StartUtc, DateTime EndUtc, string Date, string TimeZone);
 
+/// <summary>A place that was merged directly into another one: its id, and its name (the owner's, else OpenStreetMap's, else null).</summary>
+public sealed record MergedPlace(long Id, string? Name);
+
+/// <summary>
+/// A place in use, as <see cref="PlaceStore.FindSurvivorAsync"/> finds it: its id (the surviving place's) and its name (the owner's, else
+/// OpenStreetMap's, else null).
+/// </summary>
+public sealed record SurvivingPlace(long Id, string? Name);
+
 /// <summary>
 /// A place in use and everything that was spent at it (see <see cref="PlaceStore.FindDetailAsync"/>). <paramref name="Id"/> is the
 /// surviving place's, <paramref name="Name"/> the owner's name, else OpenStreetMap's, else null. <paramref name="TotalSeconds"/>
 /// and <paramref name="Visits"/> are over all of its stays, <paramref name="FirstVisit"/> and <paramref name="LastVisit"/> the
-/// starts of the earliest and the latest; <paramref name="RecentVisits"/> are the latest stays, newest first.
+/// starts of the earliest and the latest; <paramref name="RecentVisits"/> are the latest stays, newest first, and
+/// <paramref name="Merged"/> the places merged directly into it, by name (ignoring case; those with none last), then by id.
 /// </summary>
 public sealed record PlaceDetail(
     long Id, string? Name, string? Address, string? City, string? Country, double Latitude, double Longitude,
-    long TotalSeconds, int Visits, DateTime FirstVisit, DateTime LastVisit, IReadOnlyList<PlaceVisit> RecentVisits);
+    long TotalSeconds, int Visits, DateTime FirstVisit, DateTime LastVisit, IReadOnlyList<PlaceVisit> RecentVisits,
+    IReadOnlyList<MergedPlace> Merged);
+
+/// <summary>
+/// A place a place can be merged with (see <see cref="PlaceStore.FindCandidatesAsync"/>): <paramref name="DistanceM"/> is how far its
+/// centre is from the other's, <paramref name="Visits"/> how many stays there were at it and the places merged into it.
+/// </summary>
+public sealed record PlaceCandidate(long Id, string? Name, string? Address, double DistanceM, int Visits);
+
+/// <summary>A place in use that <see cref="PlaceStore.SearchAsync"/> found: its id (the surviving place's), its name (the owner's, else OpenStreetMap's, else null), its address and its visits.</summary>
+public sealed record FoundPlace(long Id, string? Name, string? Address, int Visits);
+
+/// <summary>How a merge ended (see <see cref="PlaceStore.MergeAsync"/>).</summary>
+public enum MergeOutcome
+{
+    /// <summary>The place was merged: <see cref="MergeResult.SurvivorId"/> is the place it was merged into.</summary>
+    Merged,
+
+    /// <summary>One of the two is no place of the timeline.</summary>
+    NotFound,
+
+    /// <summary>Both are the same place once their merges are followed.</summary>
+    Conflict,
+
+    /// <summary>
+    /// The merge would chain more merges than the views follow (<see cref="PlaceStore.MaxMergeLinks"/>): some place would reach its
+    /// survivor in more links than that, and so stand for no place at all.
+    /// </summary>
+    ChainTooLong,
+}
+
+/// <summary>What <see cref="PlaceStore.MergeAsync"/> did; <paramref name="SurvivorId"/> is the place that survives, when it merged.</summary>
+public readonly record struct MergeResult(MergeOutcome Outcome, long SurvivorId = 0);
 
 /// <summary>
 /// The places stays are matched to. A place keeps its id (and the name its owner gave it) however often the
@@ -34,14 +76,34 @@ public sealed record PlaceDetail(
 public sealed class PlaceStore(NpgsqlDataSource dataSource)
 {
     /// <summary>
-    /// The SQL condition, for <c>place</c> aliased <c>p</c>, for a place that is in use: not merged into another, and shown
-    /// by at least one segment. A reprocessing that moves a stay leaves its old place behind with no segment; such an
-    /// orphan is not on the timeline and is never named. What names places and what counts them both use this, so that
-    /// they cannot disagree about which places there are. (The place view, <see cref="FindDetailAsync"/>, asks a little more
-    /// of the places merged into another: it serves the survivor when any place merged into it has a segment, which is
-    /// what the day and range views show, whether or not the survivor has one of its own.)
+    /// The SQL condition, for <c>place</c> aliased <c>p</c>, for a place that is in use: not merged into another, and shown by
+    /// at least one segment, its own or that of a place merged into it, however indirectly (a stay keeps the place it was given,
+    /// and the views show it at the place that survives). A reprocessing that moves a stay leaves its old place behind with no
+    /// segment; such an orphan is not on the timeline and is never named, while a survivor that has lost its own segments but has
+    /// a merged place that still has one is. What names places and what counts them both use this, so that they cannot disagree
+    /// about which places there are. (The place view, <see cref="FindDetailAsync"/>, asks the same of the group, and that a stay
+    /// shows it.)
     /// </summary>
-    internal const string InUse = "p.merged_into_id is null and exists (select 1 from segment s where s.place_id = p.id)";
+    /// <remarks>
+    /// The places that have a segment are followed up the merges, to every place they reach, up to 32 links as the views do, once
+    /// for the whole query; a survivor is in use when it is among them. (Looking down from each survivor instead would read the
+    /// segments once for every place.)
+    /// </remarks>
+    internal const string InUse =
+        """
+        p.merged_into_id is null and p.id in (
+            with recursive up as (
+                select s.place_id as id, 0 as depth
+                from segment s
+                where s.place_id is not null
+                group by s.place_id
+                union all
+                select link.merged_into_id, up.depth + 1
+                from up join place link on link.id = up.id
+                where link.merged_into_id is not null and up.depth < 32
+            )
+            select id from up)
+        """;
 
     /// <summary>
     /// The SQL for the place each of some places stands for, to follow <c>with recursive</c> and a list of CTEs that includes
@@ -110,12 +172,39 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
         )
         """;
 
-    /// <summary>Every place that has not been merged into another one, with its centre.</summary>
-    public async Task<List<(long Id, GeoPoint Centre)>> LoadActiveAsync(CancellationToken ct = default)
+    /// <summary>
+    /// The condition, for a query that starts with <see cref="SurvivorAndMembers"/> and reads <c>place p</c>, that <c>p</c> is a place of the
+    /// timeline: the survivor of the place <c>@Id</c> stands for (<c>survivor</c>), which a stay of it or of a place merged into it shows. What
+    /// <see cref="FindSurvivorAsync"/> and the checks of a merge and of the candidates (<see cref="FindOnTimelineAsync"/>) both ask, so that they
+    /// cannot disagree about which places are on the timeline.
+    /// </summary>
+    private const string OnTimeline =
+        """
+        p.id = (select id from survivor)
+          and exists (select 1 from segment s where s.kind = 'stay' and s.place_id in (select id from members))
+        """;
+
+    /// <summary>
+    /// Every place, the merged ones too, with its centre: what a stay is matched to (see <see cref="PlaceMatcher"/>), which answers the
+    /// id of the place itself, merged or not. A stay near the centre of a place that was merged into another is stored at that place:
+    /// whatever reads it follows the merges to the survivor, and separating the two places gives the stay back. A place whose merges
+    /// lead nowhere (a cycle, which the app does not write but the schema allows, or a chain of more than 32 links) stands for no place,
+    /// as the views see it, and is left out.
+    /// </summary>
+    public async Task<List<(long Id, GeoPoint Centre)>> LoadMatchableAsync(CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         var rows = await connection.QueryAsync<PlaceRow>(new CommandDefinition(
-            "select id as Id, latitude as Latitude, longitude as Longitude from place where merged_into_id is null order by id",
+            $"""
+            with recursive
+            named as (
+                select id as place_id from place
+            ),
+            {Survivors}
+            select p.id as Id, p.latitude as Latitude, p.longitude as Longitude
+            from place p join survivor on survivor.origin = p.id
+            order by p.id
+            """,
             cancellationToken: ct));
         return rows.Select(r => (r.Id, new GeoPoint(r.Latitude, r.Longitude))).ToList();
     }
@@ -197,7 +286,9 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     /// The totals are over every stay of the place and of every place merged into it, all of the time there is and not a range of
     /// it: <c>TotalSeconds</c> is the stays' durations added up, <c>Visits</c> their number, <c>FirstVisit</c> and
     /// <c>LastVisit</c> when the earliest and the latest began (as the date of a visit is that of its start).
-    /// <c>RecentVisits</c> are the latest <see cref="RecentVisitCount"/> stays by start, newest first. The totals and the list are
+    /// <c>RecentVisits</c> are the latest <see cref="RecentVisitCount"/> stays by start, newest first, and <c>Merged</c> the places
+    /// merged directly into the place (all of them, whether or not a segment still shows them), ordered by the name that shows,
+    /// whatever the case, then by id; a place with no name comes last. The totals and the lists are
     /// read from one snapshot, so that a rewrite of the timeline that lands in the middle cannot leave them disagreeing.
     /// </remarks>
     public async Task<PlaceDetail?> FindDetailAsync(long id, CancellationToken ct = default)
@@ -241,12 +332,334 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
             """,
             new { Id = id, Limit = RecentVisitCount }, transaction, cancellationToken: ct));
 
+        var merged = await connection.QueryAsync<MergedRow>(new CommandDefinition(
+            """
+            select id as Id, coalesce(user_name, osm_name) as Name
+            from place
+            where merged_into_id = @Id
+            order by lower(coalesce(user_name, osm_name)), id
+            """,
+            new { place.Id }, transaction, cancellationToken: ct));
+
         await transaction.CommitAsync(ct);
 
         return new PlaceDetail(
             place.Id, place.Name, place.Address, place.City, place.Country, place.Latitude, place.Longitude,
             (long)Math.Round(place.TotalSeconds), (int)place.Visits, AsUtc(first), AsUtc(last),
-            [.. visits.Select(v => new PlaceVisit(AsUtc(v.StartUtc), AsUtc(v.EndUtc), v.Date, v.TimeZone))]);
+            [.. visits.Select(v => new PlaceVisit(AsUtc(v.StartUtc), AsUtc(v.EndUtc), v.Date, v.TimeZone))],
+            [.. merged.Select(m => new MergedPlace(m.Id, m.Name))]);
+    }
+
+    /// <summary>
+    /// The place <paramref name="id"/> stands for and its name, or null when there is no such place: the same places <see cref="FindDetailAsync"/>
+    /// finds (a stay of the place, or of one merged into it, shows it), without reading the time spent there. For what only needs to know that
+    /// a place is on the timeline, and which one it is: a home that names it.
+    /// </summary>
+    public async Task<SurvivingPlace?> FindSurvivorAsync(long id, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var row = await connection.QuerySingleOrDefaultAsync<MergedRow>(new CommandDefinition(
+            SurvivorAndMembers +
+            $"""
+            select p.id as Id, coalesce(p.user_name, p.osm_name) as Name
+            from place p
+            where {OnTimeline}
+            """,
+            new { Id = id }, cancellationToken: ct));
+
+        return row is null ? null : new SurvivingPlace(row.Id, row.Name);
+    }
+
+    /// <summary>
+    /// How often <see cref="RenameAsync"/> asks again: it is more than once only when a merge lands while it runs, and one such merge
+    /// does not come twice.
+    /// </summary>
+    private const int RenameAttempts = 3;
+
+    /// <summary>
+    /// Names the place <paramref name="id"/> stands for (see <see cref="FindDetailAsync"/>) <paramref name="name"/>, which is the owner's
+    /// and is shown in place of OpenStreetMap's wherever the place is; null takes it back, and OpenStreetMap's shows again. The name is
+    /// set on the one place that survives merges, and nothing else is touched: the views read it from there, so there is nothing to
+    /// rebuild, and processing never writes it. Returns the place as it is now, or null, with nothing changed, when there is no such place
+    /// (the same ones <see cref="FindDetailAsync"/> finds none for).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It writes first and reads after: the name is set in one statement and the detail is read back in another, so a rebuild that removes
+    /// the group's segments between the two leaves the name written and gives null (a 404) for a place that was found a moment before.
+    /// </para>
+    /// <para>
+    /// The survivor is found and named in one statement, so that a merge cannot land between the two. One that is not yet committed when
+    /// the statement finds its survivor but is when it gets to name it has made the place no survivor: the update only names a place
+    /// that is not merged into another (checked on the row as it is then), so it names none, and the next attempt finds the place
+    /// the merge led to. The name is read back with the detail, so that it is what the views show.
+    /// </para>
+    /// </remarks>
+    public async Task<PlaceDetail?> RenameAsync(long id, string? name, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+
+        for (var attempt = 0; attempt < RenameAttempts; attempt++)
+        {
+            var named = await connection.ExecuteScalarAsync<long?>(new CommandDefinition(
+                SurvivorAndMembers +
+                """
+                update place set user_name = @Name
+                where id = (select id from survivor) and merged_into_id is null
+                returning id
+                """,
+                new { Id = id, Name = name }, cancellationToken: ct));
+
+            if (named is { } survivor)
+                return await FindDetailAsync(survivor, ct);
+        }
+
+        return null; // no such place; or, which is not to be expected, one that was merged on and on while this tried
+    }
+
+    /// <summary>
+    /// The place <paramref name="id"/> stands for and its centre, when it is on the timeline: what <see cref="FindDetailAsync"/> serves,
+    /// which is a place that a stay shows, or a stay of a place merged into it. Null for an unknown place, one no stay shows, and one
+    /// whose merges never end.
+    /// </summary>
+    private static async Task<PlaceRow?> FindOnTimelineAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, long id, CancellationToken ct)
+        => await connection.QuerySingleOrDefaultAsync<PlaceRow>(new CommandDefinition(
+            SurvivorAndMembers +
+            $"""
+            select p.id as Id, p.latitude as Latitude, p.longitude as Longitude
+            from place p
+            where {OnTimeline}
+            """,
+            new { Id = id }, transaction, cancellationToken: ct));
+
+    /// <summary>
+    /// How often <see cref="MergeAsync"/> resolves the two places again: it is more than once only when a merge lands while it runs
+    /// (one that makes one of them a place that is merged), and one such merge does not come twice.
+    /// </summary>
+    private const int MergeAttempts = 5;
+
+    /// <summary>
+    /// The most links a place can be from its survivor, as the day, range, place and trip views follow them. A merge that would make
+    /// a chain longer is refused (<see cref="MergeOutcome.ChainTooLong"/>): a place beyond it would have no survivor, and be on no day.
+    /// </summary>
+    public const int MaxMergeLinks = 32;
+
+    /// <summary>
+    /// Merges the place <paramref name="other"/> stands for into the place <paramref name="id"/> stands for (see
+    /// <see cref="FindDetailAsync"/>): the one is set to be merged into the other, and nothing else of it is touched. A stay keeps the
+    /// place it was given, and what is read follows the merges. A <paramref name="name"/> that is not null becomes the survivor's
+    /// name, as <see cref="RenameAsync"/> takes one, with the merge or not at all (an empty one takes it back); null leaves the
+    /// survivor's name as it is. The result is <see cref="MergeOutcome.NotFound"/>, with nothing changed, when either is no place of
+    /// the timeline, <see cref="MergeOutcome.Conflict"/> when both are the same place, and <see cref="MergeOutcome.ChainTooLong"/> when
+    /// the merge would put a place more than <see cref="MaxMergeLinks"/> links from its survivor.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both are places that no merge has moved on, and the merge is written under a lock on both rows, taken in the order of their ids,
+    /// and checked again once held (<c>merged_into_id is null</c>, on the rows as they are then). Two merges in opposite directions
+    /// (A into B, and B into A) each find two places that are their own survivors, ask for the same two rows in the same order, and
+    /// the second waits for the first. When the first commits, the row it merged is no longer one that has not been merged, so
+    /// the second does not get its two: it resolves the places again, finds one survivor on both sides and is a conflict. Without
+    /// this it would make a cycle, which no view could read.
+    /// </para>
+    /// <para>
+    /// Each attempt is a transaction of its own, so that an attempt that does not get its two rows lets go of the one it got: it
+    /// would otherwise hold it while asking for rows with lower ids than it, and break the order the locks are taken in.
+    /// </para>
+    /// <para>
+    /// The chain is checked under the lock too: the places merged into the absorbed one can only change by a merge that locks it, so
+    /// its deepest member cannot move while this looks. The merge puts every one of them one link further from its survivor.
+    /// </para>
+    /// </remarks>
+    public async Task<MergeResult> MergeAsync(long id, long other, string? name, CancellationToken ct = default)
+    {
+        for (var attempt = 0; attempt < MergeAttempts; attempt++)
+        {
+            await using var connection = await dataSource.OpenConnectionAsync(ct);
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+
+            var survivor = await FindOnTimelineAsync(connection, transaction, id, ct);
+            var absorbed = await FindOnTimelineAsync(connection, transaction, other, ct);
+            if (survivor is null || absorbed is null)
+                return new MergeResult(MergeOutcome.NotFound);
+            if (survivor.Id == absorbed.Id)
+                return new MergeResult(MergeOutcome.Conflict);
+
+            // Both rows, the lower id first, and only if neither has been merged on since they were found.
+            var locked = await connection.QueryAsync<long>(new CommandDefinition(
+                "select id from place where id = any(@Ids) and merged_into_id is null order by id for update",
+                new { Ids = new[] { survivor.Id, absorbed.Id } }, transaction, cancellationToken: ct));
+            if (locked.Count() != 2)
+                continue; // the transaction is rolled back, and its lock with it
+
+            // The deepest of the places merged into the absorbed one (itself, at 0) is that many links from it, and one more from the survivor.
+            var deepest = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+                """
+                with recursive members as (
+                    select id, 0 as depth from place where id = @Absorbed
+                    union all
+                    select merged.id, members.depth + 1
+                    from members join place merged on merged.merged_into_id = members.id
+                    where members.depth < @Max
+                )
+                select max(depth) from members
+                """,
+                new { Absorbed = absorbed.Id, Max = MaxMergeLinks }, transaction, cancellationToken: ct));
+            if (deepest + 1 > MaxMergeLinks)
+                return new MergeResult(MergeOutcome.ChainTooLong);
+
+            await connection.ExecuteAsync(new CommandDefinition(
+                "update place set merged_into_id = @Survivor where id = @Absorbed",
+                new { Survivor = survivor.Id, Absorbed = absorbed.Id }, transaction, cancellationToken: ct));
+            if (name is not null)
+            {
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "update place set user_name = nullif(@Name, '') where id = @Survivor",
+                    new { Name = name, Survivor = survivor.Id }, transaction, cancellationToken: ct));
+            }
+
+            await transaction.CommitAsync(ct);
+            return new MergeResult(MergeOutcome.Merged, survivor.Id);
+        }
+
+        return new MergeResult(MergeOutcome.Conflict); // not to be expected: the places were merged on and on while this tried
+    }
+
+    /// <summary>
+    /// Separates <paramref name="other"/> from the place <paramref name="id"/> stands for (see <see cref="FindDetailAsync"/>, as merge,
+    /// rename and candidates take an id): when <paramref name="other"/> was merged directly into that place, it is no longer merged into
+    /// any place, and what was merged into it stays with it. Returns whether it was: false for a place that is not merged into it,
+    /// whether it exists or not (one merged into it only through another is not), and for an <paramref name="id"/> that is no place of
+    /// the timeline. <paramref name="other"/> is the place itself, not the one it stands for. One statement, so that two separations of
+    /// the same place cannot both succeed.
+    /// </summary>
+    public async Task<bool> SeparateAsync(long id, long other, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var changed = await connection.ExecuteAsync(new CommandDefinition(
+            SurvivorAndMembers +
+            "update place set merged_into_id = null where id = @Other and merged_into_id = (select id from survivor)",
+            new { Id = id, Other = other }, cancellationToken: ct));
+        return changed > 0;
+    }
+
+    /// <summary>The most places <see cref="FindCandidatesAsync"/> and <see cref="SearchAsync"/> list.</summary>
+    public const int CandidateLimit = 20;
+
+    /// <summary>
+    /// The SQL, to start a query, for the places that stays are at: <c>stays</c> counts the stays (<c>visits</c>) at each place that has
+    /// any, and <c>survivor</c> maps each of those places (<c>origin</c>) to the place it stands for (<see cref="Survivors"/>), so that the
+    /// visits of a place are summed over the places merged into it.
+    /// </summary>
+    private const string VisitedPlaces =
+        $"""
+        with recursive
+        stays as (
+            select place_id, count(*) as visits
+            from segment
+            where kind = 'stay' and place_id is not null
+            group by place_id
+        ),
+        named as (
+            select place_id from stays
+        ),
+        {Survivors}
+        """;
+
+    /// <summary>
+    /// The SQL condition, for <c>place</c> aliased <c>p</c> and the parameter <c>@Query</c> (text, or null for any), for a place whose name,
+    /// as the views show it (the owner's, else OpenStreetMap's), or whose address contains the query, whatever the case. The query is
+    /// text, not a pattern: <c>strpos</c> takes <c>%</c>, <c>_</c> and <c>\</c> as they are, which <c>like</c> would not.
+    /// </summary>
+    private const string MatchesQuery =
+        """
+        (@Query::text is null
+         or strpos(lower(coalesce(p.user_name, p.osm_name, '')), lower(@Query::text)) > 0
+         or strpos(lower(coalesce(p.address, '')), lower(@Query::text)) > 0)
+        """;
+
+    /// <summary>A query as it is sent to the database: trimmed, and null when there is none.</summary>
+    private static string? Needle(string? query) => string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+
+    /// <summary>
+    /// The places that <paramref name="id"/> can be merged with, the nearest first: the places that are on the timeline (see
+    /// <see cref="FindDetailAsync"/>) and survive merges, other than the one <paramref name="id"/> stands for (so nothing that is merged
+    /// into that one is in it either), at most <see cref="CandidateLimit"/>. With a <paramref name="query"/>, only those whose name, as
+    /// the views show it (the owner's, else OpenStreetMap's), or whose address contains it, whatever the case. The query is trimmed, and
+    /// is text, not a pattern. Null when <paramref name="id"/> is no place of the timeline.
+    /// </summary>
+    /// <remarks>
+    /// The distance is that between the two centres, worked out as <see cref="Geo.DistanceMeters"/> does, and the visits are the stays
+    /// at the place and at the places merged into it (as <see cref="PlaceDetail.Visits"/>). The places are read in one snapshot.
+    /// A few thousand places are read and sorted here: the sort is by a distance the database does not know.
+    /// </remarks>
+    public async Task<IReadOnlyList<PlaceCandidate>?> FindCandidatesAsync(long id, string? query, CancellationToken ct = default)
+    {
+        var needle = Needle(query);
+
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
+
+        var self = await FindOnTimelineAsync(connection, transaction, id, ct);
+        if (self is null)
+        {
+            await transaction.CommitAsync(ct);
+            return null;
+        }
+
+        var rows = await connection.QueryAsync<CandidateRow>(new CommandDefinition(
+            $"""
+            {VisitedPlaces}
+            select p.id as Id, coalesce(p.user_name, p.osm_name) as Name, p.address as Address,
+                   p.latitude as Latitude, p.longitude as Longitude, sum(stays.visits)::bigint as Visits
+            from stays
+            join survivor on survivor.origin = stays.place_id
+            join place p on p.id = survivor.id
+            where p.id <> @Self
+              and {MatchesQuery}
+            group by p.id
+            """,
+            new { Self = self.Id, Query = needle }, transaction, cancellationToken: ct));
+
+        await transaction.CommitAsync(ct);
+
+        var from = new GeoPoint(self.Latitude, self.Longitude);
+        return
+        [
+            .. rows
+                .Select(r => new PlaceCandidate(r.Id, r.Name, r.Address, Geo.DistanceMeters(from, new GeoPoint(r.Latitude, r.Longitude)), (int)r.Visits))
+                .OrderBy(c => c.DistanceM)
+                .ThenBy(c => c.Id)
+                .Take(CandidateLimit),
+        ];
+    }
+
+    /// <summary>
+    /// The places in use (see <see cref="InUse"/>), with no place to start from: the most visited first, then the lower id, at most
+    /// <see cref="CandidateLimit"/>. With a <paramref name="query"/>, only those whose name, as the views show it (the owner's, else
+    /// OpenStreetMap's), or whose address contains it, whatever the case, as <see cref="FindCandidatesAsync"/> takes it: trimmed, and
+    /// text, not a pattern. With none, or an empty one, all of them.
+    /// </summary>
+    /// <remarks>The visits are the stays at the place and at the places merged into it, as for the candidates. The database sorts and cuts the list.</remarks>
+    public async Task<IReadOnlyList<FoundPlace>> SearchAsync(string? query, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var rows = await connection.QueryAsync<FoundRow>(new CommandDefinition(
+            $"""
+            {VisitedPlaces}
+            select p.id as Id, coalesce(p.user_name, p.osm_name) as Name, p.address as Address, sum(stays.visits)::bigint as Visits
+            from stays
+            join survivor on survivor.origin = stays.place_id
+            join place p on p.id = survivor.id
+            where {InUse}
+              and {MatchesQuery}
+            group by p.id
+            order by Visits desc, p.id
+            limit @Limit
+            """,
+            new { Query = Needle(query), Limit = CandidateLimit }, cancellationToken: ct));
+        return [.. rows.Select(r => new FoundPlace(r.Id, r.Name, r.Address, (int)r.Visits))];
     }
 
     private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
@@ -254,6 +667,12 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     private sealed record PlaceRow(long Id, double Latitude, double Longitude);
 
     private sealed record SurvivorRow(long Merged, long Survivor);
+
+    private sealed record MergedRow(long Id, string? Name);
+
+    private sealed record FoundRow(long Id, string? Name, string? Address, long Visits);
+
+    private sealed record CandidateRow(long Id, string? Name, string? Address, double Latitude, double Longitude, long Visits);
 
     private sealed record DetailRow(
         long Id, string? Name, string? Address, string? City, string? Country, double Latitude, double Longitude,

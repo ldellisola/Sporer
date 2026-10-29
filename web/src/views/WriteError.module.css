@@ -1,0 +1,14 @@
+/* What the server said, in the words of the server: the weight of the line is the headline's, which this is not. */
+.reason {
+  font-weight: 400;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* What else can be done about a refusal: buttons of the forms, a line of their own under the message. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 0;
+}

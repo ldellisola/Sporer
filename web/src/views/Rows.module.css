@@ -71,3 +71,37 @@
   padding: 4px 6px;
   text-align: left;
 }
+
+/*
+ * A row of a list of the settings that is not one button: what it is at the left (`itemText`: a column of lines) and the button that does something to it at
+ * the right (the button is Forms.module.css's, and is not made smaller by a long name). A panel that wants room between its rows says so in a class next to it.
+ */
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+}
+
+.itemText {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.item button {
+  flex: none;
+}
+
+/* What there is to say when a list of the settings has nothing in it, which takes the focus when the last row is gone (it is not a control, and a ring round a line of text says nothing). */
+.none {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.none:focus {
+  outline: none;
+}

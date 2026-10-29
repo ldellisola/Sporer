@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -299,5 +300,53 @@ public class StatusEndpointTests(DatabaseFixture db)
     {
         public Task<ReprocessResult> ReprocessAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct)
             => throw new InvalidOperationException("chunk exploded");
+    }
+
+    // ---- retrying what failed -------------------------------------------------------------------------------------------
+
+    private sealed record DirtyRow(int Attempts, DateTime? NextAttemptAt, string? LastError);
+
+    private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
+
+    [Fact]
+    public async Task Retry_makes_failed_ranges_due()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var queue = api.Services.GetRequiredService<ProcessingQueue>();
+        var inAnHour = DateTime.UtcNow.AddHours(1);
+        await TimelineSeeder.InsertDirtyRangeAsync(cs, Utc(10, 20, 6), Utc(10, 20, 7), attempts: 1, nextAttemptAt: inAnHour); // failed once, waiting
+        await TimelineSeeder.InsertDirtyRangeAsync(cs, Utc(10, 22, 6), Utc(10, 22, 7), attempts: 3, nextAttemptAt: inAnHour.AddHours(5)); // set aside
+        await TimelineSeeder.InsertDirtyRangeAsync(cs, Utc(10, 24, 6), Utc(10, 24, 7)); // waiting, not failed
+        await TimelineSeeder.SetBackfillAsync(cs, Utc(1, 1), Utc(10, 28), Utc(5, 1));
+        Assert.Empty(await queue.DueRangesAsync(DateTime.UtcNow, ct: Ct)); // the two that failed are waiting out their backoff, and the third is new
+
+        var response = await client.PostAsync("/api/status/retry", Json("{}"), Ct);
+
+        var text = await response.Content.ReadAsStringAsync(Ct);
+        Assert.True(response.StatusCode == HttpStatusCode.OK, $"POST /api/status/retry returned {(int)response.StatusCode}: {text}");
+        using (var body = JsonDocument.Parse(text))
+            Assert.Equal(2, body.RootElement.GetProperty("retried").GetInt32());
+        var rows = await Sql.QueryAsync<DirtyRow>(cs,
+            "select attempts as Attempts, next_attempt_at as NextAttemptAt, last_error as LastError from dirty_range order by from_utc", ct: Ct);
+        Assert.Equal([new DirtyRow(0, null, "boom"), new DirtyRow(0, null, "boom"), new DirtyRow(0, null, null)], rows); // the error stays: what failed last
+        // Due now: the failed ranges have been waiting longer than the debounce, whenever they were recorded. The one that did not fail
+        // is still a range that ingest recorded a moment ago, and waits for more points as it did.
+        var due = await queue.DueRangesAsync(DateTime.UtcNow, ct: Ct);
+        Assert.Equal([(Utc(10, 20, 6), Utc(10, 20, 7)), (Utc(10, 22, 6), Utc(10, 22, 7))], due.Select(d => (d.FromUtc, d.ToUtc)));
+        // The backfill is not touched.
+        Assert.Equal(Utc(5, 1), (await queue.GetStateAsync(Ct)).BackfillCursor);
+
+        // They are not failed any more, and what is pending is still all three.
+        using var status = await GetStatusAsync(client);
+        Assert.Empty(status.RootElement.GetProperty("failedRanges").EnumerateArray());
+        Assert.Equal(3, status.RootElement.GetProperty("pendingRanges").GetInt32());
+
+        // Nothing is left to retry, and an empty body is as good as {}.
+        var again = await client.PostAsync("/api/status/retry", Json(""), Ct);
+        using (var body = JsonDocument.Parse(await again.Content.ReadAsStringAsync(Ct)))
+            Assert.Equal(0, body.RootElement.GetProperty("retried").GetInt32());
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, (await client.PostAsync("/api/status/retry", new StringContent("{}", Encoding.UTF8, "text/plain"), Ct)).StatusCode);
     }
 }

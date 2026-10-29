@@ -2,8 +2,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { DayResponse, HeatResponse, PlaceResponse, RangeResponse, StaySegment, TripResponse, TripsResponse } from "../api/types";
-import { dayGeoJson, heatGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripGeoJson, tripsGeoJson } from "../map/layers";
+import type { DayPointsResponse, DayResponse, HeatResponse, PlaceResponse, RangeResponse, StaySegment, TripResponse, TripsResponse } from "../api/types";
+import { dayGeoJson, editPointsGeoJson, heatGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripGeoJson, tripsGeoJson } from "../map/layers";
+import type { MapData } from "../map/MapView";
 import newYorkDay from "../../e2e/fixtures/day-new-york.json";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
 import cafe from "../../e2e/fixtures/place-cafe.json";
@@ -41,6 +42,7 @@ const PLACE_2: Route = { view: "place", id: 2 };
 const TRIPS: Route = { view: "trips" };
 const TRIP: Route = { view: "trip", id: "2026-09-12" };
 const OTHER_TRIP: Route = { view: "trip", id: "2026-08-01" };
+const SETTINGS: Route = { view: "settings" };
 
 const emptyDay = (date: string, state: DayResponse["state"] = "done"): DayResponse => ({
   date,
@@ -87,12 +89,12 @@ function stubApi(answers: Record<string, Answer>): { answers: Record<string, Ans
   return { answers, paths };
 }
 
-function setup(route: Route, heatOn = false) {
+function setup(route: Route, heatOn = false, editing?: DayPointsResponse) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-  // Both props are always given: a render that left `on` out would quietly turn the heat off.
-  const { rerender, ...hook } = renderHook(({ at, on }: { at: Route; on: boolean }) => useViewMap(at, on), {
-    initialProps: { at: route, on: heatOn },
+  // All the props are always given: a render that left `on` out would quietly turn the heat off.
+  const { rerender, ...hook } = renderHook(({ at, on, points }: { at: Route; on: boolean; points?: DayPointsResponse }) => useViewMap(at, on, points), {
+    initialProps: { at: route, on: heatOn, points: editing },
     wrapper,
   });
   const refetch = async (date: string) => {
@@ -128,6 +130,7 @@ function setup(route: Route, heatOn = false) {
   };
   let at = route;
   let on = heatOn;
+  let points = editing;
   return {
     ...hook,
     client,
@@ -137,15 +140,20 @@ function setup(route: Route, heatOn = false) {
     refetchPlace,
     refetchTrips,
     /** Renders again on the same route with the heat as it was, for a render that is made for another reason. */
-    again: () => rerender({ at, on }),
+    again: () => rerender({ at, on, points }),
     go: (next: Route) => {
       at = next;
-      rerender({ at, on });
+      rerender({ at, on, points });
     },
     /** Turns the heat on or off, on the route that is shown. */
     setHeat: (next: boolean) => {
       on = next;
-      rerender({ at, on });
+      rerender({ at, on, points });
+    },
+    /** Gives the map the points of edit mode, or takes them away (undefined). */
+    setPoints: (next: DayPointsResponse | undefined) => {
+      points = next;
+      rerender({ at, on, points });
     },
   };
 }
@@ -321,6 +329,93 @@ describe("useViewMap home", () => {
 
     go({ view: "place", id: 3 });
     expect(result.current.home).toBeNull();
+  });
+});
+
+describe("useViewMap edit points", () => {
+  const T0 = 1_761_120_000_000_000;
+  const POINTS: DayPointsResponse = {
+    date: "2026-10-22",
+    devices: ["phone"],
+    points: [
+      [T0, 10.0, 59.0, 0],
+      [T0 + 30_000_000, 10.01, 59.01, 0],
+      [T0 + 60_000_000, 10.02, 59.02, 0],
+    ],
+  };
+
+  test("useViewMap_draws_the_points_of_edit_mode_with_the_routes_and_pins_of_the_day", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY });
+    const { result } = setup(DAY_22, false, POINTS);
+
+    await waitFor(() => expect(result.current.data.stops).toBeDefined());
+
+    expect(result.current.data.editPoints).toEqual(editPointsGeoJson(POINTS.points));
+    expect(result.current.data.routes).toEqual(dayGeoJson(OSLO_DAY).routes); // the day is as it was: the points are drawn over it
+    expect(result.current.data.stops).toEqual(dayGeoJson(OSLO_DAY).stops);
+  });
+
+  test("useViewMap_draws_the_points_when_they_come_and_takes_them_away_when_they_go", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY });
+    const { result, setPoints } = setup(DAY_22);
+    await waitFor(() => expect(result.current.data.stops).toBeDefined());
+    expect(result.current.data.editPoints).toBeUndefined();
+    expect("editPoints" in result.current.data).toBe(false);
+
+    setPoints(POINTS);
+    expect(result.current.data.editPoints?.features).toHaveLength(3);
+
+    setPoints(undefined);
+    expect("editPoints" in result.current.data).toBe(false);
+  });
+
+  test("useViewMap_keeps_the_points_collection_it_gave_while_the_points_are_the_same_and_the_day_is_refetched", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY });
+    const { result, again, refetch } = setup(DAY_22, false, POINTS);
+    await waitFor(() => expect(result.current.data.editPoints).toBeDefined());
+    const before = result.current.data.editPoints;
+
+    again();
+    await refetch("2026-10-22"); // the day is rebuilt: the points are those that were
+
+    expect(result.current.data.editPoints).toBe(before); // forty thousand features are not made again, nor sent to the map again
+  });
+
+  test("useViewMap_makes_new_points_for_new_points", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY });
+    const { result, setPoints } = setup(DAY_22, false, POINTS);
+    await waitFor(() => expect(result.current.data.editPoints).toBeDefined());
+    const before = result.current.data.editPoints;
+
+    setPoints({ ...POINTS, points: POINTS.points.slice(1) });
+
+    expect(result.current.data.editPoints).not.toBe(before);
+    expect(result.current.data.editPoints?.features).toHaveLength(2);
+  });
+
+  test("useViewMap_draws_points_of_another_day_or_on_a_view_that_is_not_a_day_as_nothing", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY, "2026-10-23": NEW_YORK_DAY, "2026-10-19..2026-10-25": WEEK_19_RANGE });
+    const { result, go } = setup(DAY_23, false, POINTS); // the points of the 22nd on the 23rd: a day that edit mode was not on
+    await waitFor(() => expect(result.current.data.stops).toBeDefined());
+    expect("editPoints" in result.current.data).toBe(false);
+
+    go(DAY_22);
+    expect(result.current.data.editPoints).toBeDefined();
+
+    go(WEEK_19);
+    await waitFor(() => expect(result.current.data.places).toBeDefined());
+    expect("editPoints" in result.current.data).toBe(false); // a week has no points to edit
+  });
+
+  test("useViewMap_draws_the_points_and_the_heat_together", async () => {
+    const heat: HeatResponse = { maxSeconds: 10, cells: [[10, 59, 10]] };
+    stubApi({ "2026-10-22": OSLO_DAY, [heatKey("2026-10-22")]: heat });
+    const { result } = setup(DAY_22, true, POINTS);
+
+    await waitFor(() => expect(result.current.data.heat).toBeDefined());
+
+    expect(result.current.data.editPoints?.features).toHaveLength(3);
+    expect(result.current.data.heat).toEqual(heatGeoJson(heat));
   });
 });
 
@@ -1761,5 +1856,102 @@ describe("useViewMap heat that cannot be had", () => {
 
     await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_23)));
     expect(result.current.heat.failed).toBe(false);
+  });
+});
+
+describe("useViewMap settings", () => {
+  test("useViewMap_keeps_the_drawing_of_the_day_the_settings_were_opened_from_and_leaves_the_map_where_it_is", async () => {
+    const { paths } = stubApi({ "2026-10-22": OSLO_DAY, [heatKey("2026-10-22")]: HEAT_22 });
+    const { result, go } = setup(DAY_22, true);
+    await waitFor(() => expect(result.current.data.heat).toEqual(heatGeoJson(HEAT_22)));
+    const before = result.current;
+    const asked = paths.length;
+
+    go(SETTINGS);
+
+    expect(result.current.data).toBe(before.data); // the very collections, so that the map is sent nothing
+    expect(result.current.fitTo).toBe(before.fitTo); // and is not brought anywhere
+    expect(result.current.home).toBe(before.home);
+    expect(result.current.data.routes.features).toEqual(dayGeoJson(OSLO_DAY).routes.features);
+    expect(result.current.heat.available).toBe(true); // the map's heat button stays, and so does the glow
+    expect(paths).toHaveLength(asked); // and nothing is asked for on its account
+  });
+
+  test("useViewMap_does_not_fit_the_map_again_when_the_view_it_came_from_is_shown_again", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY });
+    const { result, go } = setup(DAY_22);
+    await waitFor(() => expect(result.current.fitTo).not.toBeNull());
+    const fitted = result.current.fitTo;
+    act(() => result.current.onFocus([featuresOf(OSLO_DAY)[0]!])); // the owner brought the map to a row, and may have panned it since
+    const focused = result.current.fitTo;
+    expect(focused).not.toBe(fitted);
+
+    go(SETTINGS);
+    go(DAY_22); // Back
+
+    expect(result.current.fitTo).toBe(focused); // the map is where the owner left it, not flown to the day again
+    expect(result.current.data.routes.features).toEqual(dayGeoJson(OSLO_DAY).routes.features);
+  });
+
+  test("useViewMap_keeps_what_every_other_kind_of_view_drew", async () => {
+    stubApi({ trips: TRIPS_LIST, [placeKey(2)]: CAFE, [tripKey("2026-09-12")]: LISBON, "2026-10-19..2026-10-25": WEEK_19_RANGE });
+    // For each kind of view that has a map: the route, and what is drawn on it when it is there.
+    const views: [Route, (data: MapData) => number][] = [
+      [WEEK_19, (data) => data.routes.features.length],
+      [PLACE_2, (data) => data.stops?.features.length ?? 0],
+      [TRIPS, (data) => data.places?.features.length ?? 0],
+      [TRIP, (data) => data.routes.features.length],
+    ];
+    for (const [route, count] of views) {
+      const { result, go, unmount } = setup(route);
+      await waitFor(() => expect(count(result.current.data), route.view).toBeGreaterThan(0));
+      const before = result.current;
+
+      go(SETTINGS);
+
+      expect(result.current.data, route.view).toBe(before.data);
+      expect(result.current.fitTo, route.view).toBe(before.fitTo);
+      expect(result.current.home, route.view).toBe(before.home);
+      unmount();
+    }
+  });
+
+  test("useViewMap_draws_the_next_view_after_the_settings_and_fits_it_as_for_any_view", async () => {
+    stubApi({ "2026-10-22": OSLO_DAY, "2026-10-23": NEW_YORK_DAY });
+    const { result, go } = setup(DAY_22);
+    await waitFor(() => expect(result.current.fitTo).toEqual(featuresOf(OSLO_DAY)));
+    go(SETTINGS);
+
+    go(DAY_23);
+
+    await waitFor(() => expect(result.current.fitTo).toEqual(featuresOf(NEW_YORK_DAY)));
+    expect(result.current.data.routes.features).toEqual(dayGeoJson(NEW_YORK_DAY).routes.features);
+    expect(result.current.home).toEqual(featuresOf(NEW_YORK_DAY));
+  });
+
+  test("useViewMap_draws_nothing_on_settings_that_were_opened_as_a_page_and_asks_for_nothing", async () => {
+    const { paths } = stubApi({});
+
+    const { result } = setup(SETTINGS, true); // with the heat on, and no period to show it for
+
+    expect(result.current.data).toEqual({ routes: { type: "FeatureCollection", features: [] } });
+    expect(result.current.fitTo).toBeNull();
+    expect(result.current.home).toBeNull();
+    expect(result.current.heat).toMatchObject({ available: false, failed: false });
+    await act(async () => undefined);
+    expect(paths).toEqual([]); // no day, no range, no heat, no list of trips
+  });
+
+  test("useViewMap_goes_on_drawing_the_view_before_the_settings_when_it_comes_back_with_more", async () => {
+    const { answers } = stubApi({ "2026-10-22": emptyDay("2026-10-22", "pending") });
+    const { result, go, refetch } = setup(DAY_22);
+    await waitFor(() => expect(result.current.data.routes.features).toEqual([]));
+    go(SETTINGS);
+
+    answers["2026-10-22"] = OSLO_DAY; // the day was processed meanwhile, and the open view of it is asked for again
+    await refetch("2026-10-22");
+
+    await waitFor(() => expect(result.current.data.routes.features).toEqual(dayGeoJson(OSLO_DAY).routes.features));
+    expect(result.current.fitTo).toEqual(featuresOf(OSLO_DAY)); // the first thing there was to bring the map to
   });
 });

@@ -22,7 +22,9 @@ public sealed record StayPosition(DateTime StartUtc, DateTime EndUtc, GeoPoint P
 /// A run of consecutive away nights from <paramref name="FirstNight"/> to <paramref name="LastNight"/>
 /// (<paramref name="Nights"/> counts them, unknown ones in between included). It leaves at
 /// <paramref name="StartUtc"/> and returns at <paramref name="EndUtc"/>, which is null while the trip is ongoing. The
-/// zones are the IANA zones of the start and the end, and the local dates are the calendar dates of them in those zones.
+/// zones are the IANA zones of the start and the end, and the local dates are the calendar dates of them in those zones. (A trip the
+/// owner re-dated, see <see cref="TripEdits"/>, ends at the midnight after its end date, which is the date itself and not the one the
+/// instant is on: the local end date is what the trip says, and is never worked out from <paramref name="EndUtc"/> again.)
 /// </summary>
 public sealed record DetectedTrip(
     DateOnly FirstNight,

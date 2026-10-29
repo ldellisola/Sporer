@@ -1,6 +1,7 @@
 using Dapper;
 using Npgsql;
 using Sporer.Api.Configuration;
+using Sporer.Api.Features.Trips;
 
 namespace Sporer.Api.Features.Timeline;
 
@@ -130,6 +131,22 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
             new { From = AsUtc(fromUtc), To = AsUtc(toUtc) }, cancellationToken: ct));
     }
 
+    /// <summary>
+    /// Records that the timeline between <paramref name="fromUtc"/> and <paramref name="toUtc"/> is to be rebuilt, and that it is due
+    /// at once: the range is stored as if it had been recorded <see cref="ProcessingOptions.Debounce"/> before
+    /// <paramref name="nowUtc"/>, so the worker takes it on its next pass (<see cref="DueRangesAsync"/>) instead of waiting for more
+    /// points to arrive, as it does for ingest. For what the owner does: removing and restoring points. The range is the first to the
+    /// last point it changes, and the rebuild widens it to the stays around it, as it does for ingest. It is written on the connection
+    /// and in the transaction given, so that it is recorded if, and only if, the change it is for is.
+    /// </summary>
+    public async Task EnqueueNowAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, DateTime fromUtc, DateTime toUtc, DateTime nowUtc,
+        CancellationToken ct = default)
+        => await connection.ExecuteAsync(new CommandDefinition(
+            "insert into dirty_range (from_utc, to_utc, created_at) values (@From, @To, @CreatedAt)",
+            new { From = AsUtc(fromUtc), To = AsUtc(toUtc), CreatedAt = AsUtc(nowUtc) - options.Debounce },
+            transaction, cancellationToken: ct));
+
     /// <summary>The rows are done with: they are removed.</summary>
     public async Task CompleteAsync(IReadOnlyList<long> ids, CancellationToken ct = default)
     {
@@ -158,6 +175,24 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
             "update dirty_range set attempts = @Attempts, last_error = @Error, next_attempt_at = @NextAttemptAt where id = @Id",
             failed.Select(f => new { f.Id, f.Attempts, f.Error, NextAttemptAt = now + Backoff(f.Attempts) }).ToList(),
             cancellationToken: ct));
+    }
+
+    /// <summary>
+    /// Makes every failed dirty range due now, and returns how many that was: the ranges with <c>attempts</c> above zero, those that failed
+    /// on their own and the backfill steps that were set aside (<see cref="SetBackfillStepAsideAsync"/>), start again with no attempts and no
+    /// backoff to wait out, so the worker takes them on its next pass (<see cref="DueRangesAsync"/>). A range that is not failed is left alone
+    /// (it is waiting, which is not what is retried), and so is the state of the backfill: its cursor and its chunk attempts are not touched, so a
+    /// backfill that is held up by a step that keeps failing goes on as it did. The last error stays with the range, as what failed last; the
+    /// next failure replaces it, and a range that is done is deleted. A range recorded less than <see cref="ProcessingOptions.Debounce"/> ago (a
+    /// step that was set aside a moment ago) would still wait out the debounce, so it is recorded as if it had been that long ago, as the edits
+    /// of points are (<see cref="EnqueueNowAsync"/>): retrying is asking for it now.
+    /// </summary>
+    public async Task<int> RetryFailedAsync(DateTime nowUtc, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        return await connection.ExecuteAsync(new CommandDefinition(
+            "update dirty_range set attempts = 0, next_attempt_at = null, created_at = least(created_at, @DueBefore) where attempts > 0",
+            new { DueBefore = AsUtc(nowUtc) - options.Debounce }, cancellationToken: ct));
     }
 
     /// <summary>
@@ -279,16 +314,21 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
     /// them would anchor the rebuild (see <see cref="SegmentStore.FindAnchorsAsync"/>) and carry its output into the
     /// new one. The set-aside dirty ranges go too, and the chunk attempts return to zero: the backfill goes over all of that
     /// history again, and a set-aside range that stayed would be listed twice, and would hold back the new rebuilds.
-    /// What is derived from the segments goes with them: every night, every trip and the detected home periods are deleted,
+    /// What is derived from the segments goes with them: every night, every trip and the detected home periods are deleted
+    /// (under the advisory lock that whatever writes them holds, see <see cref="TripRefresher.AdvisoryLockKey"/>),
     /// and the window waiting to be refreshed is cleared, because the backfill refreshes it all again as it goes. The
-    /// home periods the owner set (<c>user</c>) are not derived from anything and stay. Places are kept, and the raw points
-    /// are never touched.
+    /// home periods the owner set (<c>user</c>) are not derived from anything and stay. Places are kept, with the names and
+    /// merges the owner made, and so are the owner's other tables (<c>excluded_point</c>, <c>trip_edit</c>, <c>app_setting</c>), which
+    /// this never reads or writes. The raw points are never touched.
     /// </summary>
     public async Task RestartBackfillAsync(string algorithmVersion, DateTime? fromUtc, DateTime? toUtc, CancellationToken ct = default)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
+        // The nights, homes and trips are written only under this lock (see TripRefresher), and this deletes them: a refresh or an
+        // edit's recompute that is working from them finishes first, and one that comes after finds none.
+        await TripRefresher.LockAsync(connection, transaction, ct);
         await connection.ExecuteAsync(new CommandDefinition("delete from segment", transaction: transaction, cancellationToken: ct));
         await connection.ExecuteAsync(new CommandDefinition(
             """

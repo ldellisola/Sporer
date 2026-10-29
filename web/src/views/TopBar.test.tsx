@@ -661,6 +661,79 @@ describe("TopBar", () => {
     });
   });
 
+  describe("the Settings button", () => {
+    test("TopBar_settings_button_is_a_gear_next_to_Trips_that_opens_the_settings_and_is_pressed_there", () => {
+      open("/day/2026-10-22");
+      const gear = screen.getByRole("button", { name: "Settings", pressed: false });
+      expect(gear.querySelector("svg")).not.toBeNull(); // drawn in place, and hidden from the reader (the button has its name)
+      expect(gear.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+      expect(screen.getByRole("button", { name: "Trips" }).nextElementSibling).toBe(gear); // right after Trips
+
+      press("Settings");
+
+      expect(pathname()).toBe("/settings");
+      expect(screen.getByRole("button", { name: "Settings", pressed: true })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Trips", pressed: false })).toBeInTheDocument(); // the list of trips is not what is shown
+      // The date row gives way to a title row, and no view is the current one, as on the trips.
+      expect(label()).toBe("Settings");
+      expect(screen.queryByRole("button", { name: /^(Previous|Next|Older|Newer)/ })).not.toBeInTheDocument();
+      for (const name of ["Day", "Week", "Month", "Year", "Range"]) {
+        expect(screen.getByRole("button", { name, pressed: false })).toBeInTheDocument();
+      }
+      expect(screen.queryByLabelText("From")).not.toBeInTheDocument();
+    });
+
+    test("TopBar_settings_button_is_not_pressed_on_any_other_view", () => {
+      for (const path of ["/day/2026-10-22", "/week/2026-10-19", "/month/2026-10", "/year/2026", "/range/2026-10-19..2026-10-25", "/place/5", "/trips"]) {
+        const { unmount } = open(path);
+        expect(screen.getByRole("button", { name: "Settings", pressed: false }), path).toBeInTheDocument();
+        unmount();
+      }
+    });
+
+    test("TopBar_settings_button_on_the_settings_goes_nowhere", () => {
+      open("/settings");
+      const entries = window.history.length;
+
+      press("Settings");
+
+      expect(pathname()).toBe("/settings");
+      expect(window.history.length).toBe(entries);
+    });
+
+    test("TopBar_a_view_chosen_on_the_settings_is_at_the_day_that_was_shown_last", () => {
+      open("/day/2026-08-14");
+      press("Next day"); // the 15th is the last day shown
+
+      press("Settings");
+      press("Month");
+      expect(pathname()).toBe("/month/2026-08");
+
+      press("Settings");
+      press("Day");
+      expect(pathname()).toBe("/day/2026-08-15");
+    });
+
+    test("TopBar_a_view_chosen_on_settings_that_were_opened_as_a_page_starts_from_today", () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-10-24T12:00:00"));
+      open("/settings"); // no day has been shown
+
+      press("Week");
+
+      expect(pathname()).toBe("/week/2026-10-19");
+    });
+
+    test("TopBar_leaves_the_arrow_keys_alone_on_the_settings", () => {
+      open("/settings");
+
+      key("ArrowRight");
+      key("ArrowLeft");
+
+      expect(pathname()).toBe("/settings");
+    });
+  });
+
   // The trips are the API's: the bar asks for the list (the order of it is what ‹ and › step by) and for the trip it shows.
   describe("on a trip", () => {
     const TRIPS = tripsFixture as TripsResponse; // newest first: 2026-10-22 (New York, ongoing), 2026-09-12 (Lisbon & Sintra), 2026-08-01 (Copenhagen)
