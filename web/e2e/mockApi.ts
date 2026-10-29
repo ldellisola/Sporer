@@ -21,7 +21,7 @@ export type Override = ((request: Request) => Reply | Promise<Reply>) | object;
 
 /**
  * Overrides by API path, without the `/api/` prefix and without the query: `"day/2026-10-22"`, `"range"`, `"places/7"`, `"trips"`.
- * A key ending in `/*` matches every path below it (`"day/*"`); an exact key wins over it. A key is a read (`GET`) unless it starts with
+ * A key ending in `/*` matches every path below it (`"day/*"`); an exact key wins over it, in either spelling. A key is a read (`GET`) unless it starts with
  * another method and a space: `"POST status/retry"`, `"PUT trips/*"`, `"DELETE homes/3"`; a read may be written with its method too
  * (`"GET status"`), and the bare path wins over it. A write has no default: one that no test has mocked gets the 501 of the guard, and
  * fails the test.
@@ -123,11 +123,25 @@ const defaults: Record<string, Override> = {
   },
 };
 
-function find(table: Record<string, Override>, path: string): Override | undefined {
-  if (Object.hasOwn(table, path)) return table[path];
-  const wildcard = `${path.slice(0, Math.max(path.lastIndexOf("/"), 0))}/*`;
-  return path.includes("/") && Object.hasOwn(table, wildcard) ? table[wildcard] : undefined;
+function exact(table: Record<string, Override>, key: string): Override | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
 }
+
+/** The override of the key with its last segment made `*` (`"day/2026-10-22"` is answered by `"day/*"`), if there is one. */
+function wildcard(table: Record<string, Override>, key: string): Override | undefined {
+  const pattern = `${key.slice(0, Math.max(key.lastIndexOf("/"), 0))}/*`;
+  return key.includes("/") && Object.hasOwn(table, pattern) ? table[pattern] : undefined;
+}
+
+/** The override of a write (or of any key spelt out): the exact key, else the wildcard. */
+const find = (table: Record<string, Override>, key: string): Override | undefined => exact(table, key) ?? wildcard(table, key);
+
+/**
+ * The override of a read: an exact key beats a wildcard, in either spelling, and where both are the same kind the bare path beats the one with
+ * `GET ` (`"places/2"`, `"GET places/2"`, `"places/*"`, `"GET places/*"`, in that order).
+ */
+const findRead = (table: Record<string, Override>, path: string): Override | undefined =>
+  exact(table, path) ?? exact(table, `GET ${path}`) ?? wildcard(table, path) ?? wildcard(table, `GET ${path}`);
 
 /**
  * Answers every `/api/*` request of `page` from the fixtures in `e2e/fixtures/` (empty days and ranges are made up from the
@@ -157,8 +171,7 @@ export async function mockApi(page: Page, overrides: Overrides = {}): Promise<Mo
     }
 
     const path = url.pathname.slice("/api/".length);
-    const override =
-      method === "GET" ? (find(overrides, path) ?? find(overrides, `GET ${path}`) ?? find(defaults, path)) : find(overrides, `${method} ${path}`);
+    const override = method === "GET" ? (findRead(overrides, path) ?? find(defaults, path)) : find(overrides, `${method} ${path}`);
     if (override === undefined) {
       await route.fallback(); // to the guard, which records it and answers 501
       return;

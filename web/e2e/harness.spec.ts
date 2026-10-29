@@ -123,6 +123,32 @@ test("read_is_answered_by_an_override_written_with_its_method_too_and_the_bare_p
   expect(guard.take()).toEqual({ consoleErrors: [], externalRequests: [], unmockedApiRequests: [] });
 });
 
+test("read_override_with_the_exact_path_wins_over_a_wildcard_in_either_spelling", async ({ page, guard }) => {
+  await mockApi(page, {
+    "places/*": { from: "places/*" },
+    "GET places/*": { from: "GET places/*" },
+    "GET places/2": { from: "GET places/2" }, // exact, though a bare wildcard is there
+    "places/3": { from: "places/3" },
+    "GET day/*": { from: "GET day/*" },
+    "day/2026-10-22": { from: "day/2026-10-22" }, // exact bare, over the wildcard that has the method
+  });
+  await page.goto(BLANK);
+
+  const answers = await page.evaluate(async () => {
+    const read = async (path: string) => (await (await fetch(path)).json()) as unknown;
+    return [await read("/api/places/2"), await read("/api/places/3"), await read("/api/places/4"), await read("/api/day/2026-10-22"), await read("/api/day/2026-10-23")];
+  });
+
+  expect(answers).toEqual([
+    { from: "GET places/2" },
+    { from: "places/3" },
+    { from: "places/*" }, // both are wildcards: the bare one wins
+    { from: "day/2026-10-22" },
+    { from: "GET day/*" },
+  ]);
+  expect(guard.take()).toEqual({ consoleErrors: [], externalRequests: [], unmockedApiRequests: [] });
+});
+
 test("write_with_no_override_of_its_method_is_reported_even_where_a_read_of_the_path_is_mocked", async ({ page, guard }) => {
   const api = await mockApi(page, { "status/retry": { retried: 9 } }); // a GET override: it answers no POST
   await page.goto(BLANK);
