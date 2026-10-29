@@ -602,6 +602,7 @@ describe("App day panel", () => {
       { view: "place", id: 3 },
       { view: "trips" },
       { view: "trip", id: "2026-09-12" },
+      { view: "settings" },
     ] as const) {
       act(() => navigate(route));
       expect(screen.getByRole("region", { name: "Details" })).not.toBeEmptyDOMElement();
@@ -1317,5 +1318,89 @@ describe("App trips", () => {
     expect(periodRequests(paths)).toEqual([]);
     expect(screen.getByRole("button", { name: "Older trip" })).toBeDisabled(); // the trip is not in it: no trip is older or newer than it
     expect(screen.getByRole("button", { name: "Newer trip" })).toBeDisabled();
+  });
+});
+
+describe("App settings", () => {
+  const OSLO_DAY = flightDay as DayResponse;
+  const answerWithTheFlight: Answer = (path) =>
+    path.startsWith("/api/heat") ? Response.json({ maxSeconds: 0, cells: [] } satisfies HeatResponse) : path.endsWith("2026-10-22") ? Response.json(OSLO_DAY) : answerEmpty(path);
+  const details = () => screen.getByRole("region", { name: "Details" });
+  /** What the app asks for that is a period: a day, a range, a heat. */
+  const periodRequests = (paths: string[]) => paths.filter((path) => /^\/api\/(day|range|heat)/.test(path));
+
+  // The heat is on, as the owner left it: the map of the view that the settings were opened from has its glow, which stays.
+  beforeEach(() => {
+    window.localStorage.setItem("heat", "true");
+  });
+  afterEach(() => {
+    window.localStorage.removeItem("heat");
+  });
+
+  test("App_opens_the_settings_with_the_gear_shows_processing_and_about_and_leaves_the_map_as_it_was", async () => {
+    const paths = stubApi(answerWithTheFlight);
+    renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    await waitFor(() => expect(paths).toContain("/api/heat?from=2026-10-22&to=2026-10-22"));
+    await waitFor(() => expect(mapProps().data.heat).toBeDefined());
+    const { data, fitTo, home } = mapProps();
+    const before = periodRequests(paths).length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(window.location.pathname).toBe("/settings");
+    expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument(); // in the bar, in the place of the date
+    expect(within(details()).getByRole("region", { name: "Processing" })).toBeInTheDocument();
+    expect(within(details()).getByRole("region", { name: "About" })).toBeInTheDocument();
+    expect(await within(details()).findByText("Nothing has failed")).toBeInTheDocument();
+    // The map is the day's still: the same collections, nothing to bring it anywhere, and its heat button.
+    expect(mapProps().data).toBe(data);
+    expect(mapProps().fitTo).toBe(fitTo);
+    expect(mapProps().home).toBe(home);
+    expect(mapProps().heatToggle).toBeDefined();
+    expect(periodRequests(paths)).toHaveLength(before);
+  });
+
+  test("App_back_from_the_settings_is_the_day_it_was_opened_from_with_the_map_where_it_was", async () => {
+    stubApi(answerWithTheFlight);
+    renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    const { data, fitTo } = mapProps();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(window.location.pathname).toBe("/settings");
+
+    act(() => window.history.back()); // the browser's own Back
+
+    await waitFor(() => expect(window.location.pathname).toBe("/day/2026-10-22"));
+    expect(await screen.findByText("5 places")).toBeInTheDocument();
+    expect(mapProps().data).toBe(data); // never cleared, so nothing to draw again
+    expect(mapProps().fitTo).toBe(fitTo); // and not brought to the day again
+  });
+
+  test("App_draws_nothing_and_asks_for_no_period_for_settings_that_were_opened_as_a_page", async () => {
+    window.history.replaceState(null, "", "/settings");
+    const paths = stubApi(answerWithTheFlight);
+
+    renderApp();
+
+    expect(await within(details()).findByText("Nothing has failed")).toBeInTheDocument();
+    expect(mapProps().data).toEqual({ routes: { type: "FeatureCollection", features: [] } });
+    expect(mapProps().fitTo).toBeNull();
+    expect(mapProps().heatToggle).toBeUndefined(); // there is no period to show the heat of
+    expect(periodRequests(paths)).toEqual([]);
+  });
+
+  test("App_goes_from_the_settings_to_a_view_of_time_that_has_its_map_and_its_heat_button_again", async () => {
+    stubApi(answerWithTheFlight);
+    renderApp();
+    await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Week" })); // at the day that was shown last
+
+    expect(window.location.pathname).toBe("/week/2026-10-19");
+    expect(screen.getByRole("button", { name: "Settings", pressed: false })).toBeInTheDocument();
+    expect(mapProps().heatToggle).toBeDefined();
+    await screen.findByText("No data for this period");
   });
 });

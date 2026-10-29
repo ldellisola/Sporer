@@ -21,13 +21,28 @@ export type Override = ((request: Request) => Reply | Promise<Reply>) | object;
 
 /**
  * Overrides by API path, without the `/api/` prefix and without the query: `"day/2026-10-22"`, `"range"`, `"places/7"`, `"trips"`.
- * A key ending in `/*` matches every path below it (`"day/*"`); an exact key wins over it.
+ * A key ending in `/*` matches every path below it (`"day/*"`); an exact key wins over it. A key is a read (`GET`) unless it starts with
+ * another method and a space: `"POST status/retry"`, `"PUT trips/*"`, `"DELETE homes/3"`. A write has no default: one that no test has
+ * mocked gets the 501 of the guard, and fails the test.
  */
 export type Overrides = Record<string, Override>;
+
+/** A write that the page made, as the server would have seen it. */
+export interface Write {
+  method: string;
+  /** The path and the query: `/api/status/retry`. */
+  path: string;
+  /** What the request said its body was; the API refuses a write that does not say JSON. */
+  contentType: string | undefined;
+  /** The body as JSON, or null when there was none. */
+  body: unknown;
+}
 
 export interface MockApi {
   /** Every request to the API made so far, mocked or not, as path and query: `/api/day/2026-10-22`. */
   readonly requests: string[];
+  /** Every write (a request that is not a `GET`) made so far, in order, mocked or not. */
+  readonly writes: Write[];
 }
 
 interface ApiState {
@@ -123,14 +138,25 @@ export async function mockApi(page: Page, overrides: Overrides = {}): Promise<Mo
   await guardApi(page);
   const state = states.get(page) as ApiState;
   const requests: string[] = [];
+  const writes: Write[] = [];
 
   await page.route(isApiUrl, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     requests.push(url.pathname + url.search);
+    const method = request.method();
+    if (method !== "GET") {
+      let body: unknown = null;
+      try {
+        body = request.postDataJSON();
+      } catch {
+        body = request.postData(); // not JSON: said as it was sent
+      }
+      writes.push({ method, path: url.pathname + url.search, contentType: request.headers()["content-type"], body });
+    }
 
     const path = url.pathname.slice("/api/".length);
-    const override = request.method() === "GET" ? (find(overrides, path) ?? find(defaults, path)) : undefined;
+    const override = method === "GET" ? (find(overrides, path) ?? find(defaults, path)) : find(overrides, `${method} ${path}`);
     if (override === undefined) {
       await route.fallback(); // to the guard, which records it and answers 501
       return;
@@ -139,7 +165,8 @@ export async function mockApi(page: Page, overrides: Overrides = {}): Promise<Mo
     const reply: Reply = typeof override === "function" ? await override(request) : { json: override };
     const status = reply.status ?? 200;
     if (status >= 400) state.deliberateErrors.add(request.url());
-    await route.fulfill({ status, json: reply.json ?? {} });
+    // A 204 has no body, and a write that says so (a delete) is answered with none.
+    await (status === 204 ? route.fulfill({ status }) : route.fulfill({ status, json: reply.json ?? {} }));
   });
-  return { requests };
+  return { requests, writes };
 }

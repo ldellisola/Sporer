@@ -269,6 +269,11 @@ export interface FailedRange {
   lastError: string | null;
 }
 
+/** The answer to `POST /api/status/retry` (Features/Status/RetryFailedEndpoint.cs): how many failed ranges were made due, 0 when none had failed. */
+export interface RetryFailedResponse {
+  retried: number;
+}
+
 export interface PlaceStatus {
   total: number;
   unnamed: number;

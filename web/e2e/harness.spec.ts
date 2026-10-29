@@ -81,6 +81,41 @@ test("unmocked_api_call_is_still_reported", async ({ page, guard }) => {
   expect(found.externalRequests).toEqual([]);
 });
 
+test("write_is_answered_by_the_override_of_its_method_and_recorded_with_what_it_said_it_sent", async ({ page, guard }) => {
+  const api = await mockApi(page, {
+    "POST status/retry": { retried: 2 },
+    "PUT trips/*": (request) => ({ json: { seen: request.method() } }),
+    "DELETE homes/3": () => ({ status: 204 }),
+  });
+  await page.goto(BLANK);
+
+  const answers = await page.evaluate(async () => {
+    const json = { "Content-Type": "application/json" };
+    const post = await fetch("/api/status/retry", { method: "POST", headers: json, body: "{}" });
+    const put = await fetch("/api/trips/2026-09-12", { method: "PUT", headers: json, body: JSON.stringify({ name: "Lisbon" }) });
+    const del = await fetch("/api/homes/3", { method: "DELETE", headers: json });
+    return { post: [post.status, await post.json()], put: [put.status, await put.json()], del: [del.status, await del.text()] };
+  });
+
+  expect(answers).toEqual({ post: [200, { retried: 2 }], put: [200, { seen: "PUT" }], del: [204, ""] });
+  expect(api.writes).toEqual([
+    { method: "POST", path: "/api/status/retry", contentType: "application/json", body: {} },
+    { method: "PUT", path: "/api/trips/2026-09-12", contentType: "application/json", body: { name: "Lisbon" } },
+    { method: "DELETE", path: "/api/homes/3", contentType: "application/json", body: null },
+  ]);
+  expect(guard.take()).toEqual({ consoleErrors: [], externalRequests: [], unmockedApiRequests: [] });
+});
+
+test("write_with_no_override_of_its_method_is_reported_even_where_a_read_of_the_path_is_mocked", async ({ page, guard }) => {
+  const api = await mockApi(page, { "status/retry": { retried: 9 } }); // a GET override: it answers no POST
+  await page.goto(BLANK);
+
+  await untilConsoleError(page, () => page.evaluate(() => fetch("/api/status/retry", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })));
+
+  expect(guard.take().unmockedApiRequests).toEqual(["POST /api/status/retry"]);
+  expect(api.writes).toHaveLength(1); // and it was recorded all the same
+});
+
 test("api_call_in_a_spec_without_mockApi_is_refused_and_reported", async ({ page, guard }) => {
   // No mockApi here: whatever listens on the API's port on this machine must not be reached.
   await page.goto(BLANK);

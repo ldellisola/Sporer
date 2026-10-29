@@ -1,0 +1,58 @@
+/*
+ * A note at the bottom of the panel, a little lifted off it like the notes over the map: the panel's own colour would hide it, so it is
+ * the sunken one with a line and a shadow. Where the panel scrolls it stays at the bottom of what is shown, and where it does not it sits
+ * after what the panel has.
+ */
+.toast {
+  position: sticky;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-sizing: border-box;
+  margin: 12px 0 0;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-sunken);
+  box-shadow: var(--shadow-card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Made taller than its text to be a target for a finger. */
+.action {
+  flex: none;
+  min-height: 36px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent-ink);
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.action:active {
+  background: var(--row-hover);
+}
+
+@media (hover: hover) {
+  .action:hover {
+    background: var(--row-hover);
+  }
+}
+
+.action:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}

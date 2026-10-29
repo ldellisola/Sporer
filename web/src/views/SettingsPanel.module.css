@@ -1,0 +1,115 @@
+/* A figure and what it is: the term at the left, the value at the right, one row each. */
+.facts {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.fact dt {
+  color: var(--ink-muted);
+}
+
+.fact dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.none {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.lastError {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--danger-ink);
+  overflow-wrap: anywhere;
+}
+
+/* The periods that failed: a card each, the stretch first, then how many times and why. */
+.failedList {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.failed {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface-sunken);
+}
+
+.when {
+  font-size: 13.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.attempts {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+.error {
+  font-size: 12.5px;
+  color: var(--danger-ink);
+  overflow-wrap: anywhere;
+}
+
+/* A button that does something to the data: the colour of the bar's own buttons, made tall enough for a finger. */
+.action {
+  min-height: 36px;
+  margin: 0 0 8px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: var(--radius-segment);
+  background: var(--segment-track);
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.action:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.credit {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+}
+
+.link {
+  color: var(--accent-ink);
+  text-decoration: underline;
+}
+
+.link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-radius: 3px;
+}

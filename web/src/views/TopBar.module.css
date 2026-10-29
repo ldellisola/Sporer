@@ -10,7 +10,7 @@
   box-shadow: var(--shadow-card);
 }
 
-/* The views, and at the trailing edge the Trips button: one row. */
+/* The views, and at the trailing edge the Trips and Settings buttons: one row. */
 .head {
   display: flex;
   align-items: center;
@@ -48,15 +48,18 @@
 }
 
 .segment:focus-visible,
-.trips:focus-visible,
+.iconButton:focus-visible,
 .arrow:focus-visible,
 .field input:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
 
-/* The way into the trips, which are not a view of time: a button of its own, as tall as the segmented control, filled when it is the one in use. */
-.trips {
+/*
+ * The ways into the trips and the settings, which are not views of time: a button of its own each, as tall as the segmented control, filled
+ * when it is the one in use.
+ */
+.iconButton {
   display: grid;
   flex: none;
   place-items: center;
@@ -73,7 +76,7 @@
   -webkit-tap-highlight-color: transparent;
 }
 
-.trips[aria-pressed="true"] {
+.iconButton[aria-pressed="true"] {
   background: var(--accent);
   color: #ffffff;
 }

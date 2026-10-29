@@ -10,6 +10,7 @@ import { DayPanel } from "../views/DayPanel";
 import { Notice } from "../views/Notice";
 import { PlacePanel } from "../views/PlacePanel";
 import { RangePanel } from "../views/RangePanel";
+import { SettingsPanel } from "../views/SettingsPanel";
 import { StatusBanner } from "../views/StatusBanner";
 import { TopBar } from "../views/TopBar";
 import { TripPanel } from "../views/TripPanel";
@@ -32,7 +33,7 @@ const DESKTOP_QUERY = "(min-width: 900px)";
 const AIR = 16;
 
 /**
- * The panel of the view of the route. The day, the place, the trips and a trip have their own, and the week, the month, the year and the
+ * The panel of the view of the route. The day, the place, the trips, a trip and the settings have their own, and the week, the month, the year and the
  * range share one (the period they cover is what differs). A place is a panel of its own, made again for another place (`key`), so that
  * nothing of one place is ever under the name of another; so is a trip. `onFocus` is how a panel asks for the map to be brought to
  * something (a row tapped): the map is the shell's, and the one.
@@ -42,6 +43,7 @@ function Panel({ route, onFocus }: { route: Route; onFocus: (features: FitFeatur
   if (route.view === "place") return <PlacePanel key={route.id} id={route.id} />;
   if (route.view === "trips") return <TripsPanel />;
   if (route.view === "trip") return <TripPanel key={route.id} id={route.id} />;
+  if (route.view === "settings") return <SettingsPanel />;
   const { from, to } = periodRange(route);
   return <RangePanel from={from} to={to} />;
 }

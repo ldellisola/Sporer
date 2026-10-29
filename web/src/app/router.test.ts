@@ -123,7 +123,21 @@ describe("parseRoute and formatRoute", () => {
     }
   });
 
-  test("isPeriodRoute_is_false_for_place_trips_and_trip", () => {
+  test("parseRoute_reads_settings_and_rejects_what_is_not_the_one_page", () => {
+    const settings: Route = { view: "settings" };
+    expect(formatRoute(settings)).toBe("/settings");
+    expect(parseRoute("/settings", TODAY)).toEqual(settings);
+    expect(parseRoute(formatRoute(settings), TODAY)).toEqual(settings);
+    expect(parseRoute("/settings/", TODAY)).toEqual(settings); // one trailing slash is ignored, as for every view
+
+    // Settings is one page and has no argument; a path that says more names nothing, and is today's day.
+    for (const path of ["/settings/home", "/settings/2026-10-22", "/settings//", "/Settings", "/setting"]) {
+      expect(parseRoute(path, TODAY), path).toBeNull();
+      expect(resolveRoute(path, TODAY), path).toEqual(TODAY_ROUTE);
+    }
+  });
+
+  test("isPeriodRoute_is_false_for_place_trips_trip_and_settings", () => {
     const periods: Route[] = [
       { view: "day", date: "2026-10-22" },
       { view: "week", start: "2026-10-19" },
@@ -131,7 +145,7 @@ describe("parseRoute and formatRoute", () => {
       { view: "year", year: 2026 },
       { view: "range", from: "2026-09-12", to: "2026-09-19" },
     ];
-    const others: Route[] = [{ view: "place", id: 42 }, { view: "trips" }, { view: "trip", id: "2026-09-12" }];
+    const others: Route[] = [{ view: "place", id: 42 }, { view: "trips" }, { view: "trip", id: "2026-09-12" }, { view: "settings" }];
 
     for (const route of periods) expect(isPeriodRoute(route), route.view).toBe(true);
     for (const route of others) expect(isPeriodRoute(route), route.view).toBe(false);
