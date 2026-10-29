@@ -20,7 +20,8 @@ public sealed record TripsResponse(IReadOnlyList<TripDto> Trips);
 /// or changed its dates (an edit of the dates is why <paramref name="Id"/> may not be the night detection found it on).
 /// <paramref name="OwnName"/> is the owner's name alone: <c>null</c> (present in the JSON, and null) when the owner has given none, so that
 /// <paramref name="Name"/> is made up. <paramref name="Name"/> does not say which it is, and a form that sends a name back must know, or it
-/// would make the made-up one the owner's.
+/// would make the made-up one the owner's. <paramref name="DatesEdited"/> says that the owner's edit has a start date or an end date, which
+/// <paramref name="Edited"/> does not (a name is an edit too): a trip that has them can be put back to the dates that detection found it with.
 /// </summary>
 /// <remarks>
 /// Not abstract, so that <see cref="TripMapping.Summary"/> can make one to build the others from; what the others add to it is
@@ -41,7 +42,8 @@ public record TripSummary(
     bool Ongoing,
     IReadOnlyList<TripCityDto> Cities,
     bool Edited,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? OwnName);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? OwnName,
+    bool DatesEdited);
 
 /// <summary>
 /// A trip of the list: its <see cref="TripSummary"/>, and its <see cref="Thumbnail"/>, the line to draw for the trip,

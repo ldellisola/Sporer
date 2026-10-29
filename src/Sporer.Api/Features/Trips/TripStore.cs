@@ -15,11 +15,12 @@ namespace Sporer.Api.Features.Trips;
 /// null where no home period covers the night: the home it left from and the one it came back to, which is another when the person moved
 /// house while away (a new home is in effect from the night after the trip, as <see cref="TripDetector"/> measures the return). The
 /// trip's own fields are those the detector found, with the dates of the owner's edit where it has given it any, and its id is its
-/// first night. <paramref name="Name"/> is the owner's name for it, null for the automatic one, and <paramref name="Edited"/> says that
-/// the trip has an edit (see <see cref="TripStore.ListAsync"/>).
+/// first night. <paramref name="Name"/> is the owner's name for it, null for the automatic one, <paramref name="Edited"/> says that
+/// the trip has an edit, and <paramref name="DatesEdited"/> that the edit has a start date or an end date (see <see cref="TripStore.ListAsync"/>).
 /// </summary>
 public sealed record StoredTrip(
-    DetectedTrip Trip, IReadOnlyList<TripNight> Nights, GeoPoint? HomeAtStart, GeoPoint? HomeAtEnd, string? Name = null, bool Edited = false);
+    DetectedTrip Trip, IReadOnlyList<TripNight> Nights, GeoPoint? HomeAtStart, GeoPoint? HomeAtEnd, string? Name = null, bool Edited = false,
+    bool DatesEdited = false);
 
 /// <summary>
 /// The home in effect on a date: the place that survives merges (the id the day and range views give a stay at it) and that
@@ -52,11 +53,11 @@ public sealed record TripMove(
 /// nights of the trip that have a position, as in <see cref="StoredTrip"/>. <paramref name="SleepPlaces"/> says, for the nights
 /// from the one before the trip's first day to the one of its last, the surviving place each was spent at (a night that has
 /// none is not in it). <paramref name="Stays"/> and <paramref name="Moves"/> are those that overlap the span, earliest first.
-/// <paramref name="Name"/> and <paramref name="Edited"/> are as in <see cref="StoredTrip"/>.
+/// <paramref name="Name"/>, <paramref name="Edited"/> and <paramref name="DatesEdited"/> are as in <see cref="StoredTrip"/>.
 /// </summary>
 public sealed record TripDetail(
     DetectedTrip Trip, DateTime SpanEndUtc, IReadOnlyList<TripNight> Nights, IReadOnlyDictionary<DateOnly, long> SleepPlaces,
-    IReadOnlyList<TripStay> Stays, IReadOnlyList<TripMove> Moves, string? Name = null, bool Edited = false);
+    IReadOnlyList<TripStay> Stays, IReadOnlyList<TripMove> Moves, string? Name = null, bool Edited = false, bool DatesEdited = false);
 
 /// <summary>
 /// The homes and trips (<c>home_period</c>, <c>trip</c>) and the window of the timeline that has been rebuilt since they were
@@ -213,7 +214,9 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
         to_char(local_start_date, 'YYYY-MM-DD') as LocalStartDate, to_char(local_end_date, 'YYYY-MM-DD') as LocalEndDate,
         name as Name,
         (name is not null or detected_id is not null
-         or exists (select 1 from trip_edit e where e.detected_id = coalesce(trip.detected_id, trip.id) and not e.deleted)) as Edited
+         or exists (select 1 from trip_edit e where e.detected_id = coalesce(trip.detected_id, trip.id) and not e.deleted)) as Edited,
+        exists (select 1 from trip_edit e where e.detected_id = coalesce(trip.detected_id, trip.id) and not e.deleted
+                and (e.start_date is not null or e.end_date is not null)) as DatesEdited
         """;
 
     /// <summary>
@@ -238,7 +241,8 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     /// <c>Name</c> is the owner's name for the trip (<c>trip.name</c>), null for the automatic one. A trip is <c>Edited</c> when it has an
     /// edit: it has the owner's name, or the first night its edit is keyed by is not its own (<c>detected_id</c>), or a stored edit
     /// is keyed by it (<c>trip_edit</c>). The last is the only thing that says that the dates were changed, because the trip row does not
-    /// keep the dates it was detected with. The edit of a deleted trip is the edit of no trip.
+    /// keep the dates it was detected with: <c>DatesEdited</c> is that edit having a start date or an end date. The edit of a deleted trip is the
+    /// edit of no trip.
     /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<StoredTrip>> ListAsync(CancellationToken ct = default)
@@ -283,7 +287,8 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
                     .Select(n => new TripNight(ParseDate(n.Date), n.City, n.Country, new GeoPoint(n.Latitude, n.Longitude)));
 
                 return new StoredTrip(
-                    trip, [.. known], HomeOn(trip.FirstNight, homeList)?.Position, HomeOn(trip.LastNight.AddDays(1), homeList)?.Position, t.Name, t.Edited);
+                    trip, [.. known], HomeOn(trip.FirstNight, homeList)?.Position, HomeOn(trip.LastNight.AddDays(1), homeList)?.Position, t.Name, t.Edited,
+                    t.DatesEdited);
             }),
         ];
     }
@@ -497,7 +502,8 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
                     RangeStore.ParseLine(s.GeometryCoarseJson))),
             ],
             row.Name,
-            row.Edited);
+            row.Edited,
+            row.DatesEdited);
     }
 
     private static DetectedTrip ToTrip(TripRow row) => new(
@@ -541,6 +547,7 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
         public string LocalEndDate { get; set; } = string.Empty;
         public string? Name { get; set; }
         public bool Edited { get; set; }
+        public bool DatesEdited { get; set; }
     }
 
     private sealed class TripNightRow

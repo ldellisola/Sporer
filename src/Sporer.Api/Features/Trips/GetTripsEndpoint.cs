@@ -30,6 +30,6 @@ internal sealed class GetTripsEndpoint(TripStore store) : EndpointWithoutRequest
         var thumbnail = TripThumbnail.Line(
             stored.HomeAtStart, nights.Select(n => n.Position), trip.EndUtc is null ? null : stored.HomeAtEnd);
 
-        return new TripDto(TripMapping.Summary(trip, nights, stored.Name, stored.Edited), TripMapping.LonLat(thumbnail));
+        return new TripDto(TripMapping.Summary(trip, nights, stored.Name, stored.Edited, stored.DatesEdited), TripMapping.LonLat(thumbnail));
     }
 }
