@@ -175,7 +175,7 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     /// <summary>
     /// The condition, for a query that starts with <see cref="SurvivorAndMembers"/> and reads <c>place p</c>, that <c>p</c> is a place of the
     /// timeline: the survivor of the place <c>@Id</c> stands for (<c>survivor</c>), which a stay of it or of a place merged into it shows. What
-    /// <see cref="FindSurvivorAsync"/> and the checks of a merge and of a separation (<see cref="FindOnTimelineAsync"/>) both ask, so that they
+    /// <see cref="FindSurvivorAsync"/> and the checks of a merge and of the candidates (<see cref="FindOnTimelineAsync"/>) both ask, so that they
     /// cannot disagree about which places are on the timeline.
     /// </summary>
     private const string OnTimeline =
