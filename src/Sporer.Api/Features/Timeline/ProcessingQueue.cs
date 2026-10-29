@@ -328,8 +328,7 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
 
         // The nights, homes and trips are written only under this lock (see TripRefresher), and this deletes them: a refresh or an
         // edit's recompute that is working from them finishes first, and one that comes after finds none.
-        await connection.ExecuteAsync(new CommandDefinition(
-            "select pg_advisory_xact_lock(@Key)", new { Key = TripRefresher.AdvisoryLockKey }, transaction, cancellationToken: ct));
+        await TripRefresher.LockAsync(connection, transaction, ct);
         await connection.ExecuteAsync(new CommandDefinition("delete from segment", transaction: transaction, cancellationToken: ct));
         await connection.ExecuteAsync(new CommandDefinition(
             """

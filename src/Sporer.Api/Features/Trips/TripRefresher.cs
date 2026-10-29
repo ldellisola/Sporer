@@ -66,6 +66,14 @@ public sealed class TripRefresher(
     /// </summary>
     internal const long AdvisoryLockKey = 0x5350_4F52_5452_4950;
 
+    /// <summary>
+    /// Takes the lock <see cref="AdvisoryLockKey"/> names, which is held until the transaction ends: whatever writes the nights, homes or trips
+    /// does it first in its transaction, so that it is the only one to read and write them (P4-R11).
+    /// </summary>
+    internal static Task LockAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken ct)
+        => connection.ExecuteAsync(new CommandDefinition(
+            "select pg_advisory_xact_lock(@Key)", new { Key = AdvisoryLockKey }, transaction, cancellationToken: ct));
+
     public Task RefreshAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct) => RunAsync((fromUtc, toUtc), ct);
 
     public Task RecomputeAsync(CancellationToken ct) => RunAsync(null, ct);
@@ -80,8 +88,7 @@ public sealed class TripRefresher(
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
         // First, before anything is read for what is written below: whoever has it is the only one to read and write the derived tables.
-        await connection.ExecuteAsync(new CommandDefinition(
-            "select pg_advisory_xact_lock(@Key)", new { Key = AdvisoryLockKey }, transaction, cancellationToken: ct));
+        await LockAsync(connection, transaction, ct);
 
         // The nights of the window are built afresh. They are not stored yet: the nights, the homes and the trips are written
         // together at the end, so that the trips a reader finds always belong to the nights it finds.

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json.Serialization;
 using FastEndpoints;
 using Sporer.Api.Features.Places;
@@ -88,10 +87,10 @@ public sealed record EditTripResponse(string Id);
 /// <b>The dates.</b> The start date is the day the trip begins and the end date the day the person is back, so the trip's nights are from the
 /// evening of the first to the one before the second: the start date must be before the end date, else 400. The trip begins at midnight
 /// at the start of the start date and ends at midnight at the end of the end date (see <see cref="TripEdits"/>), so the day of the journey
-/// home is part of the trip. A date is <c>yyyy-MM-dd</c> and no other
-/// form, from <see cref="EarliestDate"/> to <see cref="LatestDate"/>, else 400. A date the trip has already, where the owner has not given
-/// it one (a form that is filled in with the trip's dates and sends them back as they are), is as detected: the trip keeps the moments detection
-/// found, and does not begin or end at midnight. With only one of the dates, the trip's other end is as detected, and the nights it would
+/// home is part of the trip. A date is <c>yyyy-MM-dd</c> and no other form, from <see cref="NightDate.Earliest"/> to
+/// <see cref="NightDate.Latest"/>, else 400. A date the trip has already, where the owner has not given it one (a form that is filled in
+/// with the trip's dates and sends them back as they are), is as detected: the trip keeps the moments detection found, and does not begin
+/// or end at midnight. With only one of the dates, the trip's other end is as detected, and the nights it would
 /// have are worked out against that for the checks. A trip whose new nights would share one with another trip, as the trips are now, is a 409;
 /// touching is not sharing (one is over the day the next begins).
 /// </para>
@@ -112,12 +111,6 @@ public sealed record EditTripResponse(string Id);
 /// </remarks>
 internal sealed class EditTripEndpoint(TripEditStore edits, EditRecompute recompute) : Endpoint<EditTripRequest, EditTripResponse>
 {
-    /// <summary>The earliest date a trip can be given: nothing was ever logged before it.</summary>
-    public static readonly DateOnly EarliestDate = new(1970, 1, 1);
-
-    /// <summary>The latest date a trip can be given.</summary>
-    public static readonly DateOnly LatestDate = new(2099, 12, 31);
-
     public override void Configure()
     {
         Put("trips/{id}");
@@ -145,8 +138,8 @@ internal sealed class EditTripEndpoint(TripEditStore edits, EditRecompute recomp
         if (name is { Length: > RenamePlaceEndpoint.MaxNameLength })
             ValidationFailures.Add(new("name", $"The name can be at most {RenamePlaceEndpoint.MaxNameLength} characters."));
 
-        var start = ParseDate(req.StartDate, "startDate");
-        var end = ParseDate(req.EndDate, "endDate");
+        var start = NightDate.Read(req.StartDate, "startDate", required: false, ValidationFailures);
+        var end = NightDate.Read(req.EndDate, "endDate", required: false, ValidationFailures);
         if (ValidationFailures.Count > 0)
         {
             await Send.ErrorsAsync(400, ct);
@@ -192,25 +185,5 @@ internal sealed class EditTripEndpoint(TripEditStore edits, EditRecompute recomp
         var now = recomputed ? await edits.FindIdByKeyAsync(target.Key, ct) : null;
         await Send.OkAsync(new EditTripResponse(TripMapping.Text(
             now ?? start ?? (target.Edit?.StartDate is not null ? target.Key : target.Id))), ct);
-    }
-
-    /// <summary>
-    /// The date <paramref name="text"/> says, or null for none (null is as detected), or for one that is not a date or is out of range, which is
-    /// a failure of <paramref name="property"/>.
-    /// </summary>
-    private DateOnly? ParseDate(string? text, string property)
-    {
-        if (text is null)
-            return null;
-
-        if (!DateOnly.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
-            || date < EarliestDate || date > LatestDate)
-        {
-            ValidationFailures.Add(new(property,
-                $"The date must be written yyyy-MM-dd, from {TripMapping.Text(EarliestDate)} to {TripMapping.Text(LatestDate)}, or be null."));
-            return null;
-        }
-
-        return date;
     }
 }

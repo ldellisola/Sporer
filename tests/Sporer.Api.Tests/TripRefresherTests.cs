@@ -353,37 +353,17 @@ public class TripRefresherTests(DatabaseFixture db)
 
         // A refresh or a recompute holds the lock. The restart deletes the nights, homes and trips, so it must not do it under the feet
         // of one that is working from them: it waits.
-        await using var holder = new NpgsqlConnection(cs);
-        await holder.OpenAsync(Ct);
-        await using var holding = await holder.BeginTransactionAsync(Ct);
-        await using (var take = new NpgsqlCommand("select pg_advisory_xact_lock(@key)", holder, holding))
-        {
-            take.Parameters.AddWithValue("key", TripRefresher.AdvisoryLockKey);
-            await take.ExecuteNonQueryAsync(Ct);
-        }
+        await using var holder = await AdvisoryLockHolder.HoldAsync(cs, Ct);
         var restart = Task.Run(() => api.Services.GetRequiredService<ProcessingQueue>().RestartBackfillAsync("a new version", Utc(1, 1), Utc(7, 15), Ct), Ct);
-        var until = DateTime.UtcNow.AddSeconds(20);
-        while (await AdvisoryWaitersAsync(cs) < 1)
-        {
-            Assert.False(restart.IsCompleted, "the restart did not wait for the lock");
-            Assert.True(DateTime.UtcNow < until, "timed out waiting for the restart to wait for the lock");
-            await Task.Delay(20, Ct);
-        }
+        await AdvisoryLockHolder.WaitForWaitersAsync(cs, 1, Ct, (restart, "the restart"));
         Assert.NotEmpty(await TripsAsync(cs));
 
-        await holding.CommitAsync(Ct);
+        await holder.ReleaseAsync(Ct);
         await restart;
 
         Assert.Empty(await TripsAsync(cs));
         Assert.Equal(0, await Sql.ScalarAsync<long>(cs, "select count(*) from night", ct: Ct));
     }
-
-    /// <summary>How many sessions of the database wait for an advisory lock.</summary>
-    private static Task<long> AdvisoryWaitersAsync(string cs) => Sql.ScalarAsync<long>(cs,
-        """
-        select count(*) from pg_locks
-        where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())
-        """, ct: Ct);
 
     [Fact]
     public async Task Recompute_and_refresh_do_not_interleave()
@@ -401,31 +381,17 @@ public class TripRefresherTests(DatabaseFixture db)
 
         // Someone else holds the lock, as the worker's refresh or an edit's recompute would while it works. Both calls ask for it first,
         // before they read anything, and both wait.
-        await using var holder = new NpgsqlConnection(cs);
-        await holder.OpenAsync(Ct);
-        await using var holding = await holder.BeginTransactionAsync(Ct);
-        await using (var take = new NpgsqlCommand("select pg_advisory_xact_lock(@key)", holder, holding))
-        {
-            take.Parameters.AddWithValue("key", TripRefresher.AdvisoryLockKey);
-            await take.ExecuteNonQueryAsync(Ct);
-        }
+        await using var holder = await AdvisoryLockHolder.HoldAsync(cs, Ct);
         var recompute = Task.Run(() => refresher.RecomputeAsync(Ct), Ct);
         var refresh = Task.Run(() => refresher.RefreshAsync(Utc(7, 9), Utc(7, 13), Ct), Ct);
-        var until = DateTime.UtcNow.AddSeconds(20);
-        while (await AdvisoryWaitersAsync(cs) < 2)
-        {
-            Assert.False(recompute.IsCompleted, "the recompute did not wait for the lock");
-            Assert.False(refresh.IsCompleted, "the refresh did not wait for the lock");
-            Assert.True(DateTime.UtcNow < until, "timed out waiting for the two to wait for the lock");
-            await Task.Delay(20, Ct);
-        }
+        await AdvisoryLockHolder.WaitForWaitersAsync(cs, 2, Ct, (recompute, "the recompute"), (refresh, "the refresh"));
 
         // While they wait, the timeline changes under them: the person was at home all along in July, so the July trip is gone and
         // the nights of those days are at home. Whatever either of them did read before it asked for the lock would be out of date.
         await Sql.ExecAsync(cs, "delete from segment where id = @lisbonStay", new { lisbonStay }, Ct);
         await Sql.ExecAsync(cs, "update segment set start_utc = @start, local_start_date = '2026-07-09' where start_utc = @was",
             new { start = Utc(7, 9, 12), was = Utc(7, 12, 14) }, Ct);
-        await holding.CommitAsync(Ct);
+        await holder.ReleaseAsync(Ct);
         await Task.WhenAll(recompute, refresh);
 
         // One after the other, in whichever order, each reading what the other left: the homes and trips are those of the nights that are

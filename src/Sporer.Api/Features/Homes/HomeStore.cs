@@ -87,7 +87,7 @@ public sealed class HomeStore(NpgsqlDataSource dataSource)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
-        await LockAsync(connection, transaction, ct);
+        await TripRefresher.LockAsync(connection, transaction, ct);
 
         var overlaps = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
             """
@@ -117,7 +117,7 @@ public sealed class HomeStore(NpgsqlDataSource dataSource)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
-        await LockAsync(connection, transaction, ct);
+        await TripRefresher.LockAsync(connection, transaction, ct);
 
         var source = await connection.ExecuteScalarAsync<string?>(new CommandDefinition(
             "select source from home_period where id = @Id", new { Id = id }, transaction, cancellationToken: ct));
@@ -132,11 +132,6 @@ public sealed class HomeStore(NpgsqlDataSource dataSource)
         await transaction.CommitAsync(ct);
         return DeleteHomeOutcome.Deleted;
     }
-
-    /// <summary>The lock that the nights, homes and trips are written under, taken first and held until the transaction ends.</summary>
-    private static Task LockAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken ct)
-        => connection.ExecuteAsync(new CommandDefinition(
-            "select pg_advisory_xact_lock(@Key)", new { Key = TripRefresher.AdvisoryLockKey }, transaction, cancellationToken: ct));
 
     private static DateOnly ParseDate(string text) => DateOnly.ParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture);
 

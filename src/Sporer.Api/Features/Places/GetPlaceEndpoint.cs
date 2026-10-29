@@ -1,5 +1,6 @@
 using FastEndpoints;
 using Sporer.Api.Features.Timeline;
+using Sporer.Api.Http;
 
 namespace Sporer.Api.Features.Places;
 
@@ -19,9 +20,9 @@ internal sealed class GetPlaceEndpoint(PlaceStore places) : EndpointWithoutReque
 
     public override async Task HandleAsync(CancellationToken ct)
     {
-        if (!PlaceId.TryParse(Route<string>("id", isRequired: false), out var id))
+        if (!PositiveId.TryParse(Route<string>("id", isRequired: false), out var id))
         {
-            ValidationFailures.Add(new("id", PlaceId.InvalidMessage));
+            ValidationFailures.Add(new("id", PositiveId.InvalidMessage));
             await Send.ErrorsAsync(400, ct);
             return;
         }

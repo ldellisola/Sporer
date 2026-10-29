@@ -20,6 +20,9 @@ public sealed record PlaceVisit(DateTime StartUtc, DateTime EndUtc, string Date,
 /// <summary>A place that was merged directly into another one: its id, and its name (the owner's, else OpenStreetMap's, else null).</summary>
 public sealed record MergedPlace(long Id, string? Name);
 
+/// <summary>A place in use, as <see cref="PlaceStore.FindSurvivorAsync"/> finds it: its id (the surviving place's) and its name (the owner's, else OpenStreetMap's, else null).</summary>
+public sealed record SurvivingPlace(long Id, string? Name);
+
 /// <summary>
 /// A place in use and everything that was spent at it (see <see cref="PlaceStore.FindDetailAsync"/>). <paramref name="Id"/> is the
 /// surviving place's, <paramref name="Name"/> the owner's name, else OpenStreetMap's, else null. <paramref name="TotalSeconds"/>
@@ -327,6 +330,27 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
             (long)Math.Round(place.TotalSeconds), (int)place.Visits, AsUtc(first), AsUtc(last),
             [.. visits.Select(v => new PlaceVisit(AsUtc(v.StartUtc), AsUtc(v.EndUtc), v.Date, v.TimeZone))],
             [.. merged.Select(m => new MergedPlace(m.Id, m.Name))]);
+    }
+
+    /// <summary>
+    /// The place <paramref name="id"/> stands for and its name, or null when there is no such place: the same places <see cref="FindDetailAsync"/>
+    /// finds (a stay of the place, or of one merged into it, shows it), without reading the time spent there. For what only needs to know that
+    /// a place is on the timeline, and which one it is: a home that names it.
+    /// </summary>
+    public async Task<SurvivingPlace?> FindSurvivorAsync(long id, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var row = await connection.QuerySingleOrDefaultAsync<MergedRow>(new CommandDefinition(
+            SurvivorAndMembers +
+            """
+            select p.id as Id, coalesce(p.user_name, p.osm_name) as Name
+            from place p
+            where p.id = (select id from survivor)
+              and exists (select 1 from segment s where s.kind = 'stay' and s.place_id in (select id from members))
+            """,
+            new { Id = id }, cancellationToken: ct));
+
+        return row is null ? null : new SurvivingPlace(row.Id, row.Name);
     }
 
     /// <summary>

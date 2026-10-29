@@ -5,7 +5,6 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Time.Testing;
-using Npgsql;
 using Sporer.Api.Features.Timeline;
 using Sporer.Api.Features.Trips;
 using Sporer.SyntheticData;
@@ -663,9 +662,6 @@ public class TripEditTests(DatabaseFixture db)
         Assert.Equal("Lisbon again", Assert.Single(await StoredAsync(cs)).Name);
     }
 
-    private static async Task<long> AdvisoryWaitersAsync(string cs)
-        => await Sql.ScalarAsync<long>(cs, "select count(*) from pg_locks where locktype = 'advisory' and not granted", ct: Ct);
-
     [Fact]
     public async Task Trip_edit_and_a_refresh_that_wait_for_each_other_both_land()
     {
@@ -676,25 +672,12 @@ public class TripEditTests(DatabaseFixture db)
         await SeedAsync(cs, api);
 
         // Something else holds the lock the trips are written under, and an edit and a refresh both ask for them.
-        await using var holder = new NpgsqlConnection(cs);
-        await holder.OpenAsync(Ct);
-        await using var holding = await holder.BeginTransactionAsync(Ct);
-        await using (var take = new NpgsqlCommand("select pg_advisory_xact_lock(@key)", holder, holding))
-        {
-            take.Parameters.AddWithValue("key", TripRefresher.AdvisoryLockKey);
-            await take.ExecuteNonQueryAsync(Ct);
-        }
+        await using var holder = await AdvisoryLockHolder.HoldAsync(cs, Ct);
 
         var edit = Task.Run(() => PutAsync(client, "2026-07-09", "Lisbon weekend", "2026-07-08", "2026-07-13"), Ct);
         var refresh = Task.Run(() => refresher.RefreshAsync(Utc(4, 1), Utc(9, 12, 12), Ct), Ct);
-        var until = DateTime.UtcNow.AddSeconds(20);
-        while (await AdvisoryWaitersAsync(cs) < 2)
-        {
-            Assert.False(edit.IsCompleted || refresh.IsCompleted, "one of them did not wait for the lock");
-            Assert.True(DateTime.UtcNow < until, "timed out waiting for both to wait for the lock");
-            await Task.Delay(20, Ct);
-        }
-        await holding.CommitAsync(Ct);
+        await AdvisoryLockHolder.WaitForWaitersAsync(cs, 2, Ct, (edit, "the edit"), (refresh, "the refresh"));
+        await holder.ReleaseAsync(Ct);
 
         using var response = await edit;
         await refresh;

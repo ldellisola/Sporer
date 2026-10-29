@@ -57,7 +57,7 @@ public static class HomeOverrides
         var end = period.To ?? DateOnly.MaxValue;
         var next = period.From; // the first date not yet looked at, as long as it is not past the end
 
-        foreach (var cutter in cutters.Where(c => c.To is not { } to || c.From <= to).OrderBy(c => c.From))
+        foreach (var cutter in cutters.OrderBy(c => c.From))
         {
             var cutterEnd = cutter.To ?? DateOnly.MaxValue;
             if (cutterEnd < next) continue;   // all of it is behind what has been looked at

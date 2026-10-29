@@ -1,6 +1,7 @@
 using FastEndpoints;
 using Sporer.Api.Features.Timeline;
 using Sporer.Api.Features.Trips;
+using Sporer.Api.Http;
 
 namespace Sporer.Api.Features.Places;
 
@@ -47,9 +48,9 @@ internal sealed class MergePlaceEndpoint(PlaceStore places, EditRecompute recomp
 
     public override async Task HandleAsync(MergePlaceRequest req, CancellationToken ct)
     {
-        if (!PlaceId.TryParse(Route<string>("id", isRequired: false), out var id))
+        if (!PositiveId.TryParse(Route<string>("id", isRequired: false), out var id))
         {
-            ValidationFailures.Add(new("id", PlaceId.InvalidMessage));
+            ValidationFailures.Add(new("id", PositiveId.InvalidMessage));
             await Send.ErrorsAsync(400, ct);
             return;
         }

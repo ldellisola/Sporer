@@ -4,7 +4,6 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Npgsql;
 using Sporer.Api.Features.Timeline;
 using Sporer.Api.Features.Trips;
 using Sporer.Testing;
@@ -103,28 +102,6 @@ public class HomesSettingsTests(DatabaseFixture db)
     {
         using var body = await JsonOf(await client.GetAsync("/api/settings", Ct));
         return (body.RootElement.GetProperty("tripMinDistanceKm").GetDouble(), body.RootElement.GetProperty("tripMinDistanceKmDefault").GetDouble());
-    }
-
-    /// <summary>
-    /// Takes the lock that the nights, homes and trips are written under, as a refresh does while it works, and holds it until
-    /// <see cref="ReleaseAsync"/>.
-    /// </summary>
-    private static async Task<NpgsqlTransaction> HoldTheLockAsync(string cs)
-    {
-        var connection = new NpgsqlConnection(cs);
-        await connection.OpenAsync(Ct);
-        var transaction = await connection.BeginTransactionAsync(Ct);
-        await using var command = new NpgsqlCommand("select pg_advisory_xact_lock(@key)", connection, transaction);
-        command.Parameters.AddWithValue("key", TripRefresher.AdvisoryLockKey);
-        await command.ExecuteNonQueryAsync(Ct);
-        return transaction;
-    }
-
-    private static async Task ReleaseAsync(NpgsqlTransaction transaction)
-    {
-        var connection = transaction.Connection!;
-        await transaction.CommitAsync(Ct);
-        await connection.DisposeAsync();
     }
 
     /// <summary>Whether the worker is asked to work the homes and trips out, which is then done with: the window that waits is emptied.</summary>
@@ -391,25 +368,23 @@ public class HomesSettingsTests(DatabaseFixture db)
         var client = api.CreateClient();
         var (_, lisbon) = await SeedAsync(cs, api, Spots.Lisbon);
 
-        // Somebody has the lock the homes are written under, and a home is set meanwhile: it waits.
-        var held = await HoldTheLockAsync(cs);
+        // Somebody has the lock the homes are written under, and a home is set meanwhile: it asks for the lock, and waits.
+        await using var holder = await AdvisoryLockHolder.HoldAsync(cs, Ct);
         var post = PostHomeAsync(client, new { placeId = lisbon, from = "2026-07-09", to = "2026-07-11" });
-        await Task.Delay(750, Ct);
-        Assert.False(post.IsCompleted, "a home was set while the lock was held");
+        await AdvisoryLockHolder.WaitForWaitersAsync(cs, 1, Ct, (post, "setting a home"));
         Assert.Empty(await UserRowsAsync(cs));
 
-        await ReleaseAsync(held);
+        await holder.ReleaseAsync(Ct);
         using var created = await JsonOf(await post, HttpStatusCode.Created);
         var id = created.RootElement.GetProperty("id").GetInt64();
 
         // Taking it back waits the same way.
-        held = await HoldTheLockAsync(cs);
+        await using var second = await AdvisoryLockHolder.HoldAsync(cs, Ct);
         var delete = client.DeleteAsync($"/api/homes/{id}", Ct);
-        await Task.Delay(750, Ct);
-        Assert.False(delete.IsCompleted, "a home was deleted while the lock was held");
+        await AdvisoryLockHolder.WaitForWaitersAsync(cs, 1, Ct, (delete, "taking a home back"));
         Assert.Single(await UserRowsAsync(cs));
 
-        await ReleaseAsync(held);
+        await second.ReleaseAsync(Ct);
         Assert.Equal(HttpStatusCode.NoContent, (await delete).StatusCode);
         Assert.Empty(await UserRowsAsync(cs));
     }
@@ -541,110 +516,5 @@ public class HomesSettingsTests(DatabaseFixture db)
             Assert.Equal(double.Parse(value, System.Globalization.CultureInfo.InvariantCulture), body.RootElement.GetProperty("tripMinDistanceKm").GetDouble());
             Assert.Equal(double.Parse(value, System.Globalization.CultureInfo.InvariantCulture), await SettingAsync(cs));
         }
-    }
-
-    // ---- what failed, tried again --------------------------------------------------------------------------------------------
-
-    [Fact]
-    public async Task Retry_makes_failed_ranges_due()
-    {
-        var cs = await db.CreateDatabaseAsync(Ct);
-        await using var api = new ApiFactory(cs);
-        var client = api.CreateClient();
-        var queue = api.Services.GetRequiredService<ProcessingQueue>();
-        var inAnHour = DateTime.UtcNow.AddHours(1);
-        await TimelineSeeder.InsertDirtyRangeAsync(cs, Utc(10, 20, 6), Utc(10, 20, 7), attempts: 1, nextAttemptAt: inAnHour); // failed once, waiting
-        await TimelineSeeder.InsertDirtyRangeAsync(cs, Utc(10, 22, 6), Utc(10, 22, 7), attempts: 3, nextAttemptAt: inAnHour.AddHours(5)); // set aside
-        await TimelineSeeder.InsertDirtyRangeAsync(cs, Utc(10, 24, 6), Utc(10, 24, 7)); // waiting, not failed
-        await TimelineSeeder.SetBackfillAsync(cs, Utc(1, 1), Utc(10, 28), Utc(5, 1));
-        Assert.Empty(await queue.DueRangesAsync(DateTime.UtcNow, ct: Ct)); // the two that failed are waiting out their backoff, and the third is new
-
-        using var body = await JsonOf(await client.PostAsync("/api/status/retry", Json("{}"), Ct));
-
-        Assert.Equal(2, body.RootElement.GetProperty("retried").GetInt32());
-        var rows = await Sql.QueryAsync<DirtyRow>(cs,
-            "select attempts as Attempts, next_attempt_at as NextAttemptAt, last_error as LastError from dirty_range order by from_utc", ct: Ct);
-        Assert.Equal([new DirtyRow(0, null, "boom"), new DirtyRow(0, null, "boom"), new DirtyRow(0, null, null)], rows); // the error stays: what failed last
-        // Due now: the failed ranges have been waiting longer than the debounce, whenever they were recorded. The one that did not fail
-        // is still a range that ingest recorded a moment ago, and waits for more points as it did.
-        var due = await queue.DueRangesAsync(DateTime.UtcNow, ct: Ct);
-        Assert.Equal([(Utc(10, 20, 6), Utc(10, 20, 7)), (Utc(10, 22, 6), Utc(10, 22, 7))], due.Select(d => (d.FromUtc, d.ToUtc)));
-        // The backfill is not touched.
-        Assert.Equal(Utc(5, 1), (await queue.GetStateAsync(Ct)).BackfillCursor);
-
-        // They are not failed any more, and what is pending is still all three.
-        using var status = await JsonOf(await client.GetAsync("/api/status", Ct));
-        Assert.Empty(status.RootElement.GetProperty("failedRanges").EnumerateArray());
-        Assert.Equal(3, status.RootElement.GetProperty("pendingRanges").GetInt32());
-
-        // Nothing is left to retry, and an empty body is as good as {}.
-        using var again = await JsonOf(await client.PostAsync("/api/status/retry", Json(""), Ct));
-        Assert.Equal(0, again.RootElement.GetProperty("retried").GetInt32());
-        Assert.Equal(HttpStatusCode.UnsupportedMediaType, (await client.PostAsync("/api/status/retry", new StringContent("{}", Encoding.UTF8, "text/plain"), Ct)).StatusCode);
-    }
-
-    private sealed record DirtyRow(int Attempts, DateTime? NextAttemptAt, string? LastError);
-
-    // ---- what the views read ---------------------------------------------------------------------------------------------------
-
-    [Fact]
-    public async Task Thumbnail_of_a_trip_ending_at_a_new_home_ends_there()
-    {
-        var cs = await db.CreateDatabaseAsync(Ct);
-        await using var api = new ApiFactory(cs);
-        var client = api.CreateClient();
-        var oldHomeAt = Spots.Home;
-        var newHomeAt = Geo.Offset(Spots.Home, 7000, 0); // the person moved house during the trip
-        var oldHome = await PlaceAsync(cs, oldHomeAt);
-        var newHome = await PlaceAsync(cs, newHomeAt);
-        var lisbon = await PlaceAsync(cs, Spots.Lisbon, "Lisbon", "Portugal");
-        // The new home is in effect from the night after the last away night, which is how detection backdates a home that was moved into on the way back.
-        await StoreAsync(api,
-            [Stay(D(9, 12), lisbon, Spots.Lisbon), Stay(D(9, 13), lisbon, Spots.Lisbon), Stay(D(9, 14), lisbon, Spots.Lisbon)],
-            [new HomePeriod(oldHome, D(1, 1), D(9, 14)), new HomePeriod(newHome, D(9, 15), null)],
-            Trip(D(9, 12), D(9, 14), Utc(9, 12, 7), Utc(9, 15, 12)));
-
-        var trip = Assert.Single(await TripsAsync(client));
-
-        var line = JsonSerializer.Deserialize<double[][]>(trip.GetProperty("thumbnail").GetRawText())!;
-        Assert.Equal([[oldHomeAt.Longitude, oldHomeAt.Latitude], [Spots.Lisbon.Longitude, Spots.Lisbon.Latitude], [newHomeAt.Longitude, newHomeAt.Latitude]], line);
-    }
-
-    [Fact]
-    public async Task Day_marks_a_place_near_a_home_the_owner_set_by_the_nights_of_that_period()
-    {
-        var cs = await db.CreateDatabaseAsync(Ct);
-        await using var api = new ApiFactory(cs);
-        var client = api.CreateClient();
-        var detectedAt = Spots.Home;
-        var ownersAt = Geo.Offset(Spots.Home, 7000, 0);
-        var detected = await PlaceAsync(cs, detectedAt, "Oslo", "Norway", userName: "Home");
-        var owners = await PlaceAsync(cs, ownersAt, "Oslo", "Norway", userName: "Flat");
-        // Two more places of the owner's flat, as GPS drift makes them: one was where a night was spent in August, the other in July, before
-        // the owner's period, which is then not a night of that home.
-        var fragment = await PlaceAsync(cs, Geo.Offset(ownersAt, 0, 120), "Oslo", "Norway", osmName: "Storgata 5");
-        var earlier = await PlaceAsync(cs, Geo.Offset(ownersAt, 150, 0), "Oslo", "Norway", osmName: "Storgata 7");
-        await StoreAsync(api, [Stay(D(7, 10), earlier, Geo.Offset(ownersAt, 150, 0)), Stay(D(8, 10), fragment, Geo.Offset(ownersAt, 0, 120))],
-            [new HomePeriod(detected, D(1, 1), null)]);
-        await Sql.ExecAsync(cs, "insert into home_period (place_id, from_date, to_date, source) values (@owners, '2026-08-01', '2026-08-31', 'user')",
-            new { owners }, Ct);
-        foreach (var (day, hour, place) in new[]
-        {
-            (D(8, 15), 10, owners), (D(8, 15), 12, fragment), (D(8, 15), 14, earlier), (D(9, 15), 10, owners), (D(9, 15), 12, detected),
-        })
-            await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(day.Month, day.Day, hour), Utc(day.Month, day.Day, hour + 1), day, day, placeId: place);
-
-        async Task<List<(long? Place, bool Home)>> HomesOf(string date)
-        {
-            using var body = await JsonOf(await client.GetAsync($"/api/day/{date}", Ct));
-            return [.. body.RootElement.GetProperty("segments").EnumerateArray()
-                .Where(s => s.GetProperty("kind").GetString() == "stay")
-                .Select(s => ((long?)s.GetProperty("place").GetProperty("id").GetInt64(), s.GetProperty("home").GetBoolean()))];
-        }
-
-        // In August the owner's flat is home, and so is the fragment whose night was in August; the other one's night was before the period.
-        Assert.Equal([(owners, true), (fragment, true), (earlier, false)], await HomesOf("2026-08-15"));
-        // In September the detected home is: the owner's flat is a place like another, and has no nights of a period then.
-        Assert.Equal([(owners, false), (detected, true)], await HomesOf("2026-09-15"));
     }
 }

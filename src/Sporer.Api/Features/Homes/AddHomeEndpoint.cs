@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json.Serialization;
 using FastEndpoints;
 using Sporer.Api.Features.Timeline;
@@ -48,11 +47,11 @@ internal sealed record AddHomeRequest
 /// <remarks>
 /// <para>
 /// <b>The place</b> is as <c>GET /api/places/{id}</c> reads an id: one that was merged into another is the one it was merged into, and that is
-/// the place the period is stored at. A place that is no place of the timeline (see <see cref="PlaceStore.FindDetailAsync"/>) is a 404.
+/// the place the period is stored at. A place that is no place of the timeline (see <see cref="PlaceStore.FindSurvivorAsync"/>) is a 404.
 /// </para>
 /// <para>
-/// <b>The dates</b> are <c>yyyy-MM-dd</c> and no other form, from <see cref="EditTripEndpoint.EarliestDate"/> to
-/// <see cref="EditTripEndpoint.LatestDate"/>. <c>from</c> may be the same date as <c>to</c> (one night) but not after it: that is a 400. A period
+/// <b>The dates</b> are <c>yyyy-MM-dd</c> and no other form, from <see cref="NightDate.Earliest"/> to
+/// <see cref="NightDate.Latest"/>. <c>from</c> may be the same date as <c>to</c> (one night) but not after it: that is a 400. A period
 /// that shares a date with another one of the owner's is a 409, whatever the place; touching (one ends the day before the next begins) is not
 /// sharing. A detected period may be overlapped: the owner's wins on its dates.
 /// </para>
@@ -74,10 +73,10 @@ internal sealed class AddHomeEndpoint(HomeStore homes, PlaceStore places, EditRe
         if (req.PlaceId is not { } placeId || placeId <= 0)
             ValidationFailures.Add(new("placeId", "The place must be given, as a positive whole number."));
 
-        var from = ParseDate(req.From, "from", required: true);
+        var from = NightDate.Read(req.From, "from", required: true, ValidationFailures);
         if (!req.HasTo)
             ValidationFailures.Add(new("to", "The end date is missing: send null for a home that goes on."));
-        var to = ParseDate(req.To, "to", required: false);
+        var to = NightDate.Read(req.To, "to", required: false, ValidationFailures);
 
         if (ValidationFailures.Count == 0 && from > to)
             ValidationFailures.Add(new("from", "The first date must not be after the last."));
@@ -87,7 +86,7 @@ internal sealed class AddHomeEndpoint(HomeStore homes, PlaceStore places, EditRe
             return;
         }
 
-        var place = await places.FindDetailAsync(req.PlaceId!.Value, ct);
+        var place = await places.FindSurvivorAsync(req.PlaceId!.Value, ct);
         if (place is null)
         {
             await Send.NotFoundAsync(ct);
@@ -107,30 +106,5 @@ internal sealed class AddHomeEndpoint(HomeStore homes, PlaceStore places, EditRe
 
         await Send.ResponseAsync(new HomeDto(
             id.Value, place.Id, place.Name, TripMapping.Text(from.Value), to is { } end ? TripMapping.Text(end) : null, "user"), 201, ct);
-    }
-
-    /// <summary>
-    /// The date <paramref name="text"/> says, or null for none, which is a failure of <paramref name="property"/> where one is
-    /// <paramref name="required"/>, and so is a text that is not a date or is out of range.
-    /// </summary>
-    private DateOnly? ParseDate(string? text, string property, bool required)
-    {
-        if (text is null)
-        {
-            if (required)
-                ValidationFailures.Add(new(property, "The date must be given, as yyyy-MM-dd."));
-            return null;
-        }
-
-        if (!DateOnly.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
-            || date < EditTripEndpoint.EarliestDate || date > EditTripEndpoint.LatestDate)
-        {
-            ValidationFailures.Add(new(property,
-                $"The date must be written yyyy-MM-dd, from {TripMapping.Text(EditTripEndpoint.EarliestDate)} to {TripMapping.Text(EditTripEndpoint.LatestDate)}"
-                + (required ? "." : ", or be null.")));
-            return null;
-        }
-
-        return date;
     }
 }

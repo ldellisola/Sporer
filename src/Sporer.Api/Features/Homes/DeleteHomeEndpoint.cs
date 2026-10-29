@@ -1,5 +1,6 @@
 using FastEndpoints;
 using Sporer.Api.Features.Trips;
+using Sporer.Api.Http;
 
 namespace Sporer.Api.Features.Homes;
 
@@ -18,9 +19,9 @@ internal sealed class DeleteHomeEndpoint(HomeStore homes, EditRecompute recomput
 
     public override async Task HandleAsync(CancellationToken ct)
     {
-        if (!HomeId.TryParse(Route<string>("id", isRequired: false), out var id))
+        if (!PositiveId.TryParse(Route<string>("id", isRequired: false), out var id))
         {
-            ValidationFailures.Add(new("id", HomeId.InvalidMessage));
+            ValidationFailures.Add(new("id", PositiveId.InvalidMessage));
             await Send.ErrorsAsync(400, ct);
             return;
         }
