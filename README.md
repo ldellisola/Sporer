@@ -74,8 +74,9 @@ screen in a window of its own, without Safari's bars, on today.
   ("Map unavailable", with its own Retry) because its style and tiles are fetched from the network. Nothing you looked at before is shown: viewing
   data loaded earlier without a network is not part of v1. When the network is back, Retry loads the view. The same happens when the network
   answers but very slowly: after 3 seconds without an answer the app opens from the saved page instead of waiting, and its views load as the
-  answers come.
-- **How a release reaches the installed app.** The app's page is always asked of the server first (it is saved only for when that fails), so the next time
+  answers come. And when the server is down for a moment (a restart, an update) and the proxy in front answers 502, 503 or 504, the app opens
+  from the saved page too, and its views say they could not load, with Retry, rather than showing the proxy's error page.
+- **How a release reaches the installed app.** The app's page is always asked of the server first (the saved one is only for when that fails), so the next time
   the app starts after the server was updated, it starts on the new version of the page; the phone checks `/sw.js` at the same time, and a new build is
   a new worker that fetches the new shell in the background and then takes over and throws the old one away. An app you left open (it is still in the
   app switcher) runs on the version it started with until you close it: if it then needs a file that the release replaced, the view says it is
