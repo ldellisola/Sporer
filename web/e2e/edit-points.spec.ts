@@ -247,6 +247,25 @@ async function intoEditMode(page: Page, overrides: Overrides): Promise<{ project
       return { ids, dataCount, qsf, qrf, qrfAll, layer: lay ? { type: lay.type, vis: m.getLayoutProperty("sporer-edit-points", "visibility"), min: lay.minzoom, max: lay.maxzoom } : null, zoom: m.getZoom(), center: m.getCenter(), loaded: m.loaded(), style: m.isStyleLoaded(), srcLoaded: src?.loaded?.(), gl: (() => { const g = m.painter?.context?.gl; return g ? { ver: g.getParameter(g.VERSION), r: g.getParameter(g.RENDERER) } : null; })() };
     }, [x, y] as const);
     console.log(`DIAGMAP ${test.info().project.name} ${JSON.stringify(mapInfo)}`);
+    const glPixels = await page.evaluate(([px, py]) => new Promise((resolve) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const m = (window as any).__sporerMap;
+      m.once("render", () => {
+        const gl = m.painter.context.gl;
+        const dpr = devicePixelRatio;
+        const out: string[] = [];
+        for (const [dx, dy] of [[0, 0], [2, 0], [4, 0], [-5, -5]]) {
+          const buf = new Uint8Array(4);
+          gl.readPixels(Math.round((px + dx) * dpr), Math.round(gl.drawingBufferHeight - (py + dy) * dpr), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+          out.push(`${dx},${dy}=${[...buf].join("/")}`);
+        }
+        resolve(`buffer ${gl.drawingBufferWidth}x${gl.drawingBufferHeight} ${out.join(" ")}`);
+      });
+      m.triggerRepaint();
+    }), [x, y] as const);
+    console.log(`DIAGGL ${test.info().project.name} ${glPixels}`);
+    await page.waitForTimeout(1000);
+    console.log(`DIAGAFTER ${test.info().project.name} screenshot after repaint: ${(await pixelAt(page, x, y)).join("/")}`);
     console.log(`DIAGCANVAS ${test.info().project.name} ${JSON.stringify(layers)}`);
     const crop = await page.screenshot({ clip: { x: Math.max(0, x - 60), y: Math.max(0, y - 60), width: 120, height: 120 } });
     console.log(`DIAGPNG ${test.info().project.name} ${crop.toString("base64")}`);

@@ -547,8 +547,8 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       type: "circle",
       source: SOURCE_IDS.editPoints,
       paint: {
-        "circle-radius": EDIT_POINT_RADIUS, // DIAGNOSTIC ONLY: no feature state
-        "circle-color": ink,
+        "circle-radius": ["case", IS_SELECTED, EDIT_POINT_SELECTED_RADIUS, EDIT_POINT_RADIUS],
+        "circle-color": ["case", IS_SELECTED, EDIT_SELECTED_COLOR, ink],
       },
     },
     {
