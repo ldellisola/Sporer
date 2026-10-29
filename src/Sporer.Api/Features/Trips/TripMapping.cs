@@ -13,7 +13,8 @@ internal static class TripMapping
     /// <summary>
     /// The fields of <paramref name="trip"/> as a list item and the trip's page both have them, with its cities made from its known
     /// <paramref name="nights"/> and its name the owner's (<paramref name="name"/>) or, where it has none, made from them too (see
-    /// <see cref="DisplayName"/>). <paramref name="edited"/> is whether the trip has an edit.
+    /// <see cref="DisplayName"/>). <paramref name="edited"/> is whether the trip has an edit. The owner's name is the summary's
+    /// <c>OwnName</c> as it is, null when there is none.
     /// </summary>
     public static TripSummary Summary(DetectedTrip trip, IReadOnlyList<TripNight> nights, string? name, bool edited) => new(
         Text(trip.FirstNight),
@@ -29,7 +30,8 @@ internal static class TripMapping
         Text(trip.LocalEndDate),
         trip.EndUtc is null,
         [.. TripNaming.Cities(nights).Select(c => new TripCityDto(c.Name, c.Country, c.Nights, c.Latitude, c.Longitude))],
-        edited);
+        edited,
+        name);
 
     /// <summary>
     /// What a trip is called: the owner's <paramref name="name"/> for it, or, where it has none, the one made from its known

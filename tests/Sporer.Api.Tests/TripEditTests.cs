@@ -149,8 +149,8 @@ public class TripEditTests(DatabaseFixture db)
         Assert.All(item.EnumerateObject().Where(p => p.Name != "thumbnail"),
             p => Assert.Equal(p.Value.GetRawText(), detail.RootElement.GetProperty(p.Name).GetRawText()));
         Assert.Equal(["id", "name"], detail.RootElement.EnumerateObject().Take(2).Select(p => p.Name));
-        Assert.Equal(["edited", "thumbnail"], item.EnumerateObject().TakeLast(2).Select(p => p.Name));
-        Assert.Equal(["edited", "stats", "moves", "days"], detail.RootElement.EnumerateObject().TakeLast(4).Select(p => p.Name));
+        Assert.Equal(["edited", "ownName", "thumbnail"], item.EnumerateObject().TakeLast(3).Select(p => p.Name));
+        Assert.Equal(["edited", "ownName", "stats", "moves", "days"], detail.RootElement.EnumerateObject().TakeLast(5).Select(p => p.Name));
 
         // The dates are as they were detected, and the edit is of this trip, with nothing but its name.
         var stored = Assert.Single(await StoredAsync(cs));
@@ -168,6 +168,40 @@ public class TripEditTests(DatabaseFixture db)
             Assert.Empty(await EditsAsync(cs));
             Assert.Null(Assert.Single(await StoredAsync(cs)).Name);
         }
+    }
+
+    [Fact]
+    public async Task Trip_says_the_name_the_owner_gave_it_apart_from_the_name_it_is_shown_under()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await SeedAsync(cs, api);
+
+        // `name` is what the trip is shown under, made up or the owner's; `ownName` is the owner's, and null (present, and null) when there is none.
+        async Task<(string? Name, string? OwnName, bool Edited)> ListedAsync(string id)
+        {
+            var item = Assert.Single(await TripsAsync(client));
+            using var detail = await GetAsync(client, $"/api/trips/{id}");
+            Assert.Equal(item.GetProperty("ownName").GetRawText(), detail.RootElement.GetProperty("ownName").GetRawText()); // the list and the page agree
+            var own = item.GetProperty("ownName");
+            return (item.GetProperty("name").GetString(), own.ValueKind == JsonValueKind.Null ? null : own.GetString(), item.GetProperty("edited").GetBoolean());
+        }
+
+        Assert.Equal(("Lisbon", null, false), await ListedAsync("2026-07-09")); // detected: the name is made up, and the owner has given none
+
+        using (var named = await JsonOf(await PutAsync(client, "2026-07-09", "  Lisbon weekend  "))) { }
+        Assert.Equal(("Lisbon weekend", "Lisbon weekend", true), await ListedAsync("2026-07-09")); // trimmed, as it is stored
+
+        // Dates of its own do not make a name of its own: a trip that was re-dated and has no name of the owner's is shown under a made-up one (which
+        // follows the nights it has now: the night before is in Oslo), and that is edited. Which is what tells a form that the name that it shows
+        // is not one to send back.
+        using (var redated = await JsonOf(await PutAsync(client, "2026-07-09", null, "2026-07-08", "2026-07-13"))) { }
+        Assert.Equal(("Lisbon & Oslo", null, true), await ListedAsync("2026-07-08"));
+
+        // With a name and dates both, the name is still the owner's.
+        using (var both = await JsonOf(await PutAsync(client, "2026-07-08", "Lisbon weekend", "2026-07-08", "2026-07-13"))) { }
+        Assert.Equal(("Lisbon weekend", "Lisbon weekend", true), await ListedAsync("2026-07-08"));
     }
 
     [Fact]
