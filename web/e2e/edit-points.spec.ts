@@ -541,9 +541,11 @@ test("edit_points_says_the_points_could_not_be_loaded_with_a_retry_that_draws_th
   await expect(bar(page).getByText("Couldn't load the points")).toBeInViewport({ ratio: 1 });
   await expect(bar(page).getByRole("button", { name: "Retry" })).toBeInViewport({ ratio: 1 });
   await expect(bar(page).getByRole("button", { name: "Done" })).toBeInViewport({ ratio: 1 });
-  await bar(page).getByRole("button", { name: "Retry" }).click();
+  await bar(page).getByRole("button", { name: "Retry" }).focus();
+  await page.keyboard.press("Enter");
   await expect(bar(page).getByRole("alert")).toHaveCount(0);
   await expect(bar(page).getByText(/Tap a point/)).toBeVisible();
+  await expect(bar(page).getByRole("button", { name: "Done" })).toBeFocused(); // the Retry that had the focus is gone with the alert: nothing is selected, and Done is the button that is on
   const project = await projector(page);
   await expectDot(page, project, WALK(3), INK);
 });
@@ -567,7 +569,7 @@ test("edit_points_says_a_later_failed_load_in_the_row_at_the_peek_with_clear_rem
   const alert = bar(page).getByRole("alert");
   await expect(alert).toContainText("Couldn't load the points");
   await sheetAtRest(page); // where edit mode has it: the peek, which shows the row of the bar and nothing under it
-  // The words, the Retry and the three buttons are in the row (in a font that is wider than the developer's it is two lines): all on screen, or the owner sees no reason and has no way on.
+  // The words, the Retry and the three buttons are in the row, which is two lines on any phone (the words, and then the buttons): all on screen, or the owner sees no reason and has no way on.
   await expect(alert).toBeInViewport({ ratio: 1 });
   await expect(bar(page).getByText("Couldn't load the points")).toBeInViewport({ ratio: 1 });
   await expect(alert.getByRole("button", { name: "Retry" })).toBeInViewport({ ratio: 1 });
@@ -580,9 +582,11 @@ test("edit_points_says_a_later_failed_load_in_the_row_at_the_peek_with_clear_rem
   await expect(bar(page).getByText(/^GET .*points failed with status 500$/)).toHaveCount(1);
   await expectDot(page, project, WALK(5), RED); // the points that were on screen are, and are selected still
 
-  await alert.getByRole("button", { name: "Retry" }).click();
+  await alert.getByRole("button", { name: "Retry" }).focus();
+  await page.keyboard.press("Enter");
 
   await expect(alert).toHaveCount(0);
+  await expect(bar(page).getByRole("button", { name: "Clear" })).toBeFocused(); // the Retry that had the focus is gone with the alert: the bar has it, and Clear is on
   await expect(count).toBeVisible();
   expect((await count.boundingBox())!.width).toBeGreaterThan(1);
   await expectDot(page, project, WALK(3), INK); // the point that was restored is drawn, with the list that came
@@ -594,6 +598,15 @@ test("edit_points_keeps_the_focus_on_a_button_of_the_bar_when_a_removal_is_sent_
   const server = editServer();
   const { project, writes } = await intoEditMode(page, server.overrides);
   const focused = bar(page).locator("button:focus"); // a button of the bar has it: the page does not (that is the loss of the place for a keyboard)
+
+  // Clear, by the keyboard: it is off once nothing is selected, and Done is the button that is on.
+  await tap(page, placeOf(project, WALK(3)));
+  await expect(bar(page).getByText("1 selected")).toBeVisible();
+  await bar(page).getByRole("button", { name: "Clear" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(bar(page).getByText("0 selected")).toBeVisible();
+  await expect(bar(page).getByRole("button", { name: "Done" })).toBeFocused();
+  await expectDot(page, project, WALK(3), INK);
 
   // A removal that fails, so that the selection is still there: Remove is on again, or the focus has gone to Clear.
   server.refuse({ status: 503, json: {} });

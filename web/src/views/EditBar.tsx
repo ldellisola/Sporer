@@ -33,10 +33,13 @@ export interface EditBarProps {
  * page, off the screen and not off the reader (`heardOnly`), so that the count that is tapped meanwhile is heard and the one that comes back is not said again.
  * While the removal is on its way the selection is held still: it is the one that was sent.
  *
- * The focus is never left on the page itself. A button that has the focus and is turned off, or is not there any more, takes it with it, and for a keyboard that is
- * a loss of the place in the bar: so when a removal is answered, or the points to select are gone, and the focus is on the page (or is still on a Remove that
- * is off, which a browser that keeps the focus on a disabled button does), it goes to Clear if that is on, and to Done if it is not: after a removal that went
- * through the selection is empty, and after a refusal Remove is off until it is changed. Where the owner has put the focus (the map, a toast) it is left.
+ * The focus is mended where it has been lost with a button of the bar: a button that has it and is turned off, or is not there any more, takes it with it, and for a
+ * keyboard that is the place in the bar. These are the changes at which it is looked at, and no others: a removal is answered (the Remove that was pressed is off while
+ * it is sent); the points to select are gone (Clear and Remove with them); a refusal turns Remove off; and the alert goes after its Retry was pressed with the focus on
+ * it (the load went through or, for a first load, is asked for again). Then, if the focus is on the page (or is still on a Remove that is off, which a browser that
+ * keeps the focus on a disabled button does), it goes to Clear if that is on, else to Done. Clear's own press, with the focus on it, moves it to Done: the selection is
+ * empty and Clear is off. A focus that the owner has put elsewhere (the map, a toast) is left, and so is one that is on the page and was never in the bar: a tap on
+ * the map leaves it there on iOS, so a count that falls to nothing is not one of the changes.
  */
 export function EditBar({ edit, onDone }: EditBarProps) {
   const { points, load, removal, selected } = edit;
@@ -46,37 +49,55 @@ export function EditBar({ edit, onDone }: EditBarProps) {
   const removeButton = useRef<HTMLButtonElement>(null);
   const clearButton = useRef<HTMLButtonElement>(null);
   const doneButton = useRef<HTMLButtonElement>(null);
+  const alertBox = useRef<HTMLDivElement>(null);
+  // Whether the Retry of the alert had the focus when it was pressed: the alert goes when the load does, and the focus is lost with it (a tap does not focus a button in Safari).
+  const retryHadFocus = useRef(false);
   // Whether there is anything to select: while the points load, when they could not be had and when the day has none there is not, and the row is for saying so.
   const selectable = points !== undefined && points.points.length > 0;
+  // The load that failed, which is what the alert in the row says.
+  const failure = load.error;
+  const failed = failure !== null;
   // Where the focus goes when it is lost with a button of the bar (see above): a removal that was answered (the one that was pressed is off while it is sent, and after a
-  // refusal until the selection changes), points that are gone (Clear and Remove with them), or Remove off after a refusal, which may have had it. Clear is the way back, and where
-  // there is nothing to clear (a removal that went through) Done is the button that is on. Only what has just changed is looked at, and only a focus that is lost is moved.
-  const before = useRef({ pending: removal.pending, selectable, refused });
+  // refusal until the selection changes), points that are gone (Clear and Remove with them), Remove off after a refusal, which may have had it, or the alert that had the
+  // Retry that was pressed gone. Clear is the way back, and where there is nothing to clear (a removal that went through) Done is the button that is on. Only what has just
+  // changed is looked at, and only a focus that is lost is moved.
+  const before = useRef({ pending: removal.pending, selectable, refused, failed });
   useEffect(() => {
     const was = before.current;
-    before.current = { pending: removal.pending, selectable, refused };
+    before.current = { pending: removal.pending, selectable, refused, failed };
     const answered = was.pending && !removal.pending;
     const emptied = was.selectable && !selectable;
     const turnedOff = !was.refused && refused;
-    if (!answered && !emptied && !turnedOff) return;
+    const recovered = was.failed && !failed && retryHadFocus.current;
+    if (was.failed && !failed) retryHadFocus.current = false;
+    if (!answered && !emptied && !turnedOff && !recovered) return;
     const remove = removeButton.current;
     const onOffRemove = remove !== null && remove.disabled && document.activeElement === remove;
     if (!focusLost() && !onOffRemove) return;
     const clear = clearButton.current;
     (clear !== null && !clear.disabled ? clear : doneButton.current)?.focus();
-  }, [removal.pending, selectable, refused]);
+  }, [removal.pending, selectable, refused, failed]);
+  const retryLoad = (): void => {
+    retryHadFocus.current = alertBox.current?.contains(document.activeElement) === true;
+    load.retry();
+  };
+  // Clear, pressed from the keyboard, is off once the selection is empty and has the focus with it: Done, which is always there, is where it goes.
+  const clearSelection = (): void => {
+    const hadFocus = document.activeElement === clearButton.current;
+    edit.clear();
+    if (hadFocus) doneButton.current?.focus();
+  };
   // A load that failed takes the place of the count in the row, which is what a sheet at its lowest shows. Where there are no points yet (the first load) there is nothing
   // to count and the region of the count is not there; where there are (they were asked for again), it stays, off the screen, and the buttons stay with it.
-  const failure = load.error;
   const selectedCount = `${formatInteger(count)} selected`;
   const said = points === undefined ? (load.pending ? "Loading points…" : selectedCount) : points.points.length === 0 ? "No points on this day" : selectedCount;
   return (
     <div className={styles.bar} role="group" aria-label="Edit points">
       <div className={styles.row}>
         {failure !== null && (
-          <div className={styles.problem} role="alert">
+          <div ref={alertBox} className={styles.problem} role="alert">
             <p className={states.headline}>
-              {LOAD_FAILED} — <RetryButton onClick={load.retry} />
+              {LOAD_FAILED} — <RetryButton onClick={retryLoad} />
             </p>
           </div>
         )}
@@ -88,7 +109,7 @@ export function EditBar({ edit, onDone }: EditBarProps) {
         <div className={styles.buttons}>
           {selectable && (
             <>
-              <button ref={clearButton} type="button" className={forms.secondary} disabled={count === 0 || removal.pending} onClick={edit.clear}>
+              <button ref={clearButton} type="button" className={forms.secondary} disabled={count === 0 || removal.pending} onClick={clearSelection}>
                 Clear
               </button>
               <button ref={removeButton} type="button" className={forms.primary} disabled={count === 0 || removal.pending || refused} onClick={removal.run}>

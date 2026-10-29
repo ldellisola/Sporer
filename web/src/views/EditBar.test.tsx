@@ -451,6 +451,123 @@ describe("EditBar", () => {
       expect(screen.getByRole("button", { name: "on the map" })).toHaveFocus();
     });
 
+    test("EditBar_moves_the_focus_from_clear_to_done_when_clear_is_pressed_with_the_focus_on_it_for_clear_is_off_once_nothing_is_selected", () => {
+      const edit = pointEditing({ selected: new Set([0, 1]) });
+      render(<EditBar edit={edit} onDone={() => undefined} />);
+      screen.getByRole("button", { name: "Clear" }).focus();
+
+      fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+
+      expect(edit.clear).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("button", { name: "Done" })).toHaveFocus();
+    });
+
+    test("EditBar_leaves_the_focus_where_it_is_when_clear_is_pressed_with_the_focus_not_on_it", () => {
+      // A tap on a button does not focus it in Safari, and the owner may have the focus on the map: neither is for the bar to take.
+      const edit = pointEditing({ selected: new Set([0, 1]) });
+      render(
+        <div>
+          <button type="button">on the map</button>
+          <EditBar edit={edit} onDone={() => undefined} />
+        </div>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+      expect(document.body).toHaveFocus();
+
+      screen.getByRole("button", { name: "on the map" }).focus();
+      fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+
+      expect(edit.clear).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("button", { name: "on the map" })).toHaveFocus();
+    });
+
+    test("EditBar_puts_the_focus_on_clear_when_a_later_load_that_was_retried_from_the_alert_goes_through_and_the_focus_was_lost_with_it", () => {
+      const retry = vi.fn();
+      const failed = (selected: number[]) => pointEditing({ selected: new Set(selected), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry } });
+      const { rerender } = render(<EditBar edit={failed([0, 1])} onDone={() => undefined} />);
+      screen.getByRole("button", { name: "Retry" }).focus();
+
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(retry).toHaveBeenCalledTimes(1);
+      rerender(<EditBar edit={pointEditing({ selected: new Set([0, 1]) })} onDone={() => undefined} />); // it went through: the alert, and the focus with it, are gone
+
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Clear" })).toHaveFocus();
+    });
+
+    test("EditBar_puts_the_focus_on_done_when_a_later_load_that_was_retried_goes_through_with_nothing_selected", () => {
+      const failed = pointEditing({ load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } });
+      const { rerender } = render(<EditBar edit={failed} onDone={() => undefined} />);
+      screen.getByRole("button", { name: "Retry" }).focus();
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+      rerender(<EditBar edit={pointEditing()} onDone={() => undefined} />);
+
+      expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Done" })).toHaveFocus();
+    });
+
+    test("EditBar_puts_the_focus_on_done_when_a_first_load_that_was_retried_from_the_alert_takes_the_alert_away", () => {
+      const failed = pointEditing({ points: undefined, load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } });
+      const { rerender } = render(<EditBar edit={failed} onDone={() => undefined} />);
+      screen.getByRole("button", { name: "Retry" }).focus();
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+      rerender(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } })} onDone={() => undefined} />); // asked again: the alert is gone
+
+      expect(screen.getByRole("button", { name: "Done" })).toHaveFocus();
+
+      rerender(<EditBar edit={pointEditing()} onDone={() => undefined} />); // and the points came: the focus stays where it is
+
+      expect(screen.getByRole("button", { name: "Done" })).toHaveFocus();
+    });
+
+    test("EditBar_leaves_the_focus_alone_when_a_failed_load_clears_that_was_not_retried_from_the_alert_or_whose_focus_is_elsewhere", () => {
+      const failedLoad = () => ({ pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() });
+      const quiet = () => pointEditing({ selected: new Set([0]) });
+      // The alert goes by itself (the points were asked for again by the shell, or by the window coming back): nothing was pressed, and the focus is not the bar's to take.
+      const first = render(<EditBar edit={pointEditing({ selected: new Set([0]), load: failedLoad() })} onDone={() => undefined} />);
+      first.rerender(<EditBar edit={quiet()} onDone={() => undefined} />);
+      expect(document.body).toHaveFocus();
+      first.unmount();
+
+      // Retry was pressed (a tap does not focus it in Safari): the focus was never in the alert.
+      const second = render(<EditBar edit={pointEditing({ selected: new Set([0]), load: failedLoad() })} onDone={() => undefined} />);
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      second.rerender(<EditBar edit={quiet()} onDone={() => undefined} />);
+      expect(document.body).toHaveFocus();
+      second.unmount();
+
+      // Retry was pressed from the keyboard, and the focus has been put on the map since.
+      const third = render(
+        <div>
+          <button type="button">on the map</button>
+          <EditBar edit={pointEditing({ selected: new Set([0]), load: failedLoad() })} onDone={() => undefined} />
+        </div>,
+      );
+      screen.getByRole("button", { name: "Retry" }).focus();
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      screen.getByRole("button", { name: "on the map" }).focus();
+      third.rerender(
+        <div>
+          <button type="button">on the map</button>
+          <EditBar edit={quiet()} onDone={() => undefined} />
+        </div>,
+      );
+      expect(screen.getByRole("button", { name: "on the map" })).toHaveFocus();
+    });
+
+    test("EditBar_does_not_take_the_focus_when_the_last_point_is_taken_off_by_a_tap_that_leaves_the_focus_on_the_page", () => {
+      // On iOS a tap on the map leaves the focus on the page: that is not a loss of the bar's to mend, and Done is not to have it for a tap.
+      const { rerender } = render(<EditBar edit={pointEditing({ selected: new Set([0]) })} onDone={() => undefined} />);
+      expect(document.body).toHaveFocus();
+
+      rerender(<EditBar edit={pointEditing()} onDone={() => undefined} />);
+
+      expect(screen.getByText("0 selected")).toBeInTheDocument();
+      expect(document.body).toHaveFocus();
+    });
+
     test("EditBar_takes_no_focus_when_it_appears_or_when_the_points_come_or_while_nothing_has_changed", () => {
       const { rerender } = render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } })} onDone={() => undefined} />);
       expect(document.body).toHaveFocus();
