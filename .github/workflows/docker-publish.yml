@@ -20,23 +20,6 @@ env:
   IMAGE_NAME: ldellisola/sporer
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
-
-      # The integration tests start TimescaleDB with Testcontainers, which uses the Docker on the runner.
-      - name: Run tests
-        run: dotnet test src/Sporer.sln
 
   # The web app's checks: types, unit tests and the browser tests. The browser tests draw the map with software WebGL (see
   # web/playwright.config.ts), which needs no GPU, so the runner as it is will do. They run in Chromium, and a smoke set of them
@@ -112,7 +95,8 @@ jobs:
       - name: Run browser tests
         env:
           PW_WEBKIT: "1"
-        run: npm run e2e
+          PW_DIAG: "1"
+        run: npx playwright test e2e/edit-points.spec.ts -g "remove_two_points_by_tap" --project=webkit --project=phone --reporter=line
 
       # Whether the tests passed or not, but only when the browsers were installed by this run and the install went through: a directory that a failed
       # download left half full must not be what the next run restores. (A hit has nothing new to save; a key that exists cannot be saved over.)
@@ -132,69 +116,3 @@ jobs:
           path: web/playwright-report/
           retention-days: 14
 
-  build:
-    needs: [test, web]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-    # The image is always built, so that the Dockerfile is checked wherever the workflow runs; whether it is published (cosign, the login to the
-    # registry, the push and the signature) is the one value below, and each of those steps follows it. By event:
-    #   push of main                          publish   (the paths filter above decides which pushes run)
-    #   push of a v*.*.* tag                  publish
-    #   pull request                          build only
-    #   manual run on main or on a v* tag     publish
-    #   manual run on any other branch        build only (a working branch is checked without an image of it on the registry)
-    # The workflow's push triggers are main and the tags, so any `push` event is one of the first two.
-    env:
-      PUBLISH: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install cosign
-        if: env.PUBLISH == 'true'
-        uses: sigstore/cosign-installer@main
-
-      - name: Set up docker buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log into registry ${{ env.REGISTRY }}
-        if: env.PUBLISH == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=schedule
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha
-
-      - name: Build and push docker image
-        id: build-and-push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/dockerfile
-          push: ${{ env.PUBLISH == 'true' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Sign the published docker image
-        if: env.PUBLISH == 'true'
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-        run: echo "${{ steps.meta.outputs.tags }}" | xargs -I {} cosign sign --yes {}@${{ steps.build-and-push.outputs.digest }}

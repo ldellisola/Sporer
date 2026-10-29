@@ -1,4 +1,5 @@
 import type { Locator, Page, Request } from "@playwright/test";
+declare const process: { env: Record<string, string | undefined> };
 import type { DayResponse, RawPoint } from "../src/api/types";
 import { expect, test } from "./base";
 import { fitOf, type LonLat } from "./fit";
@@ -209,11 +210,29 @@ async function intoEditMode(page: Page, overrides: Overrides): Promise<{ project
   await expect(bar(page)).toBeVisible();
   await sheetAtRest(page);
   const project = await projector(page);
+  if (process.env["PW_DIAG"]) {
+    const { x, y } = placeOf(project, WALK(3));
+    for (const wait of [0, 3000, 6000]) {
+      await page.waitForTimeout(wait);
+      const info = await page.evaluate(() => {
+        const canvas = document.querySelector("canvas");
+        const rect = canvas?.getBoundingClientRect();
+        return { dpr: devicePixelRatio, canvas: canvas ? [canvas.width, canvas.height] : null, rect: rect ? [rect.x, rect.y, rect.width, rect.height] : null, inner: [innerWidth, innerHeight] };
+      });
+      const around: string[] = [];
+      for (const [dx, dy] of [[0, 0], [-2, 0], [2, 0], [0, -2], [0, 2], [-5, -5], [5, 5]]) around.push(`${dx},${dy}=${(await pixelAt(page, x + dx!, y + dy!)).join("/")}`);
+      console.log(`DIAG ${test.info().project.name} wait=${wait} at=${x.toFixed(1)},${y.toFixed(1)} ${JSON.stringify(info)} ${around.join(" ")}`);
+    }
+    const crop = await page.screenshot({ clip: { x: Math.max(0, x - 60), y: Math.max(0, y - 60), width: 120, height: 120 } });
+    console.log(`DIAGPNG ${test.info().project.name} ${crop.toString("base64")}`);
+    const full = await page.screenshot({ type: "jpeg", quality: 35, scale: "css" });
+    console.log(`DIAGFULL ${test.info().project.name} ${full.toString("base64")}`);
+  }
   await expectDot(page, project, WALK(3), INK); // the points are drawn, and the camera is at rest
   return { project, writes: api.writes, requests: api.requests };
 }
 
-test("edit_points_remove_two_points_by_tap_see_the_day_rebuilt_and_undo", async ({ page }) => {
+test("edit_points_remove_two_points_by_tap_see_the_day_rebuilt_and_undo", { tag: "@smoke" }, async ({ page }) => {
   const server = editServer();
   const { project, writes } = await intoEditMode(page, server.overrides);
   const [a, b] = [WALK(3), WALK(8)];
