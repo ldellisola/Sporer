@@ -253,6 +253,19 @@ README.md, docs/superpowers/plans/2026-10-29-sporer-plan-5-perf.md
 
 ---
 
+### Task 6: Edit bar follow-ups (P5-R7)
+
+**Files:**
+- Modify: `web/src/views/EditBar.tsx` (+ `.module.css`, `.test.tsx`), `web/e2e/edit-points.spec.ts`
+
+The fix on main for the edit bar (`47bc910`) put the load's state in the bar's row, which is what the sheet at its peek shows. Its review found two more gaps:
+
+- [ ] **Step 1: A later failed load shows at the peek.** When the points are asked for again (after a removal or an Undo) and that fails while points are still on screen, its alert, with its Retry, takes the place of the count in the row, and Clear, Remove and Done stay. Test first (unit), then an e2e under the DejaVu font override (`FONTCONFIG_FILE`, as the fix did) that the alert and Retry are fully in the viewport at the peek.
+- [ ] **Step 2: Focus never falls to the page.** When a removal stops pending, or the points to select are gone (only Done is left), and the focus is on `<body>` or nowhere, it goes to Clear if Clear is enabled, else to Done. This is the pattern the bar already uses after a refusal. Test first (unit), then an e2e: select points, Remove by keyboard, and the focus is on a button of the bar after the removal and after a failed one.
+- [ ] **Step 3: Commit.** Message: `Edit bar: a later failed load shows at the peek, and the focus stays in the bar`.
+
+---
+
 ## Out of scope (later, spec §11)
 
 - Offline viewing of data loaded before. The worker caches the shell only.
