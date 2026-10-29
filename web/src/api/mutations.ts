@@ -4,7 +4,8 @@ import { isNotFound } from "./client";
 /**
  * A write to the API (`postJson`, `putJson`, `deleteJson`) as the control that makes it uses it: `mutate(variables)` runs `write`, and the
  * result says whether it is on its way (`isPending`: the control shows it), has failed (`error`, an `ApiError` for an answer that was
- * not a success: the control shows it with a Retry, which is `mutate(variables)` again with the same `variables`) or went through.
+ * not a success) or went through. A failure is shown with a Retry, which is `mutate(variables)` again with the same `variables`, only when it
+ * is not a refusal (`isRefusal`): the server refusing the request itself would refuse it again, and is shown in its own words with no Retry.
  *
  * Every query is invalidated when a write goes through, with no filter (global constraints, Web writes): what is on screen is asked for
  * again, and the rest is marked stale and asked for when it is next shown. A write changes things (a place's name, the trips, the days)

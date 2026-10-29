@@ -79,11 +79,12 @@ export const putJson = <T = void>(path: string, body: unknown = {}): Promise<T> 
 export const deleteJson = (path: string): Promise<void> => send<void>("DELETE", path);
 
 /**
- * Whether `error` is the server refusing the request itself (a 400, a 404 or a 409): the same request would be refused again, so a control
- * does not offer to send it again. A 5xx or a request that got no answer may pass, and is offered a Retry.
+ * Whether `error` is the server refusing the request itself (P4-R29): every 4xx but a 408 (the request timed out) and a 429 (it was told to wait),
+ * which may pass when sent again. A 400, a 404, a 409, a 415... is the same the next time, so a control does not offer to send it again. A 5xx, a
+ * 408, a 429 and a request that got no answer may pass, and are offered a Retry.
  */
 export const isRefusal = (error: unknown): error is ApiError =>
-  error instanceof ApiError && (error.status === 400 || error.status === 404 || error.status === 409);
+  error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429;
 
 /** Whether `error` is the server saying there is no such thing (a 404): a place that was merged away or never was. Asking again cannot help. */
 export const isNotFound = (error: unknown): boolean => error instanceof ApiError && error.status === 404;

@@ -8,6 +8,7 @@ import { formatCount, formatDistance, formatDuration, formatTime } from "../time
 import { Chip, Chips } from "./Chips";
 import styles from "./DayPanel.module.css";
 import { HouseIcon } from "./HouseIcon";
+import { UNNAMED } from "./placeNames";
 import rows from "./Rows.module.css";
 import { Shown } from "./Shown";
 import { Empty, ErrorState, Loading } from "./States";
@@ -55,7 +56,7 @@ function FitButton({ label, onClick }: { label: string; onClick: () => void }) {
 
 function StayRow({ stay, order, when, onFocus }: { stay: StaySegment; order: number | undefined; when: string; onFocus: DayPanelProps["onFocus"] }) {
   const { place } = stay;
-  const name = place?.name ?? "Unnamed place";
+  const name = place?.name ?? UNNAMED;
   const home = place !== null && stay.home; // home is a place: a stay that is at none is not it, whatever it says
   return (
     <li className={styles.row}>

@@ -5,6 +5,7 @@ import { useStatus } from "../api/queries";
 import type { FailedRange, RetryFailedResponse, StatusResponse } from "../api/types";
 import { dateLabel, dateOf } from "../time/dates";
 import { formatCount, formatTime } from "../time/format";
+import forms from "./Forms.module.css";
 import rows from "./Rows.module.css";
 import styles from "./SettingsPanel.module.css";
 import { ErrorState, Loading } from "./States";
@@ -89,7 +90,7 @@ function Failed({ ranges }: { ranges: readonly FailedRange[] }) {
               <FailedPeriod key={index} range={range} />
             ))}
           </ul>
-          <button type="button" className={styles.action} disabled={retry.isPending} onClick={() => retry.mutate()}>
+          <button type="button" className={`${forms.secondary} ${styles.action}`} disabled={retry.isPending} onClick={() => retry.mutate()}>
             {retry.isPending ? "Retrying…" : "Retry failed"}
           </button>
         </>

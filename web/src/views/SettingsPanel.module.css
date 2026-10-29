@@ -72,29 +72,9 @@
   overflow-wrap: anywhere;
 }
 
-/* A button that does something to the data: the colour of the bar's own buttons, made tall enough for a finger. */
+/* Room under the button that does something to the data, before the note or the error that follows it (the button itself is Forms.module.css's). */
 .action {
-  min-height: 36px;
   margin: 0 0 8px;
-  padding: 6px 14px;
-  border: 0;
-  border-radius: var(--radius-segment);
-  background: var(--segment-track);
-  color: var(--accent-ink);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.action:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.action:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
 }
 
 .credit {

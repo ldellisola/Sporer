@@ -17,11 +17,12 @@ export interface WriteErrorProps {
   refusedActions?: ReactNode;
 }
 
-/** What a refusal says when the server gave no message of its own. */
-const GENERIC: Record<number, string> = { 400: "The server did not accept it.", 404: "It no longer exists.", 409: "The server refused it." };
+/** What a refusal says when the server gave no message of its own: a 409 is a conflict, a 404 says what is gone, and any other 4xx is "not accepted". */
+const GENERIC: Record<number, string> = { 404: "It no longer exists.", 409: "The server refused it." };
+const NOT_ACCEPTED = "The server did not accept it.";
 
 /**
- * The line under a control whose write failed, in one of two ways (P4-R28). A refusal (400, 404, 409: see `isRefusal`) is the server saying
+ * The line under a control whose write failed, in one of two ways (P4-R28). A refusal (a 4xx but a 408 or a 429: see `isRefusal`) is the server saying
  * no to the request itself, so sending it again would only be refused again: the line says "Could not rename: …" with the server's own
  * message (`ApiError.detail`, shown as it is and never read to choose what to say), or a generic line when it gave none, and has no Retry. A
  * control that has something else to offer passes it as `refusedActions`. Any other failure (a 5xx, no answer) may pass, and is
@@ -31,7 +32,7 @@ const GENERIC: Record<number, string> = { 400: "The server did not accept it.", 
  */
 export function WriteError({ what, error, onRetry, gone, refusedActions }: WriteErrorProps) {
   if (!isRefusal(error)) return <ErrorState message={`Couldn't ${what}`} error={error} onRetry={onRetry} />;
-  const reason = error.detail ?? (error.status === 404 ? gone : undefined) ?? GENERIC[error.status];
+  const reason = error.detail ?? (error.status === 404 ? gone : undefined) ?? GENERIC[error.status] ?? NOT_ACCEPTED;
   return (
     <div className={states.error} role="alert">
       <p className={states.headline}>

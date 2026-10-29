@@ -336,6 +336,7 @@ describe("MergeConfirm", () => {
       expect(alert).not.toHaveTextContent("Couldn't merge");
       expect(screen.queryByRole("button", { name: "Retry" }), said).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Merge" }), said).toBeDisabled(); // it would send the same again
+      expect(within(alert).getByRole("button", { name: "Choose another place" }), said).toHaveFocus(); // not on Merge, which is off: the focus would be on nothing
       expect(screen.getByText("Merge Bistro into Café?")).toBeInTheDocument(); // the confirm stays
       expect(onClose).not.toHaveBeenCalled();
       expect(api.writes(), String(status)).toHaveLength(1);
@@ -575,6 +576,68 @@ describe("MergedPlaces", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Separate Bar" })).toHaveFocus()); // the last: the one before it
     expect(onEmptied).not.toHaveBeenCalled();
+  });
+
+  test("MergedPlaces_keeps_the_focus_on_the_button_of_a_row_whose_separate_failed_and_on_the_next_row_when_the_row_is_gone", async () => {
+    const three = { ...CAFE, merged: [{ id: 5, name: "Bar" }, { id: 7, name: "Bistro" }, { id: 9, name: "Cafe" }] };
+    let current = three;
+    let answer: () => Response = () => new Response("{}", { status: 500 });
+    mountSection(
+      {
+        "GET /api/places/2": () => Response.json(current),
+        "DELETE /api/places/2/merged/7": () => answer(),
+      },
+      three,
+    );
+
+    // A failure that may pass: the row is where it was, and so is the focus (the buttons were off while the request was on its way).
+    fireEvent.click(screen.getByRole("button", { name: "Separate Bistro" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't separate — Retry");
+    expect(screen.getByRole("button", { name: "Separate Bistro" })).toHaveFocus();
+
+    // A refusal that is about the row being gone (a 404): the row goes with the refetch, so the focus is on the next one.
+    answer = () => {
+      current = { ...CAFE, merged: [three.merged[0]!, three.merged[2]!] };
+      return new Response("{}", { status: 404 });
+    };
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not separate"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Separate Bistro" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Separate Cafe" })).toHaveFocus();
+  });
+
+  test("MergedPlaces_keeps_the_focus_on_the_row_of_a_separate_that_the_server_refused_for_another_reason", async () => {
+    mountSection({ "DELETE /api/places/2/merged/7": () => refusal(409, "Not now.") });
+
+    fireEvent.click(screen.getByRole("button", { name: "Separate Bistro" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not separate: Not now.");
+    expect(screen.getByRole("button", { name: "Separate Bistro" })).toHaveFocus();
+  });
+
+  test("MergedPlaces_does_not_take_the_focus_later_for_a_row_that_was_gone_when_the_focus_was_to_move", async () => {
+    // The row after the separated one is gone when the list is drawn (it was separated elsewhere meanwhile): the focus that was to go to it
+    // is not kept, and does not jump to the row if it is ever back.
+    const three = { ...CAFE, merged: [{ id: 5, name: "Bar" }, { id: 7, name: "Bistro" }, { id: 9, name: "Cafe" }] };
+    let release: (response: Response) => void = () => undefined;
+    stubEdits({ "DELETE /api/places/2/merged/7": () => new Promise<Response>((resolve) => (release = resolve)) });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const section = (place: PlaceResponse) => (
+      <QueryClientProvider client={client}>
+        <MergedPlaces place={place} placeKey={KEY} onEmptied={() => undefined} />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(section(three));
+
+    fireEvent.click(screen.getByRole("button", { name: "Separate Bistro" }));
+    await screen.findByRole("button", { name: "Separating…" });
+    rerender(section({ ...CAFE, merged: [three.merged[0]!, three.merged[1]!] })); // Cafe went while the request was on its way
+    release(new Response(null, { status: 204 }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Separate Bar" })).toBeEnabled());
+    rerender(section(three)); // and is merged in again
+
+    expect(screen.getByRole("button", { name: "Separate Cafe" })).not.toHaveFocus();
+    expect(document.body).toHaveFocus();
   });
 
   test("MergedPlaces_hands_the_focus_on_when_the_last_place_is_separated_and_the_section_goes", async () => {

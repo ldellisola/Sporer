@@ -268,10 +268,13 @@ describe("isNotFound", () => {
 });
 
 describe("isRefusal", () => {
-  test("isRefusal_is_true_for_a_400_a_404_and_a_409_of_the_api_and_for_nothing_else", () => {
-    // The server refused the request itself: sent again it is refused again, so there is no use in offering to send it again.
-    for (const status of [400, 404, 409]) expect(isRefusal(new ApiError(status, "/api/places/9/merge", "POST")), String(status)).toBe(true);
-    for (const status of [401, 403, 415, 500, 502, 503]) expect(isRefusal(new ApiError(status, "/api/places/9/merge", "POST")), String(status)).toBe(false);
+  test("isRefusal_is_true_for_every_4xx_of_the_api_except_a_408_and_a_429_and_for_nothing_else", () => {
+    // The server refused the request itself: sent again it is refused again, so there is no use in offering to send it again (P4-R29).
+    for (const status of [400, 401, 403, 404, 409, 410, 413, 415, 422, 451, 499])
+      expect(isRefusal(new ApiError(status, "/api/places/9/merge", "POST")), String(status)).toBe(true);
+    // A request that timed out and one that was told to wait may pass when sent again, as a 5xx or a dropped connection may.
+    for (const status of [408, 429, 500, 502, 503, 504]) expect(isRefusal(new ApiError(status, "/api/places/9/merge", "POST")), String(status)).toBe(false);
+    for (const status of [200, 204, 304, 399]) expect(isRefusal(new ApiError(status, "/api/places/9/merge", "POST")), String(status)).toBe(false);
     expect(isRefusal(new Error("POST /api/places/9/merge failed with status 409"))).toBe(false); // the words of a message are not a status
     expect(isRefusal(new TypeError("Failed to fetch"))).toBe(false);
     expect(isRefusal({ status: 409 })).toBe(false);

@@ -7,7 +7,7 @@ const failed = (status: number, detail: string | null = null) => new ApiError(st
 
 describe("WriteError", () => {
   test("WriteError_says_a_refusal_in_the_words_of_the_server_with_no_retry", () => {
-    for (const status of [400, 404, 409]) {
+    for (const status of [400, 401, 403, 404, 409, 415, 422]) {
       const { unmount } = render(<WriteError what="merge" error={failed(status, "The server's own words.")} onRetry={() => undefined} />);
 
       expect(screen.getByRole("alert"), String(status)).toHaveTextContent("Could not merge: The server's own words.");
@@ -26,6 +26,12 @@ describe("WriteError", () => {
     rerender(<WriteError what="merge" error={failed(404)} onRetry={() => undefined} />);
     expect(screen.getByRole("alert")).toHaveTextContent("Could not merge: It no longer exists.");
 
+    // Any other 4xx is a refusal too (P4-R29), and has a line of its own to say when the server gave none.
+    for (const status of [401, 403, 415, 422]) {
+      rerender(<WriteError what="merge" error={failed(status)} onRetry={() => undefined} />);
+      expect(screen.getByRole("alert"), String(status)).toHaveTextContent("Could not merge: The server did not accept it.");
+    }
+
     rerender(<WriteError what="merge" error={failed(404)} gone="One of the places no longer exists." onRetry={() => undefined} />);
     expect(screen.getByRole("alert")).toHaveTextContent("Could not merge: One of the places no longer exists.");
 
@@ -43,7 +49,7 @@ describe("WriteError", () => {
   });
 
   test("WriteError_offers_a_retry_for_a_failure_that_may_pass_and_says_what_failed", () => {
-    const failures: unknown[] = [failed(500), failed(502), failed(503), failed(401), failed(415), new TypeError("Failed to fetch"), "something else"];
+    const failures: unknown[] = [failed(500), failed(502), failed(503), failed(408), failed(429), new TypeError("Failed to fetch"), "something else"];
     for (const error of failures) {
       const onRetry = vi.fn();
       const { unmount } = render(<WriteError what="rename" error={error} onRetry={onRetry} gone="Gone." />);

@@ -5,6 +5,7 @@ import { navigate } from "../app/router";
 import { addDays, periodDays, shortDayLabel, today } from "../time/dates";
 import { formatCount, formatDistance, formatDuration } from "../time/format";
 import { Chip, Chips } from "./Chips";
+import { UNNAMED } from "./placeNames";
 import styles from "./RangePanel.module.css";
 import rows from "./Rows.module.css";
 import { Shown } from "./Shown";
@@ -26,7 +27,7 @@ const EVERY_DATE_UP_TO = 31;
 /** How many places "Where your time went" lists before it offers the rest: the ones the time went to, and not the long tail of them. */
 const TOP_PLACES = 10;
 
-const nameOf = (place: RangePlace): string => place.name ?? place.city ?? "Unnamed place";
+const nameOf = (place: RangePlace): string => place.name ?? place.city ?? UNNAMED;
 
 /** A place of the ranking: what its row says, the share of the bar, and the name of its button. */
 interface Ranked {

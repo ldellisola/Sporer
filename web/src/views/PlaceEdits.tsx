@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { deleteJson, isRefusal, postJson, putJson } from "../api/client";
+import { deleteJson, isNotFound, isRefusal, postJson, putJson } from "../api/client";
 import { useWrite } from "../api/mutations";
 import type { PlaceCandidate, PlaceResponse } from "../api/types";
 import forms from "./Forms.module.css";
@@ -93,7 +93,7 @@ export function RenameForm({ place, placeKey, onClose }: EditProps & { onClose: 
  *
  * It takes the focus when it opens (on the question, which a screen reader reads, and not on a button: Enter held down on the row that was
  * picked would merge), so that Escape is Cancel at once. A merge the server refuses (409, 404) would be refused again: no Retry, and Merge is
- * off, but the owner can choose another place (`onChooseAnother`) or cancel.
+ * off, but the owner can choose another place (`onChooseAnother`) or cancel; the focus is put on that button, since the one it was on is off.
  */
 export function MergeConfirm({
   place,
@@ -105,6 +105,7 @@ export function MergeConfirm({
   const client = useQueryClient();
   const group = useId();
   const question = useRef<HTMLParagraphElement>(null);
+  const chooseAnother = useRef<HTMLButtonElement>(null);
   const [keep, setKeep] = useState<"here" | "there">("here");
   const merge = useWrite((name: string | null) => postJson<PlaceResponse>(`/api/places/${place.id}/merge`, { place: other.id, name }));
   const here = place.name ?? UNNAMED;
@@ -113,6 +114,10 @@ export function MergeConfirm({
   // A 400 can be put right (the other name may be shorter); a 404 or a 409 is about the two places, and not about what the form says.
   const conflict = merge.isError && isRefusal(merge.error) && merge.error.status !== 400;
   useEffect(() => question.current?.focus(), []);
+  // Merge is off after a refusal, and the focus was on it (it is off while the request is on its way): it goes to the way on, which is there now.
+  useEffect(() => {
+    if (conflict) chooseAnother.current?.focus();
+  }, [conflict]);
   const submit = () =>
     merge.mutate(keep === "here" ? place.name : other.name, {
       onSuccess: (survivor) => {
@@ -161,7 +166,7 @@ export function MergeConfirm({
           gone="One of the places no longer exists."
           refusedActions={
             conflict ? (
-              <button type="button" className={forms.secondary} onClick={onChooseAnother}>
+              <button ref={chooseAnother} type="button" className={forms.secondary} onClick={onChooseAnother}>
                 Choose another place
               </button>
             ) : undefined
@@ -175,7 +180,10 @@ export function MergeConfirm({
 /**
  * The places that were merged into this one, each with the button that makes it a place of its own again (its stays and its name are its own).
  * The row that was separated is gone, and the focus was on its button: it goes to the button of the next row (the one before it for the last),
- * and for the last of all, where the section goes with it, to `onEmptied` (the panel puts it on the name of the place).
+ * and for the last of all, where the section goes with it, to `onEmptied` (the panel puts it on the name of the place). A separate that failed
+ * leaves the focus on the button of its row, which was off while the request was on its way; unless the server says there is no such merge (404):
+ * the row goes with the refetch, and the focus goes where it does for a row that was separated. The focus that is to move is held until the
+ * button it is to move to can take it, and is let go of when it has, or when that button is no longer there: it never moves later.
  */
 export function MergedPlaces({ place, placeKey, onEmptied }: EditProps & { onEmptied: () => void }) {
   const client = useQueryClient();
@@ -183,22 +191,32 @@ export function MergedPlaces({ place, placeKey, onEmptied }: EditProps & { onEmp
   const buttons = useRef(new Map<number, HTMLButtonElement>());
   const focusAfter = useRef<number | null>(null);
   const separate = useWrite((other: number) => deleteJson(`/api/places/${place.id}/merged/${other}`));
-  // A button that is disabled cannot take the focus, and all of them are while a write is on its way: once the list is drawn without the row, try.
+  // A button that is disabled cannot take the focus, and all of them are while a write is on its way: the focus waits for the write to be
+  // done, and the list to be drawn as it is to be. It is let go of once it has moved, and when the button it was to move to is not there.
   useEffect(() => {
     const target = focusAfter.current;
-    const button = target === null ? undefined : buttons.current.get(target);
-    if (button === undefined || button.disabled) return;
+    if (target === null) return;
+    const button = buttons.current.get(target);
+    if (button?.disabled) return;
     focusAfter.current = null;
-    button.focus();
+    button?.focus();
   });
   const run = (other: number) => {
     const at = place.merged.findIndex((merged) => merged.id === other);
     const next = place.merged[at + 1] ?? place.merged[at - 1];
+    // The row is to go, and the focus on it with it: to the next row, or to the panel when there is none.
+    const goes = () => {
+      if (next === undefined) onEmptied();
+      else focusAfter.current = next.id;
+    };
     separate.mutate(other, {
       onSuccess: () => {
-        if (next === undefined) onEmptied();
-        else focusAfter.current = next.id;
+        goes();
         client.setQueryData<PlaceResponse>(placeKey, (old) => old && { ...old, merged: old.merged.filter((merged) => merged.id !== other) });
+      },
+      onError: (error) => {
+        if (isNotFound(error)) goes(); // not merged any more: the refetch that a 404 makes takes the row away
+        else focusAfter.current = other;
       },
     });
   };
