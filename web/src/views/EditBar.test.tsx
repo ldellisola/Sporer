@@ -85,15 +85,18 @@ describe("EditBar", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "on the map" }));
   });
 
-  test("EditBar_says_the_points_are_on_their_way", () => {
+  test("EditBar_says_the_points_are_on_their_way_in_its_row", () => {
     render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } })} onDone={() => undefined} />);
 
-    expect(screen.getByText("Loading points…")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Done" })).toBeEnabled(); // and edit mode can be left
+    const row = screen.getByText("Loading points…");
+    expect(row).toBeInTheDocument();
+    expect(row.closest("p")).toBeNull(); // in the row, with the buttons: a sheet at its lowest shows nothing under it
+    expect(row.parentElement).toContainElement(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument(); // there is nothing to count yet
     expect(screen.queryByText(/Tap a point/)).not.toBeInTheDocument();
   });
 
-  test("EditBar_says_the_points_could_not_be_had_with_a_retry_and_keeps_done", () => {
+  test("EditBar_says_the_points_could_not_be_had_with_a_retry_in_its_row_and_keeps_done", () => {
     const retry = vi.fn();
     render(
       <EditBar
@@ -104,16 +107,87 @@ describe("EditBar", () => {
 
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent("Couldn't load the points — Retry");
+    expect(alert.parentElement).toContainElement(screen.getByRole("button", { name: "Done" })); // in the row, where the sheet at its lowest shows it
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
   });
 
-  test("EditBar_says_a_day_has_no_points_when_the_server_has_none_for_it", () => {
+  test("EditBar_says_what_failed_under_its_row_and_not_in_it", () => {
+    render(
+      <EditBar
+        edit={pointEditing({ points: undefined, load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } })}
+        onDone={() => undefined}
+      />,
+    );
+
+    const detail = screen.getByText("GET /api/day/2026-10-22/points failed with status 503");
+    expect(detail).toBeInTheDocument();
+    expect(screen.getByRole("alert")).not.toContainElement(detail); // the row has the words and the Retry: the line under it is for whoever reads on
+    expect(screen.getByRole("button", { name: "Done" }).compareDocumentPosition(detail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // under the row, after its buttons
+  });
+
+  test("EditBar_says_a_day_has_no_points_when_the_server_has_none_for_it_in_its_row", () => {
     render(<EditBar edit={pointEditing({ points: { date: "2026-10-22", devices: [], points: [] } })} onDone={() => undefined} />);
 
-    expect(screen.getByText("No points on this day")).toBeInTheDocument();
+    const row = screen.getByText("No points on this day");
+    expect(row.parentElement).toContainElement(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Tap a point/)).not.toBeInTheDocument();
+  });
+
+  test("EditBar_has_only_done_while_there_are_no_points_to_select_which_is_while_they_load_when_they_could_not_be_had_and_when_the_day_has_none", () => {
+    const states = {
+      loading: pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } }),
+      failed: pointEditing({ points: undefined, load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } }),
+      none: pointEditing({ points: { date: "2026-10-22", devices: [], points: [] } }),
+    };
+    for (const [state, edit] of Object.entries(states)) {
+      const { unmount } = render(<EditBar edit={edit} onDone={() => undefined} />);
+
+      expect(within(group()).getAllByRole("button").map((button) => button.textContent), state).toEqual(state === "failed" ? ["Retry", "Done"] : ["Done"]);
+      expect(screen.getByRole("button", { name: "Done" }), state).toBeEnabled();
+      unmount();
+    }
+  });
+
+  test("EditBar_has_clear_remove_and_done_once_the_points_are_there", () => {
+    const { rerender } = render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } })} onDone={() => undefined} />);
+    expect(screen.queryByRole("button", { name: "Clear" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Remove/ })).not.toBeInTheDocument();
+
+    rerender(<EditBar edit={pointEditing()} onDone={() => undefined} />); // the points came
+
+    expect(within(group()).getAllByRole("button").map((button) => button.textContent)).toEqual(["Clear", "Remove 0 points", "Done"]);
+    expect(screen.getByText("0 selected")).toBeInTheDocument();
+    expect(screen.queryByText("Loading points…")).not.toBeInTheDocument();
+  });
+
+  test("EditBar_keeps_the_count_as_it_is_when_a_later_load_fails_with_the_points_still_there", () => {
+    // A refetch that failed (the points of the day are asked for again after a removal): what is on screen is still there to select, and the owner is told under the row.
+    const retry = vi.fn();
+    render(
+      <EditBar
+        edit={pointEditing({ selected: new Set([0, 1]), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry } })}
+        onDone={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove 2 points" })).toBeEnabled();
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  test("EditBar_has_the_one_live_region_for_what_its_row_says_of_the_points_and_of_the_count", () => {
+    const { rerender } = render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } })} onDone={() => undefined} />);
+    const region = screen.getByText("Loading points…");
+    expect(region).toHaveAttribute("aria-live", "polite");
+
+    rerender(<EditBar edit={pointEditing({ selected: new Set([1]) })} onDone={() => undefined} />);
+
+    expect(screen.getByText("1 selected")).toBe(region); // mounted already when the points come: the count is heard as it changes
   });
 
   test("EditBar_says_a_refused_removal_in_the_words_of_the_server_with_no_retry", () => {
