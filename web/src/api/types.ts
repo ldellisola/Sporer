@@ -242,6 +242,11 @@ export interface TripSummary {
   localEndDate: string;
   ongoing: boolean;
   cities: TripCity[];
+  /**
+   * Whether the owner has edited the trip: given it a name, or changed its dates (which is why its `id` may not be the night that detection found it on).
+   * `name` is the owner's when they gave one and the made-up one when they did not, and nothing else here says which.
+   */
+  edited: boolean;
 }
 
 /** A trip of the list: its summary and the line to draw for it, home, the places it slept at, home (an ongoing trip has not come back, so it stops at the last place). */
@@ -288,6 +293,20 @@ export interface TripDay {
   highlights: string[];
   groundDistanceMeters: number;
   flights: number;
+}
+
+// --- PUT /api/trips/{id}, GET /api/trips/deleted (Features/Trips/EditTripEndpoint.cs, DeletedTripsEndpoints.cs) ---
+
+/** The answer to the edit of a trip: its id now, which is the date of its first night and moves with its start date. */
+export interface EditTripResponse {
+  id: string;
+}
+
+/** A trip that the owner deleted, as the list of them has it: the `key` that restores it, what it was called and when it was (`yyyy-MM-dd`, "Lisbon · 12 – 16 Sep 2026", ISO-8601 UTC). */
+export interface DeletedTrip {
+  key: string;
+  label: string;
+  deletedAt: string;
 }
 
 // --- GET /api/status (Features/Status/StatusResponse.cs) ---

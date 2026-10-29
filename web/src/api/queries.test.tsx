@@ -20,6 +20,7 @@ import {
   useConfig,
   useDay,
   useDayPoints,
+  useDeletedTrips,
   useHeat,
   usePlace,
   useRange,
@@ -27,7 +28,7 @@ import {
   useTrip,
   useTrips,
 } from "./queries";
-import type { DayResponse, LoadState, PlaceResponse, RangeResponse, TripListItem, TripResponse, TripsResponse } from "./types";
+import type { DayResponse, DeletedTrip, LoadState, PlaceResponse, RangeResponse, TripListItem, TripResponse, TripsResponse } from "./types";
 
 const SUMMARY = { places: 0, distanceMeters: 0, movingSeconds: 0 };
 
@@ -54,6 +55,7 @@ function listed(id: string, nights = 2): TripListItem {
     localStartDate: id,
     localEndDate: id,
     ongoing: false,
+    edited: false,
     cities: [{ name: "Lisbon", country: "Portugal", nights, lat: 38.72, lon: -9.14 }],
     thumbnail: [
       [10.75, 59.91],
@@ -638,6 +640,17 @@ describe("query hooks", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(result.current.data?.trips.map((t) => t.id)).toEqual(["2026-10-20", "2026-09-12"]);
+  });
+
+  test("useDeletedTrips_reads_the_trips_the_owner_deleted_with_the_key_that_restores_each", async () => {
+    const deleted: DeletedTrip[] = [{ key: "2026-09-12", label: "Lisbon · 12 – 16 Sep 2026", deletedAt: "2026-10-24T08:15:00Z" }];
+    const urls = stubApi(() => json(deleted));
+    const { result } = renderHook(() => useDeletedTrips(), { wrapper: wrapperFor(newClient()) });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(urls).toEqual(["/api/trips/deleted"]);
+    expect(result.current.data).toEqual(deleted);
   });
 
   test("useTrip_with_no_id_asks_for_nothing_even_when_every_trip_is_refetched", async () => {

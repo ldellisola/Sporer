@@ -1,8 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { deleteJson, isNotFound, isRefusal, postJson, putJson } from "../api/client";
 import { useWrite } from "../api/mutations";
 import type { PlaceCandidate, PlaceResponse } from "../api/types";
+import { MAX_NAME_LENGTH, onEscape } from "./editForms";
 import forms from "./Forms.module.css";
 import styles from "./PlaceEdits.module.css";
 import { UNNAMED } from "./placeNames";
@@ -10,18 +11,6 @@ import rows from "./Rows.module.css";
 import { WriteError } from "./WriteError";
 
 // What the owner can do to a place: rename it, merge another into it, and separate what was merged in. The panel of the place composes these.
-
-/**
- * The longest name the server takes. The field counts what a text field counts (WebKit counts what a reader sees as one character, an emoji,
- * as one; the server counts UTF-16 units, which make an emoji two), so a name can pass the field and be refused: that is a 400, which says so
- * in the server's words (`WriteError`).
- */
-const MAX_NAME_LENGTH = 100;
-
-/** The key handler of a form: Escape is Cancel, which every form of the panel takes it as. */
-const onEscape = (action: () => void) => (event: KeyboardEvent) => {
-  if (event.key === "Escape") action();
-};
 
 export interface EditProps {
   /** The place that is shown: its id is the one that every write is to (a place that was merged is served as the one it was merged into). */
@@ -49,7 +38,7 @@ export function RenameForm({ place, placeKey, onClose }: EditProps & { onClose: 
   };
   return (
     <form
-      className={styles.form}
+      className={forms.form}
       onKeyDown={onEscape(onClose)}
       onSubmit={(event: FormEvent) => {
         event.preventDefault();
@@ -71,7 +60,7 @@ export function RenameForm({ place, placeKey, onClose }: EditProps & { onClose: 
         onFocus={(event) => event.currentTarget.select()}
         onChange={(event) => setText(event.target.value)}
       />
-      <div className={styles.buttons}>
+      <div className={forms.buttons}>
         <button type="submit" className={forms.primary} disabled={rename.isPending}>
           {rename.isPending ? "Saving…" : "Save"}
         </button>
@@ -127,14 +116,14 @@ export function MergeConfirm({
     });
   return (
     <form
-      className={styles.form}
+      className={forms.form}
       onKeyDown={onEscape(onClose)}
       onSubmit={(event: FormEvent) => {
         event.preventDefault();
         submit();
       }}
     >
-      <p ref={question} tabIndex={-1} className={styles.question}>
+      <p ref={question} tabIndex={-1} className={forms.question}>
         {same ? `Merge the other “${there}” into this one?` : `Merge ${there} into ${here}?`}
       </p>
       {!same && (
@@ -150,7 +139,7 @@ export function MergeConfirm({
           </label>
         </fieldset>
       )}
-      <div className={styles.buttons}>
+      <div className={forms.buttons}>
         <button type="submit" className={forms.primary} disabled={merge.isPending || conflict}>
           {merge.isPending ? "Merging…" : "Merge"}
         </button>
@@ -277,7 +266,7 @@ export function EditActions({ onRename, onMerge, focus }: EditActionsProps) {
     if (focus === "merge") mergeButton.current?.focus();
   }, [focus]);
   return (
-    <div className={styles.actions}>
+    <div className={forms.actions}>
       <button ref={renameButton} type="button" className={forms.secondary} onClick={onRename}>
         Rename
       </button>

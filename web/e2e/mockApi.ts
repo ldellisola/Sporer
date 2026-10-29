@@ -93,6 +93,8 @@ const defaults: Record<string, Override> = {
   status,
   heat,
   trips,
+  // No trip is deleted. An exact key beats the wildcard below, which would take "deleted" for the id of a trip.
+  "trips/deleted": [],
   // The page of a trip: the fixture's own for the one that has days and moves, the summary of the list (with nothing in it) for the other
   // trips of the list, and the 404 that the server gives for an id that is not a stored trip.
   "trips/*": (request): Reply => {

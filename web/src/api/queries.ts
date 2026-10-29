@@ -6,6 +6,7 @@ import type {
   ConfigResponse,
   DayPointsResponse,
   DayResponse,
+  DeletedTrip,
   HeatResponse,
   PlaceCandidate,
   PlaceResponse,
@@ -172,6 +173,15 @@ export function tripQueryOptions(id: string | null) {
   });
 }
 
+/** The trips the owner deleted and has not brought back, the one deleted last first: what Settings lists, each with the key that restores it. */
+export function deletedTripsQueryOptions() {
+  return queryOptions({
+    queryKey: ["deleted-trips"] as const,
+    queryFn: ({ signal }) => getJson<DeletedTrip[]>("/api/trips/deleted", signal),
+    staleTime: STALE_MS,
+  });
+}
+
 export function statusQueryOptions() {
   return queryOptions({
     queryKey: ["status"] as const,
@@ -221,6 +231,8 @@ export function shownOf<T>(query: { data?: T; error: Error | null }): { gone: bo
 export const useTrips = (enabled = true) => useQuery({ ...tripsQueryOptions(), enabled });
 
 export const useTrip = (id: string | null) => useQuery(tripQueryOptions(id));
+
+export const useDeletedTrips = () => useQuery(deletedTripsQueryOptions());
 
 /**
  * The trips either side of the trip `id` in `trips`, which is newest first: the older one is the next in the list and the newer one the

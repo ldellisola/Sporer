@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, useState } from "react";
 import { shownOf, useTrip } from "../api/queries";
 import type { TripDay, TripResponse } from "../api/types";
 import { navigate } from "../app/router";
@@ -8,6 +8,7 @@ import { Chip, Chips, ONGOING } from "./Chips";
 import rows from "./Rows.module.css";
 import { Empty, ErrorState, Loading } from "./States";
 import styles from "./TripPanel.module.css";
+import { DeleteTripConfirm, EditTripForm, TripEditActions } from "./TripEdits";
 import { useKeptData } from "./useKeptData";
 
 export interface TripPanelProps {
@@ -54,12 +55,25 @@ function DayRow({ day }: { day: TripDay }) {
   );
 }
 
-/** What is on screen of a trip that is there: its figures as chips ("Ongoing" among them), and its days one by one. */
+/** What an edit is doing to the trip: nothing, or the one form that is open (the forms are in the panel, and only one is open at a time). */
+type Editing = "none" | "edit" | "delete";
+
+/** What is on screen of a trip that is there: what can be done to it, its figures as chips ("Ongoing" among them), and its days one by one. */
 function Trip({ trip }: { trip: TripResponse }) {
   const daysHeading = useId();
   const { stats } = trip;
+  const [editing, setEditing] = useState<Editing>("none");
+  // The focus was in the form that is closed, which is gone: it goes back to the button that opened it.
+  const [openedBy, setOpenedBy] = useState<"edit" | "delete">();
+  const close = () => {
+    if (editing !== "none") setOpenedBy(editing);
+    setEditing("none");
+  };
   return (
     <>
+      {editing === "none" && <TripEditActions focus={openedBy} onEdit={() => setEditing("edit")} onDelete={() => setEditing("delete")} />}
+      {editing === "edit" && <EditTripForm trip={trip} onClose={close} />}
+      {editing === "delete" && <DeleteTripConfirm trip={trip} onClose={close} />}
       <Chips>
         {trip.ongoing && <Chip>{ONGOING}</Chip>}
         <Chip>{formatCount(stats.flights, "flight")}</Chip>
@@ -86,9 +100,9 @@ function Trip({ trip }: { trip: TripResponse }) {
 }
 
 /**
- * The panel of a trip: its figures as chips (flights, cities, places, and the distance on the ground, which a flight is not part of, and "Ongoing"
- * while it has not come home) and its days, one row for each, which open the Day view. The trip is the one that the map draws, and the bar names,
- * from the same query (one request).
+ * The panel of a trip: what the owner can do to it (name it, give it other dates, delete it: see `TripEdits`), its figures as chips (flights, cities,
+ * places, and the distance on the ground, which a flight is not part of, and "Ongoing" while it has not come home) and its days, one row for each, which
+ * open the Day view. The trip is the one that the map draws, and the bar names, from the same query (one request).
  *
  * A trip that is no longer there (a 404) says so, with the way out to the list of trips and no Retry (asking again cannot help), and nothing of
  * what it showed before. A failure of another kind is an error with its Retry, and the trip stays under it if it was on screen
@@ -110,7 +124,7 @@ export function TripPanel({ id }: TripPanelProps) {
         </>
       )}
       {!gone && trip.isError && <ErrorState error={trip.error} onRetry={() => void trip.refetch()} />}
-      {shown !== undefined ? <Trip trip={shown} /> : !gone && !trip.isError && <Loading />}
+      {shown !== undefined ? <Trip key={shown.id} trip={shown} /> : !gone && !trip.isError && <Loading />}
     </>
   );
 }

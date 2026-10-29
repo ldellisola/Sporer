@@ -1,32 +1,4 @@
-/* What the owner can do to the place: the buttons that open a form, and the forms (the buttons and the fields are Forms.module.css's). */
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 12px 0 0;
-}
-
-.form {
-  margin: 12px 0 0;
-}
-
-.buttons {
-  display: flex;
-  gap: 8px;
-  margin: 0 0 8px;
-}
-
-/* The question takes the focus as the confirm opens (it is not a control, and a ring round a line of text says nothing). */
-.question {
-  margin: 0 0 8px;
-  font-size: 14px;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.question:focus {
-  outline: none;
-}
+/* What is the place's own in the forms of its edits: the two names to keep one of, and the places that were merged in (the buttons, the fields and the forms are Forms.module.css's). */
 
 /* The two names to keep one of, one to a line. */
 .choices {

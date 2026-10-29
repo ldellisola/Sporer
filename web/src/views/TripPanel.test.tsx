@@ -4,6 +4,7 @@ import type { ReactElement } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import lisbonFixture from "../../e2e/fixtures/trip-2026-09-12.json";
 import type { TripDay, TripResponse } from "../api/types";
+import { refusal, stubEdits } from "../test/stubEdits";
 import { TripPanel } from "./TripPanel";
 
 const LISBON = lisbonFixture as TripResponse; // 2026-09-12: 2 flights, 2 cities, 9 places, 169 km on the ground, five days
@@ -259,5 +260,174 @@ describe("TripPanel states", () => {
     expect(screen.getByText("Loading…")).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Day by day" })).not.toBeInTheDocument();
     expect(screen.queryByText("2 flights")).not.toBeInTheDocument();
+  });
+});
+
+describe("TripPanel edits", () => {
+  const TRIP = "GET /api/trips/2026-09-12";
+  const PUT = "PUT /api/trips/2026-09-12";
+  const DELETE = "DELETE /api/trips/2026-09-12";
+  const editButton = () => screen.getByRole("button", { name: "Edit" });
+  const deleteButton = () => screen.getByRole("button", { name: "Delete trip" });
+
+  /** The trip as the server has it, which the edit changes: what a write is answered with, and what the next read finds. */
+  function server(over: { put?: () => Response; remove?: () => Response } = {}) {
+    let trip: TripResponse = LISBON;
+    const api = stubEdits({
+      [TRIP]: () => Response.json(trip),
+      [PUT]: over.put ?? (() => {
+        trip = { ...LISBON, edited: true, name: "Portugal 2026", stats: { ...LISBON.stats, flights: 3 } };
+        return Response.json({ id: "2026-09-12" });
+      }),
+      [DELETE]: over.remove ?? (() => new Response(null, { status: 204 })),
+    });
+    return api;
+  }
+
+  test("TripPanel_has_edit_and_delete_trip_for_a_trip_that_is_there_and_for_no_other_state", async () => {
+    server();
+    const { unmount } = mount();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument(); // still loading
+    await screen.findByRole("list", { name: "Day by day" });
+    expect(editButton()).toBeInTheDocument();
+    expect(deleteButton()).toBeInTheDocument();
+    unmount();
+
+    stubEdits({ [TRIP]: () => new Response("{}", { status: 404 }) });
+    mount();
+    await screen.findByText("This trip no longer exists");
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete trip" })).not.toBeInTheDocument();
+  });
+
+  test("TripPanel_opens_the_form_of_the_edit_in_place_of_the_buttons_and_gives_the_focus_back_to_edit_when_it_is_closed", async () => {
+    server();
+    mount();
+    await screen.findByRole("list", { name: "Day by day" });
+
+    fireEvent.click(editButton());
+
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete trip" })).not.toBeInTheDocument(); // one form at a time
+    expect(days()).toHaveLength(5); // the days are still there under it
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("textbox", { name: "Name" })).not.toBeInTheDocument();
+    expect(editButton()).toHaveFocus(); // the focus was in the form, which is gone
+
+    fireEvent.click(editButton());
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Name" }), { key: "Escape" });
+
+    expect(editButton()).toHaveFocus();
+  });
+
+  test("TripPanel_asks_before_it_deletes_and_gives_the_focus_back_to_delete_trip_when_the_owner_does_not", async () => {
+    const api = server();
+    mount();
+    await screen.findByRole("list", { name: "Day by day" });
+
+    fireEvent.click(deleteButton());
+
+    expect(screen.getByText("Delete this trip? It stays deleted when your data is reprocessed. You can restore it in Settings.")).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(deleteButton()).toHaveFocus();
+    expect(api.writes()).toEqual([]);
+  });
+
+  test("TripPanel_closes_the_form_when_the_edit_is_saved_gives_the_focus_back_and_shows_the_trip_as_the_server_has_it_now", async () => {
+    const api = server();
+    mount();
+    await screen.findByText("2 flights");
+
+    fireEvent.click(editButton());
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Portugal 2026" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Name" })).not.toBeInTheDocument());
+    expect(editButton()).toHaveFocus();
+    expect(api.writes().map((call) => call.body)).toEqual([{ name: "Portugal 2026", startDate: "2026-09-12", endDate: "2026-09-16" }]);
+    expect(await screen.findByText("3 flights")).toBeInTheDocument(); // everything is asked for again after a write
+    expect(window.location.pathname).toBe("/trip/2026-09-12");
+  });
+
+  test("TripPanel_goes_to_the_new_id_in_place_of_the_page_when_the_edit_moves_the_start_date", async () => {
+    server({ put: () => Response.json({ id: "2026-09-10" }) });
+    mount();
+    await screen.findByRole("list", { name: "Day by day" });
+    const entries = window.history.length;
+
+    fireEvent.click(editButton());
+    fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2026-09-10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/trip/2026-09-10"));
+    expect(window.history.length).toBe(entries);
+  });
+
+  test("TripPanel_deletes_the_trip_and_goes_to_the_list_of_trips", async () => {
+    const api = server();
+    mount();
+    await screen.findByRole("list", { name: "Day by day" });
+
+    fireEvent.click(deleteButton());
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/trips"));
+    expect(api.writes().map((call) => `${call.method} ${call.path}`)).toEqual(["DELETE /api/trips/2026-09-12"]);
+  });
+
+  test("TripPanel_shows_that_the_trip_is_gone_in_place_of_the_form_when_a_write_finds_it_gone", async () => {
+    let gone = false;
+    stubEdits({
+      [TRIP]: () => (gone ? new Response("{}", { status: 404 }) : Response.json(LISBON)),
+      [DELETE]: () => {
+        gone = true; // deleted already, in another window
+        return new Response("{}", { status: 404 });
+      },
+    });
+    mount();
+    await screen.findByRole("list", { name: "Day by day" });
+
+    fireEvent.click(deleteButton());
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(await screen.findByText("This trip no longer exists")).toBeInTheDocument(); // asked for again, as a 404 has it
+    expect(screen.queryByText(/Delete this trip\?/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "See all trips" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/trip/2026-09-12");
+  });
+
+  test("TripPanel_says_what_a_save_the_server_refuses_gets_in_its_words_and_keeps_the_form", async () => {
+    server({ put: () => refusal(409, "The trip would have nights from 2026-09-12 to 2026-10-24, and another trip has one of them.") });
+    mount();
+    await screen.findByRole("list", { name: "Day by day" });
+
+    fireEvent.click(editButton());
+    fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2026-10-25" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not save: The trip would have nights from 2026-09-12 to 2026-10-24, and another trip has one of them.");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("End date")).toHaveValue("2026-10-25");
+    expect(days()).toHaveLength(5); // the trip is still there: the panel is never blank
+  });
+
+  test("TripPanel_starts_another_trip_with_no_form_open", async () => {
+    stubEdits({ [TRIP]: () => Response.json(LISBON), "GET /api/trips/2026-08-01": () => Response.json({ ...LISBON, id: "2026-08-01" }) });
+    const { show } = mount();
+    await screen.findByRole("list", { name: "Day by day" });
+    fireEvent.click(editButton());
+    expect(screen.getByRole("textbox", { name: "Name" })).toBeInTheDocument();
+
+    show("2026-08-01");
+    await screen.findByRole("list", { name: "Day by day" });
+
+    expect(screen.queryByRole("textbox", { name: "Name" })).not.toBeInTheDocument(); // what was typed for one trip is not for another
+    expect(editButton()).toBeInTheDocument();
   });
 });

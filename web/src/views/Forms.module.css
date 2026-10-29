@@ -1,7 +1,8 @@
 /*
  * What the forms of the app have in common: the buttons (a button is made taller than its text to be a target for a finger, in the colour of
  * the bar's own buttons; the primary one of a form, Save or Merge, has the accent for its background), the label over a field, and the field
- * (16 px, which is the size under which a phone zooms the page in on the field when it is tapped).
+ * (16 px, which is the size under which a phone zooms the page in on the field when it is tapped); and the places that an edit has in a panel: the
+ * buttons that open its forms, the form, the row of its buttons, and the question of a confirm.
  */
 .secondary,
 .primary {
@@ -61,4 +62,34 @@
 .field:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
+}
+
+/* The buttons that open the forms of the edits of what the panel shows, and the form that takes their place. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.form {
+  margin: 12px 0 0;
+}
+
+.buttons {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+/* The question of a confirm takes the focus as it opens (it is not a control, and a ring round a line of text says nothing). */
+.question {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.question:focus {
+  outline: none;
 }

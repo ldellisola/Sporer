@@ -40,6 +40,18 @@ describe("WriteError", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Could not merge: Not here.");
   });
 
+  test("WriteError_says_what_a_409_is_when_the_server_gave_no_words_and_it_is_told", () => {
+    const { rerender } = render(<WriteError what="save" error={failed(409)} conflict="Overlaps another trip." onRetry={() => undefined} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not save: Overlaps another trip.");
+
+    // The server's own message is what is shown, over what the control knows; and the line is for a 409 and no other refusal.
+    rerender(<WriteError what="save" error={failed(409, "The trip would have nights from 2026-09-12 to 2026-10-24.")} conflict="Overlaps another trip." onRetry={() => undefined} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not save: The trip would have nights from 2026-09-12 to 2026-10-24.");
+
+    rerender(<WriteError what="save" error={failed(400)} conflict="Overlaps another trip." onRetry={() => undefined} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not save: The server did not accept it.");
+  });
+
   test("WriteError_shows_what_else_can_be_done_about_a_refusal_and_only_there", () => {
     const { rerender } = render(<WriteError what="merge" error={failed(409, "No.")} onRetry={() => undefined} refusedActions={<button type="button">Choose another place</button>} />);
     expect(screen.getByRole("alert")).toContainElement(screen.getByRole("button", { name: "Choose another place" }));

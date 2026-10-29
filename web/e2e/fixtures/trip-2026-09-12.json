@@ -11,6 +11,7 @@
   "localStartDate": "2026-09-12",
   "localEndDate": "2026-09-16",
   "ongoing": false,
+  "edited": false,
   "cities": [
     { "name": "Lisbon", "country": "Portugal", "nights": 3, "lat": 38.72, "lon": -9.14 },
     { "name": "Sintra", "country": "Portugal", "nights": 1, "lat": 38.8, "lon": -9.38 }

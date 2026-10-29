@@ -16,6 +16,7 @@ const details = (page: Page): Locator => page.getByRole(isWide(page) ? "compleme
 const grip = (page: Page): Locator => page.getByRole("button", { name: "Resize panel" });
 const map = (page: Page): Locator => page.getByRole("region", { name: "Map view" });
 const settingsButton = (page: Page): Locator => page.getByRole("button", { name: "Settings" });
+const deletedTrips = (page: Page): Locator => details(page).getByRole("region", { name: "Deleted trips" });
 const processing = (page: Page): Locator => details(page).getByRole("region", { name: "Processing" });
 const about = (page: Page): Locator => details(page).getByRole("region", { name: "About" });
 
@@ -49,7 +50,8 @@ test("gear_opens_settings_with_processing_and_about_and_leaves_the_map", async (
   // The days either side were asked for as soon as this one was shown: from here on, nothing is asked for on the account of the settings.
   await expect.poll(() => api.requests).toContain("/api/day/2026-10-23");
   await expect.poll(() => api.requests).toContain("/api/day/2026-10-21");
-  const before = api.requests.filter((request) => request !== "/api/status").length;
+  const notSettings = (request: string): boolean => request !== "/api/status" && request !== "/api/trips/deleted"; // the status is polled, and the deleted trips are what the settings list
+  const before = api.requests.filter(notSettings).length;
 
   await settingsButton(page).click();
 
@@ -60,6 +62,9 @@ test("gear_opens_settings_with_processing_and_about_and_leaves_the_map", async (
   await expect(page.getByRole("group", { name: "View" }).getByRole("button", { pressed: true })).toHaveCount(0); // no view is the current one
   await openSheet(page);
 
+  // Deleted trips come first, as the plan has the sections: none are deleted here.
+  await expect(deletedTrips(page).getByRole("heading", { name: "Deleted trips" })).toBeVisible();
+  await expect(deletedTrips(page).getByText("No deleted trips")).toBeVisible();
   // Processing: how far the backfill is, when the worker last ran, what waits.
   await expect(processing(page).getByRole("heading", { name: "Processing" })).toBeVisible();
   await expect(processing(page).locator("dl > div")).toHaveText(["Backfill 100 %", "Last processed Sat 24 Oct 2026 10:15", "Waiting to be processed 2 periods"], {
@@ -84,7 +89,7 @@ test("gear_opens_settings_with_processing_and_about_and_leaves_the_map", async (
   // The map is still the day's, with its heat button, and nothing was asked for on the settings' account.
   await expect(map(page)).toHaveAttribute("data-map-state", "ready");
   await expect(page.getByRole("button", { name: "Heat map" })).toBeVisible();
-  expect(api.requests.filter((request) => request !== "/api/status")).toHaveLength(before);
+  expect(api.requests.filter(notSettings)).toHaveLength(before);
 
   // A view of time chosen from here is at the day that was shown last.
   await page.getByRole("group", { name: "View" }).getByRole("button", { name: "Week" }).click();
@@ -118,7 +123,8 @@ test("settings_opened_as_a_page_shows_processing_and_about_and_no_period", async
   await expect(processing(page).getByRole("heading", { name: "Processing" })).toBeVisible();
   await expect(about(page).getByRole("heading", { name: "About" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Heat map" })).toHaveCount(0); // there is no period to show the heat of
-  expect(api.requests.filter((request) => request !== "/api/status" && request !== "/api/config")).toEqual([]); // no day, no range, no heat
+  // No day, no range, no heat: the status and the config that every page asks for, and the deleted trips that the settings list.
+  expect(api.requests.filter((request) => !["/api/status", "/api/config", "/api/trips/deleted"].includes(request))).toEqual([]);
 });
 
 test("retry_failed_lists_the_failed_periods_and_posts_an_empty_json_object", async ({ page }) => {

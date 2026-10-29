@@ -429,6 +429,7 @@ describe("tripsGeoJson", () => {
       localStartDate: id,
       localEndDate: id,
       ongoing: false,
+      edited: false,
       cities,
       thumbnail: [],
     };
@@ -550,6 +551,7 @@ describe("tripGeoJson", () => {
       localStartDate: "2026-09-12",
       localEndDate: "2026-09-16",
       ongoing: false,
+      edited: false,
       cities,
       stats: { flights: 0, cities: cities.length, places: 0, groundDistanceMeters: 0 },
       moves,

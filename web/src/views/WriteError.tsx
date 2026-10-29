@@ -13,6 +13,8 @@ export interface WriteErrorProps {
   onRetry: () => void;
   /** What a 404 says when the server gave no words of its own, as a sentence: what is gone ("This place no longer exists."). */
   gone?: string;
+  /** What a 409 says when the server gave no words of its own, as a sentence: what it conflicted with ("Overlaps another trip."). */
+  conflict?: string;
   /** What else can be done about a refusal, as buttons ("Choose another place"): they are shown under the message, and not for any other failure. */
   refusedActions?: ReactNode;
 }
@@ -30,9 +32,10 @@ const NOT_ACCEPTED = "The server did not accept it.";
  *
  * A 404 also has the screen asked for again (`useWrite`), so that what is gone goes away; this line says what happened.
  */
-export function WriteError({ what, error, onRetry, gone, refusedActions }: WriteErrorProps) {
+export function WriteError({ what, error, onRetry, gone, conflict, refusedActions }: WriteErrorProps) {
   if (!isRefusal(error)) return <ErrorState message={`Couldn't ${what}`} error={error} onRetry={onRetry} />;
-  const reason = error.detail ?? (error.status === 404 ? gone : undefined) ?? GENERIC[error.status] ?? NOT_ACCEPTED;
+  const own = error.status === 404 ? gone : error.status === 409 ? conflict : undefined;
+  const reason = error.detail ?? own ?? GENERIC[error.status] ?? NOT_ACCEPTED;
   return (
     <div className={states.error} role="alert">
       <p className={states.headline}>
