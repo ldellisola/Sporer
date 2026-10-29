@@ -160,6 +160,21 @@ describe("SettingsPanel processing", () => {
     expect(within(processing()).getByRole("button", { name: "Retry failed" })).toBeEnabled();
   });
 
+  test("SettingsPanel_lists_two_failed_periods_that_cover_the_same_span_each_once_and_without_a_warning", async () => {
+    // Two rows of the status can have the same span (the DTO has no id): a list keyed by the span would warn and could drop one.
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    stubApi(status({ failedRanges: [failedRange({ lastError: "first" }), failedRange({ lastError: "second" })] }));
+
+    mount();
+
+    const failed = await within(processing()).findByRole("list", { name: "Failed periods" });
+    const items = within(failed).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("first");
+    expect(items[1]).toHaveTextContent("second");
+    expect(errors).not.toHaveBeenCalled();
+  });
+
   test("SettingsPanel_says_nothing_failed_and_offers_no_retry_when_nothing_has", async () => {
     stubApi(status());
 

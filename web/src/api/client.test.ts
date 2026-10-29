@@ -23,6 +23,19 @@ describe("getJson", () => {
     }
   });
 
+  test("getJson_throws_ApiError_with_the_status_for_an_error_body_that_is_not_JSON", async () => {
+    // A proxy or a gateway answers in HTML: the status is what the caller needs, and there is no JSON to read.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>", { status: 502 })));
+
+    const failure = await getJson("/api/day/2026-10-22").then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).status).toBe(502);
+  });
+
   test("getJson_returns_the_parsed_body_and_passes_the_signal_on", async () => {
     const fetchMock = vi.fn(async (..._args: Parameters<typeof fetch>) => respond(200, { mapStyleLight: "a" }));
     vi.stubGlobal("fetch", fetchMock);
@@ -130,6 +143,26 @@ describe("postJson, putJson and deleteJson", () => {
         expect((failure as ApiError).message).toContain(`${method} /api/`);
         expect((failure as ApiError).message).toContain(String(status));
       }
+    }
+  });
+
+  test("the_write_helpers_throw_ApiError_with_the_status_for_an_error_body_that_is_not_JSON", async () => {
+    const calls: [string, () => Promise<unknown>][] = [
+      ["POST", () => postJson("/api/places/7/merge", { place: 2, name: null })],
+      ["PUT", () => putJson("/api/places/7/name", { name: null })],
+      ["DELETE", () => deleteJson("/api/places/7/merged/2")],
+    ];
+    for (const [method, call] of calls) {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>", { status: 502 })));
+
+      const failure = await call().then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      expect(failure, method).toBeInstanceOf(ApiError);
+      expect((failure as ApiError).status).toBe(502);
+      expect((failure as ApiError).message).toContain(`${method} /api/`);
     }
   });
 

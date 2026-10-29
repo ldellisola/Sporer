@@ -84,8 +84,9 @@ function Failed({ ranges }: { ranges: readonly FailedRange[] }) {
       ) : (
         <>
           <ul className={styles.failedList} aria-label="Failed periods">
-            {ranges.map((range) => (
-              <FailedPeriod key={`${range.from}..${range.to}`} range={range} />
+            {/* By place in the list: two rows can cover the same span, the rows have no id, and an item holds no state to lose. */}
+            {ranges.map((range, index) => (
+              <FailedPeriod key={index} range={range} />
             ))}
           </ul>
           <button type="button" className={styles.action} disabled={retry.isPending} onClick={() => retry.mutate()}>

@@ -22,8 +22,9 @@ export type Override = ((request: Request) => Reply | Promise<Reply>) | object;
 /**
  * Overrides by API path, without the `/api/` prefix and without the query: `"day/2026-10-22"`, `"range"`, `"places/7"`, `"trips"`.
  * A key ending in `/*` matches every path below it (`"day/*"`); an exact key wins over it. A key is a read (`GET`) unless it starts with
- * another method and a space: `"POST status/retry"`, `"PUT trips/*"`, `"DELETE homes/3"`. A write has no default: one that no test has
- * mocked gets the 501 of the guard, and fails the test.
+ * another method and a space: `"POST status/retry"`, `"PUT trips/*"`, `"DELETE homes/3"`; a read may be written with its method too
+ * (`"GET status"`), and the bare path wins over it. A write has no default: one that no test has mocked gets the 501 of the guard, and
+ * fails the test.
  */
 export type Overrides = Record<string, Override>;
 
@@ -156,7 +157,8 @@ export async function mockApi(page: Page, overrides: Overrides = {}): Promise<Mo
     }
 
     const path = url.pathname.slice("/api/".length);
-    const override = method === "GET" ? (find(overrides, path) ?? find(defaults, path)) : find(overrides, `${method} ${path}`);
+    const override =
+      method === "GET" ? (find(overrides, path) ?? find(overrides, `GET ${path}`) ?? find(defaults, path)) : find(overrides, `${method} ${path}`);
     if (override === undefined) {
       await route.fallback(); // to the guard, which records it and answers 501
       return;

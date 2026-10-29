@@ -106,6 +106,23 @@ test("write_is_answered_by_the_override_of_its_method_and_recorded_with_what_it_
   expect(guard.take()).toEqual({ consoleErrors: [], externalRequests: [], unmockedApiRequests: [] });
 });
 
+test("read_is_answered_by_an_override_written_with_its_method_too_and_the_bare_path_wins", async ({ page, guard }) => {
+  await mockApi(page, {
+    "GET status": { from: "GET status" },
+    "GET places/*": { from: "GET places/*" },
+    "places/2": { from: "bare places/2" },
+  });
+  await page.goto(BLANK);
+
+  const answers = await page.evaluate(async () => {
+    const read = async (path: string) => (await (await fetch(path)).json()) as unknown;
+    return [await read("/api/status"), await read("/api/places/3"), await read("/api/places/2")];
+  });
+
+  expect(answers).toEqual([{ from: "GET status" }, { from: "GET places/*" }, { from: "bare places/2" }]);
+  expect(guard.take()).toEqual({ consoleErrors: [], externalRequests: [], unmockedApiRequests: [] });
+});
+
 test("write_with_no_override_of_its_method_is_reported_even_where_a_read_of_the_path_is_mocked", async ({ page, guard }) => {
   const api = await mockApi(page, { "status/retry": { retried: 9 } }); // a GET override: it answers no POST
   await page.goto(BLANK);
