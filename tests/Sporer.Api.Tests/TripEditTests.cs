@@ -621,33 +621,46 @@ public class TripEditTests(DatabaseFixture db)
         await using var api = new ApiFactory(cs, configureServices: services =>
         {
             services.RemoveAll<ITripRefresher>();
-            services.AddSingleton<ITripRefresher>(sp => refresher = new FailingRefresher(sp.GetRequiredService<TripRefresher>(), failures: 1));
+            services.AddSingleton<ITripRefresher>(sp => refresher = new FailingRefresher(sp.GetRequiredService<TripRefresher>(), failures: 3));
         });
         var client = api.CreateClient();
         var worker = api.Services.GetRequiredService<TimelineWorker>();
+        var store = api.Services.GetRequiredService<TripStore>();
         await Sql.ExecAsync(cs, "update processing_state set algorithm_version = @version where id = 1",
             new { version = AlgorithmVersion.Compute(api.Services.GetRequiredService<DetectionOptions>()) }, Ct);
-        await SeedAsync(cs, api);
+        await SeedAsync(cs, api); // a refresh, which does not fail: only the recomputes of the edits do (three of them)
 
-        // The recompute fails (once). The edit is stored and answered: the id is the one the new start date makes, which is all there is to say.
+        // The recompute fails. The edit is stored and answered: the id is the one the new start date makes, which is all there is to say.
         using var edited = await JsonOf(await PutAsync(client, "2026-07-09", "Lisbon weekend", "2026-07-08", null));
         Assert.Equal("2026-07-08", edited.RootElement.GetProperty("id").GetString());
         Assert.Equal(1, refresher!.Recomputes);
         Assert.Equal(["2026-07-09"], (await StoredAsync(cs)).Select(t => t.Id)); // the trips are as they were
         Assert.Equal(["2026-07-09"], (await EditsAsync(cs)).Select(e => e.DetectedId));
-        Assert.NotNull(await api.Services.GetRequiredService<TripStore>().TakePendingAsync(Ct));
+        Assert.NotNull(await store.TakePendingAsync(Ct));
 
-        // Without a start date it is the id the trip has.
-        using var renamed = await JsonOf(await PutAsync(client, "2026-07-09", "Lisbon weekend"));
-        Assert.Equal("2026-07-09", renamed.RootElement.GetProperty("id").GetString());
-        await Sql.ExecAsync(cs, "delete from trip_edit", ct: Ct);
-        await Sql.ExecAsync(cs,
-            "insert into trip_edit (detected_id, detected_last_night, name, start_date) values ('2026-07-09', '2026-07-11', 'Lisbon weekend', '2026-07-08')", ct: Ct);
-
-        // The worker's next pass works the trips out, with the edit in them.
+        // The worker's next pass works the trips out, with the edit in them: the trip is on the 8th, and its edit is of the one detected on the 9th.
         Assert.True(await worker.RunOnceAsync(Ct));
+        var moved = Assert.Single(await StoredAsync(cs));
+        Assert.Equal(("2026-07-08", "Lisbon weekend", "2026-07-09"), (moved.Id, moved.Name, moved.DetectedId));
+        Assert.Null(await store.TakePendingAsync(Ct));
+
+        // The start date is taken back, and the recompute fails again. The trip is still on the 8th, and what is answered is the id the edit
+        // says it will have: the first night it was detected on, and not the one it has until the worker has been.
+        using var taken = await JsonOf(await PutAsync(client, "2026-07-08", "Lisbon weekend"));
+        Assert.Equal("2026-07-09", taken.RootElement.GetProperty("id").GetString());
+        Assert.Equal(2, refresher.Recomputes);
         Assert.Equal(["2026-07-08"], (await StoredAsync(cs)).Select(t => t.Id));
-        Assert.Equal("Lisbon weekend", Assert.Single(await StoredAsync(cs)).Name);
+        Assert.Equal([("2026-07-09", (string?)null)], (await EditsAsync(cs)).Select(e => (e.DetectedId, e.StartDate)));
+        Assert.True(await worker.RunOnceAsync(Ct));
+        Assert.Equal(["2026-07-09"], (await StoredAsync(cs)).Select(t => t.Id));
+
+        // With no start date to take back, it is the id the trip has.
+        using var renamed = await JsonOf(await PutAsync(client, "2026-07-09", "Lisbon again"));
+        Assert.Equal("2026-07-09", renamed.RootElement.GetProperty("id").GetString());
+        Assert.Equal(3, refresher.Recomputes);
+        Assert.Equal("Lisbon weekend", Assert.Single(await StoredAsync(cs)).Name); // not yet
+        Assert.True(await worker.RunOnceAsync(Ct));
+        Assert.Equal("Lisbon again", Assert.Single(await StoredAsync(cs)).Name);
     }
 
     private static async Task<long> AdvisoryWaitersAsync(string cs)

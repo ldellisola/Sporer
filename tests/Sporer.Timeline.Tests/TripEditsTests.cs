@@ -67,16 +67,17 @@ public class TripEditsTests
     {
         var detected = Trip(D(9, 12), D(9, 13));
 
-        // From the 11th (the night of that date was read in Lisbon, UTC+1 in September) to the 16th: the last night is the 15th. The 16th is the
-        // day the person is back, so the trip is over when it ends: at the midnight after it, in the zone the night of the 16th was read in
-        // (Tokyo, UTC+9). Its local end date is the 16th, not the 17th that the instant is on.
+        // From the 11th to the 16th: the last night is the 15th. The trip begins at the midnight that begins the 11th, which ends the night of the
+        // 10th, so it is in the zone that night was read in (Oslo, UTC+2 in September: where the person slept before it). The 16th is the day
+        // the person is back, so the trip is over when it ends: at the midnight after it, in the zone the night of the 16th was read in (Tokyo,
+        // UTC+9), which is read three hours after it. Its local end date is the 16th, not the 17th that the instant is on.
         var edited = Assert.Single(TripEdits.Apply([detected], [Edit(D(9, 12), D(9, 13), start: D(9, 11), end: D(9, 16))], ZoneAt));
 
         Assert.Equal(
             new DetectedTrip(
                 FirstNight: D(9, 11), LastNight: D(9, 15), Nights: 5,
-                StartUtc: Utc(9, 10, 23), EndUtc: Utc(9, 16, 15),
-                StartZone: Lisbon, EndZone: Tokyo,
+                StartUtc: Utc(9, 10, 22), EndUtc: Utc(9, 16, 15),
+                StartZone: Oslo, EndZone: Tokyo,
                 LocalStartDate: D(9, 11), LocalEndDate: D(9, 16)),
             edited.Trip);
         Assert.Equal(D(9, 12), edited.DetectedId); // it is still the edit of the trip detected on the 12th
@@ -101,7 +102,7 @@ public class TripEditsTests
         Assert.Null(restarted.Trip.EndUtc);
         Assert.Equal(D(9, 14), restarted.Trip.LocalEndDate);
         Assert.Equal((D(9, 11), D(9, 13), 3), (restarted.Trip.FirstNight, restarted.Trip.LastNight, restarted.Trip.Nights));
-        Assert.Equal(Utc(9, 10, 23), restarted.Trip.StartUtc);
+        Assert.Equal(Utc(9, 10, 22), restarted.Trip.StartUtc); // 11 September 00:00 in Oslo (the night of the 10th was read there)
     }
 
     [Fact]
@@ -114,6 +115,52 @@ public class TripEditsTests
         Assert.Equal((Oslo, Oslo), (edited.Trip.StartZone, edited.Trip.EndZone));
         Assert.Equal(Utc(9, 10, 22), edited.Trip.StartUtc); // Oslo is UTC+2 in September
         Assert.Equal(Utc(9, 15, 22), edited.Trip.EndUtc); // 16 September 00:00
+    }
+
+    [Fact]
+    public void TripEdits_a_start_on_a_day_of_travel_begins_at_midnight_where_the_person_slept_the_night_before()
+    {
+        var detected = Trip(D(9, 16), D(9, 18));
+        // The person flies east on the 14th: the night of the 14th (read at 03:00 on the 15th) is in Oslo, the night of the 15th in Tokyo.
+        string? Eastbound(DateOnly night) => night <= D(9, 14) ? Oslo : Tokyo;
+
+        // The trip is to begin on the 15th. The midnight that begins the 15th ends the night of the 14th, which was spent in Oslo, and it is
+        // 00:00 there (22:00Z on the 14th), not 00:00 in Tokyo (15:00Z on the 14th), which is where the night of the 15th was.
+        var edited = Assert.Single(TripEdits.Apply([detected], [Edit(D(9, 16), D(9, 18), start: D(9, 15))], Eastbound));
+
+        Assert.Equal((Utc(9, 14, 22), Oslo), (edited.Trip.StartUtc, edited.Trip.StartZone));
+        Assert.Equal(D(9, 15), edited.Trip.LocalStartDate);
+        Assert.Equal(D(9, 15), edited.Trip.FirstNight);
+
+        // The end is the other way round: it is where the night of the end date was spent, read three hours after the midnight that ends the day.
+        var early = Trip(D(9, 10), D(9, 12));
+        var back = Assert.Single(TripEdits.Apply([early], [Edit(D(9, 10), D(9, 12), end: D(9, 14))], Eastbound));
+        Assert.Equal((Utc(9, 14, 22), Oslo), (back.Trip.EndUtc, back.Trip.EndZone)); // 15 September 00:00 in Oslo
+        var away = Assert.Single(TripEdits.Apply([early], [Edit(D(9, 10), D(9, 12), end: D(9, 17))], Eastbound));
+        Assert.Equal((Utc(9, 17, 15), Tokyo), (away.Trip.EndUtc, away.Trip.EndZone)); // 18 September 00:00 in Tokyo
+    }
+
+    [Fact]
+    public void TripEdits_a_midnight_the_clocks_skip_moves_forward_by_the_gap()
+    {
+        // Chile puts its clocks forward at midnight on the first Sunday of September: 00:00 on 6 September 2026 does not exist, and 23:59 on
+        // the 5th (UTC-4) is followed by 01:00 (UTC-3). A trip that begins that day begins when the day does, which is 01:00.
+        const string Santiago = "America/Santiago";
+        var detected = Trip(D(9, 8), D(9, 9));
+
+        var edited = Assert.Single(TripEdits.Apply([detected], [Edit(D(9, 8), D(9, 9), start: D(9, 6))], _ => Santiago));
+        Assert.Equal(Utc(9, 6, 4), edited.Trip.StartUtc); // 04:00Z is 01:00 at UTC-3, the first moment of the 6th
+        Assert.Equal(D(9, 6), LocalTime.LocalDate(edited.Trip.StartUtc, Santiago));
+
+        // And the same for the end: the trip that is over when the 6th begins is over at 01:00, the instant after the gap.
+        var early = Trip(D(9, 1), D(9, 2));
+        var over = Assert.Single(TripEdits.Apply([early], [Edit(D(9, 1), D(9, 2), end: D(9, 5))], _ => Santiago));
+        Assert.Equal(Utc(9, 6, 4), over.Trip.EndUtc);
+        Assert.Equal(D(9, 5), over.Trip.LocalEndDate);
+
+        // The days around it are as ordinary: 00:00 on the 8th is at UTC-3.
+        var after = Assert.Single(TripEdits.Apply([detected], [Edit(D(9, 8), D(9, 9), start: D(9, 7))], _ => Santiago));
+        Assert.Equal(Utc(9, 7, 3), after.Trip.StartUtc);
     }
 
     [Fact]
@@ -140,6 +187,44 @@ public class TripEditsTests
         Assert.Equal([null, "Moved"], edited.Select(e => e.Name));
         Assert.Equal([D(9, 10), D(9, 12)], edited.Select(e => e.DetectedId)); // it keeps the key it was made with
         Assert.Equal([first, second], edited.Select(e => e.Trip)); // and the dates are those detected
+    }
+
+    [Fact]
+    public void TripEdits_a_deletion_found_by_overlap_needs_more_than_half_of_the_trip_it_deletes()
+    {
+        // A, five nights, was deleted; B, five more before it, was kept. Detection now finds one trip of the ten, which begins where B did:
+        // the deletion has half of its nights and no more, so it is not for that trip, which is kept (and the deletion waits).
+        var merged = Trip(D(9, 1), D(9, 10));
+        var deletion = Edit(D(9, 6), D(9, 10), name: "Not mine", deleted: true);
+
+        var kept = Assert.Single(TripEdits.Apply([merged], [deletion], ZoneAt));
+        Assert.Equal(merged, kept.Trip);
+        Assert.Null(kept.Name);
+
+        // With the nights it has in common more than half of the trip's (6 of 10), it is that trip's deletion.
+        Assert.Empty(TripEdits.Apply([merged], [Edit(D(9, 5), D(9, 10), deleted: true)], ZoneAt));
+
+        // What is not a deletion goes to the trip it overlaps most, however little of it that is: a name is no loss.
+        var renamed = Assert.Single(TripEdits.Apply([merged], [Edit(D(9, 6), D(9, 10), name: "Second half")], ZoneAt));
+        Assert.Equal("Second half", renamed.Name);
+
+        // And an edit made for the trip's own first night is its edit whatever else is in the trip now.
+        Assert.Empty(TripEdits.Apply([merged], [Edit(D(9, 1), D(9, 2), deleted: true)], ZoneAt));
+    }
+
+    [Fact]
+    public void TripEdits_a_deleted_trip_that_drifted_by_a_night_is_still_deleted()
+    {
+        var deletion = Edit(D(9, 12), D(9, 16), deleted: true); // five nights
+
+        // A night earlier (five of its six nights are the deleted trip's), and a night later (four of five).
+        Assert.Empty(TripEdits.Apply([Trip(D(9, 11), D(9, 16))], [deletion], ZoneAt));
+        Assert.Empty(TripEdits.Apply([Trip(D(9, 13), D(9, 17))], [deletion], ZoneAt));
+
+        // The trip beside it is another trip.
+        var other = Trip(D(9, 20), D(9, 22));
+        var remaining = Assert.Single(TripEdits.Apply([Trip(D(9, 13), D(9, 17)), other], [deletion], ZoneAt));
+        Assert.Equal(other, remaining.Trip);
     }
 
     [Fact]

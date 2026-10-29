@@ -96,6 +96,15 @@ public sealed record EditTripResponse(string Id);
 /// touching is not sharing (one is over the day the next begins).
 /// </para>
 /// <para>
+/// <b>The 409 is a check, and the answer to a request, not what keeps the trips apart.</b> It is made against the trips as they are stored
+/// when the request is read, outside the lock the trips are written under, so a refresh that lands between the check and the recompute can
+/// make it wrong either way. A date the request leaves out is as detected, and its nights are those of the first and last night that the
+/// trip was detected on when it was first edited (its edit's key and <c>detected_last_night</c>) where it has an edit of that date: which
+/// detection can have moved since, so they are the best there is, not the trips' own. What keeps them apart is <see cref="TripEdits.Apply"/>,
+/// which every refresh and every recompute goes through: dates that would share a night with another trip are not applied there, whatever
+/// was checked here, and wait (the name is applied) until the nights are free.
+/// </para>
+/// <para>
 /// <b>The answer</b> comes when the trips are worked out again (see <see cref="EditRecompute"/>), and its id is the one the trip then has. When
 /// that fails, the worker is asked to do it, the edit is done and answered, and the id is the one the edit says: the start date if it gave one,
 /// else the first night the trip was detected on if it had a start date and has none, else the id it has.

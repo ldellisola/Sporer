@@ -32,10 +32,10 @@ public static class TripEdits
     /// <param name="trips">The detected trips.</param>
     /// <param name="edits">The owner's edits, one for each <see cref="TripEdit.DetectedId"/>.</param>
     /// <param name="zoneAt">
-    /// The IANA zone the night of a date was read in, or null where it is not known (see <see cref="ZoneOfNearestNight"/>). It is asked for
-    /// the zone of the night on the start date and of the night on the end date of a trip whose dates were edited (the night of a date is
-    /// the one that begins its evening, and is read at 03:00 local time on the next), and where it says nothing the zone the trip was
-    /// detected in is used.
+    /// The IANA zone the night of a date was read in, or null where it is not known (see <see cref="ZoneOfNearestNight"/>). The night of a date
+    /// begins its evening and is read at 03:00 local time on the next. For a trip whose dates were edited it is asked for the night
+    /// before the start date, which ends at the midnight the trip begins at (where the person slept before it), and for the night of the end
+    /// date, read three hours after the midnight the trip ends at. Where it says nothing the zone the trip was detected in is used.
     /// </param>
     /// <remarks>
     /// <para>
@@ -43,14 +43,17 @@ public static class TripEdits
     /// shares most nights with <c>[DetectedId, DetectedLastNight]</c> (the earlier one, between trips that share as many), so that an edit
     /// still finds its trip when new data moves a night of it. A trip has at most one edit, and the ones keyed by a first night are given
     /// theirs before any is matched by overlap. An edit that matches no trip waits: it changes nothing, and is applied to the trip it
-    /// matches if one is detected again.
+    /// matches if one is detected again. A deletion is the exception to the largest overlap: it is for a trip found by overlap only if
+    /// they have more than half of that trip's nights in common, so that a trip that detection has grown to take in the deleted one (and
+    /// others the owner kept) is not lost with it, and the deletion waits instead. One keyed by the trip's first night always applies.
     /// </para>
     /// <para>
     /// <b>What an edit does.</b> A deleted trip is dropped. A name is carried. A start date makes the date of the trip's first night, and
-    /// its start the local midnight that begins that date, in the zone the night of the date was read in. An end date is the day the person
-    /// is back, which is a day of the trip: the trip ends at the local midnight that ends that date (the one after it, 17 September 00:00
-    /// for an end date of the 16th), in the zone the night of the date was read in, so the day of the journey home, its moves and its
-    /// stays, is inside the trip; its local end date is the end date itself; and its last night is the one before. The nights are those from
+    /// its start the local midnight that begins that date, in the zone the night before it was read in: that night ends at the midnight, so
+    /// it is where the person was when the date began, which on a day of travel is not where the night of the date was. An end date is the
+    /// day the person is back, which is a day of the trip: the trip ends at the local midnight that ends that date (the one after it,
+    /// 17 September 00:00 for an end date of the 16th), in the zone the night of the date was read in (three hours after the midnight),
+    /// so the day of the journey home, its moves and its stays, is inside the trip; its local end date is the end date itself; and its last night is the one before. The nights are those from
     /// the first to the last, and a trip that was ongoing and is given an end date no longer is. A date the owner left out is as it was
     /// detected, so a start date alone leaves the end of the trip alone, ongoing or not.
     /// </para>
@@ -167,7 +170,9 @@ public static class TripEdits
                     (best, most) = (i, shared);
             }
 
-            if (best >= 0)
+            // A deletion takes a trip by overlap only if most of the trip is what was deleted: otherwise the trip is more than the one the
+            // owner deleted (detection has merged it with another), and it is kept.
+            if (best >= 0 && (!edit.Deleted || most * 2 > trips[best].Nights))
                 matched[best] = edit;
         }
 
@@ -200,7 +205,9 @@ public static class TripEdits
         var moved = trip;
         if (edit.StartDate is { } start)
         {
-            var zone = zoneAt(start) ?? trip.StartZone;
+            // The midnight that begins the start date ends the night before it, which is where the person was: on a day of travel the night of
+            // the start date itself may be in another zone.
+            var zone = zoneAt(start.AddDays(-1)) ?? trip.StartZone;
             moved = moved with { FirstNight = start, StartUtc = MidnightUtc(start, zone), StartZone = zone, LocalStartDate = start };
         }
 
