@@ -82,7 +82,7 @@ const answers = {
   },
 };
 
-test("month_view_and_range_picker", async ({ page }) => {
+test("month_view_and_range_picker", { tag: "@smoke" }, async ({ page }) => {
   await fixToday(page);
   const api = await mockApi(page, answers);
   await page.goto("/day/2026-10-22");

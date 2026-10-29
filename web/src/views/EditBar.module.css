@@ -1,13 +1,18 @@
 /*
  * The bar of edit mode, at the top of the day's panel: the first thing it has, so that it shows when the sheet is at its lowest, and it stays at
  * the top of the panel where this scrolls. The buttons are those of the forms (Forms.module.css), and wrap under the count when the panel is narrow.
+ *
+ * What a sheet at its lowest shows of the panel is 64 px (the peek is 96 and the grip has 32), and the row is two lines where the words are too long for the
+ * buttons to be beside them (the words of a load that failed, with Clear, Remove and Done, on any phone; the count too, in a font as wide as DejaVu Sans). The
+ * 6 px above are the room that a Retry has over its line (it is made taller than the words to be a target for a finger, and a box that is over the top of the
+ * panel is cut off); then the line of words (14 px at a line height of 1.1), the 6 px that the Retry has under it, and the buttons: 6 + 15.4 + 6 + 36 is 63.4.
  */
 .bar {
   position: sticky;
   top: 0;
   z-index: 1;
   margin: 0 0 8px;
-  padding: 2px 0 6px;
+  padding: 6px 0;
   background: var(--surface);
 }
 
@@ -22,18 +27,36 @@
 .count {
   min-width: 0;
   font-size: 14px;
+  line-height: 1.1;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--ink);
 }
 
 /*
+ * The count while the words of a load that failed are in its place in the row: off the screen and not off a screen reader, which hears the count that is tapped
+ * meanwhile. Out of the flow (the bar is sticky, and is what it is placed in), so that the row is as tall as the buttons.
+ */
+.heardOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/*
  * The words of a load that failed, in the place of the count (the alert of ErrorState, as small as the count is and with none of the box it has under a
- * list: the row must not be made taller than the buttons are, for the sheet at its lowest shows the row and nothing under it).
+ * list: the row must not be made taller than the buttons are, for the sheet at its lowest shows the row and nothing under it). Their lines are close
+ * for the same reason: where the buttons are three they are a line of their own (see the bar), and there are 64 px.
  */
 .problem {
   min-width: 0;
   font-size: 14px;
+  line-height: 1.1;
 }
 
 /* Three buttons and the count in the 358 px of a phone's sheet, in the one line that a sheet at its lowest shows: the buttons give up a little of their side padding. */

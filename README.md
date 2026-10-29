@@ -53,11 +53,40 @@ map), `/trip/2026-09-12` (one trip, named by the date of its first night; see "T
 your homes, the trip distance, and what you deleted or removed, see "Editing"). Anything else opens today. The map
 follows the light or dark setting of the device, and the ◐ button of the map draws where the time of a period was spent as a heat layer.
 
-**On an iPhone**, open `https://sporer.lud.ar` in Safari, tap Share, then **Add to Home Screen**. It opens from the home
-screen in a window of its own, without Safari's bars. On a desktop browser it is just a page. It does not work offline yet.
+**On an iPhone**, open `https://sporer.lud.ar` in Safari, tap Share, then **Add to Home Screen** (see "Installing on the iPhone"
+below). It opens from the home screen in a window of its own, without Safari's bars. On a desktop browser it is just a page.
 
 The web app is built into the image: nothing else needs to be installed or run next to it. It is served by the same process
 as the API, from `wwwroot` next to `Sporer.Api.dll`.
+
+## Installing on the iPhone
+
+Open `https://sporer.lud.ar` in Safari (over the VPN), tap Share, then **Add to Home Screen**. From then on the app opens from the home
+screen in a window of its own, without Safari's bars, on today.
+
+- **What the app keeps.** Once the app has loaded, a service worker (`/sw.js`, for the whole site) saves the app's **shell** on the phone: its page,
+  its scripts and styles, its icons and its manifest: 2 MB unpacked, about half a megabyte as it travels. That is all. It **never keeps and never answers anything
+  from the API** (`/api/…`): every day, month, trip and place you look at is asked of the server each time, so what is on the screen is never
+  older than the server's, and none of your data is stored by the worker. Nor does it touch anything from another site (the map's style and
+  tiles come from their own server, as before). The shell is what makes the app open at once, without fetching its code again over the VPN, and
+  what lets it open at all when the network is slow or gone.
+- **A start without a network.** The app opens, and each view says it could not load, with a **Retry**; the map has no basemap
+  ("Map unavailable", with its own Retry) because its style and tiles are fetched from the network. Nothing you looked at before is shown: viewing
+  data loaded earlier without a network is not part of v1. When the network is back, Retry loads the view. The same happens when the network
+  answers but very slowly: after 3 seconds without an answer the app opens from the saved page instead of waiting, and its views load as the
+  answers come. And when the server is down for a moment (a restart, an update) and the proxy in front answers 502, 503 or 504, the app opens
+  from the saved page too, and its views say they could not load, with Retry, rather than showing the proxy's error page.
+- **How a release reaches the installed app.** The app's page is always asked of the server first (the saved one is only for when that fails), so the next time
+  the app starts after the server was updated, it starts on the new version of the page; the phone checks `/sw.js` at the same time, and a new build is
+  a new worker that fetches the new shell in the background and then takes over and throws the old one away. An app you left open (it is still in the
+  app switcher) runs on the version it started with until you close it: if it then needs a file that the release replaced, the view says it is
+  unavailable, with a **Retry**, and closing the app and opening it again fixes it.
+- **If it ever seems stuck** (an old version that does not go, a view that says unavailable and will not load): close the app from the app
+  switcher and open it again. As a last resort, **delete the app from the Home Screen** (touch and hold its icon, then Remove App, Delete App) and add
+  it again from Safari: an app on the Home Screen keeps its own website data, its worker and its saved shell included, apart from Safari's, and the
+  new one starts with none, so the first start fetches the shell once more. Nothing of yours is lost, for the worker keeps only the shell and your data is on
+  the server. Removing the site from Safari's Website Data is the other way, and may not reach the app on the Home Screen: on iOS 18 and later it is
+  Settings, Apps, Safari, Advanced, Website Data; on iOS 17 and earlier, Settings, Safari, Advanced, Website Data.
 
 ## Trips and home
 
@@ -277,6 +306,14 @@ Authentik forward-auth is added in front of it, **exempt `/api/overland` from fo
 that endpoint is protected by `OVERLAND_TOKEN` instead. Everything else (the read API and the web app) belongs behind
 forward-auth.
 
+**Behind the login.** When the session at the login has ended, the app does not show an error that has nothing to do with it: the first request of
+the app that the login answers with a redirect (every request of the app is made so that a redirect is seen and not followed) reloads the page, which
+the proxy then sends to its login, and after signing in you are back in the app. The reload happens at most once a minute (the tab remembers when it
+last did), so a login that keeps redirecting cannot make the page reload for ever: the view that asked shows its error with a Retry instead, as it does
+when the browser will not let the tab remember anything (a private window). A request that gets no answer at all (no network) is not a sign-out and
+never reloads the page. The installed app's service worker is no part of this: it never answers a request of the API, and a page that the login
+redirects to is shown as the login sends it, never replaced by the saved page unless the network gives no answer for 3 seconds.
+
 ## First release
 
 The first release of the timeline server changes the database, so take a schema-only dump before it starts against your
@@ -360,6 +397,16 @@ timeline (an algorithm change, or any `Detection__*` change, makes one, and your
   it. Tap **Undo** in the toast: the points are back and the day as it was. Then remove it again and leave it: Settings, Removed points, lists
   it with a Restore, and it stays out of the day after the timeline is rebuilt too. (Edit points on a day with tens of thousands of points
   draws them all; say how long it takes on the phone, the target is two seconds.)
+- [ ] **Edit mode on the iPhone itself.** The browser tests that run in WebKit in CI leave edit mode out (headless WebKit shows the last frame of a WebGL
+  canvas late, so the test that removes points cannot read it there; see "Continuous integration"), so this is where it is checked on Safari's
+  engine. Open a day, tap Edit points: the points are drawn on the map; tap one (it is marked), Remove, and Undo; then turn on Select area and
+  drag a box over some.
+- [ ] **The edit bar at the peek, at larger text.** With edit mode on and the sheet at its lowest (its peek), the edit bar's row (the note or the count,
+  Clear and Done) is fully visible without pulling the sheet up, with Safari's text size (the page menu, aA, in the address bar of a page in Safari: the
+  app on the Home Screen has no such menu) at 100 %, and again at 115 % and at 125 %. And again with Settings, Display & Brightness, Display Zoom, Larger
+  Text: it narrows the page, and it is the one size setting that also applies to the app on the Home Screen. Check the same with a load error of the
+  points (open a day, turn on Airplane mode, then tap Edit points): its alert and its Retry must be in that row. At large text the row can need a third
+  line and push Done below the peek: say so, with the size, if it does.
 - [ ] **Re-date and rename a trip, delete one and restore it.** Open a trip, tap Edit, give it a name and another start or end date (the day you
   are back is the end date), Save. The trip, its days and the trips list show the new name and dates, and the address follows a new start
   date. **Use detected dates** puts the detected ones back. Delete another trip (Delete trip): it leaves the list, and is listed under Settings,
@@ -371,6 +418,46 @@ timeline (an algorithm change, or any `Detection__*` change, makes one, and your
   moment and with no rebuild (`/api/status` shows no backfill). Reset to default goes back to 50 km (or `Detection__TripMinDistanceKm`).
 - [ ] **The edits stay.** After the next release, or any restart of the container (the timeline is only rebuilt when an algorithm or a
   `Detection__*` setting changed), your names, merges, removed points, trips, homes and distance are as you left them.
+
+## Owner's sign-off: the §8 targets
+
+v1 is signed off by you, on your iPhone, over the VPN, against your real history once the first backfill has finished (spec §8 and §9). The
+performance check in `docs/superpowers/plans/2026-10-29-sporer-plan-5-perf.md` measured every target on a generated history of ten million
+rows, on a computer with its processor held back four times and a network like the VPN (60 ms round trip, 20 Mbit/s down, 5 up), and says
+what the code does at that volume. It cannot say what the phone does: the map there is drawn by the phone's graphics chip with the real tiles, over
+the real network. So each line below is yours, and the target is the spec's. Open the app from the home screen, as you use it, and look at the
+clock, not at the feel.
+
+- [ ] **Open the app, cold and installed: the map is visible in 2 seconds or less.** Close the app from the app switcher, open it from the home screen,
+  and time it from the tap to the map showing its basemap and the day's list under it. Three times. (The very first start of a new install is slower:
+  it has no shell yet. The target is for the installed app.)
+- [ ] **A past day after ‹ or ›: 1 second or less, and near instant when it was prefetched.** Open a past day, wait a second, and tap › and ‹ a few
+  times: the day should be there at once. Then tap › twice in a row without waiting: the second day may take longer, but not more than a second.
+- [ ] **A month: 2 seconds or less.** Open the month with the most going on (the Month button of the top bar), and time it from the tap to the list and
+  the routes.
+- [ ] **A year: 3 seconds or less.** The same on the busiest year, with all its routes (the answer for a year is half a megabyte, about 150 kB on the wire).
+- [ ] **Pan and zoom are smooth, the Year with its routes included.** On the Year, drag the map about and pinch in and out. Look for a stutter. This is the
+  one line that no computer can answer: software drawing on the computer is far slower than your phone, so its frame times in the performance check are
+  information and no verdict.
+- [ ] **Ingest stays fast while processing runs: p95 under 200 ms.** The performance check measured the p95 (34 ms with 1,000-point batches every 0.4 s
+  over a whole rebuild); the API logs no request times at its default level, so what you can check is that nothing is refused. The next time the whole timeline
+  is rebuilt (the first backfill, or after changing a `Detection__*` setting), leave Overland sending: every batch is accepted (Overland shows no failed
+  uploads, and none is retried; Traefik's access log has the times, if it is on), and once the rebuild has ended `pendingRanges` in `GET /api/status` is back
+  to 0 (the new points' ranges wait for the rebuild by design, so they rise while it runs). Do not use `tools/perf/ingest-latency.sh` for this: it posts
+  made-up points, and a point that is stored is never deleted. It is for a database of generated data.
+- [ ] **No unhandled error reaches a blank screen; a failure of one day's processing shows in Settings, for that day only.** Use the app for a while,
+  and try the worst: open it with Airplane mode on (the views say they could not load, with a Retry, and nothing is blank), turn it off and tap Retry;
+  look at Settings for failed ranges and warnings after a rebuild.
+- [ ] **The installed app behaves** (see "Installing on the iPhone"): a start with no network shows the app and not a browser error; a release reaches the
+  app on its next start after the server was updated; if the session at the login ended, the app goes to the login by itself and comes back.
+- [ ] **Edit mode on the iPhone** is in the editing checklist above, with the edit bar at larger text: the browser tests in CI cannot check it in WebKit.
+- [ ] **Detection quality** is only signed off on real data, so it is yours too: the two checklists above, "Owner's checklist: trips and home" (the home
+  periods and any move, each trip you remember and no trip that is not one, a long stay that is not a move, the house on the stops at home, the
+  day lines of a trip) and "Owner's checklist: editing" (a spike removed and undone, two places of one house merged, a trip re-dated and one deleted
+  and restored, a home you set, the trip distance, and that your edits are still there after the next release). Where something is wrong, the
+  `Detection__*` settings are in "Detection thresholds", and an edit puts it right in the app.
+
+If a line misses, say which, with the time and the phone, and what you were doing: the performance document says where the time goes.
 
 ## Releases
 
@@ -385,7 +472,8 @@ The workflow runs the .NET tests and the web app's checks (type check, unit test
 image (the web app is built inside it) and publishes it as `ghcr.io/ldellisola/sporer` with the tags `1.2.3`, `1.2`, `1` and
 `latest` (among others). Only a `v*.*.*` tag publishes `latest`. The server pulls `:latest` daily. Pushes to `main` that touch
 `src/`, `tests/`, `web/`, `docker/dockerfile`, `.dockerignore` or the workflow file build and publish a branch-tagged image;
-pull requests run the tests and a build without publishing.
+pull requests run the tests and a build without publishing. So does a run started by hand on any branch or tag but `main` and the
+`v*` tags (it publishes on those): see [Continuous integration](#continuous-integration).
 
 ## Local development
 
@@ -416,6 +504,15 @@ The image builds `src/Sporer.Api` only. The solution also references the test pr
 in the image. The web app is built in a Node stage of its own (`node:22-alpine`) and copied into the image's `wwwroot`;
 whatever `web/node_modules`, `web/dist` or `src/Sporer.Api/wwwroot` hold locally is left out of the build.
 
+The API is published ReadyToRun: its code is compiled ahead of time, so that the first requests, the first edit and the first
+refresh after a start wait less for the JIT (they still wait for some of it). That code is for one architecture, taken from the
+platform being built: BuildKit, which `docker build` uses by default, sets `TARGETARCH` to the architecture of the build (the host's,
+unless `--platform` says another), and `amd64` gives `linux-x64` and `arm64` gives `linux-arm64`; only the classic builder leaves it
+empty, which gives `linux-x64`. Any other value fails the build. The app stays framework-dependent, on the same `aspnet` image as
+before. For the rest, after the migrations the app reads the nights and works the homes and trips out once in the background, and throws
+the result away, so that the first refresh and the first edit do not compile that code while you wait: it writes nothing and takes no
+lock, and a failure is only logged as a warning; the log says `Warmed up the homes and trips` when it is done.
+
 ### Front-end development
 
 The web app is in `web/`: React, TypeScript, Vite and MapLibre, with CSS Modules and no other UI libraries. You need
@@ -433,14 +530,55 @@ access gets a plain background instead of a map; the rest of the page works.
 
 | Command | What it does |
 | --- | --- |
-| `npm run typecheck` | `tsc --noEmit`, with `strict` on, for the app and, as a project of its own (`web/perf/tsconfig.json`), for the performance run. |
+| `npm run typecheck` | `tsc --noEmit`, with `strict` on, for four projects: the app, the service worker (`src/sw`), the build's configuration (`build`) and, with Node's few declarations, the performance run (`web/perf/tsconfig.json`). |
 | `npm test` | The unit and component tests (Vitest, jsdom). |
-| `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. |
-| `npm run perf` | The web performance run (spec §8): times the panel's rows and the map's idle for a day, a month and a year, for the list of trips and for each trip, and, for edit mode, the time from the tap on Edit points to the points drawn on the day with the most points, on a phone-sized page with the processor held back 4 times, against API answers recorded by `npm run perf:record` from a server over the synthetic history. Not part of `npm run e2e` or CI; takes about four minutes (72 tests for the synthetic history's three trips). How to run it, and its results, are in `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md` and, for the trips and for editing, `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md` and `docs/superpowers/plans/2026-10-28-sporer-plan-4-perf.md`. |
+| `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. With `PW_WEBKIT=1` it adds a WebKit project that runs only the tests tagged `@smoke` (see below). |
+| `npm run perf` | The web performance run (spec §8), on a phone-sized page with the processor held back 4 times and, unless `PERF_NETWORK=off`, a network like the VPN (60 ms round trip, 20 Mbit/s down, 5 up): the panel's rows and the map's idle for a day, a month and a year (and the step to the next, with its answer prefetched and not), the list of trips and each trip, edit mode on the day with the most points, the app opened on today as a first visit and as the installed app (the service worker active, its cache filled), and a scripted pan and zoom on the year with its routes. The API's answers are those recorded by `npm run perf:record` from a server over the synthetic history, served over real HTTP by `web/perf/serve.mjs` as the API serves them (Brotli, cache headers). Not part of `npm run e2e` or CI; takes about six minutes (94 tests). How to run it, and its results, are in `docs/superpowers/plans/2026-10-29-sporer-plan-5-perf.md` and, for the earlier plans, `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md`, `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md` and `docs/superpowers/plans/2026-10-28-sporer-plan-4-perf.md`. |
 | `npm run perf:record` | Records those API answers, the trips' and the points of the day with the most of them among them (`node scripts/perf/record.mjs <api-url> <first-date> <last-date>`; it asks for the points of every day, which takes about half a minute), into `web/perf/recorded/`, which git ignores. |
-| `npm run perf:bundle` | After a build: the size of each JavaScript file of the production bundle, gzipped and Brotli-compressed. |
+| `npm run perf:bundle` | After a build: the size of each JavaScript file of the production bundle, gzipped and Brotli-compressed. `npm run check:sw` prints what the service worker keeps. |
 | `npm run build` | Type checks and builds the web app into `src/Sporer.Api/wwwroot`, which the API serves (and git ignores). |
 | `npm run icons` | Draws the PNG icons in `public/icons/` again from `icon.svg`. Only when the icon changes. |
+
+### Continuous integration
+
+`.github/workflows/docker-publish.yml` (Create Docker Image) has three jobs:
+
+- `test`: the .NET tests (`dotnet test src/Sporer.sln`).
+- `web`: `npm ci`, `npm run typecheck`, `npm test` and `npm run e2e` (with `PW_WEBKIT=1`) in `web/`. The browser tests run in Chromium and a smoke
+  set of them also in WebKit, the engine of iOS Safari. The Playwright browsers are cached on the version in `web/package-lock.json` (saved even
+  when a test fails; a cache is per branch and goes after 7 days unused, so the first run on `main` after a merge installs them again); a run
+  that finds them in the cache still installs the system packages they need.
+- `build`: always builds the image, so that the Dockerfile is checked on every run, and publishes it (cosign, the login, the push and the
+  signature) only for these events:
+
+  | Event | The image |
+  | --- | --- |
+  | Push to `main` | built and published |
+  | Push of a `v*.*.*` tag | built and published |
+  | Pull request | built, not published |
+  | Run workflow by hand on `main` or on a `v*` tag | built and published |
+  | Run workflow by hand on any other branch or tag | built, not published |
+
+The WebKit smoke set is the tests tagged `{ tag: "@smoke" }`: one or two of each flow (the app opens on today, day navigation, the month, opening a
+trip, renaming a place, Settings, and the service worker installing from a page that is not the app). Three
+kinds of test stay with Chromium. The test of removing points reads the pixels of the points right after edit mode sets them, and headless WebKit
+puts the last frame of a WebGL canvas into a screenshot late (the points are in the canvas, and in the screenshot only after another frame is drawn,
+which an idle map does not do; the trips test, whose map keeps moving, runs on WebKit too). The two service-worker cases that need the page's
+requests to reach the test's mocks stay too: their page requests are not routed by Playwright on WebKit while a worker controls the page. And the
+test of a session that has ended at the login answers the API with a redirect, which Playwright cannot fake on WebKit (`route.fulfill` refuses a
+302 there). Edit mode and the login on Safari are in the owner's iPhone checklist.
+The smoke set is a project called `webkit` that exists only when `PW_WEBKIT=1`, so only CI runs it by
+default; a plain `npm run e2e` is Chromium's two projects. The project uses Playwright's iPhone 14 descriptor (WebKit, touch, the phone's pixel
+density). Where WebKit is installed (`npx playwright install webkit`; on Linux add `--with-deps`), run it with:
+
+```sh
+cd web
+PW_WEBKIT=1 npx playwright test --project=webkit
+```
+
+To check a branch before it is merged, without publishing anything: Actions, Create Docker Image, Run workflow, and pick the branch. The
+`test`, `web` and `build` jobs all run, and `build` pushes nothing, as it does for a pull request: only `main` and a `v*` tag are published when
+the run is started by hand.
 
 ### Synthetic data and performance checks
 
@@ -461,8 +599,12 @@ time the day view and ingest, `tools/perf/api-latency.sh` the range, heat, place
 places the way Nominatim would. For editing, `tools/perf/edit-latency.sh` times the edits that recompute the homes and trips,
 `tools/perf/points-latency.sh` the points of a day, `tools/perf/exclude-points.sql` removes a thousand points spread over the history (to time a
 backfill with removals) and `tools/perf/explain-edits.sql` shows the plans of the removal's anti-join, the day's points and the place search.
+`tools/perf/first-after-start.sh` starts the API itself and times the first refresh, edit and reads after each start (what ReadyToRun and the
+warm-up are for), and `tools/perf/rng.awk` is the seeded random generator that `api-latency.sh` and `day-latency.sh` share.
 The measurements at 10 million rows, and how to repeat them, are in
 `docs/superpowers/plans/2026-10-23-sporer-plan-1-perf.md` (server), `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md` (range, heat,
 place, the web app), `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md` (the nights, homes and trips: the backfill, the refresh,
-the trips endpoints and views) and `docs/superpowers/plans/2026-10-28-sporer-plan-4-perf.md` (editing: the backfill with removed points,
-the edits, the day's points, the place search and edit mode on a phone).
+the trips endpoints and views), `docs/superpowers/plans/2026-10-28-sporer-plan-4-perf.md` (editing: the backfill with removed points,
+the edits, the day's points, the place search and edit mode on a phone) and `docs/superpowers/plans/2026-10-29-sporer-plan-5-perf.md` (the final pass
+over every target of spec §8, on the published ReadyToRun build and with a network like the VPN, the installed app, the first requests after a start,
+ingest while the timeline is rebuilt, and the pan and zoom of the year).

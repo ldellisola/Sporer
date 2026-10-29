@@ -1,0 +1,132 @@
+// What the service worker (sw.ts) decides, as pure functions: which requests it answers, how its caches are named and which of them
+// go. Nothing here touches a worker global, so the rules can be tested without a worker.
+
+/** How long a navigation waits for the network before the cached page is shown instead. */
+export const NAVIGATION_TIMEOUT_MS = 3000;
+
+const CACHE_PREFIX = "sporer-shell-";
+
+export type RoutedRequest = { url: string; mode: string; method: string };
+
+/**
+ * - `navigation`: a page of the app: network first, the cached `index.html` when the network fails or is slow;
+ * - `shell`: a file of the build: the cache, else the network;
+ * - `pass`: not the worker's to answer, the browser deals with it as if there were no worker.
+ *
+ * Only a GET of this origin is ever answered, and never anything under /api: the worker must not hold a private answer or hand one
+ * out stale. Another origin (the map's tiles and style) is not the shell's either. Nor is a navigation that the server does not answer
+ * with the page (a path that ends in a file's extension: the worker's own address, an icon, the manifest) or that belongs to the login
+ * in front of the app (Authentik's forward-auth callback): the cached page would be shown in the place of what they are.
+ */
+export function routeOf(request: RoutedRequest, origin: string, shellFiles: ReadonlySet<string>): "navigation" | "shell" | "pass" {
+  if (request.method !== "GET") return "pass";
+  const url = new URL(request.url);
+  if (url.origin !== origin) return "pass";
+  if (isApiPath(url.pathname) || isLoginPath(url.pathname)) return "pass";
+  if (request.mode === "navigate") return hasExtension(url.pathname) ? "pass" : "navigation";
+  return shellFiles.has(url.pathname) ? "shell" : "pass";
+}
+
+// The server matches its routes without regard to case and decodes the path first, so /API and /%61pi reach the API like /api does.
+// `/api` is a prefix by segment: /apiary is a page.
+function isApiPath(pathname: string): boolean {
+  return isApi(pathname) || isApi(decoded(pathname));
+}
+
+function isApi(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower === "/api" || lower.startsWith("/api/");
+}
+
+// Authentik's outpost, which a proxy of the login serves on the app's own host (/outpost.goauthentik.io/start, /callback, ...): by segment too.
+function isLoginPath(pathname: string): boolean {
+  return isLogin(pathname) || isLogin(decoded(pathname));
+}
+
+function isLogin(path: string): boolean {
+  return path.toLowerCase().startsWith("/outpost.goauthentik.io/");
+}
+
+// The server answers a path with the page unless it ends in a dot and letters or digits (the fallback in Program.cs, `(?!.*\.\w+$)`: the
+// `..` of a range is none): what does is a file or a 404, and is left to the browser.
+function hasExtension(pathname: string): boolean {
+  return /\.\w+$/.test(pathname) || /\.\w+$/.test(decoded(pathname));
+}
+
+function decoded(path: string): string {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path; // not valid percent-encoding: the server would turn it away, and it is not an API path here
+  }
+}
+
+/**
+ * The files of the shell as a request has their paths: percent-encoded (a name with a space is asked for as `%20`), which is what
+ * `routeOf` and `isAppPage` compare with. The build gives the names as they are on disk.
+ */
+export function shellPaths(files: readonly string[], origin: string): Set<string> {
+  return new Set(files.map((file) => new URL(file, origin).pathname));
+}
+
+/**
+ * Whether an answer of the server to a navigation is a proxy's, not the app's: a 502, 503 or 504 comes from what stands in front of the
+ * app when it cannot reach it (a restart, a deploy). With the page kept, the worker shows that rather than the proxy's error page, and
+ * the views say what went wrong with a Retry. Every other answer, a redirect to the login included (status 0 here), is the network's own.
+ */
+export function isProxyError(response: { status: number }): boolean {
+  return response.status === 502 || response.status === 503 || response.status === 504;
+}
+
+/**
+ * How the install asks for a file of the shell (`RequestInit.cache`). The page and the files outside /assets/ keep their names when they
+ * change, so they are asked of the server (`reload`), and never of the browser's HTTP cache, which may have those of another build. A
+ * file under /assets/ is named by its content: what any cache has under that name is that file, so it is taken from there if it is (`default`).
+ */
+export function installCacheMode(path: string): "reload" | "default" {
+  return path.startsWith("/assets/") ? "default" : "reload";
+}
+
+export function cacheName(version: string): string {
+  return `${CACHE_PREFIX}${version}`;
+}
+
+/** Every shell cache but the current one, given by its cache name (`cacheName(version)`). Caches of any other name are not ours. */
+export function cachesToDelete(names: readonly string[], current: string): string[] {
+  return names.filter((name) => name.startsWith(CACHE_PREFIX) && name !== current);
+}
+
+/**
+ * Whether the server's answer for /index.html can be the page of the app: ok, of this origin, and not what a redirect led to (a sign-in
+ * page): its body is then looked at (`isAppPage`). Any other answer is not kept.
+ */
+export function isShellDocument(response: { ok: boolean; type: string; redirected: boolean; headers: { get(name: string): string | null } }): boolean {
+  return (
+    response.ok &&
+    response.type === "basic" &&
+    !response.redirected &&
+    (response.headers.get("content-type") ?? "").trim().toLowerCase().startsWith("text/html")
+  );
+}
+
+// An attribute `src` or `href` and its value, quoted either way or not at all. (Not `data-src`: nothing before it that is part of a name.)
+// What comes before the name is consumed, the start of the string or one character that is no part of a name, and not looked behind
+// for: Safari takes a lookbehind only from 16.4, and a worker that does not parse does not install. So that the quote that ends one
+// attribute can be what comes before the next, a quoted value stops short of its closing quote (a lookahead, which every Safari has).
+const URL_ATTRIBUTE = /(?:^|[^\w-])(?:src|href)\s*=\s*(?:"([^"]*)(?=")|'([^']*)(?=')|([^\s"'>]+))/gi;
+// The same for the id of a div: `<div` is always before it, and a `>` ends the tag, so it is no character that may come before the name.
+const ROOT_ELEMENT = /<div\b[^>]*?[^\w>-]id\s*=\s*(?:"root"|'root'|root(?![\w-]))/i;
+
+/**
+ * Whether `html` is the app's page of this build: it has the element the app mounts in, and every file it names under /assets/ is one of
+ * the worker's (`shellFiles`, as `shellPaths` gives them). A page of another build, or no page of the app at all, is not to be kept as the
+ * page that opens offline: it would open an app whose files are not there.
+ */
+export function isAppPage(html: string, shellFiles: ReadonlySet<string>): boolean {
+  if (!ROOT_ELEMENT.test(html)) return false;
+  for (const match of html.matchAll(URL_ATTRIBUTE)) {
+    const value = match[1] ?? match[2] ?? match[3] ?? "";
+    if (value.startsWith("/assets/") && !shellFiles.has(new URL(value, "https://page.invalid").pathname)) return false;
+  }
+  return true;
+}

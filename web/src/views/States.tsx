@@ -1,4 +1,5 @@
 import type { Ref } from "react";
+import { ApiError } from "../api/client";
 import { RetryButton } from "./RetryButton";
 import styles from "./States.module.css";
 
@@ -22,8 +23,10 @@ export function Empty({ message, ref, tabIndex }: { message: string; ref?: Ref<H
   );
 }
 
+// What failed, for whoever looks; and what the owner is told about it when the error has that to say (`ApiError.detail`, as it is).
 function describe(error: unknown): string | null {
   if (error === null || error === undefined) return null;
+  if (error instanceof ApiError && error.detail !== null) return `${error.message}. ${error.detail}`;
   return error instanceof Error ? error.message : String(error);
 }
 

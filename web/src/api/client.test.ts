@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { ApiError, deleteJson, getJson, isNotFound, isRefusal, postJson, putJson } from "./client";
 
 function respond(status: number, body: unknown = {}): Response {
@@ -47,6 +47,7 @@ describe("getJson", () => {
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe("/api/config");
     expect(init?.signal).toBe(controller.signal);
+    expect(init?.redirect).toBe("manual"); // a redirect is the login's, and is looked at, not followed (see "signed out" below)
     expect(new Headers(init?.headers).get("Accept")).toBe("application/json");
   });
 
@@ -76,7 +77,7 @@ describe("getJson", () => {
 function sent(fetchMock: ReturnType<typeof vi.fn>) {
   const [url, init] = (fetchMock.mock.calls[0] ?? []) as [string, RequestInit | undefined];
   const headers = new Headers(init?.headers);
-  return { url, method: init?.method, body: init?.body, contentType: headers.get("Content-Type"), accept: headers.get("Accept") };
+  return { url, method: init?.method, body: init?.body, contentType: headers.get("Content-Type"), accept: headers.get("Accept"), redirect: init?.redirect };
 }
 
 describe("postJson, putJson and deleteJson", () => {
@@ -85,7 +86,14 @@ describe("postJson, putJson and deleteJson", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(postJson<{ retried: number }>("/api/status/retry", { a: 1 })).resolves.toEqual({ retried: 2 });
-    expect(sent(fetchMock)).toEqual({ url: "/api/status/retry", method: "POST", body: '{"a":1}', contentType: "application/json", accept: "application/json" });
+    expect(sent(fetchMock)).toEqual({
+      url: "/api/status/retry",
+      method: "POST",
+      body: '{"a":1}',
+      contentType: "application/json",
+      accept: "application/json",
+      redirect: "manual",
+    });
 
     fetchMock.mockClear();
     await expect(putJson<{ retried: number }>("/api/settings", { tripMinDistanceKm: 80 })).resolves.toEqual({ retried: 2 });
@@ -95,6 +103,7 @@ describe("postJson, putJson and deleteJson", () => {
       body: '{"tripMinDistanceKm":80}',
       contentType: "application/json",
       accept: "application/json",
+      redirect: "manual",
     });
   });
 
@@ -113,7 +122,7 @@ describe("postJson, putJson and deleteJson", () => {
     fetchMock.mockClear();
     vi.stubGlobal("fetch", fetchMock.mockImplementation(async () => new Response(null, { status: 204 })));
     await deleteJson("/api/trips/2026-09-12");
-    expect(sent(fetchMock)).toMatchObject({ url: "/api/trips/2026-09-12", method: "DELETE", body: undefined, contentType: "application/json" });
+    expect(sent(fetchMock)).toMatchObject({ url: "/api/trips/2026-09-12", method: "DELETE", body: undefined, contentType: "application/json", redirect: "manual" });
   });
 
   test("a_write_that_the_server_answers_with_no_content_resolves_to_undefined", async () => {
@@ -279,5 +288,345 @@ describe("isRefusal", () => {
     expect(isRefusal(new TypeError("Failed to fetch"))).toBe(false);
     expect(isRefusal({ status: 409 })).toBe(false);
     expect(isRefusal(null)).toBe(false);
+  });
+
+  test("isRefusal_is_false_for_the_error_of_a_redirect_which_is_a_status_of_0_and_is_offered_a_Retry", () => {
+    // The signed-out answer (an opaque redirect) has no status of its own: 0. It is not the server refusing a request: after the owner has
+    // signed in again it is sent as it was.
+    expect(isRefusal(new ApiError(0, "/api/day/2026-10-22"))).toBe(false);
+    expect(isRefusal(new ApiError(0, "/api/places/9/merge", "POST"))).toBe(false);
+  });
+});
+
+describe("signed out", () => {
+  // What the browser gives for a request made with `redirect: "manual"` that the server answered with a redirect (the login of a proxy in front of the
+  // app, say): a response of type `opaqueredirect`, with the status 0 and nothing in it. A `Response` cannot be made like it, so it is made by hand.
+  function opaqueRedirect(): Response {
+    const response = new Response(null);
+    Object.defineProperties(response, { type: { value: "opaqueredirect" }, status: { value: 0 }, ok: { value: false } });
+    return response;
+  }
+
+  const calls: [string, () => Promise<unknown>][] = [
+    ["GET", () => getJson("/api/day/2026-10-22")],
+    ["POST", () => postJson("/api/status/retry")],
+    ["PUT", () => putJson("/api/settings", { tripMinDistanceKm: 80 })],
+    ["DELETE", () => deleteJson("/api/trips/2026-09-12")],
+  ];
+
+  const fail = (call: () => Promise<unknown>): Promise<unknown> =>
+    call().then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+  let reload = vi.fn();
+
+  /** A page whose `location.reload` is counted (jsdom's does not navigate), and whose clock is at `iso`. */
+  function pageAt(iso: string): void {
+    reload = vi.fn();
+    vi.stubGlobal("location", { ...window.location, reload });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(iso));
+  }
+
+  const later = (ms: number): void => void vi.setSystemTime(Date.now() + ms);
+
+  afterEach(() => {
+    vi.restoreAllMocks(); // a test that broke the storage must not break the clearing of it
+    vi.useRealTimers();
+    window.sessionStorage.clear();
+  });
+
+  test("every_request_asks_for_a_redirect_to_be_handed_over_and_not_followed", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    for (const [method, call] of calls) {
+      const fetchMock = vi.fn(async (..._args: Parameters<typeof fetch>) => respond(200, {}));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await call();
+
+      expect(fetchMock.mock.calls[0]?.[1]?.redirect, method).toBe("manual");
+    }
+  });
+
+  test("a_redirect_reloads_the_page_once_and_fails_the_call_with_an_ApiError_of_status_0", async () => {
+    for (const [method, call] of calls) {
+      pageAt("2026-10-22T12:00:00Z");
+      window.sessionStorage.clear();
+      vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+      const failure = await fail(call);
+
+      expect(failure, method).toBeInstanceOf(ApiError);
+      expect((failure as ApiError).status, method).toBe(0);
+      expect((failure as ApiError).message, method).toMatch(new RegExp(`^${method} /api/\\S+ failed with status 0$`));
+      expect(isRefusal(failure), method).toBe(false); // a Retry is offered
+      expect(reload, method).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  // What the owner reads under "Couldn't load" (the error state shows `detail`), for the page that reloads and for the one that is held back.
+  const SIGNED_OUT = "Signed out at the login: close and reopen the app to sign in.";
+
+  test("the_error_of_a_redirect_says_the_owner_is_signed_out_and_what_to_do_whether_the_page_reloads_or_not", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+    for (const [method, call] of calls) {
+      window.sessionStorage.clear();
+      reload.mockClear();
+      const reloaded = await fail(call); // nothing reloaded in the last minute: the page reloads
+      expect(reload, method).toHaveBeenCalledTimes(1);
+      expect((reloaded as ApiError).detail, `${method}, reloaded`).toBe(SIGNED_OUT);
+
+      reload.mockClear();
+      later(1_000);
+      const held = await fail(call); // the page reloaded a second ago: it does not
+      expect(reload, method).not.toHaveBeenCalled();
+      expect((held as ApiError).detail, `${method}, held back`).toBe(SIGNED_OUT);
+      expect((held as ApiError).status, method).toBe(0);
+      expect((held as ApiError).message, method).toMatch(new RegExp(`^${method} /api/\\S+ failed with status 0$`)); // what failed is still said as before
+    }
+  });
+
+  test("the_error_of_a_redirect_has_the_same_detail_when_the_storage_cannot_be_used", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+    const failure = await fail(calls[0]![1]);
+
+    expect(reload).not.toHaveBeenCalled();
+    expect((failure as ApiError).detail).toBe(SIGNED_OUT);
+  });
+
+  test("the_detail_of_any_other_failure_is_not_the_sign_out", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal("fetch", vi.fn(async () => respond(503, "<html>Bad gateway</html>")));
+
+    const failure = await fail(calls[0]![1]);
+
+    expect((failure as ApiError).status).toBe(503);
+    expect((failure as ApiError).detail).toBeNull();
+  });
+
+  test("a_second_redirect_within_60_seconds_does_not_reload_again_and_still_fails_the_call", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+    await fail(calls[0]![1]);
+    later(1_000);
+    const second = await fail(calls[1]![1]);
+    later(58_998); // 59.998 s after the first
+    const third = await fail(calls[0]![1]);
+    later(1); // 59.999 s
+    await fail(calls[0]![1]);
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(second).toBeInstanceOf(ApiError);
+    expect((second as ApiError).status).toBe(0);
+    expect((third as ApiError).status).toBe(0);
+  });
+
+  test("a_redirect_after_60_seconds_reloads_again", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+    await fail(calls[0]![1]);
+    later(60_000);
+    await fail(calls[0]![1]);
+    expect(reload).toHaveBeenCalledTimes(2);
+
+    later(30_000); // the time to count from is the last reload's, not the first's
+    await fail(calls[0]![1]);
+    expect(reload).toHaveBeenCalledTimes(2);
+    later(30_000);
+    await fail(calls[0]![1]);
+    expect(reload).toHaveBeenCalledTimes(3);
+  });
+
+  test("redirects_that_come_together_reload_once", async () => {
+    // A view asks for several things at once, and each of them is answered with the redirect.
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+    await Promise.all(calls.map(([, call]) => fail(call)));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  test("the_time_of_the_last_reload_is_kept_for_the_tab_in_sessionStorage_and_not_in_localStorage", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+    await fail(calls[0]![1]);
+
+    expect(window.sessionStorage.length).toBe(1);
+    expect(window.localStorage.length).toBe(0);
+    expect(Number(window.sessionStorage.getItem(window.sessionStorage.key(0)!))).toBe(Date.parse("2026-10-22T12:00:00Z"));
+  });
+
+  test("the_time_is_kept_before_the_page_reloads", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    let keptAtReload: number | null = null;
+    reload.mockImplementation(() => {
+      keptAtReload = window.sessionStorage.length; // a reload that ends the page's scripts must find the time noted already
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+    await fail(calls[0]![1]);
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(keptAtReload).toBe(1);
+  });
+
+  test("something_in_sessionStorage_that_is_not_a_time_counts_as_no_reload_yet", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+    await fail(calls[0]![1]);
+    const key = window.sessionStorage.key(0)!;
+
+    for (const garbage of ["banana", "", "NaN", "Infinity", "-1"]) {
+      reload.mockClear();
+      window.sessionStorage.setItem(key, garbage);
+      await fail(calls[0]![1]);
+      expect(reload, JSON.stringify(garbage)).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  test("a_time_in_the_future_does_not_hold_the_reload_back", async () => {
+    // The clock was set back since: waiting for a time that is a day away would be no reload for a day.
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+    await fail(calls[0]![1]);
+    window.sessionStorage.setItem(window.sessionStorage.key(0)!, String(Date.now() + 86_400_000));
+    reload.mockClear();
+
+    await fail(calls[0]![1]);
+
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  // A private window, blocked site data or a full quota (P5-R8): the page cannot tell whether it reloaded a moment ago, and so it does not reload.
+  describe("sessionStorage_that_cannot_be_used_means_no_reload_and_the_error_with_retry", () => {
+    const insecure = () => new DOMException("The operation is insecure.", "SecurityError");
+    const full = () => new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    const failures: [string, () => void][] = [
+      [
+        "getItem and setItem",
+        () => {
+          vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+            throw insecure();
+          });
+          vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+            throw full();
+          });
+        },
+      ],
+      [
+        "getItem only",
+        () => {
+          vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+            throw insecure();
+          });
+        },
+      ],
+      [
+        "setItem only",
+        () => {
+          vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+            throw full();
+          });
+        },
+      ],
+      [
+        "the sessionStorage property",
+        () => {
+          vi.spyOn(window, "sessionStorage", "get").mockImplementation(() => {
+            throw insecure();
+          });
+        },
+      ],
+    ];
+
+    test.each(failures)("%s", async (_name, breakStorage) => {
+      pageAt("2026-10-22T12:00:00Z");
+      breakStorage();
+      vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+      const failure = await fail(calls[0]![1]);
+      later(1_000);
+      const again = await fail(calls[1]![1]);
+      later(120_000);
+      await fail(calls[0]![1]);
+
+      for (const error of [failure, again]) {
+        expect(error).toBeInstanceOf(ApiError); // no throw of the storage's reaches the caller: the view has its error to show
+        expect((error as ApiError).status).toBe(0);
+        expect(isRefusal(error)).toBe(false); // with a Retry
+      }
+      expect(reload).not.toHaveBeenCalled();
+    });
+  });
+
+  test("a_network_error_never_reloads_and_is_the_error_it_was", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))));
+
+    for (const [method, call] of calls) {
+      const failure = await fail(call);
+      expect(failure, method).toBeInstanceOf(TypeError);
+    }
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  test("an_aborted_read_never_reloads", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        init?.signal?.throwIfAborted();
+        return opaqueRedirect();
+      }),
+    );
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(getJson("/api/x", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  test("a_401_which_the_API_never_sends_to_the_web_app_is_an_error_like_any_other", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+
+    for (const [method, call] of calls) {
+      vi.stubGlobal("fetch", vi.fn(async () => respond(401, { title: "Unauthorized" })));
+
+      const failure = await fail(call);
+
+      expect(failure, method).toBeInstanceOf(ApiError);
+      expect((failure as ApiError).status, method).toBe(401);
+      expect(isRefusal(failure), method).toBe(true); // as every 4xx but a 408 and a 429 is, P4-R29: not a sign-out
+    }
+    expect(reload).not.toHaveBeenCalled();
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  test("an_answer_that_is_a_success_or_an_error_does_not_touch_the_page", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+
+    for (const status of [200, 204, 304, 404, 500, 503]) {
+      vi.stubGlobal("fetch", vi.fn(async () => (status === 204 ? new Response(null, { status }) : respond(status))));
+      for (const [, call] of calls) await fail(call);
+    }
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(window.sessionStorage.length).toBe(0);
   });
 });

@@ -541,9 +541,96 @@ test("edit_points_says_the_points_could_not_be_loaded_with_a_retry_that_draws_th
   await expect(bar(page).getByText("Couldn't load the points")).toBeInViewport({ ratio: 1 });
   await expect(bar(page).getByRole("button", { name: "Retry" })).toBeInViewport({ ratio: 1 });
   await expect(bar(page).getByRole("button", { name: "Done" })).toBeInViewport({ ratio: 1 });
-  await bar(page).getByRole("button", { name: "Retry" }).click();
+  await bar(page).getByRole("button", { name: "Retry" }).focus();
+  await page.keyboard.press("Enter");
   await expect(bar(page).getByRole("alert")).toHaveCount(0);
   await expect(bar(page).getByText(/Tap a point/)).toBeVisible();
+  await expect(bar(page).getByRole("button", { name: "Done" })).toBeFocused(); // the Retry that had the focus is gone with the alert: nothing is selected, and Done is the button that is on
   const project = await projector(page);
   await expectDot(page, project, WALK(3), INK);
+});
+
+test("edit_points_says_a_later_failed_load_in_the_row_at_the_peek_with_clear_remove_and_done_and_a_retry_that_draws_the_points", async ({ page }) => {
+  const server = editServer();
+  const { project } = await intoEditMode(page, server.overrides);
+  await tap(page, placeOf(project, WALK(3)));
+  await bar(page).getByRole("button", { name: "Remove 1 point" }).click();
+  await expect(toast(page)).toHaveText(/Removed 1 point/);
+  await expectDot(page, project, WALK(3), "none"); // the points were asked for again, and came
+  await tap(page, placeOf(project, WALK(5)));
+  await tap(page, placeOf(project, WALK(8)));
+  await expect(bar(page).getByText("2 selected")).toBeVisible();
+
+  // The Undo has the points asked for again, and that fails (the request, and the one more that the app makes by itself) while the points that are on screen stay.
+  server.failPoints(2);
+  await toast(page).getByRole("button", { name: "Undo" }).click();
+  await expect(toast(page)).toHaveText(/Restored 1 point/);
+
+  const alert = bar(page).getByRole("alert");
+  await expect(alert).toContainText("Couldn't load the points");
+  await sheetAtRest(page); // where edit mode has it: the peek, which shows the row of the bar and nothing under it
+  // The words, the Retry and the three buttons are in the row, which is two lines on any phone (the words, and then the buttons): all on screen, or the owner sees no reason and has no way on.
+  await expect(alert).toBeInViewport({ ratio: 1 });
+  await expect(bar(page).getByText("Couldn't load the points")).toBeInViewport({ ratio: 1 });
+  await expect(alert.getByRole("button", { name: "Retry" })).toBeInViewport({ ratio: 1 });
+  for (const name of ["Clear", "Remove 2 points", "Done"]) await expect(bar(page).getByRole("button", { name })).toBeInViewport({ ratio: 1 });
+  await expect(bar(page).getByRole("button", { name: "Clear" })).toBeEnabled();
+  await expect(bar(page).getByRole("button", { name: "Remove 2 points" })).toBeEnabled();
+  // It is in the place of the count, which is not on screen (it is for a screen reader, which hears the points that are tapped), and what failed is under the row.
+  const count = bar(page).getByText("2 selected");
+  expect((await count.boundingBox())!.width).toBeLessThanOrEqual(1);
+  await expect(bar(page).getByText(/^GET .*points failed with status 500$/)).toHaveCount(1);
+  await expectDot(page, project, WALK(5), RED); // the points that were on screen are, and are selected still
+
+  await alert.getByRole("button", { name: "Retry" }).focus();
+  await page.keyboard.press("Enter");
+
+  await expect(alert).toHaveCount(0);
+  await expect(bar(page).getByRole("button", { name: "Clear" })).toBeFocused(); // the Retry that had the focus is gone with the alert: the bar has it, and Clear is on
+  await expect(count).toBeVisible();
+  expect((await count.boundingBox())!.width).toBeGreaterThan(1);
+  await expectDot(page, project, WALK(3), INK); // the point that was restored is drawn, with the list that came
+  await expectDot(page, project, WALK(5), RED);
+  await expect(bar(page).getByText("2 selected")).toBeVisible();
+});
+
+test("edit_points_keeps_the_focus_on_a_button_of_the_bar_when_a_removal_is_sent_by_the_keyboard_and_when_it_fails", async ({ page }) => {
+  const server = editServer();
+  const { project, writes } = await intoEditMode(page, server.overrides);
+  const focused = bar(page).locator("button:focus"); // a button of the bar has it: the page does not (that is the loss of the place for a keyboard)
+
+  // Clear, by the keyboard: it is off once nothing is selected, and Done is the button that is on.
+  await tap(page, placeOf(project, WALK(3)));
+  await expect(bar(page).getByText("1 selected")).toBeVisible();
+  await bar(page).getByRole("button", { name: "Clear" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(bar(page).getByText("0 selected")).toBeVisible();
+  await expect(bar(page).getByRole("button", { name: "Done" })).toBeFocused();
+  await expectDot(page, project, WALK(3), INK);
+
+  // A removal that fails, so that the selection is still there: Remove is on again, or the focus has gone to Clear.
+  server.refuse({ status: 503, json: {} });
+  await tap(page, placeOf(project, WALK(3)));
+  await expect(bar(page).getByText("1 selected")).toBeVisible();
+  await bar(page).getByRole("button", { name: "Remove 1 point" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(bar(page).getByRole("alert")).toContainText("Couldn't remove");
+  expect(writes).toHaveLength(1);
+  await expect(focused).toHaveCount(1);
+  await expect(bar(page).getByText("1 selected")).toBeVisible(); // as it was
+
+  // One that goes through: nothing is selected, and Done is the button that is on.
+  server.refuse(undefined);
+  await bar(page).getByRole("button", { name: "Remove 1 point" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(toast(page)).toHaveText(/Removed 1 point/);
+  await expect(bar(page).getByText("0 selected")).toBeVisible();
+  await expect(bar(page).getByRole("button", { name: "Done" })).toBeFocused();
+  expect(server.gone()).toEqual([WALK(3)]);
+  expect(writes).toHaveLength(2);
+
+  // Where the keyboard goes on from there: Enter is Done, which ends edit mode and gives the focus back to the button that began it.
+  await page.keyboard.press("Enter");
+  await expect(bar(page)).toHaveCount(0);
+  await expect(details(page).getByRole("button", { name: "Edit points" })).toBeFocused();
 });

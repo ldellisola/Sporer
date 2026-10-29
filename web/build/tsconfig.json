@@ -1,0 +1,8 @@
+{
+  // The build's own code, which runs in Node and not in the browser: the plugin that makes the service worker, and the config that uses
+  // it. Node's few declarations are in node-modules.d.ts; the app (`src`) is checked without them (see ../tsconfig.json).
+  "extends": "../tsconfig.json",
+  "include": ["."],
+  "files": ["../vite.config.ts"],
+  "exclude": []
+}

@@ -45,9 +45,14 @@ builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConfiguration>().GetSection("Processing").Get<ProcessingOptions>() ?? new ProcessingOptions());
 builder.Services.AddSingleton<ProcessingQueue>();
 builder.Services.AddSingleton<TimelineWorker>();
-// Always registered, so tests can drive it by hand; it runs in the background only when processing is enabled.
+// Always registered, so tests can drive them by hand; they run in the background only when processing is enabled. The warm-up reads the nights
+// and works the homes and trips out once after the start, and writes nothing (see TripWarmUp).
+builder.Services.AddSingleton<TripWarmUp>();
 if (builder.Configuration.GetValue("Processing:Enabled", true))
+{
     builder.Services.AddHostedService(sp => sp.GetRequiredService<TimelineWorker>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<TripWarmUp>());
+}
 builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConfiguration>().GetSection("Nominatim").Get<NominatimOptions>() ?? new NominatimOptions());
 builder.Services

@@ -80,18 +80,8 @@ for ((r = 0; r < rounds; r++)); do
 done
 sleep 1
 
-# One line per refresh: its time and the time of the statements the database ran in it (ms). The database logs a statement in three
-# messages (parse, bind, execute): the refresh begins after the execute of the read and ends after the execute of the update, and
-# the script's own queries (the polling above) are left out.
-docker logs "$container" --since "$since" 2>&1 | awk '
-  function seconds(line,   t) { split(substr(line, 12, 12), t, /[:.]/); return t[1] * 3600 + t[2] * 60 + t[3] + t[4] / 1000 }
-  /from_utc is not null/ { next }
-  /execute [^:]*: select from_utc as FromUtc.*night_refresh where id = 1/ { take = seconds($0); db = 0; next }
-  take != "" && /duration: / { match($0, /duration: [0-9.]+ ms/); db += substr($0, RSTART + 10, RLENGTH - 13) }
-  take != "" && /execute [^:]*: update night_refresh set from_utc = null/ {
-    total = seconds($0) - take; if (total < 0) total += 86400
-    printf "%.4f %.4f\n", total, db / 1000; take = ""
-  }' > "$workdir/refreshes"
+# One line per refresh: its time and the time of the statements the database ran in it (seconds): see refresh-spans.awk.
+docker logs "$container" --since "$since" 2>&1 | awk -f "$here/refresh-spans.awk" > "$workdir/refreshes"
 
 n=$(wc -l < "$workdir/refreshes")
 [ "$n" -gt 0 ] || { echo "refresh-latency.sh: no refresh in the database's log (did the statements get logged?)" >&2; exit 1; }

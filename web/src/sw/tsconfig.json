@@ -1,0 +1,12 @@
+{
+  // The service worker runs in a worker: the WebWorker library instead of the DOM, and none of the app's ambient types (vite/client).
+  // It is checked as a project of its own (`npm run typecheck`); the app's tsconfig leaves sw.ts out, but not shellPolicy.ts, which has
+  // no worker global and is tested with the app.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "WebWorker"],
+    "types": []
+  },
+  "include": ["sw.ts", "shellPolicy.ts"],
+  "exclude": []
+}

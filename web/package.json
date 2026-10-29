@@ -8,14 +8,15 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && tsc --noEmit -p src/sw && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p perf",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/sw && tsc --noEmit -p build && tsc --noEmit -p perf",
     "test": "vitest run",
     "e2e": "playwright test",
     "perf": "playwright test -c playwright.perf.config.ts",
     "perf:record": "node scripts/perf/record.mjs",
     "perf:bundle": "node scripts/perf/bundle-size.mjs",
+    "check:sw": "node scripts/check-sw.mjs",
     "icons": "node scripts/make-icons.mjs"
   },
   "dependencies": {

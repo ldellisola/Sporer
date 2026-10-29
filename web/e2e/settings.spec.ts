@@ -44,7 +44,7 @@ const FAILED = {
   ],
 };
 
-test("gear_opens_settings_with_processing_and_about_and_leaves_the_map", async ({ page }) => {
+test("gear_opens_settings_with_processing_and_about_and_leaves_the_map", { tag: "@smoke" }, async ({ page }) => {
   await fixToday(page);
   const api = await mockApi(page, { status: { ...FAILED, failedRanges: [] } });
   await page.goto("/day/2026-10-22");
@@ -362,7 +362,7 @@ test("change_the_trip_distance_then_reset_it_and_the_empty_list_of_trips_says_th
   expect(api.writes.slice(1)).toEqual([{ method: "PUT", path: "/api/settings", contentType: "application/json", body: { tripMinDistanceKm: null } }]);
 });
 
-test("restore_a_removed_batch_and_the_day_it_was_on_is_asked_for_again", async ({ page }) => {
+test("restore_a_removed_batch_and_the_day_it_was_on_is_asked_for_again", { tag: "@smoke" }, async ({ page }) => {
   await fixToday(page);
   const batches: RemovedBatch[] = [
     {

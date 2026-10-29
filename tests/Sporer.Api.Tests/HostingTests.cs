@@ -43,12 +43,18 @@ public class HostingTests(DatabaseFixture db)
         return await reader.ReadToEndAsync(Ct);
     }
 
-    /// <summary>A directory with the files a web build leaves behind: <c>index.html</c> and, under <c>assets</c>, hashed ones.</summary>
+    /// <summary>
+    /// A directory with the files a web build leaves behind: <c>index.html</c>, the service worker and the manifest, and, under <c>assets</c>,
+    /// hashed ones (scripts, a module, a stylesheet).
+    /// </summary>
     private sealed class TempWebRoot : IDisposable
     {
         public const string IndexHtml = "<!doctype html><html><head><title>Sporer</title></head><body><div id=\"root\"></div></body></html>";
         public const string HashedScript = "export const answer = 42; // a hashed bundle, long enough to be worth compressing. ";
         public const string HashedScriptPath = "/assets/index-0a1b2c3d.js";
+        public const string HashedModulePath = "/assets/chunk-5c6d7e8f.mjs";
+        public const string WorkerScript = "self.__SHELL__={\"version\":\"0123456789abcdef\",\"files\":[]};\nself.addEventListener(\"fetch\", () => {});\n";
+        public const string Manifest = "{\"name\":\"Sporer\",\"start_url\":\"/\",\"display\":\"standalone\"}";
 
         public string Path { get; } = Directory.CreateTempSubdirectory("sporer-webroot-").FullName;
 
@@ -59,6 +65,9 @@ public class HostingTests(DatabaseFixture db)
             File.WriteAllText(System.IO.Path.Combine(Path, "index.html"), IndexHtml);
             File.WriteAllText(System.IO.Path.Combine(Path, "assets", "index-0a1b2c3d.js"), string.Concat(Enumerable.Repeat(HashedScript, 40)));
             File.WriteAllText(System.IO.Path.Combine(Path, "assets", "index-4e5f6a7b.css"), string.Concat(Enumerable.Repeat("body { margin: 0; } ", 40)));
+            File.WriteAllText(System.IO.Path.Combine(Path, "assets", "chunk-5c6d7e8f.mjs"), "export const chunk = 1;");
+            File.WriteAllText(System.IO.Path.Combine(Path, "sw.js"), WorkerScript);
+            File.WriteAllText(System.IO.Path.Combine(Path, "manifest.webmanifest"), Manifest);
             File.WriteAllText(System.IO.Path.Combine(Path, "favicon.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"4\"/></svg>");
             // A file where only the API has a say: it must never be served.
             File.WriteAllText(System.IO.Path.Combine(Path, "api", "stray.json"), "{\"stray\":true}");
@@ -181,6 +190,30 @@ public class HostingTests(DatabaseFixture db)
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("no-cache", response.Headers.CacheControl?.ToString());
+    }
+
+    [Theory]
+    [InlineData("/sw.js", "javascript", "no-cache", TempWebRoot.WorkerScript)] // the worker is checked every time, so that a new build is seen at once
+    [InlineData(TempWebRoot.HashedModulePath, "javascript", "public, max-age=31536000, immutable", "export const chunk = 1;")] // a .mjs is a file, not an unknown type
+    [InlineData("/manifest.webmanifest", "manifest", "no-cache", TempWebRoot.Manifest)]
+    public async Task The_worker_a_module_and_the_manifest_are_served_as_the_files_they_are(string url, string kind, string cacheControl, string content)
+    {
+        // The service worker and the files it keeps come from the web root like the rest. A browser refuses a worker that is not JavaScript, and a file
+        // of a type that the server does not know is a 404 (the worker's install would fail on it).
+        using var webRoot = new TempWebRoot();
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs, webRoot: webRoot.Path);
+
+        var response = await GetAsync(api.CreateClient(), url);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var mediaType = response.Content.Headers.ContentType?.MediaType;
+        if (kind == "javascript")
+            Assert.Contains(mediaType, new[] { "text/javascript", "application/javascript" });
+        else
+            Assert.Contains(mediaType, new[] { "application/manifest+json", "application/json" });
+        Assert.Equal(cacheControl, response.Headers.CacheControl?.ToString());
+        Assert.Equal(content, await response.Content.ReadAsStringAsync(Ct));
     }
 
     [Theory]
