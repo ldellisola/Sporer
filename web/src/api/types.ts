@@ -151,6 +151,29 @@ export interface PlaceResponse {
   lastVisit: string;
   /** The latest 50 stays, newest first. */
   recentVisits: PlaceVisit[];
+  /** The places merged directly into this one, by name (a place with none last); each can be separated again. Empty when there are none. */
+  merged: MergedPlace[];
+}
+
+/** A place that was merged into the one served: its own id (the one to separate it by) and its name, the owner's or else OpenStreetMap's, or null. */
+export interface MergedPlace {
+  id: number;
+  name: string | null;
+}
+
+// --- GET /api/places/{id}/candidates?q= (Features/Places/PlaceResponse.cs, PlaceCandidateDto) ---
+
+/**
+ * A place that a place can be merged with: the answer is a bare array of at most 20, nearest first, and never the place itself or one
+ * merged into it. `name` is null for a place with none (shown as "Unnamed place"), `address` until the place is named, `distanceM` is
+ * the distance in metres from the place asked about and `visits` the stays at it and at the places merged into it.
+ */
+export interface PlaceCandidate {
+  id: number;
+  name: string | null;
+  address: string | null;
+  distanceM: number;
+  visits: number;
 }
 
 export interface PlaceVisit {

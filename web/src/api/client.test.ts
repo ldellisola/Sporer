@@ -175,6 +175,79 @@ describe("postJson, putJson and deleteJson", () => {
   });
 });
 
+describe("ApiError detail", () => {
+  // The API's error body (FastEndpoints): what is wrong, by field. The first message is what a control can show or tell apart.
+  const refusal = { statusCode: 409, message: "One or more errors occurred!", errors: { place: ["The place is the one it is to be merged into."] } };
+
+  test("a_read_and_every_write_that_the_API_refuses_carry_the_first_message_of_its_error_body", async () => {
+    const calls: [string, () => Promise<unknown>][] = [
+      ["GET", () => getJson("/api/places/7")],
+      ["POST", () => postJson("/api/places/7/merge", { place: 2, name: null })],
+      ["PUT", () => putJson("/api/places/7/name", { name: null })],
+      ["DELETE", () => deleteJson("/api/places/7/merged/2")],
+    ];
+    for (const [method, call] of calls) {
+      vi.stubGlobal("fetch", vi.fn(async () => respond(409, refusal)));
+
+      const failure = await call().then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      expect(failure, method).toBeInstanceOf(ApiError);
+      expect((failure as ApiError).status).toBe(409);
+      expect((failure as ApiError).detail).toBe("The place is the one it is to be merged into.");
+      expect((failure as ApiError).message).toMatch(new RegExp(`^${method} /api/places/7\\S* failed with status 409$`)); // the message is still the status's
+    }
+  });
+
+  test("a_body_that_is_not_the_APIs_shape_gives_no_detail_and_still_the_status", async () => {
+    const bodies: (string | object)[] = ["<html>", "", {}, { title: "nope" }, { errors: null }, { errors: {} }, { errors: { place: [] } }, { errors: { place: [7] } }, { errors: [1] }, []];
+    for (const body of bodies) {
+      vi.stubGlobal("fetch", vi.fn(async () => (typeof body === "string" ? new Response(body, { status: 502 }) : respond(502, body))));
+
+      const failure = await postJson("/api/x").then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      expect(failure, JSON.stringify(body)).toBeInstanceOf(ApiError);
+      expect((failure as ApiError).status).toBe(502);
+      expect((failure as ApiError).detail, JSON.stringify(body)).toBeNull();
+    }
+  });
+
+  test("a_body_that_was_read_already_gives_no_detail_and_still_the_status", async () => {
+    const used = respond(500, refusal);
+    await used.text(); // as a mock that hands the same response to every request would
+    vi.stubGlobal("fetch", vi.fn(async () => used));
+
+    const failure = await getJson("/api/x").then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect((failure as ApiError).status).toBe(500);
+    expect((failure as ApiError).detail).toBeNull();
+  });
+
+  test("the_first_message_of_the_first_field_that_has_one_is_the_detail", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => respond(400, { errors: { id: [], name: ["The name is missing.", "Another."] } })));
+
+    const failure = await putJson("/api/places/7/name", {}).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect((failure as ApiError).detail).toBe("The name is missing.");
+  });
+
+  test("an_ApiError_made_by_hand_has_no_detail_unless_it_is_given_one", () => {
+    expect(new ApiError(404, "/api/places/9").detail).toBeNull();
+    expect(new ApiError(409, "/api/places/9/merge", "POST", "Why.").detail).toBe("Why.");
+  });
+});
+
 describe("ApiError", () => {
   test("ApiError_names_a_GET_unless_it_is_told_the_method", () => {
     expect(new ApiError(404, "/api/places/9").message).toBe("GET /api/places/9 failed with status 404");

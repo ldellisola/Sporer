@@ -68,6 +68,7 @@ const GYM = {
   firstVisit: "2026-10-05T16:00:00Z",
   lastVisit: "2026-10-22T16:00:00Z",
   recentVisits: [],
+  merged: [],
 };
 
 /** The month of the fixture, the range that is picked, and nothing for any other dates (the periods either side are asked for too). */
@@ -220,6 +221,7 @@ const HOME = {
   firstVisit: "2026-10-01T05:00:00Z",
   lastVisit: "2026-10-22T20:00:00Z",
   recentVisits: [],
+  merged: [],
 };
 
 // Spec 4.6: a place is reached by tapping it anywhere, the dots of the map too. The map is brought to the month in 600 ms, and a dot is

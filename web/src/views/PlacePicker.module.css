@@ -1,0 +1,77 @@
+/* The picker: the field over the list, and the way out under it. */
+.picker {
+  margin: 12px 0 18px;
+}
+
+/* 16 px, which is the size under which a phone zooms the page in on the field when it is tapped. */
+.search {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  margin: 0 0 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 16px;
+}
+
+.search:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* A place: the name over its address at the left, the distance over the number of stays at the right. */
+.candidate {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "name distance"
+    "address visits";
+}
+
+.name {
+  grid-area: name;
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.address {
+  grid-area: address;
+  font-size: 12px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.distance {
+  grid-area: distance;
+  justify-self: end;
+}
+
+.visits {
+  grid-area: visits;
+  justify-self: end;
+  font-size: 12px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+/* The same button as the panel's Cancel: the colour of the bar's own buttons, made tall enough for a finger. */
+.cancel {
+  min-height: 36px;
+  margin: 4px 0 0;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: var(--radius-segment);
+  background: var(--segment-track);
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.cancel:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}

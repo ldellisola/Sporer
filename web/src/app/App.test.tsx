@@ -98,6 +98,7 @@ function emptyPlace(path: string): PlaceResponse {
     firstVisit: "2026-10-01T08:00:00Z",
     lastVisit: "2026-10-01T08:00:00Z",
     recentVisits: [],
+    merged: [],
   };
 }
 

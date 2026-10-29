@@ -6,6 +6,7 @@ import type {
   ConfigResponse,
   DayResponse,
   HeatResponse,
+  PlaceCandidate,
   PlaceResponse,
   RangeResponse,
   StatusResponse,
@@ -87,6 +88,21 @@ export function placeQueryOptions(id: number | null) {
   });
 }
 
+/**
+ * The places that the place `placeId` (as `GET /api/places/{id}` serves it) can be merged with: the nearest first when `q` is empty, else those
+ * whose name or address has `q` in it. `q` is as it is to be sent: the caller trims it. The list that was on screen stays while another search is on
+ * its way (`placeholderData`: the owner is typing, and the list does not blink to "Loading…" at every pause), which `isPlaceholderData` says.
+ */
+export function candidatesQueryOptions(placeId: number, q: string) {
+  return queryOptions({
+    queryKey: ["candidates", placeId, q] as const,
+    queryFn: ({ signal }) =>
+      getJson<PlaceCandidate[]>(`/api/places/${placeId}/candidates${q === "" ? "" : `?q=${encodeURIComponent(q)}`}`, signal),
+    staleTime: STALE_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
 /** The trips, newest first: what the trips list shows, and the order that ‹ and › on a trip step by. */
 export function tripsQueryOptions() {
   return queryOptions({
@@ -132,6 +148,8 @@ export const useHeat = (from: string | null, to: string | null, enabled: boolean
   useQuery({ ...heatQueryOptions(from, to, keepPrevious), enabled });
 
 export const usePlace = (id: number | null) => useQuery(placeQueryOptions(id));
+
+export const useCandidates = (placeId: number, q: string) => useQuery(candidatesQueryOptions(placeId, q));
 
 /**
  * What a query of a thing that can go (a place, a trip) shows, for the panel, the bar and the map alike so that they never disagree: `shown` is
