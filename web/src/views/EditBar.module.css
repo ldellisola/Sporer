@@ -27,6 +27,15 @@
   color: var(--ink);
 }
 
+/*
+ * The words of a load that failed, in the place of the count (the alert of ErrorState, as small as the count is and with none of the box it has under a
+ * list: the row must not be made taller than the buttons are, for the sheet at its lowest shows the row and nothing under it).
+ */
+.problem {
+  min-width: 0;
+  font-size: 14px;
+}
+
 /* Three buttons and the count in the 358 px of a phone's sheet, in the one line that a sheet at its lowest shows: the buttons give up a little of their side padding. */
 .buttons {
   display: flex;
