@@ -534,6 +534,13 @@ test("edit_points_says_the_points_could_not_be_loaded_with_a_retry_that_draws_th
 
   await expect(bar(page).getByRole("alert")).toContainText("Couldn't load the points");
   await expect(bar(page).getByRole("button", { name: "Done" })).toBeEnabled(); // and edit mode can be left
+  await sheetAtRest(page); // where edit mode put it: the peek
+  // Edit mode has lowered the sheet to its peek, which shows the row of the bar and nothing under it (and in a font that is wider than the one the
+  // developer has the row may be two lines): the words, the Retry and the Done are in the row, and are on screen, or the owner sees no reason and has no way on.
+  await expect(bar(page).getByRole("alert")).toBeInViewport({ ratio: 1 });
+  await expect(bar(page).getByText("Couldn't load the points")).toBeInViewport({ ratio: 1 });
+  await expect(bar(page).getByRole("button", { name: "Retry" })).toBeInViewport({ ratio: 1 });
+  await expect(bar(page).getByRole("button", { name: "Done" })).toBeInViewport({ ratio: 1 });
   await bar(page).getByRole("button", { name: "Retry" }).click();
   await expect(bar(page).getByRole("alert")).toHaveCount(0);
   await expect(bar(page).getByText(/Tap a point/)).toBeVisible();
