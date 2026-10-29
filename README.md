@@ -385,8 +385,8 @@ The workflow runs the .NET tests and the web app's checks (type check, unit test
 image (the web app is built inside it) and publishes it as `ghcr.io/ldellisola/sporer` with the tags `1.2.3`, `1.2`, `1` and
 `latest` (among others). Only a `v*.*.*` tag publishes `latest`. The server pulls `:latest` daily. Pushes to `main` that touch
 `src/`, `tests/`, `web/`, `docker/dockerfile`, `.dockerignore` or the workflow file build and publish a branch-tagged image;
-pull requests run the tests and a build without publishing. So does a run started by hand on any branch but `main` (it
-publishes on `main` and on a `v*` tag): see [Continuous integration](#continuous-integration).
+pull requests run the tests and a build without publishing. So does a run started by hand on any branch or tag but `main` and the
+`v*` tags (it publishes on those): see [Continuous integration](#continuous-integration).
 
 ## Local development
 
@@ -461,12 +461,14 @@ access gets a plain background instead of a map; the rest of the page works.
   | Push of a `v*.*.*` tag | built and published |
   | Pull request | built, not published |
   | Run workflow by hand on `main` or on a `v*` tag | built and published |
-  | Run workflow by hand on any other branch | built, not published |
+  | Run workflow by hand on any other branch or tag | built, not published |
 
 The WebKit smoke set is the tests tagged `{ tag: "@smoke" }`: one or two of each flow (the app opens on today, day navigation, the month,
-opening a trip, renaming a place, Settings, and the service worker installing from a page that is not the app). Tests that read the pixels of the
-map, and those whose service worker has to let the page's requests reach the test's mocks, stay with Chromium: WebKit does not do either, so editing
-points is checked on Chromium only and on the iPhone by the owner's checklist. The smoke set is a project called `webkit` that exists only when
+opening a trip, renaming a place, Settings, and the service worker installing from a page that is not the app). Two kinds of test stay with
+Chromium. The test of removing points reads the pixels of the points right after edit mode sets them, and headless WebKit puts the last frame of a
+WebGL canvas into a screenshot late (the points are in the canvas, and in the screenshot only after another frame is drawn, which an idle map does not
+do; the trips test, whose map keeps moving, runs on WebKit too). The two service-worker cases that need the page's requests to reach the test's mocks
+are not routed by Playwright on WebKit while a worker controls the page. Edit mode on Safari is in the owner's iPhone checklist. The smoke set is a project called `webkit` that exists only when
 `PW_WEBKIT=1`, so only CI runs it by default; a plain `npm run e2e` is Chromium's two projects. The project uses Playwright's iPhone 14
 descriptor (WebKit, touch, the phone's pixel density). Where WebKit is installed (`npx playwright install webkit`; on Linux add `--with-deps`),
 run it with:

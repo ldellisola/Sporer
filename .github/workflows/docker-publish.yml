@@ -145,7 +145,7 @@ jobs:
     #   push of a v*.*.* tag                  publish
     #   pull request                          build only
     #   manual run on main or on a v* tag     publish
-    #   manual run on any other branch        build only (a working branch is checked without an image of it on the registry)
+    #   manual run on any other branch or tag build only (a working branch is checked without an image of it on the registry)
     # The workflow's push triggers are main and the tags, so any `push` event is one of the first two.
     env:
       PUBLISH: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) }}
