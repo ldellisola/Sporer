@@ -3,8 +3,8 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import lisbonFixture from "../../e2e/fixtures/trip-2026-09-12.json";
-import { useTrip } from "../api/queries";
-import type { TripResponse } from "../api/types";
+import { tripsQueryOptions, useTrip } from "../api/queries";
+import type { TripListItem, TripResponse, TripsResponse } from "../api/types";
 import { takeHeadingFocus } from "../app/headingFocus";
 import { refusal, stubEdits } from "../test/stubEdits";
 import { DeleteTripConfirm, EditTripForm } from "./TripEdits";
@@ -756,6 +756,37 @@ describe("DeleteTripConfirm", () => {
     expect(window.history.length).toBe(entries); // replaced: Back does not land on a trip that is gone
     expect(client.getQueryState(["heat", "a", "b"])?.isInvalidated).toBe(true);
     expect(takeHeadingFocus()).toBe(true); // the list is to put the focus on its heading: the trip that had it is gone
+  });
+
+  test("DeleteTripConfirm_takes_the_trip_off_the_list_that_the_app_holds_before_it_goes_to_the_list_so_that_the_list_never_shows_it", async () => {
+    const trip = (id: string): TripListItem => ({ ...(LISBON as unknown as TripListItem), id, thumbnail: [] });
+    const api = stubEdits({ [DELETE]: () => new Response(null, { status: 204 }) });
+    const { client } = mountDelete();
+    client.setQueryData<TripsResponse>(tripsQueryOptions().queryKey, { trips: [trip("2026-09-12"), trip("2026-08-01")] });
+    // What the list holds at the moment the page is replaced by the list of trips: it is drawn from it at once, while the answer to its request is on its way.
+    const replace = window.history.replaceState.bind(window.history);
+    const heldWhenReplaced: string[][] = [];
+    vi.spyOn(window.history, "replaceState").mockImplementation((...args) => {
+      heldWhenReplaced.push(client.getQueryData(tripsQueryOptions().queryKey)?.trips.map((held) => held.id) ?? []);
+      replace(...args);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/trips"));
+    expect(heldWhenReplaced).toEqual([["2026-08-01"]]); // the other trip stays: only the one that was deleted goes
+    expect(api.writes()).toHaveLength(1);
+  });
+
+  test("DeleteTripConfirm_has_nothing_to_take_off_when_the_app_holds_no_list_of_trips", async () => {
+    const api = stubEdits({ [DELETE]: () => new Response(null, { status: 204 }) });
+    const { client } = mountDelete();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/trips"));
+    expect(client.getQueryData(tripsQueryOptions().queryKey)).toBeUndefined(); // not made up for the trip's sake
+    expect(api.writes()).toHaveLength(1);
   });
 
   test("DeleteTripConfirm_says_a_404_with_no_retry_turns_delete_off_and_puts_the_focus_on_cancel", async () => {

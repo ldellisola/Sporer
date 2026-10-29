@@ -1,9 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { deleteJson, isNotFound } from "../api/client";
 import { useWrite } from "../api/mutations";
-import { removedPointsQueryOptions, useRemovedPoints } from "../api/queries";
+import { noteDayEdited, removedPointsQueryOptions, useRemovedPoints } from "../api/queries";
 import type { RemovedBatch } from "../api/types";
-import { datesLabel, dateOf } from "../time/dates";
+import { dateOf, dateRangeLabel, datesLabel } from "../time/dates";
 import { deviceZone, whenOf } from "../time/device";
 import { formatCount } from "../time/format";
 import forms from "./Forms.module.css";
@@ -21,12 +21,12 @@ const NO_BATCHES: readonly RemovedBatch[] = [];
 
 /**
  * The days a removal's points are on, as the owner reads them: "12 – 13 Oct 2026". A removal that the server lists on no day (its points are on none that has
- * a segment) is told by the dates of its first and last point on the clock of this device.
+ * a segment) is told by the span from the date of its first point to the date of its last, on the clock of this device.
  */
 function daysOf(batch: RemovedBatch): string {
   if (batch.localDates.length > 0) return datesLabel(batch.localDates);
   const zone = deviceZone();
-  return datesLabel([dateOf(batch.from, zone), dateOf(batch.to, zone)].filter((date, at, all) => all.indexOf(date) === at));
+  return dateRangeLabel(dateOf(batch.from, zone), dateOf(batch.to, zone));
 }
 
 /** What a removal is, in a few words, for what says it: "37 points from 12 – 13 Oct 2026". */
@@ -57,6 +57,7 @@ export function RemovedPoints() {
     restore.mutate(batch, {
       onSuccess: () => {
         row.leaves();
+        for (const date of batch.localDates) noteDayEdited(date); // the days are rebuilt for the points that are back: asked for every 3 seconds, as after an Undo
         client.setQueryData<RemovedBatch[]>(removedPointsQueryOptions().queryKey, (old) => old?.filter((candidate) => candidate.batch !== batch.batch));
       },
       // A 404 has the list asked for again, which has not the row: the focus is to leave it then. Any other failure leaves the row where it is.

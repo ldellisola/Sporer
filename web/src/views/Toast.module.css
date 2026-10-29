@@ -1,10 +1,11 @@
 /*
  * Fixed to the viewport, in the body of the page (see Toast.tsx): above the peek of the bottom sheet, the home indicator of a phone, and the
  * attribution that the map keeps above the sheet, so that a note is never behind the sheet or under a thumb at the lowest point, and is still
- * over the sheet at the others. The box lets every touch through to the map: only the cards take them. On a wide screen the panel is the
- * sidebar, which the note stays clear of.
+ * over the sheet at the others. It is the one column of every toast of the page, which are put in it one under the next, so that they stack and are
+ * never over each other: the first is the highest, and the last is lowest, at the bottom of the column. The box lets every touch through to the map:
+ * only the cards take them. On a wide screen the panel is the sidebar, which the note stays clear of.
  */
-.region {
+.column {
   position: fixed;
   z-index: 40;
   right: max(16px, var(--safe-right));
@@ -13,12 +14,11 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
   pointer-events: none;
 }
 
 @media (min-width: 900px) {
-  .region {
+  .column {
     bottom: calc(24px + var(--safe-bottom));
     left: calc(var(--sidebar-width) + 16px);
   }
@@ -27,13 +27,20 @@
 /*
  * The live region has no look of its own: the card is what is seen, and with none the box has no size. It is never `display: none`, which would
  * take it out of what a screen reader has: it would not be there for the message to be announced in.
+ *
+ * The cards are set apart by a margin above each, and not by a gap of the column: the status of a toast with nothing to say is in the column, and a gap
+ * would be made around it. The top of the column is no place that anything is at, so the margin of its first card is no matter.
  */
 .live {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
   max-width: 100%;
+}
+
+.live > .toast,
+.column > :not(.live) {
+  margin-top: 8px;
 }
 
 /* The note, a little lifted off the map like the notes over it: the panel's own colour would hide it, so it is the sunken one with a line and a shadow. */

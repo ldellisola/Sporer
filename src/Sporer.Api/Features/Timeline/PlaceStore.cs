@@ -20,7 +20,10 @@ public sealed record PlaceVisit(DateTime StartUtc, DateTime EndUtc, string Date,
 /// <summary>A place that was merged directly into another one: its id, and its name (the owner's, else OpenStreetMap's, else null).</summary>
 public sealed record MergedPlace(long Id, string? Name);
 
-/// <summary>A place in use, as <see cref="PlaceStore.FindSurvivorAsync"/> finds it: its id (the surviving place's) and its name (the owner's, else OpenStreetMap's, else null).</summary>
+/// <summary>
+/// A place in use, as <see cref="PlaceStore.FindSurvivorAsync"/> finds it: its id (the surviving place's) and its name (the owner's, else
+/// OpenStreetMap's, else null).
+/// </summary>
 public sealed record SurvivingPlace(long Id, string? Name);
 
 /// <summary>
@@ -167,6 +170,18 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
             from root
             where exists (select 1 from segment s where s.place_id in (select id from members))
         )
+        """;
+
+    /// <summary>
+    /// The condition, for a query that starts with <see cref="SurvivorAndMembers"/> and reads <c>place p</c>, that <c>p</c> is a place of the
+    /// timeline: the survivor of the place <c>@Id</c> stands for (<c>survivor</c>), which a stay of it or of a place merged into it shows. What
+    /// <see cref="FindSurvivorAsync"/> and the checks of a merge and of a separation (<see cref="FindOnTimelineAsync"/>) both ask, so that they
+    /// cannot disagree about which places are on the timeline.
+    /// </summary>
+    private const string OnTimeline =
+        """
+        p.id = (select id from survivor)
+          and exists (select 1 from segment s where s.kind = 'stay' and s.place_id in (select id from members))
         """;
 
     /// <summary>
@@ -345,11 +360,10 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         var row = await connection.QuerySingleOrDefaultAsync<MergedRow>(new CommandDefinition(
             SurvivorAndMembers +
-            """
+            $"""
             select p.id as Id, coalesce(p.user_name, p.osm_name) as Name
             from place p
-            where p.id = (select id from survivor)
-              and exists (select 1 from segment s where s.kind = 'stay' and s.place_id in (select id from members))
+            where {OnTimeline}
             """,
             new { Id = id }, cancellationToken: ct));
 
@@ -412,11 +426,10 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
         NpgsqlConnection connection, NpgsqlTransaction transaction, long id, CancellationToken ct)
         => await connection.QuerySingleOrDefaultAsync<PlaceRow>(new CommandDefinition(
             SurvivorAndMembers +
-            """
+            $"""
             select p.id as Id, p.latitude as Latitude, p.longitude as Longitude
             from place p
-            where p.id = (select id from survivor)
-              and exists (select 1 from segment s where s.kind = 'stay' and s.place_id in (select id from members))
+            where {OnTimeline}
             """,
             new { Id = id }, transaction, cancellationToken: ct));
 

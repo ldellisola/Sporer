@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
+import { forgetEditedDays, refreshInterval } from "../api/queries";
 import type { RemovedBatch } from "../api/types";
 import { refusal, stubEdits, type Call, type Handler } from "../test/stubEdits";
 import { RemovedPoints } from "./RemovedPoints";
@@ -79,6 +80,8 @@ const restoreOne = () => restoreButton("Restore 1 point from 30 Sep 2026, remove
 const restoreMany = () => restoreButton("Restore 5,200 points from 1 Sep 2026, 3 Sep 2026, removed Thu 22 Oct 2026 19:00");
 
 describe("RemovedPoints", () => {
+  beforeEach(forgetEditedDays);
+
   test("RemovedPoints_lists_the_removals_as_the_server_has_them_newest_first_with_the_days_the_count_and_when_each_was_made", async () => {
     const { api } = server([TWO_DAYS, ONE_POINT, MANY]);
 
@@ -103,7 +106,8 @@ describe("RemovedPoints", () => {
     const across: RemovedBatch = { ...TWO_DAYS, batch: "a0000000-0000-4000-8000-000000000001", count: 3, from: "2026-10-12T20:00:00Z", to: "2026-10-13T08:00:00Z", localDates: [] };
     const within1: RemovedBatch = { ...ONE_POINT, batch: "a0000000-0000-4000-8000-000000000002", count: 2, from: "2026-10-12T20:30:00Z", to: "2026-10-12T23:00:00Z", localDates: [] };
     const apart: RemovedBatch = { ...MANY, batch: "a0000000-0000-4000-8000-000000000003", count: 4, from: "2026-10-01T08:00:00Z", to: "2026-10-19T08:00:00Z", localDates: [] };
-    server([across, within1, apart]);
+    const overYears: RemovedBatch = { ...MANY, batch: "a0000000-0000-4000-8000-000000000004", count: 6, from: "2025-12-29T08:00:00Z", to: "2026-01-04T08:00:00Z", localDates: [] };
+    server([across, within1, apart, overYears]);
 
     mount();
 
@@ -112,10 +116,11 @@ describe("RemovedPoints", () => {
     expect(rowsOf().map((row) => row.querySelector("span")?.textContent)).toEqual([
       "13 Oct 2026", // both points are on the 13th there: one day, not "13 – 13 Oct"
       "13 Oct 2026",
-      "1 Oct 2026, 19 Oct 2026", // a day between is no span
+      "1 – 19 Oct 2026", // the first and the last point are one span, whatever days are between: they are not two dates, which would read as the only two days
+      "29 Dec 2025 – 4 Jan 2026",
     ]);
     expect(restoreButton(/^Restore 3 points from 13 Oct 2026, removed/)).toBeEnabled();
-    expect(restoreButton(/^Restore 4 points from 1 Oct 2026, 19 Oct 2026, removed/)).toBeEnabled();
+    expect(restoreButton(/^Restore 4 points from 1 – 19 Oct 2026, removed/)).toBeEnabled();
   });
 
   test("RemovedPoints_makes_a_span_of_the_first_and_last_points_dates_when_they_are_on_adjacent_days_there", async () => {
@@ -192,6 +197,33 @@ describe("RemovedPoints", () => {
     expect(client.getQueryState(["day", "2026-10-12"])?.isInvalidated).toBe(true); // the day they are on shows them again
     expect(client.getQueryState(["points", "2026-10-12"])?.isInvalidated).toBe(true);
     expect(api.reads("/api/points/removed").length).toBeGreaterThanOrEqual(2); // and what is on screen was asked for again
+  });
+
+  test("RemovedPoints_notes_each_day_of_a_restored_batch_as_edited_so_that_the_rebuilt_day_is_asked_for_every_3_seconds", async () => {
+    const days = (date: string) => refreshInterval(date, date, "pending", "2099-01-01");
+    server([TWO_DAYS, ONE_POINT]);
+    mount();
+    await within(section()).findByRole("list", { name: "Removed points" });
+    expect(days("2026-10-12")).toBe(30_000); // nothing is edited yet: a pending day is asked for every 30 seconds
+
+    fireEvent.click(restoreTwoDays());
+
+    await waitFor(() => expect(note()).toBe("Restored 37 points"));
+    expect(days("2026-10-12")).toBe(3_000); // the batch's dates, as the Undo of the toast notes them (and the days either side of each)
+    expect(days("2026-10-13")).toBe(3_000);
+    expect(days("2026-09-30")).toBe(30_000); // the days of another removal are not
+  });
+
+  test("RemovedPoints_notes_no_day_as_edited_for_a_restore_that_failed", async () => {
+    const { state } = server([TWO_DAYS]);
+    state.restore = () => refusal(404, "These points were restored already.");
+    mount();
+    await within(section()).findByRole("list", { name: "Removed points" });
+
+    fireEvent.click(restoreTwoDays());
+
+    await within(section()).findByRole("alert");
+    expect(refreshInterval("2026-10-12", "2026-10-12", "pending", "2099-01-01")).toBe(30_000);
   });
 
   test("RemovedPoints_says_one_point_in_the_singular_when_it_restores_one", async () => {

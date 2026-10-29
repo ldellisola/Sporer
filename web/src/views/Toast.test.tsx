@@ -90,6 +90,42 @@ describe("Toast", () => {
     expect(status.parentElement?.parentElement).toBe(document.body);
   });
 
+  test("Toast_puts_every_toast_in_the_one_column_so_that_two_shown_together_stack_and_do_not_overlap", () => {
+    render(
+      <>
+        <Toast toast={removed({ id: 1, message: "Removed 3 points" })} onDismiss={() => undefined}>
+          <p role="alert">Could not undo.</p>
+        </Toast>
+        <Toast toast={{ id: 2, message: "Restored 5 points" }} onDismiss={() => undefined} />
+        <Toast toast={null} onDismiss={() => undefined} />
+      </>,
+    );
+
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(3); // each toast keeps a status of its own, there whether it says something or not
+    const column = statuses[0]!.parentElement!;
+    expect(column.parentElement).toBe(document.body);
+    for (const status of statuses) expect(status.parentElement, status.textContent ?? "").toBe(column);
+    expect(screen.getByRole("alert").parentElement).toBe(column);
+    expect([...column.children].map((child) => child.textContent)).toEqual(["Removed 3 points", "Could not undo.", "Restored 5 points", ""]); // in the order they were made
+  });
+
+  test("Toast_keeps_its_column_for_the_next_toast_and_makes_it_again_if_the_page_has_lost_it", () => {
+    const first = render(<Toast toast={removed()} onDismiss={() => undefined} />);
+    const column = screen.getByRole("status").parentElement!;
+    first.unmount();
+
+    const second = render(<Toast toast={removed({ message: "Removed 4 points" })} onDismiss={() => undefined} />);
+    expect(screen.getByRole("status").parentElement).toBe(column); // one column for the page, and not one for each toast
+    second.unmount();
+
+    column.remove(); // the page took it away
+    render(<Toast toast={removed({ message: "Removed 5 points" })} onDismiss={() => undefined} />);
+    const again = screen.getByRole("status").parentElement!;
+    expect(again).toBeInTheDocument();
+    expect(again.parentElement).toBe(document.body);
+  });
+
   test("Toast_asks_to_be_dismissed_once_its_time_is_up_and_not_before", () => {
     const onDismiss = vi.fn();
     render(<Toast toast={removed({ durationMs: 10_000 })} onDismiss={onDismiss} />);

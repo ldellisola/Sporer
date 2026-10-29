@@ -1,7 +1,9 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { deleteJson, isRefusal, putJson } from "../api/client";
 import { useWrite } from "../api/mutations";
-import type { EditTripResponse, TripResponse } from "../api/types";
+import { tripsQueryOptions } from "../api/queries";
+import type { EditTripResponse, TripResponse, TripsResponse } from "../api/types";
 import { wantHeadingFocus } from "../app/headingFocus";
 import { navigate } from "../app/router";
 import { focusLost, MAX_NAME_LENGTH, onEscape } from "./editForms";
@@ -237,6 +239,7 @@ export function DeleteTripConfirm({ trip, onClose }: { trip: TripResponse; onClo
   const question = useRef<HTMLParagraphElement>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
   const cancelButton = useRef<HTMLButtonElement>(null);
+  const client = useQueryClient();
   const remove = useWrite(() => deleteJson(`/api/trips/${trip.id}`));
   const refused = remove.isError && isRefusal(remove.error);
   useEffect(() => question.current?.focus(), []);
@@ -249,6 +252,8 @@ export function DeleteTripConfirm({ trip, onClose }: { trip: TripResponse; onClo
     if (remove.isPending) return;
     remove.mutate(undefined, {
       onSuccess: () => {
+        // The list is drawn from what the app holds, at once, while it is asked for again: without this the trip that was deleted is in it for that while.
+        client.setQueryData<TripsResponse>(tripsQueryOptions().queryKey, (old) => old && { ...old, trips: old.trips.filter((held) => held.id !== trip.id) });
         wantHeadingFocus({ view: "trips" });
         navigate({ view: "trips" }, { replace: true }); // the trip is gone: Back is not to go to it
       },

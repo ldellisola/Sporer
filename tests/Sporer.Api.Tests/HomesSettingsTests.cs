@@ -13,9 +13,9 @@ using static Sporer.Api.Tests.TripSeeder;
 namespace Sporer.Api.Tests;
 
 /// <summary>
-/// What the owner says about homes and about how far away a night must be to be a trip (<c>/api/homes</c>, <c>/api/settings</c>), and
-/// retrying what failed (<c>POST /api/status/retry</c>). The trips are detected for real, from stays, by the refresher, so that what
-/// a home or a setting does is what it does to the trips the app has: three nights away in July, from a long stay at home.
+/// What the owner says about homes and about how far away a night must be to be a trip (<c>/api/homes</c>, <c>/api/settings</c>). The
+/// trips are detected for real, from stays, by the refresher, so that what a home or a setting does is what it does to the trips the app
+/// has: three nights away in July, from a long stay at home.
 /// </summary>
 [Collection("db")]
 public class HomesSettingsTests(DatabaseFixture db)

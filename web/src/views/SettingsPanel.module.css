@@ -24,12 +24,6 @@
   overflow-wrap: anywhere;
 }
 
-.none {
-  margin: 0 0 8px;
-  font-size: 14px;
-  color: var(--ink-muted);
-}
-
 .lastError {
   margin: 0 0 8px;
   font-size: 12.5px;

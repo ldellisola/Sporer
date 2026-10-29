@@ -334,11 +334,10 @@ async function run(page: import("@playwright/test").Page, scenario: Scenario, ke
     await page.waitForFunction(() => window.__probe.edit.finished, null, { polling: 200, timeout: 90_000 });
     const edit = await page.evaluate(() => window.__probe.edit);
     expect(unrecorded, "requests the recording has no answer for").toEqual([]);
-    // What the rows of the panel are to the other scenarios: the day has points, the app has them (its bar says to select one only when it has some) and
-    // the map drew them.
+    // What the rows of the panel are to the other scenarios: the day has points and the app has them (its bar says to select one only when it has some).
+    // That the map drew them is what `finished` says: the probe sets it only after the frame that draws them.
     expect(scenario.edit.points, "points of the day").toBeGreaterThan(0);
     await expect(page.getByRole("group", { name: "Edit points" }).getByText("Tap a point, or use Select area on the map.")).toBeVisible();
-    expect(edit.drawnAt, "the frame that draws the points").not.toBeNull();
     if (keep) await page.screenshot({ path: join(RESULTS, `${scenario.id}-edit.png`) });
     const clicked = edit.clickedAt as number;
     return {

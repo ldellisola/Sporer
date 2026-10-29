@@ -29,7 +29,7 @@ too early by about 0.4 s (see "Web"), and was changed before any number was kept
 | **`GET /api/places/search`**, no `q`, and a `q` of three letters, 200 each | p95 ≤ 200 ms | named, over three runs: no `q`: p50 5.4-5.5, p95 **5.9-6.2** ms; a `q` of 2-3 letters: p50 5.5-5.7, p95 **5.8-5.9** ms (unnamed, one run: 6.5 and 2.6 ms, the `q` finds none). 252 B Brotli, 1,195 B raw (20 places) | Met, 32 times under |
 | **Plans** (`EXPLAIN (ANALYZE, BUFFERS)`) of the removal's anti-join, the day's points and the search | no query scans a large table | a week of 113,958 points with 9 of the 1,000 removals: 49.0 ms against 38.9 ms without the anti-join (a merge anti join against the removals, sorted: 0.23 ms); the same week's next point and a night's nearest point: 1.4 and 0.5 ms (probes of the removals' key); the heaviest day: 13.0 ms; the search: 6.7 and 4.1 ms, which reads the 7,607 segments twice | Met; the search is the one that grows with the history, see "Plans" |
 | **Web, edit mode: from the tap on Edit points to the points drawn**, the heaviest day, phone project, 4× CPU, 7 runs | ≤ 2 s | median **1,023 ms**, worst 1,269 ms (the answer is there at 84 / 89 ms; the map has the tiles of the points at 1,010 / 1,180 ms, and draws them in the same frame) | Met, 1.6 times under at the worst |
-| *Information:* the **reads that were there**, Plan 4 (three runs) against `main` on this machine and history (named places, p50 / p95 ms) | Plan 3's targets | day 6.0-7.4 / 6.6-9.6 against 7.4 / 9.0; range 31 days 10.0 / 12.1-12.3 against 10.1 / 12.1; places 7.2-7.3 / 8.2-8.8 against 6.6 / 7.6; trips 4.8-5.0 / 5.2-7.1 against 4.6 / 6.1; trip of 25 nights 6.9-7.1 / 7.5-8.3 against 6.7 / 8.0 | The same, within the spread (about 1 ms); the trips' answers are 33 B larger (`ownName` and the edit flags) |
+| *Information:* the **reads that were there**, Plan 4 (three runs) against `main` on this machine and history (named places, p50 / p95 ms) | Plan 3's targets | day 6.0-7.4 / 6.6-9.6 against 7.4 / 9.0; range 31 days 10.0-10.5 / 12.1-12.7 against 10.1 / 12.1; places 7.2-7.3 / 8.2-8.8 against 6.6 / 7.6; trips 4.8-5.0 / 5.2-7.1 against 4.6 / 6.1; trip of 25 nights 6.9-7.1 / 7.5-8.3 against 6.7 / 8.0 | The same, within the spread (about 1 ms); the trips' answers are 33 B larger (`ownName` and the edit flags) |
 | *Information:* the **web app's start** | Plan 2's: main-thread JavaScript ≤ 450 kB gzip | 397.8 kB (Plan 3: 383.9): the page's own chunk 116.4 kB (102.6), MapLibre's chunk 281.4 kB (281.4) | Met, 52 kB under; the editing is 13.8 kB gzip of the page's chunk |
 | *Information:* the views that were there, **rows in the DOM, Plan 4 against `main`'s** web app (median of 7, ms) | Plan 3's: ≤ 1 s / 2 s / 3 s | day 453 against 389, then in alternating pairs 394 / 439 against 395 / 407; year 528 against 526, then 511 / 535 against 504 / 485; the heaviest day, the months, the trips: −4 % to +5 % | The same, within the spread of the runs (the first pass had the day 16 % over, which the pairs do not repeat: 0 % and +8 %) |
 
@@ -282,11 +282,14 @@ timings on loopback that exclude the VPN, Traefik and Authentik. Also:
   checklist asks how long Edit points takes on the phone.
 - **The history's heaviest day has 36,940 points of one device** and the API answers a day in 0.08 s; the app gets 320 kB Brotli (1.5 MB raw)
   over the VPN for it, about 0.1 to 0.2 s on a connection of 15 to 25 Mbit/s, which the mocked run does not include.
-- **The points are drawn as they are, and at the zoom the day fits at they are one white band**: each point is a dark dot with a light halo,
-  drawn in time order, so the halo of a point covers the dot of the one before it, and where the points are less than a pixel apart (11 m
-  apart at 80 km/h, and a pixel of this map is tens of metres) the band is all halo, with the dots of the isolated points (the generator's spikes)
-  dark on its sides. A dot is a dot once the map is zoomed in far enough for the points to be more than a few pixels apart, which is where
-  one is tapped. This is how Plan 4's layer draws, and no number here depends on it.
+- **The points are drawn as they are, and at the zoom the day fits at the track is a dense band of dots**: they are less than a pixel apart (11 m
+  apart at 80 km/h, and a pixel of this map is tens of metres), so the dots run together, with the dots of the isolated points (the generator's
+  spikes) on its sides. A dot is a dot once the map is zoomed in far enough for the points to be more than a few pixels apart, which is where
+  one is tapped. The numbers of this run were measured when each dot carried its own 1 px halo as a stroke, drawn in time order, which made
+  the dense track read as a white band: the halo covered the dot of the point before it. The halo is now a circle layer of its own, under the dots
+  (same source, a radius a pixel beyond the dot's, no stroke on the dots), so a dense track reads as dark dots with a light edge. **The edit-mode
+  timing above was measured before this change and is not measured again**: the source and its layout are the same (one tile bucket, which
+  both layers draw from); Plan 5's final pass measures it again.
 - **The edits are timed on 874 nights, 3 trips and 2 homes.** The recompute reads every night and every stay's position, so its cost grows
   with the history: about 30 ms for these, and four times the nights would be about four times that, which is still under 300 ms. Not measured.
 - **The anti-join is measured with 1,000 removals**, 9 in the week; the plans say what 100,000 would cost (about 25 ms a step), not a measurement.
@@ -328,7 +331,7 @@ tools/perf/api-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22          #
 docker exec -i sporer-perf-db psql -U postgres -d perf -X < tools/perf/name-places.sql
 tools/perf/api-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22
 tools/perf/points-latency.sh http://127.0.0.1:5100 2024-06-01 2026-10-22       # about 30 seconds
-tools/perf/edit-latency.sh http://127.0.0.1:5100 20 3                          # a few seconds; start the API again first to see the first edit of a start
+tools/perf/edit-latency.sh http://127.0.0.1:5100 20 3                          # under 20 seconds; start the API again first to see the first edit of a start
 docker exec -i sporer-perf-db psql -U postgres -d perf -X -v from='2025-06-24 00:00:00+00' \
   -v day_from='2025-06-27 22:00:00+00' -v day_to='2025-06-28 22:00:00+00' < tools/perf/explain-edits.sql
 

@@ -44,12 +44,13 @@ interface HomeDatesProps {
 }
 
 /**
- * What the place is to be home for, to be saved: the night it was home from, and the night it was home to when it was not for good (the nights are those the
- * owner slept at the place). A home that is set takes the place of what detection found for those dates, which the form says before it is saved (P4-R44). The question takes the focus when the form opens (it
- * is read, and Escape is Cancel at once). A start date that is empty, or an end date before it, is told by the form (on Save, and not as the dates are typed,
- * which passes through such dates), with the focus on the field to put right; every other refusal is the server's, in its words with no Retry (`WriteError`),
- * and the form stays as it was to be put right: a 409 is another home of the owner's in these dates, and a 404 is a place that is gone, which another place
- * is the way on from. While the write is on its way Cancel, Choose another place and Escape wait: they cannot take it back.
+ * What the place is to be home for, to be saved: the night it was home from, and the night it was home to when it was not for good (the nights are
+ * those the owner slept at the place). A home that is set takes the place of what detection found for those dates, which the form says before it is
+ * saved (P4-R44). The question takes the focus when the form opens (it is read, and Escape is Cancel at once). A start date that is empty, or an end
+ * date before it, is told by the form (on Save, and not as the dates are typed, which passes through such dates), with the focus on the field to put
+ * right; every other refusal is the server's, in its words with no Retry (`WriteError`), and the form stays as it was to be put right: a 409 is
+ * another home of the owner's in these dates, and a 404 is a place that is gone, which another place is the way on from. While the write is on its
+ * way Cancel, Choose another place and Escape wait: they cannot take it back.
  */
 function HomeDates({ place, add, onChooseAnother, onClose }: HomeDatesProps) {
   const client = useQueryClient();

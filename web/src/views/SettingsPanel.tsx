@@ -10,12 +10,14 @@ import { DeletedTrips } from "./DeletedTrips";
 import forms from "./Forms.module.css";
 import { HomeSettings } from "./HomeSettings";
 import { RemovedPoints } from "./RemovedPoints";
+import rows from "./Rows.module.css";
 import styles from "./SettingsPanel.module.css";
 import { SettingsNotes, useNote } from "./SettingsNotes";
 import { Section } from "./SettingsSection";
 import { ErrorState, Loading } from "./States";
 import { TripDistance } from "./TripDistance";
 import { useKeptData } from "./useKeptData";
+import { WriteError } from "./WriteError";
 
 /** The stretch a failed range covers: "Sun 13 Sep 2026 05:00 – Mon 14 Sep 2026 05:00", and the date once when both ends are on it. */
 function rangeLabel(range: FailedRange): string {
@@ -55,9 +57,9 @@ const retriedNote = ({ retried }: RetryFailedResponse): string =>
 
 /**
  * The failed periods and the button that makes them due at once, instead of when their wait is over (the worker takes them up on its next
- * pass). The button is there only while something has failed; it says it is working while the request is on its way, and a failure of it
- * is told with its own Retry, with the list still there. What it did is a note that goes by itself after a while (`useNote`): the list may well
- * look the same until the worker has had its turn.
+ * pass). The button is there only while something has failed; it says it is working while the request is on its way, and a failure of it is told
+ * as every write's is (`WriteError`: a refusal in the server's words with no Retry, any other failure with its own Retry), with the list still there.
+ * What it did is a note that goes by itself after a while (`useNote`): the list may well look the same until the worker has had its turn.
  */
 function Failed({ ranges }: { ranges: readonly FailedRange[] }) {
   const retry = useWrite(() => postJson<RetryFailedResponse>("/api/status/retry"));
@@ -65,7 +67,7 @@ function Failed({ ranges }: { ranges: readonly FailedRange[] }) {
   return (
     <>
       {ranges.length === 0 ? (
-        <p className={styles.none}>Nothing has failed</p>
+        <p className={rows.none}>Nothing has failed</p>
       ) : (
         <>
           <ul className={styles.failedList} aria-label="Failed periods">
@@ -79,7 +81,7 @@ function Failed({ ranges }: { ranges: readonly FailedRange[] }) {
           </button>
         </>
       )}
-      {retry.isError && <ErrorState message="Couldn't retry" error={retry.error} onRetry={() => retry.mutate()} />}
+      {retry.isError && <WriteError what="retry" error={retry.error} onRetry={() => retry.mutate()} />}
     </>
   );
 }

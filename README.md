@@ -349,7 +349,8 @@ timeline (an algorithm change, or any `Detection__*` change, makes one, and your
 
 - [ ] **Rename a place.** Open a place from the Day view, tap Rename, type a name, Save. The new name is on the place and on its stays in the
   day and the other views that name places, and, for a place in a trip, in the highlights of the trip's days on which you were there and did not
-  sleep there (a trip is named by its cities, and no place name changes that); an empty name brings OpenStreetMap's back.
+  sleep there (a trip is named by its cities, and no place name changes that). A day's highlights are the three named places where you spent
+  the most time that day, so a short stop may not appear among them; an empty name brings OpenStreetMap's back.
 - [ ] **Merge two places, one of them home.** Open the place that is to stay, tap Merge with…, pick the other from the nearest (or search for it), choose
   the name to keep, Merge. Do it for the two places GPS drift made of your own house, so that one of them is home. The stays of both are at
   the one place in the day, its time and visits add up, **the trips and the house on the Day view follow at once**, and the place lists the

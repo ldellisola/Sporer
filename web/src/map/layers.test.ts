@@ -786,7 +786,8 @@ describe("layerSpecs", () => {
 
     expect(LAYER_IDS.editPoints).toBe("sporer-edit-points");
     expect(SOURCE_IDS.editPoints).toBe("sporer-edit-points");
-    for (const route of ROUTE_LAYERS) expect(ids.indexOf(route), route).toBeLessThan(ids.indexOf(LAYER_IDS.editPoints));
+    for (const route of ROUTE_LAYERS) expect(ids.indexOf(route), route).toBeLessThan(ids.indexOf(LAYER_IDS.editPointHalos));
+    expect(ids.indexOf(LAYER_IDS.editPointHalos)).toBeLessThan(ids.indexOf(LAYER_IDS.editPoints));
     expect(ids.indexOf(LAYER_IDS.editPoints)).toBeLessThan(ids.indexOf(LAYER_IDS.places));
     expect(ids.indexOf(LAYER_IDS.editPoints)).toBeLessThan(ids.indexOf(LAYER_IDS.stops));
   });
@@ -805,14 +806,35 @@ describe("layerSpecs", () => {
     expect(layout(dots)["visibility"] ?? "visible").toBe("visible");
   });
 
-  test("layerSpecs_draw_the_edit_points_in_the_ink_of_the_scheme_with_a_halo_of_the_other", () => {
+  test("layerSpecs_draw_the_edit_points_in_the_ink_of_the_scheme_with_a_halo_of_the_other_in_a_layer_under_the_dots", () => {
     expect(paint(find("day", LAYER_IDS.editPoints, true))["circle-color"]).toEqual(["case", ["boolean", ["feature-state", "selected"], false], EDIT_SELECTED_COLOR, "#F2F2F7"]);
-    expect(paint(find("day", LAYER_IDS.editPoints, false))["circle-stroke-color"]).toBe("#FFFFFF");
-    expect(paint(find("day", LAYER_IDS.editPoints, true))["circle-stroke-color"]).toBe("#1C1C1E");
+    expect(paint(find("day", LAYER_IDS.editPointHalos, false))["circle-color"]).toBe("#FFFFFF");
+    expect(paint(find("day", LAYER_IDS.editPointHalos, true))["circle-color"]).toBe("#1C1C1E");
+  });
+
+  test("layerSpecs_give_no_stroke_to_the_edit_dots_a_stroke_would_paint_over_the_dots_before_it_and_make_a_dense_track_a_white_band", () => {
+    const dots = paint(find("day", LAYER_IDS.editPoints));
+
+    expect(dots["circle-stroke-width"]).toBeUndefined();
+    expect(dots["circle-stroke-color"]).toBeUndefined();
+  });
+
+  test("layerSpecs_draw_the_halo_of_an_edit_point_in_its_own_layer_of_the_same_source_a_pixel_beyond_the_dot", () => {
+    const halos = find("day", LAYER_IDS.editPointHalos);
+
+    expect(halos.type).toBe("circle");
+    expect(LAYER_IDS.editPointHalos).toBe("sporer-edit-point-halos");
+    expect((halos as { source: string }).source).toBe(SOURCE_IDS.editPoints);
+    // The dot's radius and the pixel of its edge, as before: 4 + 1 and 7 + 1.
+    expect(paint(halos)["circle-radius"]).toEqual(["case", ["boolean", ["feature-state", "selected"], false], 8, 5]);
+    expect(layout(halos)["visibility"] ?? "visible").toBe("visible");
+    expect(paint(halos)["circle-stroke-width"]).toBeUndefined();
   });
 
   test("layerSpecs_show_the_edit_points_in_every_view_the_source_of_all_but_a_day_in_edit_mode_is_empty", () => {
-    for (const view of ["day", "range", "trips", "trip"] as const) expect(layout(find(view, LAYER_IDS.editPoints))["visibility"] ?? "visible", view).toBe("visible");
+    for (const view of ["day", "range", "trips", "trip"] as const) {
+      for (const id of [LAYER_IDS.editPointHalos, LAYER_IDS.editPoints]) expect(layout(find(view, id))["visibility"] ?? "visible", `${view} ${id}`).toBe("visible");
+    }
   });
 
   test("layerSpecs_draw_the_heat_first_and_the_stops_last", () => {
