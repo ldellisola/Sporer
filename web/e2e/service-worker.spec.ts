@@ -29,7 +29,7 @@ const topBar = (page: Page) => page.getByRole("group", { name: "View" });
 /** The Retry of the view's error: the map's note has one of its own when the map has no style to draw. */
 const retry = (page: Page) => page.getByRole(page.viewportSize()!.width >= 900 ? "complementary" : "region", { name: "Details" }).getByRole("button", { name: "Retry" });
 
-test("the_worker_is_registered_for_the_whole_origin_and_controls_the_page_after_a_reload", { tag: "@smoke" }, async ({ page }) => {
+test("the_worker_is_registered_for_the_whole_origin_and_controls_the_page_after_a_reload", async ({ page }) => {
   await mockApi(page);
   await page.goto(DAY);
   const origin = new URL(page.url()).origin;
@@ -46,7 +46,7 @@ test("the_worker_is_registered_for_the_whole_origin_and_controls_the_page_after_
   await expect(topBar(page)).toBeVisible(); // and the app is as it always is
 });
 
-test("the_worker_keeps_the_files_of_the_shell_and_nothing_else", { tag: "@smoke" }, async ({ page }) => {
+test("the_worker_keeps_the_files_of_the_shell_and_nothing_else", async ({ page }) => {
   const api = await mockApi(page);
   await openWithWorker(page);
   // What the page asked for before the worker was in charge was never the worker's to see: reload, so that it is asked again, with the worker between.
@@ -70,6 +70,41 @@ test("the_worker_keeps_the_files_of_the_shell_and_nothing_else", { tag: "@smoke"
   expect(paths.filter((path) => path.startsWith("/api"))).toEqual([]); // no answer of the API, whatever the request was
   expect(paths).not.toContain("/test-style.json"); // it is for the tests
   expect(paths).not.toContain("/sw.js"); // and the worker does not keep itself
+});
+
+// The smoke test of WebKit (the first two cases above are Chromium's: with the worker in control, WebKit does not hand the page's /api/ requests to
+// `page.route`, so the mock never sees them). Nothing here is the app's: the document is an icon, which makes no request to /api/, and the worker is
+// registered from it by hand. What is left to find out is that the worker installs in this browser, which takes every file of the build in, and that it
+// reaches `activated`. The files of the build are the list that /sw.js begins with (build/serviceWorker.ts), read from the file as the server gives it.
+test("a_worker_registered_from_a_page_that_is_not_the_app_installs_activates_and_keeps_the_whole_shell", { tag: "@smoke" }, async ({ page }) => {
+  const script = await (await page.request.get("/sw.js")).text();
+  const shell = /^self\.__SHELL__=(\{.*\});$/m.exec(script)?.[1];
+  expect(shell, "the line of /sw.js that has the build's files").toBeDefined();
+  const { version, files } = JSON.parse(shell!) as { version: string; files: string[] };
+  expect(files.length).toBeGreaterThan(0);
+
+  await page.goto("/icons/icon.svg");
+  await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    const worker = registration.installing ?? registration.waiting ?? registration.active;
+    if (worker === null) throw new Error("The registration has no worker.");
+    if (worker.state === "activated") return;
+    await new Promise<void>((resolve, reject) => {
+      worker.addEventListener("statechange", () => {
+        if (worker.state === "activated") resolve();
+        else if (worker.state === "redundant") reject(new Error("The worker became redundant: its install failed."));
+      });
+    });
+  });
+
+  const kept = await page.evaluate(async () => {
+    const caches_: Record<string, string[]> = {};
+    for (const name of await caches.keys()) caches_[name] = (await (await caches.open(name)).keys()).map((request) => new URL(request.url).pathname);
+    return caches_;
+  });
+  const asked = (file: string) => new URL(file, "http://localhost").pathname; // as a request has the path of a file: percent-encoded
+  expect(Object.keys(kept)).toEqual([`sporer-shell-${version}`]);
+  expect(kept[`sporer-shell-${version}`]!.sort()).toEqual([...files.map(asked), "/index.html"].sort());
 });
 
 test("the_worker_does_not_answer_the_api_and_without_the_mock_a_request_fails_as_it_does_without_a_worker", async ({ page, guard }) => {

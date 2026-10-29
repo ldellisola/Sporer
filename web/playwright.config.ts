@@ -23,8 +23,11 @@ const PHONE_VIEWPORT = { width: 390, height: 844 };
 
 // A WebKit project, for the owner's browser (iOS Safari), is there only when asked for: CI asks (see .github/workflows/docker-publish.yml), and a run
 // on one's own machine is the Chromium projects as always, with no WebKit installed. It runs only the tests tagged `@smoke`, one or two of each flow
-// (the app opens on today, the day, the month, a trip, the name of a place, removing points, Settings, the service worker): enough to know that the app
-// works in the engine of the phone, without a second run of the whole suite on a runner that is slow already. Tests that are not tagged are Chromium's.
+// (the app opens on today, the day, the month, a trip, the name of a place, Settings, the service worker's install): enough to know that the app
+// works in the engine of the phone, without a second run of the whole suite on a runner that is slow already. Tests that are not tagged are
+// Chromium's. Two kinds are left out on purpose, because WebKit cannot do what they ask: those that read a pixel of the map (the poll of
+// pixel.ts never found a dot that the map had drawn: a screenshot of the WebGL canvas is not what Chromium's is there), and those that need
+// `page.route` to see the page's own requests while a service worker controls the page (WebKit does not hand them over).
 const webkit: PlaywrightTestConfig["projects"] =
   process.env["PW_WEBKIT"] === "1"
     ? [

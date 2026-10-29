@@ -385,8 +385,8 @@ The workflow runs the .NET tests and the web app's checks (type check, unit test
 image (the web app is built inside it) and publishes it as `ghcr.io/ldellisola/sporer` with the tags `1.2.3`, `1.2`, `1` and
 `latest` (among others). Only a `v*.*.*` tag publishes `latest`. The server pulls `:latest` daily. Pushes to `main` that touch
 `src/`, `tests/`, `web/`, `docker/dockerfile`, `.dockerignore` or the workflow file build and publish a branch-tagged image;
-pull requests run the tests and a build without publishing. A run started by hand on any other branch runs the tests only
-(see [Continuous integration](#continuous-integration)).
+pull requests run the tests and a build without publishing. So does a run started by hand on any branch but `main` (it
+publishes on `main` and on a `v*` tag): see [Continuous integration](#continuous-integration).
 
 ## Local development
 
@@ -449,15 +449,27 @@ access gets a plain background instead of a map; the rest of the page works.
 
 - `test`: the .NET tests (`dotnet test src/Sporer.sln`).
 - `web`: `npm ci`, `npm run typecheck`, `npm test` and `npm run e2e` (with `PW_WEBKIT=1`) in `web/`. The browser tests run in Chromium and a smoke
-  set of them also in WebKit, the engine of iOS Safari. The Playwright browsers are cached on the version in `web/package-lock.json`; a run
+  set of them also in WebKit, the engine of iOS Safari. The Playwright browsers are cached on the version in `web/package-lock.json` (saved even
+  when a test fails; a cache is per branch and goes after 7 days unused, so the first run on `main` after a merge installs them again); a run
   that finds them in the cache still installs the system packages they need.
-- `build`: builds the image, and publishes it from `main` and from `v*.*.*` tags only (see Releases).
+- `build`: always builds the image, so that the Dockerfile is checked on every run, and publishes it (cosign, the login, the push and the
+  signature) only for these events:
+
+  | Event | The image |
+  | --- | --- |
+  | Push to `main` | built and published |
+  | Push of a `v*.*.*` tag | built and published |
+  | Pull request | built, not published |
+  | Run workflow by hand on `main` or on a `v*` tag | built and published |
+  | Run workflow by hand on any other branch | built, not published |
 
 The WebKit smoke set is the tests tagged `{ tag: "@smoke" }`: one or two of each flow (the app opens on today, day navigation, the month,
-opening a trip, renaming a place, removing and restoring points, Settings, the service worker). It is a project called `webkit` that
-exists only when `PW_WEBKIT=1`, so only CI runs it by default; a plain `npm run e2e` is Chromium's two projects. The project uses Playwright's
-iPhone 14 descriptor (WebKit, touch, the phone's pixel density). Where WebKit is installed (`npx playwright install webkit`; on Linux add
-`--with-deps`), run it with:
+opening a trip, renaming a place, Settings, and the service worker installing from a page that is not the app). Tests that read the pixels of the
+map, and those whose service worker has to let the page's requests reach the test's mocks, stay with Chromium: WebKit does not do either, so editing
+points is checked on Chromium only and on the iPhone by the owner's checklist. The smoke set is a project called `webkit` that exists only when
+`PW_WEBKIT=1`, so only CI runs it by default; a plain `npm run e2e` is Chromium's two projects. The project uses Playwright's iPhone 14
+descriptor (WebKit, touch, the phone's pixel density). Where WebKit is installed (`npx playwright install webkit`; on Linux add `--with-deps`),
+run it with:
 
 ```sh
 cd web
@@ -465,7 +477,8 @@ PW_WEBKIT=1 npx playwright test --project=webkit
 ```
 
 To check a branch before it is merged, without publishing anything: Actions, Create Docker Image, Run workflow, and pick the branch. The
-`test` and `web` jobs run, and `build` is skipped: only `main` and version tags are built when the run is started by hand.
+`test`, `web` and `build` jobs all run, and `build` pushes nothing, as it does for a pull request: only `main` and a `v*` tag are published when
+the run is started by hand.
 
 ### Synthetic data and performance checks
 
