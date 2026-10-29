@@ -156,6 +156,45 @@ describe("EditBar", () => {
     expect(screen.getByRole("button", { name: "Remove 1 point" })).toBeEnabled();
   });
 
+  test("EditBar_puts_the_focus_on_clear_when_a_removal_is_refused_for_remove_is_off_and_had_it", () => {
+    const refused = (status = 400) => pointEditing({ selected: new Set([0, 1]), removal: { run: vi.fn(), pending: false, error: new ApiError(status, "/api/points/remove", "POST", "No."), reset: vi.fn() } });
+    const quiet = pointEditing({ selected: new Set([0, 1]) });
+
+    // It had the focus when it was pressed: Clear is the way back.
+    const first = render(<EditBar edit={quiet} onDone={() => undefined} />);
+    screen.getByRole("button", { name: "Remove 2 points" }).focus();
+    first.rerender(<EditBar edit={refused()} onDone={() => undefined} />);
+    expect(screen.getByRole("button", { name: "Clear" })).toHaveFocus();
+    first.unmount();
+
+    // It was off while the request was on its way, and the focus had gone to the page with it.
+    const second = render(<EditBar edit={quiet} onDone={() => undefined} />);
+    expect(document.body).toHaveFocus();
+    second.rerender(<EditBar edit={refused(409)} onDone={() => undefined} />);
+    expect(screen.getByRole("button", { name: "Clear" })).toHaveFocus();
+  });
+
+  test("EditBar_leaves_the_focus_where_the_owner_has_put_it_when_a_removal_is_refused_and_for_a_failure_that_may_pass", () => {
+    const withError = (status: number) =>
+      pointEditing({ selected: new Set([0, 1]), removal: { run: vi.fn(), pending: false, error: new ApiError(status, "/api/points/remove", "POST", "No."), reset: vi.fn() } });
+    const ui = (edit: ReturnType<typeof pointEditing>) => (
+      <div>
+        <button type="button">on the map</button>
+        <EditBar edit={edit} onDone={() => undefined} />
+      </div>
+    );
+    const { rerender } = render(ui(pointEditing({ selected: new Set([0, 1]) })));
+    screen.getByRole("button", { name: "on the map" }).focus();
+
+    rerender(ui(withError(400)));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "on the map" })); // not the bar's to take
+
+    rerender(ui(pointEditing({ selected: new Set([0, 1]) })));
+    screen.getByRole("button", { name: "Remove 2 points" }).focus();
+    rerender(ui(withError(502))); // Remove is on: the focus is where it was
+    expect(screen.getByRole("button", { name: "Remove 2 points" })).toHaveFocus();
+  });
+
   test("EditBar_leaves_remove_on_for_a_failure_that_may_pass_which_is_sent_again_by_it_or_by_the_retry", () => {
     for (const error of [new ApiError(408, "/api/points/remove", "POST"), new ApiError(429, "/api/points/remove", "POST"), new ApiError(502, "/api/points/remove", "POST"), new TypeError("Failed to fetch")]) {
       const run = vi.fn();

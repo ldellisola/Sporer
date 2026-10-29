@@ -473,6 +473,186 @@ describe("useEditPoints removal", () => {
   });
 });
 
+// P4-R32: a removal that fails where the owner no longer is (they pressed Done, or went on to another day) is still told, and is told to the shell and not to
+// the bar of a session that did not send it.
+describe("useEditPoints a removal that fails after Done", () => {
+  const REMOVE = "POST /api/points/remove";
+
+  /** Edit mode on, with the removal of `selected` on its way: `fail` and `succeed` are how the server answers it later; the body of every request is kept. */
+  async function sent(selected: number[], later: { route?: Route } = {}) {
+    const bodies: unknown[] = [];
+    const waiting: ((response: Response) => void)[] = [];
+    const mounted = await editing(DAY, {
+      [REMOVE]: (call) => {
+        bodies.push(call.body);
+        return new Promise<Response>((resolve) => waiting.push(resolve));
+      },
+    });
+    act(() => mounted.result.current.select(selected));
+    act(() => mounted.result.current.removal.run());
+    await waitFor(() => expect(mounted.result.current.removal.pending).toBe(true));
+    if (later.route !== undefined) mounted.rerender({ route: later.route });
+    return {
+      ...mounted,
+      bodies,
+      /** Answers the nth request that is waiting (the first by default). */
+      answer: (response: Response, nth = 0) => act(async () => waiting[nth]!(response)),
+    };
+  }
+
+  test("useEditPoints_reports_a_removal_that_fails_after_done_as_a_failure_of_its_own_with_its_points_and_the_servers_words", async () => {
+    const { result, answer } = await sent([0, 1]);
+    act(() => result.current.done());
+
+    await answer(refusal(400, "At most 50000 points can be removed at once."));
+
+    await waitFor(() => expect(result.current.failedRemoval).not.toBeNull());
+    expect(result.current.failedRemoval!.count).toBe(2);
+    expect((result.current.failedRemoval!.error as ApiError).status).toBe(400);
+    expect((result.current.failedRemoval!.error as ApiError).detail).toBe("At most 50000 points can be removed at once.");
+    expect(result.current.failedRemoval!.retrying).toBe(false);
+    expect(result.current.active).toBe(false);
+    expect(result.current.removal.error).toBeNull(); // there is no bar for it
+    expect(result.current.toast).toBeNull();
+  });
+
+  test("useEditPoints_reports_a_removal_that_fails_after_the_owner_has_gone_to_another_day_or_left_the_day", async () => {
+    for (const route of [OTHER_DAY, WEEK]) {
+      const { result, answer, unmount } = await sent([0], { route });
+
+      await answer(new Response("{}", { status: 503 }));
+
+      await waitFor(() => expect(result.current.failedRemoval?.count, route.view).toBe(1));
+      unmount();
+    }
+  });
+
+  test("useEditPoints_keeps_the_failure_of_a_removal_that_is_on_its_way_across_done_and_start_out_of_the_new_session_whose_taps_work", async () => {
+    const { result, answer } = await sent([0, 1]);
+    act(() => result.current.done());
+    act(() => result.current.start());
+    await waitFor(() => expect(result.current.points).toBeDefined());
+
+    // The old removal is still on its way, and the new session is free of it: nothing is pending for it, and a tap selects.
+    expect(result.current.removal.pending).toBe(false);
+    act(() => result.current.toggle(2));
+    act(() => result.current.select([3]));
+    expect([...result.current.selected].sort()).toEqual([2, 3]);
+
+    await answer(new Response("{}", { status: 502 }));
+
+    await waitFor(() => expect(result.current.failedRemoval).not.toBeNull());
+    expect(result.current.removal.error).toBeNull(); // not in the new session's bar
+    expect(result.current.removal.pending).toBe(false);
+    expect([...result.current.selected].sort()).toEqual([2, 3]); // and the new selection is as it was
+    act(() => result.current.toggle(3));
+    expect([...result.current.selected]).toEqual([2]);
+  });
+
+  test("useEditPoints_leaves_the_selection_of_the_new_session_alone_when_the_removal_of_the_old_one_goes_through", async () => {
+    const { result, answer } = await sent([0, 1]);
+    act(() => result.current.done());
+    act(() => result.current.start());
+    await waitFor(() => expect(result.current.points).toBeDefined());
+    act(() => result.current.toggle(2));
+
+    await answer(Response.json({ batch: BATCH, count: 2 }));
+
+    await waitFor(() => expect(result.current.toast?.kind).toBe("removed"));
+    expect([...result.current.selected]).toEqual([2]); // it was sent for other points, and does not clear these
+    expect(result.current.removal.pending).toBe(false);
+    expect(result.current.failedRemoval).toBeNull();
+  });
+
+  test("useEditPoints_lets_the_new_session_send_its_own_removal_while_the_old_one_is_on_its_way", async () => {
+    const { result, answer, bodies } = await sent([0, 1]);
+    act(() => result.current.done());
+    act(() => result.current.start());
+    await waitFor(() => expect(result.current.points).toBeDefined());
+    act(() => result.current.toggle(3));
+
+    act(() => result.current.removal.run());
+    await waitFor(() => expect(bodies).toHaveLength(2));
+    expect(result.current.removal.pending).toBe(true); // its own
+
+    await answer(Response.json({ batch: "old", count: 2 }), 0);
+    expect(result.current.removal.pending).toBe(true); // the old one's answer is not the new one's
+    await answer(refusal(400, "No."), 1);
+    await waitFor(() => expect(result.current.removal.error).not.toBeNull()); // the session that sent it has it in its bar
+    expect(result.current.failedRemoval).toBeNull();
+  });
+
+  test("useEditPoints_retries_the_points_that_the_failed_removal_remembers_and_not_the_selection_of_the_new_session", async () => {
+    const { result, answer, bodies } = await sent([0, 1]);
+    act(() => result.current.done());
+    await answer(new Response("{}", { status: 503 }));
+    await waitFor(() => expect(result.current.failedRemoval).not.toBeNull());
+    act(() => result.current.start());
+    await waitFor(() => expect(result.current.points).toBeDefined());
+    act(() => result.current.toggle(3)); // the new session has other points selected
+
+    act(() => result.current.failedRemoval!.retry());
+    await waitFor(() => expect(result.current.failedRemoval?.retrying).toBe(true));
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]); // the same two points, by device and exact time
+    expect(bodies[1]).toEqual({ points: [{ device: "phone", t: T0 }, { device: "watch", t: T0 + 30_000_001 }] });
+    expect(result.current.removal.pending).toBe(false); // it is not the new session's removal
+
+    await answer(Response.json({ batch: BATCH, count: 2 }), 1);
+
+    await waitFor(() => expect(result.current.failedRemoval).toBeNull());
+    expect(result.current.toast).toEqual({ id: expect.any(Number), kind: "removed", count: 2, batch: BATCH, date: "2026-10-22" }); // it can be undone
+    expect([...result.current.selected]).toEqual([3]); // the new selection is not touched
+  });
+
+  test("useEditPoints_tells_a_retry_that_fails_again_with_its_new_words_and_is_there_to_try_again", async () => {
+    const { result, answer } = await sent([0]);
+    act(() => result.current.done());
+    await answer(new Response("{}", { status: 503 }));
+    await waitFor(() => expect(result.current.failedRemoval).not.toBeNull());
+
+    act(() => result.current.failedRemoval!.retry());
+    await waitFor(() => expect(result.current.failedRemoval?.retrying).toBe(true));
+    act(() => result.current.failedRemoval!.retry()); // pressed again: it is on its way already
+    await answer(refusal(409, "Not now."), 1);
+
+    await waitFor(() => expect(result.current.failedRemoval?.retrying).toBe(false));
+    expect((result.current.failedRemoval!.error as ApiError).detail).toBe("Not now.");
+    expect(result.current.failedRemoval!.count).toBe(1);
+  });
+
+  test("useEditPoints_dismiss_takes_the_failure_of_a_removal_away", async () => {
+    const { result, answer } = await sent([0]);
+    act(() => result.current.done());
+    await answer(new Response("{}", { status: 503 }));
+    await waitFor(() => expect(result.current.failedRemoval).not.toBeNull());
+
+    act(() => result.current.failedRemoval!.dismiss());
+
+    expect(result.current.failedRemoval).toBeNull();
+  });
+
+  test("useEditPoints_leaves_the_failure_of_a_removal_that_the_owner_is_still_there_for_to_the_bar", async () => {
+    const { result, answer } = await sent([0]);
+
+    await answer(refusal(400, "No."));
+
+    await waitFor(() => expect(result.current.removal.error).not.toBeNull());
+    expect(result.current.failedRemoval).toBeNull(); // the bar says it, where they are
+  });
+
+  test("useEditPoints_still_shows_a_removal_that_failed_in_the_bar_when_the_owner_presses_done_in_the_meantime_as_a_failure_the_owner_saw", async () => {
+    const { result, answer } = await sent([0]);
+    await answer(refusal(400, "No."));
+    await waitFor(() => expect(result.current.removal.error).not.toBeNull());
+
+    act(() => result.current.done()); // the bar is gone, with what it said
+
+    await waitFor(() => expect(result.current.removal.error).toBeNull());
+    expect(result.current.failedRemoval).toBeNull();
+  });
+});
+
 describe("useEditPoints undo", () => {
   const REMOVE = "POST /api/points/remove";
   const UNDO = `DELETE /api/points/removed/${BATCH}`;

@@ -53,6 +53,8 @@ interface EditServer {
   refuse: (reply: Reply | undefined) => void;
   /** The first so many requests for the points are answered with a 500. */
   failPoints: (times: number) => void;
+  /** Holds the next removal until `answer` is called with what it is to be answered with (a request that is on its way, to be answered later). */
+  hold: () => { answer: (reply: Reply) => void };
 }
 
 /**
@@ -67,6 +69,7 @@ function editServer(): EditServer {
   let reads = 0;
   let refusal: Reply | undefined;
   let failing = 0;
+  let held: Promise<Reply> | undefined;
   const gone = (): number[] => [...removed.values()].flat();
   const day = (): DayResponse => ({
     ...DAY,
@@ -88,7 +91,12 @@ function editServer(): EditServer {
       const left = new Set(gone());
       return { json: { date: DAY.date, devices: DEVICES, points: POINTS.filter((_, i) => !left.has(i)) } };
     },
-    "POST points/remove": (request: Request): Reply => {
+    "POST points/remove": (request: Request): Reply | Promise<Reply> => {
+      if (held !== undefined) {
+        const waiting = held;
+        held = undefined;
+        return waiting;
+      }
       if (refusal !== undefined) return refusal;
       const { points } = request.postDataJSON() as { points: { device: string; t: number }[] };
       const indices = points.map(({ device, t }) => POINTS.findIndex((point) => point[0] === t && DEVICES[point[3]] === device));
@@ -114,6 +122,11 @@ function editServer(): EditServer {
     forget: (batch) => void removed.delete(batch),
     refuse: (reply) => void (refusal = reply),
     failPoints: (times) => void (failing = times),
+    hold: () => {
+      let answer: (reply: Reply) => void = () => undefined;
+      held = new Promise<Reply>((resolve) => (answer = resolve));
+      return { answer: (reply) => answer(reply) };
+    },
   };
 }
 
@@ -420,6 +433,7 @@ test("edit_points_says_in_the_servers_words_why_a_removal_was_refused_and_that_a
   await expect(alert.getByRole("button")).toHaveCount(0);
   await expect(bar(page).getByRole("button", { name: "Remove 1 point" })).toBeDisabled(); // the same selection is refused again: Remove waits for it to change
   await expect(bar(page).getByRole("button", { name: "Clear" })).toBeEnabled(); // and that is the way back
+  await expect(bar(page).getByRole("button", { name: "Clear" })).toBeFocused(); // which has the focus that Remove had
   await expect(bar(page).getByText("1 selected")).toBeVisible(); // the selection is as it was: the owner can take some off and try again
   await expectDot(page, project, WALK(3), RED);
 
@@ -436,12 +450,74 @@ test("edit_points_says_in_the_servers_words_why_a_removal_was_refused_and_that_a
   await expect(page.getByRole("alert").filter({ hasText: "Could not undo: That removal has been undone already." })).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0); // it would be sent again and refused again: the toast has no Undo while this is there
+  await expect(page.getByRole("button", { name: "Dismiss" })).toBeFocused(); // the focus was on the button that went: it is on the way out of the alert
   await expect(toast(page)).toHaveText(/Removed 2 points/); // what was done is still said
   await expect.poll(() => server.pointReads()).toBeGreaterThan(reads); // and what is on screen is asked for again
   expect(writes.map((write) => write.method)).toEqual(["POST", "POST", "DELETE"]);
   await page.getByRole("button", { name: "Dismiss" }).click();
   await expect(page.getByRole("alert").filter({ hasText: "Could not undo" })).toHaveCount(0);
   await expect(toast(page)).toHaveCount(0);
+});
+
+test("edit_points_tells_a_removal_that_the_server_refuses_after_done_in_the_toast_and_not_in_the_next_edit_mode", async ({ page }) => {
+  // P4-R32: the owner presses Done while the removal is on its way, begins again, and it is refused.
+  const server = editServer();
+  const { project, writes } = await intoEditMode(page, server.overrides);
+  const held = server.hold();
+  await tap(page, placeOf(project, WALK(3)));
+  await bar(page).getByRole("button", { name: "Remove 1 point" }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  await bar(page).getByRole("button", { name: "Done" }).click();
+  await details(page).getByRole("button", { name: "Edit points" }).click();
+  await expect(bar(page)).toBeVisible();
+  await expectDot(page, project, WALK(3), INK);
+
+  held.answer({ status: 400, json: { statusCode: 400, message: "One or more errors occurred!", errors: { points: ["At most 50000 points can be removed at once."] } } });
+
+  const alert = page.getByRole("alert").filter({ hasText: "Could not remove 1 point" });
+  await expect(alert).toHaveText(/Could not remove 1 point: At most 50000 points can be removed at once\./);
+  await expect(alert.getByRole("button", { name: "Retry" })).toHaveCount(0); // a refusal is refused again
+  await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
+  await expect(bar(page).getByRole("alert")).toHaveCount(0); // not in the bar of the edit mode that did not send it
+  await expect(bar(page).getByText("0 selected")).toBeVisible();
+
+  // The new edit mode is free of it: a tap selects, and Remove is on.
+  await tap(page, placeOf(project, WALK(5)));
+  await expect(bar(page).getByText("1 selected")).toBeVisible();
+  await expect(bar(page).getByRole("button", { name: "Remove 1 point" })).toBeEnabled();
+  await expectDot(page, project, WALK(5), RED);
+
+  await page.getByRole("button", { name: "Dismiss" }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(server.gone()).toEqual([]);
+});
+
+test("edit_points_sends_the_points_of_a_removal_that_failed_after_done_again_on_retry_and_not_the_selection_of_the_next_edit_mode", async ({ page }) => {
+  const server = editServer();
+  const { project, writes } = await intoEditMode(page, server.overrides);
+  const held = server.hold();
+  await tap(page, placeOf(project, WALK(3)));
+  await bar(page).getByRole("button", { name: "Remove 1 point" }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  await bar(page).getByRole("button", { name: "Done" }).click();
+  await details(page).getByRole("button", { name: "Edit points" }).click();
+  await expectDot(page, project, WALK(3), INK);
+  await tap(page, placeOf(project, WALK(5))); // the next edit mode has another point selected
+  await expect(bar(page).getByText("1 selected")).toBeVisible();
+
+  held.answer({ status: 503, json: {} }); // a failure that may pass
+
+  const alert = page.getByRole("alert").filter({ hasText: "Couldn't remove 1 point" });
+  await expect(alert).toContainText("Couldn't remove 1 point — Retry");
+  await alert.getByRole("button", { name: "Retry" }).click();
+
+  await expect(toast(page)).toHaveText(/Removed 1 point/);
+  expect(writes.map((write) => write.body)).toEqual([removing(WALK(3)), removing(WALK(3))]); // the same point, and not the one that is selected now
+  expect(server.gone()).toEqual([WALK(3)]);
+  await expect(bar(page).getByText("1 selected")).toBeVisible(); // the selection of this edit mode is as it was
+  await expectDot(page, project, WALK(5), RED);
+  await expectDot(page, project, WALK(3), "none"); // and the removed point is gone from the map
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("edit_points_says_the_points_could_not_be_loaded_with_a_retry_that_draws_them", async ({ page }) => {

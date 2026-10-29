@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ApiError } from "../api/client";
+import type { FailedRemoval } from "../app/useEditPoints";
 import { pointEditing } from "../test/pointEditing";
 import { RemovedToast } from "./RemovedToast";
 
@@ -140,6 +141,140 @@ describe("RemovedToast", () => {
       <div>
         <button type="button">on the map</button>
         <RemovedToast edit={pointEditing({ toast: REMOVED })} />
+      </div>,
+    );
+
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "on the map" }));
+  });
+});
+
+// P4-R32: a removal that failed after the owner had pressed Done is told here, wherever they are: in the words of P4-R28 (the server's for a refusal, with no Retry).
+describe("RemovedToast a failed removal", () => {
+  const failed = (error: Error, over: Partial<FailedRemoval> = {}): FailedRemoval => ({ count: 3, error, retrying: false, retry: vi.fn(), dismiss: vi.fn(), ...over });
+  const post = (status: number, detail: string | null = null) => new ApiError(status, "/api/points/remove", "POST", detail);
+
+  test("RemovedToast_says_a_removal_that_the_server_refused_in_its_own_words_with_no_retry_and_no_undo", () => {
+    const failedRemoval = failed(post(400, "At most 50000 points can be removed at once."));
+    render(<RemovedToast edit={pointEditing({ failedRemoval })} />);
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Could not remove 3 points: At most 50000 points can be removed at once.");
+    expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument(); // sent again it is refused again
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument(); // nothing was removed
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(failedRemoval.dismiss).toHaveBeenCalledTimes(1);
+  });
+
+  test("RemovedToast_says_it_in_the_singular_and_with_a_line_of_its_own_for_a_refusal_with_no_words", () => {
+    render(<RemovedToast edit={pointEditing({ failedRemoval: failed(post(409), { count: 1 }) })} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not remove 1 point: The server refused it.");
+  });
+
+  test("RemovedToast_offers_a_retry_for_a_failure_that_may_pass_and_not_for_a_refusal", () => {
+    for (const error of [post(500), post(502), post(408), post(429), new TypeError("Failed to fetch")]) {
+      const failedRemoval = failed(error);
+      const { unmount } = render(<RemovedToast edit={pointEditing({ failedRemoval })} />);
+
+      const alert = screen.getByRole("alert");
+      expect(alert, String(error)).toHaveTextContent("Couldn't remove 3 points — Retry");
+      fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+      expect(failedRemoval.retry, String(error)).toHaveBeenCalledTimes(1);
+      unmount();
+    }
+    for (const error of [post(400), post(403), post(404), post(409), post(415)]) {
+      const { unmount } = render(<RemovedToast edit={pointEditing({ failedRemoval: failed(error) })} />);
+
+      expect(within(screen.getByRole("alert")).queryByRole("button", { name: "Retry" }), String(error)).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  test("RemovedToast_says_the_removal_is_being_sent_again_and_has_no_buttons_for_that_while", () => {
+    render(<RemovedToast edit={pointEditing({ failedRemoval: failed(post(503), { retrying: true }) })} />);
+
+    expect(screen.getByText("Removing 3 points…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  test("RemovedToast_shows_a_failed_removal_with_the_toast_of_another_that_went_through_and_leaves_its_undo", () => {
+    const edit = pointEditing({ toast: REMOVED, failedRemoval: failed(post(400, "No.")) });
+    render(<RemovedToast edit={edit} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not remove 3 points: No.");
+    fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "Undo" })); // the one that went through can still be undone
+    expect(edit.undo.run).toHaveBeenCalledTimes(1);
+  });
+
+  test("RemovedToast_does_not_take_the_focus_when_a_failed_removal_is_told", () => {
+    const { rerender } = render(
+      <div>
+        <button type="button">on the map</button>
+        <RemovedToast edit={pointEditing()} />
+      </div>,
+    );
+    screen.getByRole("button", { name: "on the map" }).focus();
+
+    rerender(
+      <div>
+        <button type="button">on the map</button>
+        <RemovedToast edit={pointEditing({ failedRemoval: failed(post(503)) })} />
+      </div>,
+    );
+
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "on the map" }));
+  });
+
+  test("RemovedToast_puts_the_focus_on_the_way_on_when_a_retry_fails_again_for_the_button_that_was_pressed_was_gone", () => {
+    const ui = (failedRemoval: FailedRemoval) => <RemovedToast edit={pointEditing({ failedRemoval })} />;
+    const { rerender } = render(ui(failed(post(503))));
+    screen.getByRole("button", { name: "Retry" }).focus();
+    rerender(ui(failed(post(503), { retrying: true }))); // pressed: the card says it is sending, and the button is gone with the focus
+    expect(document.body).toHaveFocus();
+
+    rerender(ui(failed(post(502)))); // failed again, for a reason that may pass
+
+    expect(screen.getByRole("button", { name: "Retry" })).toHaveFocus();
+
+    rerender(ui(failed(post(503), { retrying: true })));
+    rerender(ui(failed(post(400, "No.")))); // and a refusal this time: there is no Retry
+
+    expect(screen.getByRole("button", { name: "Dismiss" })).toHaveFocus();
+  });
+});
+
+// The Undo button is gone once an undo has failed, and the focus was on it.
+describe("RemovedToast focus after a failed undo", () => {
+  const withError = (status: number) => pointEditing({ toast: REMOVED, undo: { ...noUndo, error: new ApiError(status, "/api/points/removed/b-1", "DELETE") } });
+
+  test("RemovedToast_puts_the_focus_on_retry_when_an_undo_fails_for_a_reason_that_may_pass_and_on_dismiss_when_it_is_refused", () => {
+    for (const [status, name] of [[503, "Retry"], [502, "Retry"], [404, "Dismiss"], [409, "Dismiss"]] as const) {
+      const { rerender, unmount } = render(<RemovedToast edit={pointEditing({ toast: REMOVED })} />);
+      screen.getByRole("button", { name: "Undo" }).focus();
+
+      rerender(<RemovedToast edit={withError(status)} />); // the undo failed: the button went, and the focus with it
+
+      expect(screen.getByRole("button", { name }), String(status)).toHaveFocus();
+      unmount();
+    }
+  });
+
+  test("RemovedToast_does_not_move_the_focus_that_the_owner_has_put_elsewhere_when_an_undo_fails", () => {
+    const { rerender } = render(
+      <div>
+        <button type="button">on the map</button>
+        <RemovedToast edit={pointEditing({ toast: REMOVED })} />
+      </div>,
+    );
+    screen.getByRole("button", { name: "on the map" }).focus();
+
+    rerender(
+      <div>
+        <button type="button">on the map</button>
+        <RemovedToast edit={withError(503)} />
       </div>,
     );
 

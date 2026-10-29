@@ -30,6 +30,7 @@ export function pointEditing(over: Partial<PointEditing> = {}): PointEditing {
     removal: { run: vi.fn(), pending: false, error: null, reset: vi.fn() },
     undo: { run: vi.fn(), pending: false, error: null },
     toast: null,
+    failedRemoval: null,
     dismiss: vi.fn(),
     ...over,
   };

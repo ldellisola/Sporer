@@ -183,8 +183,8 @@ export function App() {
           {panel}
         </BottomSheet>
       )}
-      {/* There on every day, empty, so that what it says is announced whenever it comes (a removal can finish after Done); and for as long as it has something to say. */}
-      {(route.view === "day" || edit.toast !== null) && <RemovedToast edit={edit} />}
+      {/* There on every day, empty, so that what it says is announced whenever it comes (a removal can finish after Done); and for as long as it has something to say (a removal can fail after the owner has left the day). */}
+      {(route.view === "day" || edit.toast !== null || edit.failedRemoval !== null) && <RemovedToast edit={edit} />}
     </main>
   );
 }

@@ -1670,6 +1670,79 @@ describe("App edit points", () => {
     expect(screen.getAllByRole("status").filter((status) => status.textContent === "")).toHaveLength(0);
   });
 
+  test("App_tells_a_removal_that_fails_after_done_in_the_toast_in_the_words_of_the_server_and_not_in_the_bar_of_the_next_edit_mode", async () => {
+    // P4-R32: the owner pressed Done and began again, and the removal that was on its way fails.
+    const waiting: ((response: Response) => void)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, init?: RequestInit) => {
+        if (init?.method === "POST") return new Promise<Response>((resolve) => waiting.push(resolve));
+        if (path === "/api/status") return Response.json(STATUS);
+        if (path.endsWith("/points")) return Response.json(POINTS);
+        return path.endsWith("2026-10-22") ? Response.json(flightDay) : answerEmpty(path);
+      }),
+    );
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onSelect([0, 1]));
+    fireEvent.click(screen.getByRole("button", { name: "Remove 2 points" }));
+    await waitFor(() => expect(waiting).toHaveLength(1));
+    fireEvent.click(within(screen.getByRole("group", { name: "Edit points" })).getByRole("button", { name: "Done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit points" })); // and again, with the removal still on its way
+    await waitFor(() => expect(mapProps().data.editPoints).toBeDefined());
+
+    await act(async () =>
+      waiting[0]!(Response.json({ statusCode: 400, message: "One or more errors occurred!", errors: { points: ["At most 50000 points can be removed at once."] } }, { status: 400 })),
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not remove 2 points: At most 50000 points can be removed at once.");
+    expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(details()).not.toContainElement(alert); // the page's, as the toast is
+    const bar = screen.getByRole("group", { name: "Edit points" });
+    expect(within(bar).queryByRole("alert")).not.toBeInTheDocument(); // the new session did not send it
+    act(() => edit().onToggle(2)); // and its taps work
+    expect(within(bar).getByText("1 selected")).toBeInTheDocument();
+    expect(within(bar).getByRole("button", { name: "Remove 1 point" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  test("App_keeps_the_toast_for_a_failed_removal_when_the_owner_has_left_the_day_and_sends_the_same_points_again_on_retry", async () => {
+    const waiting: { body: unknown; answer: (response: Response) => void }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, init?: RequestInit) => {
+        if (init?.method === "POST") return new Promise<Response>((resolve) => waiting.push({ body: JSON.parse(init.body as string), answer: resolve }));
+        if (path === "/api/status") return Response.json(STATUS);
+        if (path.endsWith("/points")) return Response.json(POINTS);
+        return path.endsWith("2026-10-22") ? Response.json(flightDay) : answerEmpty(path);
+      }),
+    );
+    stubLayout(100);
+    await intoEditMode();
+    act(() => edit().onSelect([0, 3]));
+    fireEvent.click(screen.getByRole("button", { name: "Remove 2 points" }));
+    await waitFor(() => expect(waiting).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Week" })); // gone from the day
+    await waitFor(() => expect(window.location.pathname).toBe("/week/2026-10-19"));
+
+    await act(async () => waiting[0]!.answer(new Response("{}", { status: 503 })));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't remove 2 points — Retry");
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(waiting).toHaveLength(2));
+    expect(waiting[1]!.body).toEqual(waiting[0]!.body); // the same two points
+    expect(await screen.findByText("Removing 2 points…")).toBeInTheDocument();
+
+    await act(async () => waiting[1]!.answer(Response.json({ batch: "b-3", count: 2 })));
+
+    expect(await screen.findByText("Removed 2 points")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   test("App_has_no_status_for_toasts_on_the_other_views_until_there_is_a_toast", async () => {
     stubEditing();
     window.history.replaceState(null, "", "/week/2026-10-19");

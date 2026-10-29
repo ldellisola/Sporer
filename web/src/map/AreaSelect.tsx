@@ -79,14 +79,17 @@ export function AreaSelect({ active, host, within, onBox, onTap }: AreaSelectPro
   const drag = useRef<Drag | null>(null);
   const [box, setBox] = useState<PixelBox | null>(null);
   const [root, setRoot] = useState<HTMLElement | null>(null);
-  // The listeners of the window and of the map's element are made once, and the handlers they call are the latest: only they need it. The handlers of the surface are made by each render.
-  const reportBox = useEffectEvent(onBox);
-  const freeNow = useEffectEvent((): PixelBox | null => {
+  /** The free part of the map, now: the map less `within`, or nothing to cut to without it. */
+  const freeOf = (): PixelBox | null => {
     const rect = layer.current?.getBoundingClientRect();
     return within === undefined || rect === undefined
       ? null
       : { left: within.left, top: within.top, right: rect.width - within.right, bottom: rect.height - within.bottom };
-  });
+  };
+  // The handlers of the surface are made by each render and see the latest as they are. The listeners of the window and of the map's element are made once
+  // (for as long as the button is off), and only they need the latest of the handlers and of what is free: they call these.
+  const reportBox = useEffectEvent(onBox);
+  const freeNow = useEffectEvent(freeOf);
   // After the element of the map has its ref (a child is made before its parent is given it, which a layout effect would find too soon).
   useEffect(() => setRoot(host.current), [host]);
 
@@ -114,7 +117,7 @@ export function AreaSelect({ active, host, within, onBox, onTap }: AreaSelectPro
     const here = at(event);
     if (!current.moved && Math.hypot(here.x - current.from.x, here.y - current.from.y) <= DRAG_THRESHOLD_PX) return;
     current.moved = true;
-    setBox(cutTo(boxOf(current.from, here), freeNow()));
+    setBox(cutTo(boxOf(current.from, here), freeOf()));
   };
   const onPointerUp = (event: ReactPointerEvent) => {
     const current = drag.current;
@@ -122,7 +125,7 @@ export function AreaSelect({ active, host, within, onBox, onTap }: AreaSelectPro
     drag.current = null;
     setBox(null);
     if (!current.moved) return onTap(current.from);
-    const cut = cutTo(boxOf(current.from, at(event)), freeNow());
+    const cut = cutTo(boxOf(current.from, at(event)), freeOf());
     if (cut !== null) onBox(cut);
   };
   const onPointerCancel = (event: ReactPointerEvent) => {

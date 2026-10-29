@@ -324,6 +324,50 @@ describe("AreaSelect within what is free", () => {
   });
 });
 
+describe("AreaSelect with what is free changing", () => {
+  test("AreaSelect_cuts_a_shift_drag_to_what_is_free_when_it_ends_and_not_to_what_was_free_when_it_began", () => {
+    // The sheet was moved while the mouse was down: the listeners of the window are made once, and what they cut to is the latest.
+    sizeTheMap();
+    const onBox = vi.fn();
+    const host = createRef<HTMLDivElement>();
+    const ui = (within: Insets) => (
+      <div ref={host}>
+        <div data-testid="canvas" />
+        <AreaSelect active={false} host={host} within={within} onBox={onBox} onTap={() => undefined} />
+      </div>
+    );
+    const { getByTestId, rerender } = render(ui({ top: 0, right: 0, bottom: 0, left: 0 }));
+    const mouse = (x: number, y: number) => ({ clientX: x, clientY: y, button: 0, shiftKey: true });
+
+    fireEvent.mouseDown(getByTestId("canvas"), mouse(100, 100));
+    fireEvent.mouseMove(window, mouse(300, 500));
+    rerender(ui({ top: 0, right: 0, bottom: 300, left: 0 })); // the sheet came up to cover the bottom 300 px
+    fireEvent.mouseUp(window, mouse(300, 500));
+
+    expect(onBox).toHaveBeenCalledWith({ left: 100, top: 100, right: 300, bottom: 300 });
+  });
+
+  test("AreaSelect_cuts_a_drag_of_the_surface_to_what_is_free_as_the_render_that_is_handling_it_has_it", () => {
+    sizeTheMap();
+    const onBox = vi.fn();
+    const host = createRef<HTMLDivElement>();
+    const ui = (within: Insets) => (
+      <div ref={host}>
+        <AreaSelect active host={host} within={within} onBox={onBox} onTap={() => undefined} />
+      </div>
+    );
+    const { container, rerender } = render(ui({ top: 0, right: 0, bottom: 0, left: 0 }));
+    const surface = () => container.querySelector(".surface")!;
+    fireEvent.pointerDown(surface(), touch(100, 100));
+    fireEvent.pointerMove(surface(), touch(300, 500));
+
+    rerender(ui({ top: 0, right: 0, bottom: 300, left: 0 }));
+    fireEvent.pointerUp(surface(), touch(300, 500));
+
+    expect(onBox).toHaveBeenCalledWith({ left: 100, top: 100, right: 300, bottom: 300 });
+  });
+});
+
 describe("AreaSelect in the page", () => {
   test("AreaSelect_puts_its_layer_in_the_element_of_the_map_wherever_it_is_made_which_lets_the_controls_that_make_it_stay_in_theirs", () => {
     const host = createRef<HTMLDivElement>();
