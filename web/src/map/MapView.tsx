@@ -499,6 +499,7 @@ function MapSurface({
           pushedRef.current = newPushed();
           shownRef.current = null;
           showState(rootRef.current, "loading");
+          (window as unknown as { __sporerMap: unknown }).__sporerMap = made; // DIAGNOSTIC ONLY
           setMap(made); // the effects below take it from here: the style, the data, and the camera, each with the latest of what was given
         } catch (error) {
           // Whatever fails in making the map, or in setting it up, is reported and not thrown: nobody is waiting on this promise to catch

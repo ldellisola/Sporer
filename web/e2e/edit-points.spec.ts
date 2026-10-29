@@ -229,6 +229,24 @@ async function intoEditMode(page: Page, overrides: Overrides): Promise<{ project
     console.log(`DIAGREQ ${test.info().project.name} ${JSON.stringify(api.requests)}`);
     console.log(`DIAGLOG ${test.info().project.name} ${JSON.stringify(logs)}`);
     const layers = await page.evaluate(() => [...document.querySelectorAll("canvas")].map((c) => `${c.className} ${c.width}x${c.height}`));
+    const mapInfo = await page.evaluate(([px, py]) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const m = (window as any).__sporerMap;
+      if (!m) return "no map";
+      const ids = (m.getStyle()?.layers ?? []).map((l: { id: string }) => l.id).filter((id: string) => id.startsWith("sporer"));
+      const src = m.getSource("sporer-edit-points");
+      const srcData = src?._data;
+      const dataCount = typeof srcData === "object" && srcData !== null ? (srcData.features?.length ?? "obj") : String(srcData);
+      let qsf: unknown = "err";
+      try { qsf = m.querySourceFeatures("sporer-edit-points").length; } catch (e) { qsf = String(e); }
+      let qrf: unknown = "err";
+      try { qrf = m.queryRenderedFeatures([[px - 6, py - 6], [px + 6, py + 6]], { layers: ["sporer-edit-points", "sporer-edit-point-halos"] }).length; } catch (e) { qrf = String(e); }
+      let qrfAll: unknown = "err";
+      try { qrfAll = m.queryRenderedFeatures().filter((f: { layer: { id: string } }) => f.layer.id.startsWith("sporer")).map((f: { layer: { id: string } }) => f.layer.id).reduce((a: Record<string, number>, id: string) => ({ ...a, [id]: (a[id] ?? 0) + 1 }), {}); } catch (e) { qrfAll = String(e); }
+      const lay = m.getLayer("sporer-edit-points");
+      return { ids, dataCount, qsf, qrf, qrfAll, layer: lay ? { type: lay.type, vis: m.getLayoutProperty("sporer-edit-points", "visibility"), min: lay.minzoom, max: lay.maxzoom } : null, zoom: m.getZoom(), center: m.getCenter(), loaded: m.loaded(), style: m.isStyleLoaded(), srcLoaded: src?.loaded?.(), gl: (() => { const g = m.painter?.context?.gl; return g ? { ver: g.getParameter(g.VERSION), r: g.getParameter(g.RENDERER) } : null; })() };
+    }, [x, y] as const);
+    console.log(`DIAGMAP ${test.info().project.name} ${JSON.stringify(mapInfo)}`);
     console.log(`DIAGCANVAS ${test.info().project.name} ${JSON.stringify(layers)}`);
     const crop = await page.screenshot({ clip: { x: Math.max(0, x - 60), y: Math.max(0, y - 60), width: 120, height: 120 } });
     console.log(`DIAGPNG ${test.info().project.name} ${crop.toString("base64")}`);
