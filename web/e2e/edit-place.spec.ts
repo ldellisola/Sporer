@@ -245,25 +245,17 @@ test("rename_that_fails_says_so_with_a_retry_that_sends_it_again", async ({ page
   expect(api.writes.map((write) => write.body)).toEqual([{ name: "Corner Café" }, { name: "Corner Café" }]);
 });
 
-test("merge_that_the_server_refuses_with_a_409_says_which_and_keeps_the_confirm", async ({ page }) => {
+test("merge_that_the_server_refuses_with_a_409_says_it_in_the_words_of_the_server_and_keeps_the_confirm", async ({ page }) => {
   await fixToday(page);
   const server = placeServer();
-  let kind: "same" | "deep" = "same";
+  const SAME_PLACE = "The place is the one it is to be merged into, or is merged into it already.";
+  const TOO_DEEP = "The place has places merged into it that are 32 merges deep already: one more would be more than the 32 that can be followed.";
+  let message: string | null = SAME_PLACE;
   await mockApi(page, {
     ...server.overrides,
     "POST places/2/merge": (): Reply => ({
       status: 409,
-      json: {
-        statusCode: 409,
-        message: "One or more errors occurred!",
-        errors: {
-          place: [
-            kind === "same"
-              ? "The place is the one it is to be merged into, or is merged into it already."
-              : "The place has places merged into it that are 32 merges deep already: one more would be more than the 32 that can be followed.",
-          ],
-        },
-      },
+      json: { statusCode: 409, message: "One or more errors occurred!", errors: message === null ? {} : { place: [message] } },
     }),
   });
   await page.goto("/place/2");
@@ -273,14 +265,21 @@ test("merge_that_the_server_refuses_with_a_409_says_which_and_keeps_the_confirm"
 
   await details(page).getByRole("button", { name: "Merge", exact: true }).click();
 
+  // Whatever the server says is what is shown; the page does not read it to choose a message of its own.
   const alert = details(page).getByRole("alert");
   await expect(alert).toContainText("Couldn't merge");
-  await expect(alert).toContainText("These are the same place already.");
+  await expect(alert).toContainText(`Could not merge: ${SAME_PLACE}`);
   await expect(details(page).getByText("Merge Office into Café?")).toBeVisible();
 
-  kind = "deep";
+  message = TOO_DEEP;
   await alert.getByRole("button", { name: "Retry" }).click();
 
-  await expect(alert).toContainText("Too many places are merged into one already.");
-  await expect(alert).not.toContainText("same place");
+  await expect(alert).toContainText(`Could not merge: ${TOO_DEEP}`);
+  await expect(alert).not.toContainText(SAME_PLACE);
+
+  message = null; // a refusal with nothing to say
+  await alert.getByRole("button", { name: "Retry" }).click();
+
+  await expect(alert).toContainText("Could not merge: the server refused it.");
+  await expect(alert).not.toContainText(TOO_DEEP);
 });
