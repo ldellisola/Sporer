@@ -61,3 +61,10 @@ export function formatDistance(meters: number): string {
   if (tenthsOfKm < 1000) return `${(tenthsOfKm / 10).toFixed(1)} km`;
   return `${integer.format(Math.round(m / 1000))} km`;
 }
+
+const kilometres = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 2 });
+
+/** A distance that the owner set, in kilometres, as they wrote it: "50 km", "7.5 km", "1,000 km" (up to two decimals, none that are zeros). */
+export function formatKm(km: number): string {
+  return `${kilometres.format(km)} km`;
+}

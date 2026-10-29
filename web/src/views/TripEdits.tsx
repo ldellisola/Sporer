@@ -165,7 +165,7 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
         onFocus={(event) => event.currentTarget.select()}
         onChange={(event) => setName(event.target.value)}
       />
-      <div className={styles.dates}>
+      <div className={forms.dates}>
         <div>
           <label className={forms.label} htmlFor={startId}>
             Start date
@@ -173,7 +173,7 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
           <input
             ref={startField}
             id={startId}
-            className={`${forms.field} ${styles.date}`}
+            className={`${forms.field} ${forms.date}`}
             type="date"
             min={EARLIEST_DATE}
             max={LATEST_DATE}
@@ -189,7 +189,7 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
           <input
             ref={endField}
             id={endId}
-            className={`${forms.field} ${styles.date}`}
+            className={`${forms.field} ${forms.date}`}
             type="date"
             min={EARLIEST_DATE}
             max={LATEST_DATE}
@@ -207,7 +207,7 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
         </div>
       )}
       {problem !== null && (
-        <p id={problemId} className={styles.problem} role="alert">
+        <p id={problemId} className={forms.problem} role="alert">
           {problem.message}
         </p>
       )}

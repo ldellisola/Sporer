@@ -1369,6 +1369,115 @@ public class RenameMergeTests(DatabaseFixture db)
         }
     }
 
+    // ---- search: the places in use, with no place to start from ----------------------------------------------------------
+
+    private sealed record Found(long Id, string? Name, string? Address, int Visits);
+
+    private static async Task<IReadOnlyList<Found>> SearchAsync(HttpClient client, string? q = null)
+    {
+        var url = "/api/places/search" + (q is null ? "" : $"?q={Uri.EscapeDataString(q)}");
+        using var body = await GetAsync(client, url);
+        Assert.Equal(JsonValueKind.Array, body.RootElement.ValueKind);
+        return [.. body.RootElement.EnumerateArray().Select(c =>
+        {
+            Assert.Equal(["id", "name", "address", "visits"], c.EnumerateObject().Select(p => p.Name));
+            return new Found(c.GetProperty("id").GetInt64(), c.GetProperty("name").GetString(), c.GetProperty("address").GetString(), c.GetProperty("visits").GetInt32());
+        })];
+    }
+
+    [Fact]
+    public async Task Search_most_visited_first_and_by_name()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var here = Spots.Lisbon;
+        // Made so that neither the order of the ids nor the distance is the order that is asked for.
+        var unnamed = await VisitedAsync(cs, Geo.Offset(here, 0, -400));
+        var livraria = await VisitedAsync(cs, Geo.Offset(here, -900, 0), osmName: "Livraria", address: "Rua do Cafe 7");
+        var mercado = await VisitedAsync(cs, Geo.Offset(here, 0, 300), userName: "Mercado", osmName: "Cafe Mercado", address: "Rua da Prata 3", stays: 2);
+        var cafe = await VisitedAsync(cs, Geo.Offset(here, 100, 0), osmName: "Cafe Central", address: "Rua Augusta 10, Lisbon");
+        var hotel = await VisitedAsync(cs, here, osmName: "Hotel Avenida", address: "Avenida da Liberdade 1", stays: 4);
+        // A place merged into another counts for the other's visits (1 + 2 for the cafe), and is not listed itself. A place whose own stays are
+        // all gone to a place merged into it is still the one that is shown, with theirs.
+        var oldCafe = await VisitedAsync(cs, Geo.Offset(here, 50, 0), osmName: "Old Cafe", stays: 2, mergedInto: cafe);
+        var annex = await TimelineSeeder.InsertPlaceAsync(cs, osmName: "Annex", lat: here.Latitude, lon: here.Longitude);
+        await VisitedAsync(cs, here, osmName: "Annex, before", mergedInto: annex);
+        // Not listed: a place no stay shows.
+        await TimelineSeeder.InsertPlaceAsync(cs, osmName: "Left behind", lat: here.Latitude, lon: here.Longitude);
+
+        // No query: all of them, the most visited first, and the lower id first among as many.
+        var all = await SearchAsync(client);
+        Assert.Equal([hotel, cafe, mercado, unnamed, livraria, annex], all.Select(c => c.Id));
+        Assert.DoesNotContain(oldCafe, all.Select(c => c.Id));
+        Assert.Equal(["Hotel Avenida", "Cafe Central", "Mercado", null, "Livraria", "Annex"], all.Select(c => c.Name)); // the owner's name wins over OpenStreetMap's
+        Assert.Equal([4, 3, 2, 1, 1, 1], all.Select(c => c.Visits));
+        Assert.Equal("Avenida da Liberdade 1", all[0].Address);
+        Assert.Null(all[3].Address); // not named yet: null, in the answer
+
+        // A query: those whose name, as it shows, or whose address contains it, whatever the case, the most visited first. "Cafe Mercado" is
+        // OpenStreetMap's name for the place the owner calls "Mercado": it is not found by it.
+        Assert.Equal([cafe, livraria], (await SearchAsync(client, "CAFE")).Select(c => c.Id));
+        Assert.Equal([cafe, livraria], (await SearchAsync(client, "cafe")).Select(c => c.Id));
+        Assert.Equal([mercado], (await SearchAsync(client, "  mercado ")).Select(c => c.Id));
+        Assert.Equal([cafe, mercado, livraria], (await SearchAsync(client, "rua")).Select(c => c.Id)); // the addresses
+        Assert.Equal([cafe], (await SearchAsync(client, "10, l")).Select(c => c.Id));
+        Assert.Equal(all.Select(c => c.Id), (await SearchAsync(client, "")).Select(c => c.Id)); // no query
+        Assert.Equal(all.Select(c => c.Id), (await SearchAsync(client, "   ")).Select(c => c.Id));
+        Assert.Empty(await SearchAsync(client, "no such place"));
+    }
+
+    [Fact]
+    public async Task Search_takes_the_query_as_text_and_not_as_a_pattern()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var underscore = await VisitedAsync(cs, Spots.Lisbon, osmName: "Bar_1");
+        var percent = await VisitedAsync(cs, Geo.Offset(Spots.Lisbon, 100, 0), osmName: "Sale 50% off");
+        var backslash = await VisitedAsync(cs, Geo.Offset(Spots.Lisbon, 200, 0), osmName: "Back\\slash", address: "1 Main St");
+        var plain = await VisitedAsync(cs, Geo.Offset(Spots.Lisbon, 300, 0), osmName: "BarX1");
+
+        Assert.Equal([underscore], (await SearchAsync(client, "_")).Select(c => c.Id));
+        Assert.Equal([underscore], (await SearchAsync(client, "r_1")).Select(c => c.Id)); // not "r" and any one letter and "1"
+        Assert.Equal([percent], (await SearchAsync(client, "%")).Select(c => c.Id));
+        Assert.Equal([percent], (await SearchAsync(client, "50%")).Select(c => c.Id));
+        Assert.Equal([backslash], (await SearchAsync(client, "\\")).Select(c => c.Id));
+        Assert.Equal([underscore, plain], (await SearchAsync(client, "bar")).Select(c => c.Id));
+        Assert.Empty(await SearchAsync(client, "%%"));
+    }
+
+    [Fact]
+    public async Task Search_lists_at_most_twenty_of_the_most_visited()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var places = new List<long>();
+        // The last five have most visits, and the ids are not in the order of the places that are asked for.
+        for (var i = 1; i <= 25; i++)
+            places.Add(await VisitedAsync(cs, Geo.Offset(Spots.Lisbon, 100 * i, 0), osmName: $"Place {i}", stays: i > 20 ? 3 : 1));
+
+        var found = await SearchAsync(client);
+
+        Assert.Equal(20, found.Count);
+        Assert.Equal([.. places.Skip(20), .. places.Take(15)], found.Select(c => c.Id));
+        Assert.Equal(20, (await SearchAsync(client, "Place")).Count);
+        Assert.Equal([places[19]], (await SearchAsync(client, "Place 20")).Select(c => c.Id)); // beyond the first 20 of all of them, and found
+    }
+
+    [Fact]
+    public async Task Search_of_a_timeline_with_no_places_is_an_empty_list()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await TimelineSeeder.InsertPlaceAsync(cs, osmName: "Left behind");
+
+        Assert.Empty(await SearchAsync(client));
+        Assert.Empty(await SearchAsync(client, "left"));
+    }
+
     // ---- two merges at once ------------------------------------------------------------------------------------------
 
     /// <summary>How many sessions of the database wait for a lock a transaction of the test holds.</summary>

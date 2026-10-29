@@ -3,24 +3,19 @@ import { postJson } from "../api/client";
 import { useWrite } from "../api/mutations";
 import { useStatus } from "../api/queries";
 import type { FailedRange, RetryFailedResponse, StatusResponse } from "../api/types";
-import { dateLabel, dateOf } from "../time/dates";
+import { dateOf } from "../time/dates";
+import { deviceZone, whenOf } from "../time/device";
 import { formatCount, formatTime } from "../time/format";
 import { DeletedTrips } from "./DeletedTrips";
 import forms from "./Forms.module.css";
+import { HomeSettings } from "./HomeSettings";
+import { RemovedPoints } from "./RemovedPoints";
 import styles from "./SettingsPanel.module.css";
+import { SettingsNotes, useNote } from "./SettingsNotes";
 import { Section } from "./SettingsSection";
 import { ErrorState, Loading } from "./States";
-import { Toast } from "./Toast";
+import { TripDistance } from "./TripDistance";
 import { useKeptData } from "./useKeptData";
-
-/** The zone of this device: the processing has no zone of its own, and the owner reads when it ran on the clock they have. */
-const deviceZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-/** The date and the time of an instant on the clock of this device: "Sat 24 Oct 2026 17:15". */
-function whenOf(isoUtc: string): string {
-  const zone = deviceZone();
-  return `${dateLabel(dateOf(isoUtc, zone))} ${formatTime(isoUtc, zone)}`;
-}
 
 /** The stretch a failed range covers: "Sun 13 Sep 2026 05:00 – Mon 14 Sep 2026 05:00", and the date once when both ends are on it. */
 function rangeLabel(range: FailedRange): string {
@@ -61,11 +56,12 @@ const retriedNote = ({ retried }: RetryFailedResponse): string =>
 /**
  * The failed periods and the button that makes them due at once, instead of when their wait is over (the worker takes them up on its next
  * pass). The button is there only while something has failed; it says it is working while the request is on its way, and a failure of it
- * is told with its own Retry, with the list still there. What it did is a note that goes by itself after a while (`Toast`): the list may well
+ * is told with its own Retry, with the list still there. What it did is a note that goes by itself after a while (`useNote`): the list may well
  * look the same until the worker has had its turn.
  */
 function Failed({ ranges }: { ranges: readonly FailedRange[] }) {
   const retry = useWrite(() => postJson<RetryFailedResponse>("/api/status/retry"));
+  useNote(retry.isSuccess ? { id: retry.submittedAt, message: retriedNote(retry.data) } : null, retry.reset);
   return (
     <>
       {ranges.length === 0 ? (
@@ -84,7 +80,6 @@ function Failed({ ranges }: { ranges: readonly FailedRange[] }) {
         </>
       )}
       {retry.isError && <ErrorState message="Couldn't retry" error={retry.error} onRetry={() => retry.mutate()} />}
-      <Toast toast={retry.isSuccess ? { id: retry.submittedAt, message: retriedNote(retry.data) } : null} onDismiss={retry.reset} />
     </>
   );
 }
@@ -151,15 +146,19 @@ function About() {
 }
 
 /**
- * The panel of the settings: one section for each thing the owner can set or see, in the order of the plan: Home, Trips, Deleted trips,
- * Removed points (the editing tasks add them above, and the deleted trips are here), then Processing and About. The map is left as it was (see `useViewMap`).
+ * The panel of the settings: one section for each thing the owner can set or see, in the order of the plan: Home, Trips (the distance that makes a trip),
+ * Deleted trips, Removed points, Processing and About. The map is left as it was (see `useViewMap`). The sections say what they have done in one status for
+ * the whole panel (`SettingsNotes`), so that a screen reader follows one.
  */
 export function SettingsPanel() {
   return (
-    <>
+    <SettingsNotes>
+      <HomeSettings />
+      <TripDistance />
       <DeletedTrips />
+      <RemovedPoints />
       <Processing />
       <About />
-    </>
+    </SettingsNotes>
   );
 }

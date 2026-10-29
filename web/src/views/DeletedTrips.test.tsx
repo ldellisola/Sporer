@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { describe, expect, test, vi } from "vitest";
 import type { DeletedTrip } from "../api/types";
 import { DeletedTrips } from "./DeletedTrips";
+import { SettingsNotes } from "./SettingsNotes";
 
 interface Call {
   path: string;
@@ -49,14 +50,16 @@ function mount() {
     client,
     ...render(
       <QueryClientProvider client={client}>
-        <DeletedTrips />
+        <SettingsNotes>
+          <DeletedTrips />
+        </SettingsNotes>
       </QueryClientProvider>,
     ),
   };
 }
 
-/** What the notes over the map say: the section has a status of its own, which is empty until it has something to say. */
-const notes = (): string[] => screen.getAllByRole("status").map((status) => status.textContent ?? "");
+/** What the note over the map says: the settings have one status for all their sections, which is empty until something is said in it. */
+const note = (): string => screen.getByRole("status").textContent ?? "";
 const refused = () => new Response("{}", { status: 404 });
 const deletedSection = () => screen.getByRole("region", { name: "Deleted trips" });
 
@@ -141,7 +144,7 @@ describe("DeletedTrips", () => {
     await act(async () => answer(new Response(null, { status: 204 })));
 
     await waitFor(() => expect(rowsOf().map((row) => row.textContent)).toEqual(["Copenhagen · 1 – 3 Aug 2026Restore"]));
-    expect(notes()).toContain("Restored Lisbon · 12 – 16 Sep 2026"); // said in a status, for the row that had the focus is gone
+    expect(note()).toBe("Restored Lisbon · 12 – 16 Sep 2026"); // said in a status, for the row that had the focus is gone
     expect(restoreButton(COPENHAGEN.label)).toBeEnabled();
     expect(api.calls.filter((call) => call.path === "/api/trips/deleted").length).toBeGreaterThanOrEqual(2); // and what is on screen was asked for again
   });

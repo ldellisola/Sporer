@@ -64,6 +64,24 @@
   outline-offset: 1px;
 }
 
+/* Two dates side by side (the labels, the fields and the buttons are the ones above), a date field as wide as its column and no wider, whatever the picker of the device makes of its own width, and what the form says is wrong with them, under them. */
+.dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.date {
+  min-width: 0;
+}
+
+.problem {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--danger-ink);
+  overflow-wrap: anywhere;
+}
+
 /* The buttons that open the forms of the edits of what the panel shows, and the form that takes their place. */
 .actions {
   display: flex;

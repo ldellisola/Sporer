@@ -168,6 +168,20 @@ export function dateRangeLabel(from: string, to: string, collapseMonth = true): 
 }
 
 /**
+ * Some dates (`yyyy-MM-dd`, oldest first) as one line: each run of days that follow each other is a span (`dateRangeLabel`), and the runs are told one after
+ * the other, "1 – 2 Sep 2026, 5 Sep 2026". A removal of points is on the days the points can be seen on, which are mostly one or two that are adjacent.
+ */
+export function datesLabel(dates: readonly string[]): string {
+  const runs: [first: string, last: string][] = [];
+  for (const date of dates) {
+    const run = runs.at(-1);
+    if (run !== undefined && addDays(run[1], 1) === date) run[1] = date;
+    else runs.push([date, date]);
+  }
+  return runs.map(([first, last]) => dateRangeLabel(first, last)).join(", ");
+}
+
+/**
  * What the top bar shows for a period: "Thursday 22 October", "19 – 25 Oct 2026" (a week; a month end or a year end in it is
  * spelled out: "28 Sep – 4 Oct 2026"), "October 2026", "2026", "12 Sep – 19 Sep 2026" (a range).
  */

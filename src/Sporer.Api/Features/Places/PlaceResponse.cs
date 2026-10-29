@@ -52,6 +52,17 @@ public sealed record PlaceCandidateDto(
     int Visits);
 
 /// <summary>
+/// A place in use, as served by <c>GET /api/places/search</c>: <paramref name="Name"/> is the owner's, else OpenStreetMap's, else null,
+/// <paramref name="Address"/> is null until the place is named, and <paramref name="Visits"/> is the stays there were at it and at the places
+/// merged into it.
+/// </summary>
+public sealed record PlaceSearchDto(
+    long Id,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? Name,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? Address,
+    int Visits);
+
+/// <summary>
 /// A stay at a place. <paramref name="Date"/> is the local date it started on (<c>yyyy-MM-dd</c>), in <paramref name="TimeZone"/>,
 /// the IANA zone it started in, so that a client shows the times of the visit on the clock of the place it was at.
 /// </summary>

@@ -41,6 +41,9 @@ public sealed record PlaceDetail(
 /// </summary>
 public sealed record PlaceCandidate(long Id, string? Name, string? Address, double DistanceM, int Visits);
 
+/// <summary>A place in use that <see cref="PlaceStore.SearchAsync"/> found: its id (the surviving place's), its name (the owner's, else OpenStreetMap's, else null), its address and its visits.</summary>
+public sealed record FoundPlace(long Id, string? Name, string? Address, int Visits);
+
 /// <summary>How a merge ended (see <see cref="PlaceStore.MergeAsync"/>).</summary>
 public enum MergeOutcome
 {
@@ -528,8 +531,43 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
         return changed > 0;
     }
 
-    /// <summary>The most places <see cref="FindCandidatesAsync"/> lists.</summary>
+    /// <summary>The most places <see cref="FindCandidatesAsync"/> and <see cref="SearchAsync"/> list.</summary>
     public const int CandidateLimit = 20;
+
+    /// <summary>
+    /// The SQL, to start a query, for the places that stays are at: <c>stays</c> counts the stays (<c>visits</c>) at each place that has
+    /// any, and <c>survivor</c> maps each of those places (<c>origin</c>) to the place it stands for (<see cref="Survivors"/>), so that the
+    /// visits of a place are summed over the places merged into it.
+    /// </summary>
+    private const string VisitedPlaces =
+        $"""
+        with recursive
+        stays as (
+            select place_id, count(*) as visits
+            from segment
+            where kind = 'stay' and place_id is not null
+            group by place_id
+        ),
+        named as (
+            select place_id from stays
+        ),
+        {Survivors}
+        """;
+
+    /// <summary>
+    /// The SQL condition, for <c>place</c> aliased <c>p</c> and the parameter <c>@Query</c> (text, or null for any), for a place whose name,
+    /// as the views show it (the owner's, else OpenStreetMap's), or whose address contains the query, whatever the case. The query is
+    /// text, not a pattern: <c>strpos</c> takes <c>%</c>, <c>_</c> and <c>\</c> as they are, which <c>like</c> would not.
+    /// </summary>
+    private const string MatchesQuery =
+        """
+        (@Query::text is null
+         or strpos(lower(coalesce(p.user_name, p.osm_name, '')), lower(@Query::text)) > 0
+         or strpos(lower(coalesce(p.address, '')), lower(@Query::text)) > 0)
+        """;
+
+    /// <summary>A query as it is sent to the database: trimmed, and null when there is none.</summary>
+    private static string? Needle(string? query) => string.IsNullOrWhiteSpace(query) ? null : query.Trim();
 
     /// <summary>
     /// The places that <paramref name="id"/> can be merged with, the nearest first: the places that are on the timeline (see
@@ -545,7 +583,7 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     /// </remarks>
     public async Task<IReadOnlyList<PlaceCandidate>?> FindCandidatesAsync(long id, string? query, CancellationToken ct = default)
     {
-        var needle = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+        var needle = Needle(query);
 
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
@@ -559,26 +597,14 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
 
         var rows = await connection.QueryAsync<CandidateRow>(new CommandDefinition(
             $"""
-            with recursive
-            stays as (
-                select place_id, count(*) as visits
-                from segment
-                where kind = 'stay' and place_id is not null
-                group by place_id
-            ),
-            named as (
-                select place_id from stays
-            ),
-            {Survivors}
+            {VisitedPlaces}
             select p.id as Id, coalesce(p.user_name, p.osm_name) as Name, p.address as Address,
                    p.latitude as Latitude, p.longitude as Longitude, sum(stays.visits)::bigint as Visits
             from stays
             join survivor on survivor.origin = stays.place_id
             join place p on p.id = survivor.id
             where p.id <> @Self
-              and (@Query::text is null
-                   or strpos(lower(coalesce(p.user_name, p.osm_name, '')), lower(@Query::text)) > 0
-                   or strpos(lower(coalesce(p.address, '')), lower(@Query::text)) > 0)
+              and {MatchesQuery}
             group by p.id
             """,
             new { Self = self.Id, Query = needle }, transaction, cancellationToken: ct));
@@ -596,6 +622,33 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
         ];
     }
 
+    /// <summary>
+    /// The places in use (see <see cref="InUse"/>), with no place to start from: the most visited first, then the lower id, at most
+    /// <see cref="CandidateLimit"/>. With a <paramref name="query"/>, only those whose name, as the views show it (the owner's, else
+    /// OpenStreetMap's), or whose address contains it, whatever the case, as <see cref="FindCandidatesAsync"/> takes it: trimmed, and
+    /// text, not a pattern. With none, or an empty one, all of them.
+    /// </summary>
+    /// <remarks>The visits are the stays at the place and at the places merged into it, as for the candidates. The database sorts and cuts the list.</remarks>
+    public async Task<IReadOnlyList<FoundPlace>> SearchAsync(string? query, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var rows = await connection.QueryAsync<FoundRow>(new CommandDefinition(
+            $"""
+            {VisitedPlaces}
+            select p.id as Id, coalesce(p.user_name, p.osm_name) as Name, p.address as Address, sum(stays.visits)::bigint as Visits
+            from stays
+            join survivor on survivor.origin = stays.place_id
+            join place p on p.id = survivor.id
+            where {InUse}
+              and {MatchesQuery}
+            group by p.id
+            order by Visits desc, p.id
+            limit @Limit
+            """,
+            new { Query = Needle(query), Limit = CandidateLimit }, cancellationToken: ct));
+        return [.. rows.Select(r => new FoundPlace(r.Id, r.Name, r.Address, (int)r.Visits))];
+    }
+
     private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
     private sealed record PlaceRow(long Id, double Latitude, double Longitude);
@@ -603,6 +656,8 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     private sealed record SurvivorRow(long Merged, long Survivor);
 
     private sealed record MergedRow(long Id, string? Name);
+
+    private sealed record FoundRow(long Id, string? Name, string? Address, long Visits);
 
     private sealed record CandidateRow(long Id, string? Name, string? Address, double Latitude, double Longitude, long Visits);
 

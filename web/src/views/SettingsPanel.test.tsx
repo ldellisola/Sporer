@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { DeletedTrip, FailedRange, StatusResponse } from "../api/types";
+import type { DeletedTrip, FailedRange, HomesResponse, RemovedBatch, SettingsResponse, StatusResponse } from "../api/types";
 import { SettingsPanel } from "./SettingsPanel";
 
 // The unit tests run on the clock of Tokyo (see globalSetup), which is the browser's zone here: an instant is read there.
@@ -37,7 +37,8 @@ interface Call {
 
 /**
  * Answers `GET /api/status` with whatever `current` is (a test changes it to change what the next request finds) and `POST /api/status/retry`
- * with `retry`; `GET /api/trips/deleted` with `deleted` (the section of the deleted trips has its own tests: see DeletedTrips.test.tsx);
+ * with `retry`; `GET /api/trips/deleted` with `deleted`, `GET /api/homes` with `homes`, `GET /api/settings` with `settings` and `GET /api/points/removed` with
+ * `removed` (those sections have their own tests: see DeletedTrips.test.tsx, HomeSettings.test.tsx, TripDistance.test.tsx and RemovedPoints.test.tsx);
  * returns the calls that were made and the knobs.
  */
 function stubApi(initial: StatusResponse | Response, retry: () => Response | Promise<Response> = () => Response.json({ retried: 1 })) {
@@ -45,6 +46,9 @@ function stubApi(initial: StatusResponse | Response, retry: () => Response | Pro
     status: initial,
     retry,
     deleted: [] as DeletedTrip[] | Response,
+    homes: { periods: [] } as HomesResponse | Response,
+    settings: { tripMinDistanceKm: 50, tripMinDistanceKmDefault: 50 } as SettingsResponse | Response,
+    removed: [] as RemovedBatch[] | Response,
   };
   const calls: Call[] = [];
   vi.stubGlobal(
@@ -58,7 +62,11 @@ function stubApi(initial: StatusResponse | Response, retry: () => Response | Pro
         body: typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : init?.body,
       });
       if (path === "/api/status/retry") return state.retry();
+      if (/^\/api\/trips\/deleted\/[^/]+\/restore$/.test(path)) return new Response(null, { status: 204 });
       if (path === "/api/trips/deleted") return state.deleted instanceof Response ? state.deleted.clone() : Response.json(state.deleted);
+      if (path === "/api/homes") return state.homes instanceof Response ? state.homes.clone() : Response.json(state.homes);
+      if (path === "/api/settings") return state.settings instanceof Response ? state.settings.clone() : Response.json(state.settings);
+      if (path === "/api/points/removed") return state.removed instanceof Response ? state.removed.clone() : Response.json(state.removed);
       if (path === "/api/status") return state.status instanceof Response ? state.status.clone() : Response.json(state.status);
       throw new Error(`unexpected request ${path}`);
     }),
@@ -86,8 +94,8 @@ const processing = () => screen.getByRole("region", { name: "Processing" });
 /** The figures of the processing section, each as the term and what it says, which is how a reader takes them in. */
 const facts = (): string[] => [...processing().querySelectorAll("dl > div")].map((row) => row.textContent ?? "");
 const about = () => screen.getByRole("region", { name: "About" });
-/** What the notes over the map say: each section that has one has a status of its own, which is empty until it has something to say. */
-const notes = (): string[] => screen.getAllByRole("status").map((status) => status.textContent ?? "");
+/** What the note over the map says: the panel has one status for all its sections, which is empty until something is said in it. */
+const note = (): string => screen.getByRole("status").textContent ?? "";
 const deletedSection = () => screen.getByRole("region", { name: "Deleted trips" });
 
 beforeEach(() => {
@@ -99,13 +107,54 @@ afterEach(() => {
 });
 
 describe("SettingsPanel", () => {
-  test("SettingsPanel_has_the_deleted_trips_section_then_the_processing_section_and_the_about_section_in_that_order", async () => {
+  test("SettingsPanel_has_the_sections_in_the_order_of_the_plan_each_a_region_named_by_its_heading", async () => {
     stubApi(status());
 
     mount();
 
     await screen.findByText("2026-10-algo-3");
-    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual(["Deleted trips", "Processing", "About"]);
+    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
+      "Home",
+      "Trips",
+      "Deleted trips",
+      "Removed points",
+      "Processing",
+      "About",
+    ]);
+    for (const name of ["Home", "Trips", "Deleted trips", "Removed points", "Processing", "About"]) {
+      expect(screen.getByRole("region", { name })).toBeInTheDocument();
+    }
+  });
+
+  test("SettingsPanel_asks_each_section_for_what_it_shows_once", async () => {
+    const api = stubApi(status());
+
+    mount();
+    await screen.findByText("2026-10-algo-3");
+    await within(screen.getByRole("region", { name: "Removed points" })).findByText("No removed points");
+    await within(screen.getByRole("region", { name: "Home" })).findByText("No home yet");
+    await screen.findByRole("spinbutton");
+
+    expect(api.calls.map((call) => call.path).sort()).toEqual(["/api/homes", "/api/points/removed", "/api/settings", "/api/status", "/api/trips/deleted"]);
+  });
+
+  test("SettingsPanel_has_one_status_for_all_its_sections_and_what_a_section_says_is_said_in_it", async () => {
+    const api = stubApi(status({ failedRanges: [failedRange()] }));
+    api.state.deleted = [{ key: "2026-09-12", label: "Lisbon · 12 – 16 Sep 2026", deletedAt: "2026-10-24T08:15:00Z" }];
+    mount();
+    // The panel has one live region, there before anything is said in it: a screen reader announces what is put into a status, and not one that is made with its text.
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(note()).toBe("");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Retry failed" }));
+    await waitFor(() => expect(note()).toBe("Retrying 1 period"));
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+
+    // Another section says something while that is on show: it is said in the same status, and replaces it (two sections do not talk at once).
+    api.state.deleted = [];
+    fireEvent.click(await within(deletedSection()).findByRole("button", { name: "Restore Lisbon · 12 – 16 Sep 2026" }));
+    await waitFor(() => expect(note()).toBe("Restored Lisbon · 12 – 16 Sep 2026"));
+    expect(screen.getAllByRole("status")).toHaveLength(1);
   });
 
   test("SettingsPanel_says_it_is_loading_the_status_and_shows_the_credits_at_once", async () => {
@@ -221,7 +270,7 @@ describe("SettingsPanel processing", () => {
     api.state.status = status({ pendingRanges: 1, failedRanges: [] }); // by the time it is asked again the worker has taken it up
     await act(async () => answer(Response.json({ retried: 1 })));
 
-    await waitFor(() => expect(notes()).toContain("Retrying 1 period")); // the status was there, empty, before: the note is put into it
+    await waitFor(() => expect(note()).toBe("Retrying 1 period")); // the status was there, empty, before: the note is put into it
     expect(screen.queryByRole("button", { name: "Retrying…" })).not.toBeInTheDocument();
     // The write invalidated what is on screen: the status was asked for again, and its failed periods are gone.
     await within(processing()).findByText("Nothing has failed");
@@ -234,7 +283,7 @@ describe("SettingsPanel processing", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Retry failed" }));
 
-    await waitFor(() => expect(notes()).toContain("Nothing was waiting to be retried"));
+    await waitFor(() => expect(note()).toBe("Nothing was waiting to be retried"));
   });
 
   test("SettingsPanel_forgets_what_retry_did_when_its_note_has_been_there_ten_seconds", async () => {

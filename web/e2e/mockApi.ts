@@ -95,6 +95,11 @@ const defaults: Record<string, Override> = {
   trips,
   // No trip is deleted. An exact key beats the wildcard below, which would take "deleted" for the id of a trip.
   "trips/deleted": [],
+  // What Settings lists besides: no home (detected or set), the distance that makes a trip as it is configured (50 km, and the owner has not changed it), and
+  // no removed points.
+  homes: { periods: [] },
+  settings: { tripMinDistanceKm: 50, tripMinDistanceKmDefault: 50 },
+  "points/removed": [],
   // The page of a trip: the fixture's own for the one that has days and moves, the summary of the list (with nothing in it) for the other
   // trips of the list, and the 404 that the server gives for an id that is not a stored trip.
   "trips/*": (request): Reply => {

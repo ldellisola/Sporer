@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { PeriodRoute } from "../app/router";
-import { addDays, dateLabel, dateOf, dateRangeLabel, monthOf, periodLabel, periodRange, shortDayLabel, step, today, weekStart } from "./dates";
+import { addDays, datesLabel, dateLabel, dateOf, dateRangeLabel, monthOf, periodLabel, periodRange, shortDayLabel, step, today, weekStart } from "./dates";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -165,6 +165,16 @@ describe("periods", () => {
     expect(dateLabel("2025-12-31")).toBe("Wed 31 Dec 2025"); // the year is there, for a list that runs over years
     expect(dateLabel("2028-02-29")).toBe("Tue 29 Feb 2028");
     expect(dateLabel("2026-01-01")).toBe("Thu 1 Jan 2026"); // no leading zero
+  });
+
+  test("datesLabel_writes_each_run_of_days_as_a_span_and_the_runs_one_after_the_other", () => {
+    expect(datesLabel(["2026-10-12"])).toBe("12 Oct 2026");
+    expect(datesLabel(["2026-10-12", "2026-10-13"])).toBe("12 – 13 Oct 2026"); // adjacent days are one span: a point on a day of travel is on two
+    expect(datesLabel(["2026-10-30", "2026-10-31", "2026-11-01"])).toBe("30 Oct – 1 Nov 2026");
+    expect(datesLabel(["2026-09-01", "2026-09-03"])).toBe("1 Sep 2026, 3 Sep 2026"); // a day between is no span
+    expect(datesLabel(["2026-09-01", "2026-09-02", "2026-09-05", "2026-09-06", "2026-09-09"])).toBe("1 – 2 Sep 2026, 5 – 6 Sep 2026, 9 Sep 2026");
+    expect(datesLabel(["2025-12-31", "2026-01-01"])).toBe("31 Dec 2025 – 1 Jan 2026");
+    expect(datesLabel([])).toBe("");
   });
 
   test("dateRangeLabel_says_the_month_once_when_both_dates_are_in_it_and_the_year_once_at_the_end", () => {

@@ -11,6 +11,18 @@
     "address visits";
 }
 
+/* A place found with no place to measure from: the name over its address at the left, the number of stays at the right, in the middle of the two lines. */
+.found {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "name visits"
+    "address visits";
+}
+
+.found .visits {
+  align-self: center;
+}
+
 .name {
   grid-area: name;
   font-size: 13.5px;

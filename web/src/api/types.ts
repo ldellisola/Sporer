@@ -204,6 +204,19 @@ export interface PlaceCandidate {
   visits: number;
 }
 
+// --- GET /api/places/search?q= (Features/Places/PlaceResponse.cs, PlaceSearchDto) ---
+
+/**
+ * A place in use, as the search with no place to start from finds it: the answer is a bare array of at most 20, the most visited first. `name` is null for a
+ * place with none (shown as "Unnamed place"), `address` until the place is named, and `visits` the stays at it and at the places merged into it.
+ */
+export interface PlaceSearchResult {
+  id: number;
+  name: string | null;
+  address: string | null;
+  visits: number;
+}
+
 export interface PlaceVisit {
   start: string;
   end: string;
@@ -316,6 +329,57 @@ export interface DeletedTrip {
   key: string;
   label: string;
   deletedAt: string;
+}
+
+// --- GET /api/homes, POST /api/homes, GET /api/settings, PUT /api/settings (Features/Homes, Features/Settings) ---
+
+/** Where a home period came from: found from the nights, or set by the owner. */
+export type HomeSource = "detected" | "user";
+
+/** A home period: the place that survives merges, and the night dates (`yyyy-MM-dd`) it was home from and to, both included; `to` is null for a period that goes on. */
+export interface HomePeriod {
+  /** What `DELETE /api/homes/{id}` takes: only the periods that are `user` can be deleted. */
+  id: number;
+  placeId: number;
+  placeName: string | null;
+  from: string;
+  to: string | null;
+  source: HomeSource;
+}
+
+/** The home periods that are stored, the detected and the owner's, in date order. */
+export interface HomesResponse {
+  periods: HomePeriod[];
+}
+
+/** The body of `POST /api/homes`: all three are there, and a null `to` is a home that goes on. */
+export interface AddHomeRequest {
+  placeId: number;
+  from: string;
+  to: string | null;
+}
+
+/**
+ * The settings: `tripMinDistanceKm` is the distance in kilometres from home that a night must be to be away, which makes a trip, as it is in effect
+ * (the owner's, else the default), and `tripMinDistanceKmDefault` the one that is configured, which a reset goes back to.
+ */
+export interface SettingsResponse {
+  tripMinDistanceKm: number;
+  tripMinDistanceKmDefault: number;
+}
+
+// --- GET /api/points/removed (Features/Points/GetRemovedPointsEndpoint.cs) ---
+
+/** A removal of points that was not restored: the `batch` that restores it, when it was made, how many points it holds, and the local dates they are on (oldest first). */
+export interface RemovedBatch {
+  batch: string;
+  removedAt: string;
+  count: number;
+  /** The times of the first and the last of the points. */
+  from: string;
+  to: string;
+  /** The dates `yyyy-MM-dd` of the days the points can be seen on; on a day of travel a point can be on two adjacent ones. */
+  localDates: string[];
 }
 
 // --- GET /api/status (Features/Status/StatusResponse.cs) ---

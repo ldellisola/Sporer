@@ -1,22 +1,4 @@
-/* What is the trip's own in the form of its edit: the two dates side by side (the labels, the fields and the buttons are Forms.module.css's). */
-.dates {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-/* A date field is as wide as its column and no wider, whatever the picker of the device makes of its own width. */
-.date {
-  min-width: 0;
-}
-
-/* What the form says is wrong with the dates, under them; the field has the ring of the focus, and this is the reason. */
-.problem {
-  margin: 0 0 8px;
-  font-size: 13px;
-  color: var(--danger-ink);
-  overflow-wrap: anywhere;
-}
+/* What is the trip's own in the form of its edit (the dates, and what is said of them, are Forms.module.css's: the form of a home has them too). */
 
 /* The button that goes back to the dates that detection found: a row of its own under the dates, which are not what it is about. */
 .detected {

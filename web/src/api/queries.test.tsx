@@ -20,15 +20,32 @@ import {
   useConfig,
   useDay,
   useDayPoints,
+  useCandidates,
   useDeletedTrips,
   useHeat,
+  useHomes,
   usePlace,
+  usePlaceSearch,
   useRange,
+  useRemovedPoints,
+  useSettings,
   useStatus,
   useTrip,
   useTrips,
 } from "./queries";
-import type { DayResponse, DeletedTrip, LoadState, PlaceResponse, RangeResponse, TripListItem, TripResponse, TripsResponse } from "./types";
+import type {
+  DayResponse,
+  DeletedTrip,
+  HomesResponse,
+  LoadState,
+  PlaceResponse,
+  RangeResponse,
+  RemovedBatch,
+  SettingsResponse,
+  TripListItem,
+  TripResponse,
+  TripsResponse,
+} from "./types";
 
 const SUMMARY = { places: 0, distanceMeters: 0, movingSeconds: 0 };
 
@@ -654,6 +671,58 @@ describe("query hooks", () => {
 
     expect(urls).toEqual(["/api/trips/deleted"]);
     expect(result.current.data).toEqual(deleted);
+  });
+
+  test("usePlaceSearch_asks_for_the_most_visited_places_with_no_q_and_escapes_the_q_it_is_given", async () => {
+    const urls = stubApi(() => json([{ id: 7, name: "Bistro", address: null, visits: 3 }]));
+    const client = newClient();
+
+    const all = renderHook(() => usePlaceSearch(""), { wrapper: wrapperFor(client) });
+    await waitFor(() => expect(all.result.current.isSuccess).toBe(true));
+    const found = renderHook(() => usePlaceSearch("Café & Co"), { wrapper: wrapperFor(client) });
+    await waitFor(() => expect(found.result.current.isSuccess).toBe(true));
+
+    expect(urls).toEqual(["/api/places/search", "/api/places/search?q=Caf%C3%A9%20%26%20Co"]);
+    expect(found.result.current.data).toEqual([{ id: 7, name: "Bistro", address: null, visits: 3 }]);
+  });
+
+  test("usePlaceSearch_and_useCandidates_with_nothing_to_ask_for_ask_for_nothing_even_when_every_query_is_refetched", async () => {
+    const urls = stubApi(() => json([]));
+    const client = newClient();
+    const search = renderHook(() => usePlaceSearch(null), { wrapper: wrapperFor(client) });
+    const near = renderHook(() => useCandidates(null, ""), { wrapper: wrapperFor(client) });
+
+    await act(async () => undefined);
+    await act(async () => {
+      await client.invalidateQueries();
+      await client.refetchQueries();
+    });
+
+    expect(urls).toEqual([]); // the picker of the places near one is not the search, and neither asks as `/api/places/null/candidates`
+    expect(search.result.current.fetchStatus).toBe("idle");
+    expect(near.result.current.fetchStatus).toBe("idle");
+  });
+
+  test("useHomes_useSettings_and_useRemovedPoints_read_what_the_server_has", async () => {
+    const homes: HomesResponse = {
+      periods: [{ id: 3, placeId: 7, placeName: "Oslo", from: "2026-01-01", to: null, source: "detected" }],
+    };
+    const settings: SettingsResponse = { tripMinDistanceKm: 80, tripMinDistanceKmDefault: 50 };
+    const removed: RemovedBatch[] = [
+      { batch: "3f2504e0-4f89-11d3-9a0c-0305e82c3301", removedAt: "2026-10-24T08:15:00Z", count: 4, from: "2026-10-22T08:00:00Z", to: "2026-10-22T08:03:00Z", localDates: ["2026-10-22"] },
+    ];
+    const urls = stubApi((url) => json(url === "/api/homes" ? homes : url === "/api/settings" ? settings : removed));
+    const client = newClient();
+
+    const home = renderHook(() => useHomes(), { wrapper: wrapperFor(client) });
+    const setting = renderHook(() => useSettings(), { wrapper: wrapperFor(client) });
+    const points = renderHook(() => useRemovedPoints(), { wrapper: wrapperFor(client) });
+    await waitFor(() => expect(home.result.current.isSuccess && setting.result.current.isSuccess && points.result.current.isSuccess).toBe(true));
+
+    expect([...urls].sort()).toEqual(["/api/homes", "/api/points/removed", "/api/settings"]);
+    expect(home.result.current.data).toEqual(homes);
+    expect(setting.result.current.data).toEqual(settings);
+    expect(points.result.current.data).toEqual(removed);
   });
 
   test("useTrip_with_no_id_asks_for_nothing_even_when_every_trip_is_refetched", async () => {

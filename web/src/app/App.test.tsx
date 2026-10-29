@@ -3,7 +3,18 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { StrictMode, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MapPadding, MapViewProps } from "../map/MapView";
-import type { DayResponse, HeatResponse, PlaceResponse, RangeResponse, StatusResponse, StaySegment, TripResponse, TripsResponse } from "../api/types";
+import type {
+  DayResponse,
+  HeatResponse,
+  HomesResponse,
+  PlaceResponse,
+  RangeResponse,
+  SettingsResponse,
+  StatusResponse,
+  StaySegment,
+  TripResponse,
+  TripsResponse,
+} from "../api/types";
 import { dayGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripGeoJson, tripsGeoJson } from "../map/layers";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
 import cafe from "../../e2e/fixtures/place-cafe.json";
@@ -104,11 +115,14 @@ function emptyPlace(path: string): PlaceResponse {
 
 type Answer = (path: string) => Response | Promise<Response>;
 
-/** Answers a day with a day, a period with a period and a place with a place, none of them with anything in it; no trips, and no trip. */
+/** Answers a day with a day, a period with a period and a place with a place, none of them with anything in it; no trips, and no trip; no homes, the settings as they are configured, and no removed points. */
 const answerEmpty: Answer = (path) => {
   if (path.startsWith("/api/range")) return Response.json(emptyRange(path));
   if (path.startsWith("/api/places/")) return Response.json(emptyPlace(path));
   if (path === "/api/trips") return Response.json({ trips: [] } satisfies TripsResponse);
+  if (path === "/api/homes") return Response.json({ periods: [] } satisfies HomesResponse);
+  if (path === "/api/settings") return Response.json({ tripMinDistanceKm: 50, tripMinDistanceKmDefault: 50 } satisfies SettingsResponse);
+  if (path === "/api/points/removed") return Response.json([]);
   if (path.startsWith("/api/trips/")) return new Response("{}", { status: 404 });
   return Response.json(day(path.split("/").pop()!));
 };

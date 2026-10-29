@@ -8,9 +8,13 @@ import type {
   DayResponse,
   DeletedTrip,
   HeatResponse,
+  HomesResponse,
   PlaceCandidate,
   PlaceResponse,
+  PlaceSearchResult,
   RangeResponse,
+  RemovedBatch,
+  SettingsResponse,
   StatusResponse,
   TripResponse,
   TripsResponse,
@@ -142,15 +146,63 @@ export function placeQueryOptions(id: number | null) {
 /**
  * The places that the place `placeId` (as `GET /api/places/{id}` serves it) can be merged with: the nearest first when `q` is empty, else those
  * whose name or address has `q` in it. `q` is as it is to be sent: the caller trims it. The list that was on screen stays while another search is on
- * its way (`placeholderData`: the owner is typing, and the list does not blink to "Loading…" at every pause), which `isPlaceholderData` says.
+ * its way (`placeholderData`: the owner is typing, and the list does not blink to "Loading…" at every pause), which `isPlaceholderData` says. Nothing
+ * is asked for while `placeId` is null (the picker is of the places in use, which is `placeSearchQueryOptions`).
  */
-export function candidatesQueryOptions(placeId: number, q: string) {
+export function candidatesQueryOptions(placeId: number | null, q: string) {
   return queryOptions({
     queryKey: ["candidates", placeId, q] as const,
-    queryFn: ({ signal }) =>
-      getJson<PlaceCandidate[]>(`/api/places/${placeId}/candidates${q === "" ? "" : `?q=${encodeURIComponent(q)}`}`, signal),
+    queryFn:
+      placeId === null
+        ? skipToken
+        : ({ signal }) =>
+            getJson<PlaceCandidate[]>(`/api/places/${placeId}/candidates${q === "" ? "" : `?q=${encodeURIComponent(q)}`}`, signal),
     staleTime: STALE_MS,
     placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * The places in use with no place to start from (`GET /api/places/search`): the most visited first when `q` is empty, else those whose name or address
+ * has `q` in it. Nothing is asked for while `q` is null (the picker is of the places near one, which is `candidatesQueryOptions`). `q` is as it is to be
+ * sent: the caller trims it. The list that was on screen stays while another search is on its way, as for the candidates.
+ */
+export function placeSearchQueryOptions(q: string | null) {
+  return queryOptions({
+    queryKey: ["place-search", q] as const,
+    queryFn:
+      q === null
+        ? skipToken
+        : ({ signal }) => getJson<PlaceSearchResult[]>(`/api/places/search${q === "" ? "" : `?q=${encodeURIComponent(q)}`}`, signal),
+    staleTime: STALE_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** The home periods, detected and the owner's, in date order: what the Home section of Settings lists. */
+export function homesQueryOptions() {
+  return queryOptions({
+    queryKey: ["homes"] as const,
+    queryFn: ({ signal }) => getJson<HomesResponse>("/api/homes", signal),
+    staleTime: STALE_MS,
+  });
+}
+
+/** The settings: the distance that makes a trip, which the Trips section of Settings sets and the empty list of trips quotes. */
+export function settingsQueryOptions() {
+  return queryOptions({
+    queryKey: ["settings"] as const,
+    queryFn: ({ signal }) => getJson<SettingsResponse>("/api/settings", signal),
+    staleTime: STALE_MS,
+  });
+}
+
+/** The removals of points that were not restored, the one made last first: what the Removed points section of Settings lists, each with the batch that restores it. */
+export function removedPointsQueryOptions() {
+  return queryOptions({
+    queryKey: ["removed-points"] as const,
+    queryFn: ({ signal }) => getJson<RemovedBatch[]>("/api/points/removed", signal),
+    staleTime: STALE_MS,
   });
 }
 
@@ -212,7 +264,17 @@ export const useHeat = (from: string | null, to: string | null, enabled: boolean
 
 export const usePlace = (id: number | null) => useQuery(placeQueryOptions(id));
 
-export const useCandidates = (placeId: number, q: string) => useQuery(candidatesQueryOptions(placeId, q));
+/** The places near the place `placeId`; nothing is asked for while it is null. */
+export const useCandidates = (placeId: number | null, q: string) => useQuery(candidatesQueryOptions(placeId, q));
+
+/** The places in use by name or address, with no place to start from; nothing is asked for while `q` is null. */
+export const usePlaceSearch = (q: string | null) => useQuery(placeSearchQueryOptions(q));
+
+export const useHomes = () => useQuery(homesQueryOptions());
+
+export const useSettings = () => useQuery(settingsQueryOptions());
+
+export const useRemovedPoints = () => useQuery(removedPointsQueryOptions());
 
 /**
  * What a query of a thing that can go (a place, a trip) shows, for the panel, the bar and the map alike so that they never disagree: `shown` is

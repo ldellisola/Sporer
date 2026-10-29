@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef } from "react";
-import { useTrips } from "../api/queries";
+import { useSettings, useTrips } from "../api/queries";
 import type { TripListItem } from "../api/types";
 import { takeHeadingFocus } from "../app/headingFocus";
 import { navigate } from "../app/router";
 import { dateRangeLabel } from "../time/dates";
-import { formatCount } from "../time/format";
+import { formatCount, formatKm } from "../time/format";
 import { Chip, ONGOING } from "./Chips";
 import rows from "./Rows.module.css";
 import { Empty, ErrorState, Loading } from "./States";
@@ -47,6 +47,16 @@ function TripCard({ trip }: { trip: TripListItem }) {
 }
 
 /**
+ * What the list says when it has no trips: what a trip is, by the distance that is in effect (the owner may have changed it: `GET /api/settings`, asked for
+ * only when there is no trip to list). The distance is a detail of the message and not what the list is: it is not waited for, and a failure to read it is no
+ * error of the list (the message says "far from home" until it is known, and does not guess a number).
+ */
+function NoTrips() {
+  const km = useSettings().data?.tripMinDistanceKm;
+  return <Empty message={`No trips yet. A trip is a night spent ${km === undefined ? "far" : `${formatKm(km)} or more`} from home.`} />;
+}
+
+/**
  * The panel of the list of trips: a card for each, newest first as the API has them, with the picture of where it went, its name, its dates,
  * its nights and its cities, and "Ongoing" on the one that has not come home. A card opens the trip. The list is the one that the map draws
  * the cities of, and the bar steps through, from the same query (one request).
@@ -72,7 +82,7 @@ export function TripsPanel() {
       {shown === undefined ? (
         !trips.isError && <Loading />
       ) : shown.trips.length === 0 ? (
-        <Empty message="No trips yet. A trip is a night spent 50 km or more from home." />
+        <NoTrips />
       ) : (
         <ul className={`${rows.list} ${styles.cards}`} aria-labelledby={heading}>
           {shown.trips.map((trip) => (

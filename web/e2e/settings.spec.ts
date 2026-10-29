@@ -1,7 +1,8 @@
 import type { Locator, Page } from "@playwright/test";
+import type { HomePeriod, PlaceSearchResult, RemovedBatch, SettingsResponse } from "../src/api/types";
 import { expect, test } from "./base";
 import status from "./fixtures/status.json" with { type: "json" };
-import { mockApi } from "./mockApi";
+import { mockApi, type Reply } from "./mockApi";
 import { sheetAtRest } from "./sheet";
 import { fixTime } from "./today";
 
@@ -16,7 +17,10 @@ const details = (page: Page): Locator => page.getByRole(isWide(page) ? "compleme
 const grip = (page: Page): Locator => page.getByRole("button", { name: "Resize panel" });
 const map = (page: Page): Locator => page.getByRole("region", { name: "Map view" });
 const settingsButton = (page: Page): Locator => page.getByRole("button", { name: "Settings" });
+const homeSection = (page: Page): Locator => details(page).getByRole("region", { name: "Home" });
+const tripDistance = (page: Page): Locator => details(page).getByRole("region", { name: "Trips" });
 const deletedTrips = (page: Page): Locator => details(page).getByRole("region", { name: "Deleted trips" });
+const removedPoints = (page: Page): Locator => details(page).getByRole("region", { name: "Removed points" });
 const processing = (page: Page): Locator => details(page).getByRole("region", { name: "Processing" });
 const about = (page: Page): Locator => details(page).getByRole("region", { name: "About" });
 
@@ -50,7 +54,8 @@ test("gear_opens_settings_with_processing_and_about_and_leaves_the_map", async (
   // The days either side were asked for as soon as this one was shown: from here on, nothing is asked for on the account of the settings.
   await expect.poll(() => api.requests).toContain("/api/day/2026-10-23");
   await expect.poll(() => api.requests).toContain("/api/day/2026-10-21");
-  const notSettings = (request: string): boolean => request !== "/api/status" && request !== "/api/trips/deleted"; // the status is polled, and the deleted trips are what the settings list
+  // The status is polled, and the home, the distance, the deleted trips and the removed points are what the settings list.
+  const notSettings = (request: string): boolean => !["/api/status", "/api/homes", "/api/settings", "/api/trips/deleted", "/api/points/removed"].includes(request);
   const before = api.requests.filter(notSettings).length;
 
   await settingsButton(page).click();
@@ -62,9 +67,17 @@ test("gear_opens_settings_with_processing_and_about_and_leaves_the_map", async (
   await expect(page.getByRole("group", { name: "View" }).getByRole("button", { pressed: true })).toHaveCount(0); // no view is the current one
   await openSheet(page);
 
-  // Deleted trips come first, as the plan has the sections: none are deleted here.
+  // The sections are in the order of the plan: Home, Trips, Deleted trips, Removed points, Processing, About.
+  await expect(details(page).getByRole("heading", { level: 2 })).toHaveText(["Home", "Trips", "Deleted trips", "Removed points", "Processing", "About"]);
+  // Home: none is known here, and one can be set. Trips: the distance, as it is in effect.
+  await expect(homeSection(page).getByText("No home yet")).toBeVisible();
+  await expect(homeSection(page).getByRole("button", { name: "Set home" })).toBeVisible();
+  await expect(tripDistance(page).getByRole("spinbutton", { name: "Minimum distance from home (km)" })).toHaveValue("50");
+  await expect(tripDistance(page).getByRole("button", { name: "Reset to default (50 km)" })).toBeVisible();
+  // Deleted trips and removed points: none here.
   await expect(deletedTrips(page).getByRole("heading", { name: "Deleted trips" })).toBeVisible();
   await expect(deletedTrips(page).getByText("No deleted trips")).toBeVisible();
+  await expect(removedPoints(page).getByText("No removed points")).toBeVisible();
   // Processing: how far the backfill is, when the worker last ran, what waits.
   await expect(processing(page).getByRole("heading", { name: "Processing" })).toBeVisible();
   await expect(processing(page).locator("dl > div")).toHaveText(["Backfill 100 %", "Last processed Sat 24 Oct 2026 10:15", "Waiting to be processed 2 periods"], {
@@ -123,8 +136,12 @@ test("settings_opened_as_a_page_shows_processing_and_about_and_no_period", async
   await expect(processing(page).getByRole("heading", { name: "Processing" })).toBeVisible();
   await expect(about(page).getByRole("heading", { name: "About" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Heat map" })).toHaveCount(0); // there is no period to show the heat of
-  // No day, no range, no heat: the status and the config that every page asks for, and the deleted trips that the settings list.
-  expect(api.requests.filter((request) => !["/api/status", "/api/config", "/api/trips/deleted"].includes(request))).toEqual([]);
+  // No day, no range, no heat: the status and the config that every page asks for, and what the settings list.
+  expect(
+    api.requests.filter(
+      (request) => !["/api/status", "/api/config", "/api/homes", "/api/settings", "/api/trips/deleted", "/api/points/removed"].includes(request),
+    ),
+  ).toEqual([]);
 });
 
 test("retry_failed_lists_the_failed_periods_and_posts_an_empty_json_object", async ({ page }) => {
@@ -197,4 +214,207 @@ test("settings_says_the_status_could_not_be_loaded_with_a_retry_and_keeps_the_cr
 
   await expect(processing(page).getByRole("list", { name: "Failed periods" })).toBeVisible();
   await expect(alert).toHaveCount(0);
+});
+
+// ---- what the owner changes in the settings -------------------------------------------------------------------------------
+
+/** The status that a note over the map is: the one place that the sections of the settings say what they have done in. */
+const note = (page: Page): Locator => page.getByRole("status");
+
+const OSLO_FLAT: HomePeriod = { id: 1, placeId: 7, placeName: "Oslo flat", from: "2025-01-01", to: null, source: "detected" };
+const PLACES: PlaceSearchResult[] = [
+  { id: 7, name: "Oslo flat", address: "Storgata 1, Oslo", visits: 40 },
+  { id: 9, name: "Lisbon flat", address: null, visits: 12 },
+];
+
+test("set_a_home_override_then_remove_it_and_the_list_follows_what_the_server_has", async ({ page }) => {
+  await fixToday(page);
+  // A server that keeps the periods: what was set is listed, and what was removed is not.
+  let periods: HomePeriod[] = [OSLO_FLAT];
+  const api = await mockApi(page, {
+    homes: (): Reply => ({ json: { periods } }),
+    "places/search": (request): Reply => {
+      const q = new URL(request.url()).searchParams.get("q")?.toLowerCase() ?? "";
+      return { json: PLACES.filter((place) => q === "" || [place.name, place.address].some((part) => part?.toLowerCase().includes(q))) };
+    },
+    "POST homes": (request): Reply => {
+      const { placeId, from, to } = request.postDataJSON() as { placeId: number; from: string; to: string | null };
+      const place = PLACES.find((candidate) => candidate.id === placeId)!;
+      const period: HomePeriod = { id: 2, placeId, placeName: place.name, from, to, source: "user" };
+      periods = [...periods, period].sort((a, b) => a.from.localeCompare(b.from));
+      return { status: 201, json: period };
+    },
+    "DELETE homes/*": (): Reply => {
+      periods = periods.filter((period) => period.id !== 2);
+      return { status: 204 };
+    },
+  });
+  await page.goto("/settings");
+  await openSheet(page);
+  const home = homeSection(page);
+  await expect(home.getByRole("listitem")).toHaveText(["Oslo flat From 1 Jan 2025 Detected"], { useInnerText: true });
+  await expect(home.getByRole("button", { name: /^Remove/ })).toHaveCount(0); // a detected period has no Remove
+
+  // Set home: the picker is of all the places in use, the most visited first, with no distance; a search narrows it.
+  await home.getByRole("button", { name: "Set home" }).click();
+  const places = home.getByRole("list", { name: "Places" });
+  await expect(places.getByRole("button")).toHaveText(["Oslo flat Storgata 1, Oslo 40 visits", "Lisbon flat 12 visits"], { useInnerText: true });
+  await home.getByRole("searchbox", { name: "Search places" }).fill("lisb");
+  await expect(places.getByRole("button")).toHaveText(["Lisbon flat 12 visits"], { useInnerText: true });
+  await places.getByRole("button", { name: /^Lisbon flat/ }).click();
+
+  await expect(home.getByText("Set Lisbon flat as home")).toBeFocused();
+  await home.getByLabel("From", { exact: true }).fill("2026-04-01");
+  await home.getByLabel("To (optional)", { exact: true }).fill("2026-08-31");
+  await home.getByRole("button", { name: "Save" }).click();
+
+  // The period is a POST of all three keys, as JSON; the list has it (set by the owner, in date order), the form is closed with the focus back on the
+  // button that opened it, and what was done is said in the status.
+  await expect(home.getByRole("listitem")).toHaveCount(2);
+  await expect(home.getByRole("listitem").nth(1)).toHaveText("Lisbon flat 1 Apr – 31 Aug 2026 Set by you Remove", { useInnerText: true });
+  await expect(home.getByLabel("From", { exact: true })).toHaveCount(0);
+  await expect(home.getByRole("button", { name: "Set home" })).toBeFocused();
+  await expect(note(page)).toHaveText("Home set to Lisbon flat");
+  expect(api.writes).toEqual([
+    { method: "POST", path: "/api/homes", contentType: "application/json", body: { placeId: 9, from: "2026-04-01", to: "2026-08-31" } },
+  ]);
+
+  // Remove takes it back: a DELETE of its id, and the list is what the server has.
+  await home.getByRole("button", { name: "Remove Lisbon flat, 1 Apr – 31 Aug 2026" }).click();
+
+  await expect(home.getByRole("listitem")).toHaveCount(1);
+  await expect(home.getByText("Lisbon flat")).toHaveCount(0);
+  await expect(note(page)).toHaveText("Removed the home at Lisbon flat");
+  await expect(home.getByRole("button", { name: "Set home" })).toBeFocused(); // no row with a button is left
+  expect(api.writes.slice(1)).toEqual([{ method: "DELETE", path: "/api/homes/2", contentType: "application/json", body: null }]);
+});
+
+test("a_home_the_server_refuses_is_told_in_its_words_with_no_retry_and_the_dates_stay_to_be_put_right", async ({ page }) => {
+  await fixToday(page);
+  const api = await mockApi(page, {
+    homes: { periods: [OSLO_FLAT] },
+    "places/search": PLACES,
+    "POST homes": (): Reply => ({ status: 409, json: { statusCode: 409, message: "One or more errors occurred!", errors: { from: ["Another home you set has a night in these dates."] } } }),
+  });
+  await page.goto("/settings");
+  await openSheet(page);
+  const home = homeSection(page);
+  await home.getByRole("button", { name: "Set home" }).click();
+  await home.getByRole("button", { name: /^Lisbon flat/ }).click();
+  await home.getByLabel("From", { exact: true }).fill("2026-04-01");
+
+  await home.getByRole("button", { name: "Save" }).click();
+
+  const alert = home.getByRole("alert");
+  await expect(alert).toContainText("Could not save: Another home you set has a night in these dates.");
+  await expect(alert.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(home.getByLabel("From", { exact: true })).toHaveValue("2026-04-01");
+  expect(api.writes).toHaveLength(1);
+});
+
+test("change_the_trip_distance_then_reset_it_and_the_empty_list_of_trips_says_the_distance_that_is_in_effect", async ({ page }) => {
+  await fixToday(page);
+  // A server that keeps the distance: the settings say what is in effect, and null puts the default back.
+  let distance = 50;
+  const settings = (): SettingsResponse => ({ tripMinDistanceKm: distance, tripMinDistanceKmDefault: 50 });
+  const api = await mockApi(page, {
+    trips: { trips: [] },
+    settings: (): Reply => ({ json: settings() }),
+    "PUT settings": (request): Reply => {
+      distance = (request.postDataJSON() as { tripMinDistanceKm: number | null }).tripMinDistanceKm ?? 50;
+      return { json: settings() };
+    },
+  });
+  await page.goto("/settings");
+  await openSheet(page);
+  const trips = tripDistance(page);
+  const field = trips.getByRole("spinbutton", { name: "Minimum distance from home (km)" });
+  await expect(field).toHaveValue("50");
+  await expect(trips.getByRole("button", { name: "Save" })).toBeDisabled(); // nothing was changed
+
+  // A distance that the server would refuse is told here, and no request is made.
+  await field.fill("3");
+  await trips.getByRole("button", { name: "Save" }).click();
+  await expect(trips.getByRole("alert")).toHaveText("Enter a distance from 5 to 1000 km.");
+  expect(api.writes).toEqual([]);
+
+  await field.fill("80");
+  await trips.getByRole("button", { name: "Save" }).click();
+
+  await expect(note(page)).toHaveText("Trip distance set to 80 km");
+  await expect(field).toHaveValue("80");
+  await expect(trips.getByRole("alert")).toHaveCount(0);
+  await expect(trips.getByRole("button", { name: "Save" })).toBeDisabled(); // what is in the field is what is in effect
+  expect(api.writes).toEqual([{ method: "PUT", path: "/api/settings", contentType: "application/json", body: { tripMinDistanceKm: 80 } }]);
+
+  // The list of trips, which has none, says the distance that is in effect, and not the 50 km that was the default.
+  await page.getByRole("button", { name: "Trips" }).click();
+  await expect(page).toHaveURL(/\/trips$/);
+  await expect(details(page).getByText("No trips yet. A trip is a night spent 80 km or more from home.")).toBeVisible();
+  await settingsButton(page).click();
+  await openSheet(page);
+
+  // Reset to default sends null, and the field is the default again.
+  await trips.getByRole("button", { name: "Reset to default (50 km)" }).click();
+
+  await expect(note(page)).toHaveText("Trip distance back to the default, 50 km");
+  await expect(field).toHaveValue("50");
+  expect(api.writes.slice(1)).toEqual([{ method: "PUT", path: "/api/settings", contentType: "application/json", body: { tripMinDistanceKm: null } }]);
+});
+
+test("restore_a_removed_batch_and_the_day_it_was_on_is_asked_for_again", async ({ page }) => {
+  await fixToday(page);
+  const batches: RemovedBatch[] = [
+    {
+      batch: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      removedAt: "2026-10-23T09:30:00Z", // 11:30 in Oslo
+      count: 12,
+      from: "2026-10-22T08:00:00Z",
+      to: "2026-10-22T08:10:00Z",
+      localDates: ["2026-10-22"],
+    },
+    {
+      batch: "9b2e1c4a-6d3f-4a8e-b1f0-5c7d8e9f0a1b",
+      removedAt: "2026-10-20T07:00:00Z",
+      count: 1,
+      from: "2026-10-19T12:00:00Z",
+      to: "2026-10-19T12:00:00Z",
+      localDates: ["2026-10-19"],
+    },
+  ];
+  let removed = batches;
+  const api = await mockApi(page, {
+    "points/removed": (): Reply => ({ json: removed }),
+    "DELETE points/removed/*": (request): Reply => {
+      const batch = new URL(request.url()).pathname.split("/").pop();
+      removed = removed.filter((candidate) => candidate.batch !== batch);
+      return { status: 204 };
+    },
+  });
+  await page.goto("/day/2026-10-22");
+  await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+  await settingsButton(page).click();
+  await openSheet(page);
+  const section = removedPoints(page);
+  const days = (): number => api.requests.filter((request) => request === "/api/day/2026-10-22").length;
+  await expect(section.getByRole("listitem")).toHaveText(
+    ["22 Oct 2026 12 points · removed Fri 23 Oct 2026 11:30 Restore", "19 Oct 2026 1 point · removed Tue 20 Oct 2026 09:00 Restore"],
+    { useInnerText: true },
+  );
+  const before = days();
+
+  await section.getByRole("button", { name: /^Restore 12 points from 22 Oct 2026/ }).click();
+
+  // A DELETE of the batch; the row goes, the focus is on the button of the next, and what was done is said in the status.
+  await expect(section.getByRole("listitem")).toHaveCount(1);
+  await expect(note(page)).toHaveText("Restored 12 points");
+  await expect(section.getByRole("button", { name: /^Restore 1 point from 19 Oct 2026/ })).toBeFocused();
+  expect(api.writes).toEqual([
+    { method: "DELETE", path: "/api/points/removed/3f2504e0-4f89-11d3-9a0c-0305e82c3301", contentType: "application/json", body: null },
+  ]);
+
+  // The day the points are on was marked as old by the write, and is asked for again when it is shown: it was fresh for half a minute before.
+  await page.goBack();
+  await expect(page).toHaveURL(/\/day\/2026-10-22$/);
+  await expect.poll(days).toBeGreaterThan(before);
 });
