@@ -560,12 +560,14 @@ access gets a plain background instead of a map; the rest of the page works.
   | Run workflow by hand on any other branch or tag | built, not published |
 
 The WebKit smoke set is the tests tagged `{ tag: "@smoke" }`: one or two of each flow (the app opens on today, day navigation, the month, opening a
-trip, renaming a place, Settings, a session that has ended at the login, and the service worker installing from a page that is not the app). Two
+trip, renaming a place, Settings, and the service worker installing from a page that is not the app). Three
 kinds of test stay with Chromium. The test of removing points reads the pixels of the points right after edit mode sets them, and headless WebKit
 puts the last frame of a WebGL canvas into a screenshot late (the points are in the canvas, and in the screenshot only after another frame is drawn,
 which an idle map does not do; the trips test, whose map keeps moving, runs on WebKit too). The two service-worker cases that need the page's
-requests to reach the test's mocks stay too: their page requests are not routed by Playwright on WebKit while a worker controls the page. Edit mode
-on Safari is in the owner's iPhone checklist. The smoke set is a project called `webkit` that exists only when `PW_WEBKIT=1`, so only CI runs it by
+requests to reach the test's mocks stay too: their page requests are not routed by Playwright on WebKit while a worker controls the page. And the
+test of a session that has ended at the login answers the API with a redirect, which Playwright cannot fake on WebKit (`route.fulfill` refuses a
+302 there). Edit mode and the login on Safari are in the owner's iPhone checklist.
+The smoke set is a project called `webkit` that exists only when `PW_WEBKIT=1`, so only CI runs it by
 default; a plain `npm run e2e` is Chromium's two projects. The project uses Playwright's iPhone 14 descriptor (WebKit, touch, the phone's pixel
 density). Where WebKit is installed (`npx playwright install webkit`; on Linux add `--with-deps`), run it with:
 
