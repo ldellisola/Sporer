@@ -14,7 +14,8 @@ import {
 } from "react";
 import { useConfig } from "../api/queries";
 import { boundsOf, type Bounds } from "./bounds";
-import { AreaSelect, type Pixel, type PixelBox } from "./AreaSelect";
+import { EditControls } from "./EditControls";
+import { editPointAt, type MapEdit } from "./editPoints";
 import { addHomeImage } from "./house";
 import {
   LAYER_IDS,
@@ -34,6 +35,9 @@ import {
 import { loadMapLibre, type MapLibreLoader, type MapLibreModule } from "./maplibre";
 import styles from "./MapView.module.css";
 import { loadStyle, type StyleSpecification } from "./style";
+import { nearestTapped } from "./taps";
+
+export type { MapEdit } from "./editPoints";
 
 /**
  * What the map draws. Routes are drawn as a day (bold, with a casing) when `stops` is given, else as part of a period (faint), unless
@@ -52,24 +56,6 @@ export interface MapData {
    * the routes, in one `setData` as they come. What is selected is not here: a tap would redraw them all. It is `MapEdit`'s, and is the map's feature state.
    */
   editPoints?: EditPointCollection;
-}
-
-/**
- * Edit mode for points, given while the owner is in it: what is selected (by the `id` of its feature in `data.editPoints`), what a tap on a point
- * and a rectangle do, and the map's Select area button. While it is given a tap on the map selects the point near it, and opens no place; the
- * map's box zoom and its double-tap zoom are off, and so is its panning while Select area is on, and each is as it was when it is not given any more.
- */
-export interface MapEdit {
-  /** The ids of the selected points: drawn bigger and red, by feature state, which is set for the ones that change and never for all of them again. */
-  selected: ReadonlySet<number>;
-  /** Whether Select area is on: a drag draws a rectangle instead of panning, and a tap on the map selects a point as ever. */
-  area: boolean;
-  /** Called for a press of the Select area button, with what it is to be. */
-  onAreaChange: (on: boolean) => void;
-  /** Called with the id of the point that a tap is on, the nearest within 12 px of it, or not at all when there is none. */
-  onToggle: (id: number) => void;
-  /** Called with the ids of every point inside a rectangle that was drawn. */
-  onSelect: (ids: readonly number[]) => void;
 }
 
 /** The map's heat button: whether the heat is on, and the way to ask for the other. The parent holds the state (and remembers it). */
@@ -165,12 +151,6 @@ export interface MapViewProps {
 
 /** The layers of the dots of a period, and of the pins of a day with the house or the numbers on them: what a tap opens the place of. */
 const TAPPABLE_LAYERS = [LAYER_IDS.places, LAYER_IDS.stops, LAYER_IDS.stopHome, LAYER_IDS.stopNumbers];
-
-/**
- * How far from a dot or a pin a tap still opens it, in pixels. A finger is some 40 px wide and the smallest dot is 8 px across, so a tap
- * is looked for in a box of this much round the point, which is also what the pointer over the map asks.
- */
-const TAP_SLOP_PX = 12;
 
 const NO_PADDING: MapPadding = { top: 0, right: 0, bottom: 0, left: 0 };
 
@@ -354,87 +334,18 @@ function fit(map: MapLibreMap, bounds: Bounds, padding: MapPadding, data: MapDat
 }
 
 /**
- * The place that a tap at `point` (pixels of the map) opens: the dot or the pin nearest to it, of those that are drawn within
- * `TAP_SLOP_PX` of it, or undefined when there is none. Near is by the position of the place (where its dot or pin is centred), not by
- * how much of a feature lies in the box: a big dot's edge is near where its middle is not. The dot says the place as its `id`; a pin's `id`
- * is a stay's (the first of them), so it says it as `placeId`. A feature that says no place is passed over: one with no id, and one whose id
- * is not a place's (0 or less: the dots of the cities of the trips are `id: 0`), so that the place next to such a dot is the one that is
- * found, and a tap on a dot of a city, or the pointer over it, is a tap on the map. Only layers that the style has are looked in: MapLibre
- * reports an error for one that it has not (before the style has loaded, say), and finds nothing there.
+ * The place that a tap at `point` (pixels of the map) opens: the dot or the pin nearest to it, of those that are drawn within the slop of it (`taps`),
+ * or undefined when there is none. The dot says the place as its `id`; a pin's `id` is a stay's (the first of them), so it says it as `placeId`. A
+ * feature that says no place is passed over: one with no id, and one whose id is not a place's (0 or less: the dots of the cities of the trips are
+ * `id: 0`), so that the place next to such a dot is the one that is found, and a tap on a dot of a city, or the pointer over it, is a tap on the map.
  */
-function placeAt(map: MapLibreMap, { x, y }: { x: number; y: number }): number | undefined {
-  const layers = TAPPABLE_LAYERS.filter((id) => map.getLayer(id) !== undefined);
-  if (layers.length === 0) return undefined;
-  const box: [[number, number], [number, number]] = [[x - TAP_SLOP_PX, y - TAP_SLOP_PX], [x + TAP_SLOP_PX, y + TAP_SLOP_PX]];
-  let nearest: number | undefined;
-  let nearestDistance = Infinity;
-  for (const feature of map.queryRenderedFeatures(box, { layers })) {
+function placeAt(map: MapLibreMap, point: { x: number; y: number }): number | undefined {
+  return nearestTapped(map, point, TAPPABLE_LAYERS, (feature) => {
     const id: unknown = feature.properties[feature.layer.id === LAYER_IDS.places ? "id" : "placeId"];
-    if (typeof id !== "number" || id <= 0 || feature.geometry.type !== "Point") continue;
+    if (typeof id !== "number" || id <= 0 || feature.geometry.type !== "Point") return undefined;
     const [lon, lat] = feature.geometry.coordinates;
-    const at = map.project([lon!, lat!]);
-    const distance = Math.hypot(at.x - x, at.y - y);
-    if (distance < nearestDistance) {
-      nearest = id;
-      nearestDistance = distance;
-    }
-  }
-  return nearest;
-}
-
-/**
- * The point of edit mode that a tap at `point` (pixels of the map) selects: the one nearest to it, of those that are drawn within `TAP_SLOP_PX` of
- * it, or undefined when there is none. Near is by where the point is (`points` has it, by the `id` of the feature: what MapLibre gives back of a
- * feature is cut to the tile it is in), and a point is found by its `id`, which is its index in the day's points. Only the layer of the points is
- * looked in, and only when the style has it (before it has loaded MapLibre reports an error and finds nothing).
- */
-function editPointAt(map: MapLibreMap, { x, y }: Pixel, points: EditPointCollection | undefined): number | undefined {
-  if (points === undefined || map.getLayer(LAYER_IDS.editPoints) === undefined) return undefined;
-  const box: [[number, number], [number, number]] = [[x - TAP_SLOP_PX, y - TAP_SLOP_PX], [x + TAP_SLOP_PX, y + TAP_SLOP_PX]];
-  let nearest: number | undefined;
-  let nearestDistance = Infinity;
-  for (const feature of map.queryRenderedFeatures(box, { layers: [LAYER_IDS.editPoints] })) {
-    const id = feature.id;
-    const point = typeof id === "number" ? points.features[id] : undefined;
-    if (typeof id !== "number" || point === undefined) continue;
-    const at = map.project(point.geometry.coordinates);
-    const distance = Math.hypot(at.x - x, at.y - y);
-    if (distance < nearestDistance) {
-      nearest = id;
-      nearestDistance = distance;
-    }
-  }
-  return nearest;
-}
-
-/**
- * The ids of the points of edit mode that lie inside `box` (pixels of the map, edges included): each is put on the screen by the map's own `project`
- * and looked at, whether it is drawn or not (a rectangle covers what is under it, and the map has all of them: some forty thousand on a dense day,
- * which this is quick enough for, once at the end of a drag), in the order of the day.
- */
-function editPointsIn(map: MapLibreMap, box: PixelBox, points: EditPointCollection | undefined): number[] {
-  const inside: number[] = [];
-  for (const point of points?.features ?? []) {
-    const { x, y } = map.project(point.geometry.coordinates);
-    if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) inside.push(point.id);
-  }
-  return inside;
-}
-
-/**
- * Turns the gesture `gesture` of `map` off while `off`, and back on when it is not any more, or when the map goes, if it was on to begin with:
- * a gesture that was off for another reason is left off. The map's own handlers (`boxZoom`, `doubleClickZoom`, `dragPan`) are what is switched.
- */
-function useGestureOff(map: MapLibreMap | null, gesture: "boxZoom" | "doubleClickZoom" | "dragPan", off: boolean): void {
-  useEffect(() => {
-    if (map === null || !off) return;
-    const handler = map[gesture];
-    const was = handler.isEnabled();
-    handler.disable();
-    return () => {
-      if (was) handler.enable();
-    };
-  }, [map, gesture, off]);
+    return { value: id, at: [lon!, lat!] };
+  });
 }
 
 /** What `foldCreditEarly` gives back: `arm` for when the map first shows its real style, `stop` for when the map goes. */
@@ -751,14 +662,6 @@ function MapSurface({
     };
   }, [map, latest]);
 
-  // In edit mode shift-drag draws a rectangle (`AreaSelect`), so MapLibre's own, which zooms to it, is off; and two quick taps are two points, and not a
-  // zoom (the owner goes from one point to the next, and a double tap near the first would zoom in on them); and while Select area is on a drag draws
-  // a rectangle, so it does not pan. Each is put back as it was found when edit mode, or Select area, ends.
-  const editing = edit !== undefined;
-  useGestureOff(map, "boxZoom", editing);
-  useGestureOff(map, "doubleClickZoom", editing);
-  useGestureOff(map, "dragPan", edit?.area === true);
-
   // Tries again what failed, once. Whoever asks (the owner's Retry, the page coming back, the network coming back) gets one attempt at
   // most, and none while there is nothing to put right or an attempt is on its way (`failureRef` is null then), so that a phone that
   // wakes up and says both does not ask twice. An attempt that fails sets `failureRef` again; nothing tries again until the next ask.
@@ -839,33 +742,8 @@ function MapSurface({
             </svg>
           </button>
         )}
-        {edit !== undefined && (
-          <button
-            type="button"
-            className={styles.button}
-            aria-label="Select area"
-            title="Select area"
-            aria-pressed={edit.area}
-            onClick={() => edit.onAreaChange(!edit.area)}
-          >
-            {/* A dashed rectangle, as the one that is drawn. */}
-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
-              <rect x="4.5" y="5.5" width="15" height="13" rx="1.5" fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray="3.2 2.6" />
-            </svg>
-          </button>
-        )}
+        {edit !== undefined && <EditControls edit={edit} map={map} points={editPoints} host={rootRef} within={padding} />}
       </div>
-      {edit !== undefined && (
-        <AreaSelect
-          active={edit.area}
-          host={rootRef}
-          onBox={(box) => map !== null && edit.onSelect(editPointsIn(map, box, editPoints))}
-          onTap={(point) => {
-            const id = map === null ? undefined : editPointAt(map, point, editPoints);
-            if (id !== undefined) edit.onToggle(id);
-          }}
-        />
-      )}
     </div>
   );
 }

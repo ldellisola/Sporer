@@ -1973,6 +1973,13 @@ describe("MapView", () => {
     };
     const POINTS = pointsAt([100, 100], [140, 100], [100, 140], [300, 300]);
 
+    // The map is 800 by 600 (jsdom has no layout): what a rectangle is cut to is the map less its padding.
+    beforeEach(() => {
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        return this.className.includes("layer") ? ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, x: 0, y: 0 } as DOMRect) : ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 } as DOMRect);
+      });
+    });
+
     /** A map with its style loaded, with `props`. */
     async function up(props: Partial<MapViewProps> = {}) {
       goodStyle();
@@ -2304,6 +2311,20 @@ describe("MapView", () => {
 
       drag([400, 400], [500, 500]); // none
       expect(onSelect).toHaveBeenLastCalledWith([]);
+    });
+
+    test("MapView_cuts_a_rectangle_to_the_part_of_the_map_that_is_not_covered_so_that_what_is_under_the_sheet_is_not_selected", async () => {
+      const onSelect = vi.fn<(ids: readonly number[]) => void>();
+      const under = pointsAt([100, 100], [100, 400], [700, 100], [790, 300]); // the second is under the sheet (the bottom 300 px), the last in the air at the side
+      const { container } = await up(withData(under, { edit: edit({ area: true, onSelect }), padding: { top: 0, right: 20, bottom: 300, left: 0 } }));
+      const surface = container.querySelector(".surface")!;
+      const at = (x: number, y: number) => ({ clientX: x, clientY: y, pointerId: 1, isPrimary: true, pointerType: "touch" });
+
+      fireEvent.pointerDown(surface, at(10, 10));
+      fireEvent.pointerMove(surface, at(790, 590)); // the whole of the map, as a finger over the sheet would draw it
+      fireEvent.pointerUp(surface, at(790, 590));
+
+      expect(onSelect).toHaveBeenCalledWith([0, 2]);
     });
 
     test("MapView_selects_a_point_for_a_tap_on_the_surface_of_select_area_for_the_map_under_it_never_saw_it", async () => {

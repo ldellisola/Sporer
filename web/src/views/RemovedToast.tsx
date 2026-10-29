@@ -13,7 +13,8 @@ function toastOf({ toast, undo }: PointEditing): ToastData | null {
       return {
         id: toast.id,
         message: `Removed ${formatCount(toast.count, "point")}`,
-        action: { label: undo.pending ? "Undoing…" : "Undo", onClick: undo.run, disabled: undo.pending },
+        // No Undo once one has failed: a refusal is refused again (P4-R28), and a failure that may pass has the Retry of the alert under the toast.
+        action: undo.error === null ? { label: undo.pending ? "Undoing…" : "Undo", onClick: undo.run, disabled: undo.pending } : undefined,
         // It goes by itself when its time is up, unless an undo is on its way or has failed: that is told to the owner, who dismisses it.
         durationMs: undo.pending || undo.error !== null ? null : undefined,
       };
@@ -28,7 +29,8 @@ function toastOf({ toast, undo }: PointEditing): ToastData | null {
  * What the shell says of the removal of points, whatever the sheet is at and whichever view is on show (it is the shell's: see `Toast`): "Removed 3
  * points" with Undo for ten seconds, then "Restored 3 points" for an Undo that went through. An Undo that did not goes under the toast as an alert,
  * which the time does not take away: a refusal (a 404 for a batch that is restored already) says so in the words of the server with no Retry, and any
- * other failure has its Retry; both have Dismiss. Nothing here takes the focus: the owner is on the map.
+ * other failure has its Retry; both have Dismiss, and the toast has no Undo of its own while the alert is there. Nothing here takes the focus: the owner is
+ * on the map.
  */
 export function RemovedToast({ edit }: { edit: PointEditing }) {
   const { undo } = edit;

@@ -1,3 +1,4 @@
+import type { Ref } from "react";
 import { RetryButton } from "./RetryButton";
 import styles from "./States.module.css";
 
@@ -9,9 +10,16 @@ export function Loading({ message = "Loading…" }: { message?: string }) {
   return <p className={styles.state}>{message}</p>;
 }
 
-/** A view whose data came and holds nothing: "No data for this day". */
-export function Empty({ message }: { message: string }) {
-  return <p className={styles.state}>{message}</p>;
+/**
+ * A view whose data came and holds nothing: "No data for this day". A panel that has to put the focus somewhere when what had it is gone gives it a `ref`
+ * and `tabIndex={-1}`: the note is what a screen reader then reads, and has no ring (it is no control).
+ */
+export function Empty({ message, ref, tabIndex }: { message: string; ref?: Ref<HTMLParagraphElement>; tabIndex?: number }) {
+  return (
+    <p ref={ref} tabIndex={tabIndex} className={styles.state}>
+      {message}
+    </p>
+  );
 }
 
 function describe(error: unknown): string | null {

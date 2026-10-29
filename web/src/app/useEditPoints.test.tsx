@@ -202,6 +202,28 @@ describe("useEditPoints selection", () => {
     expect(before.size).toBe(0); // and what it was is as it was
   });
 
+  test("useEditPoints_does_not_change_the_selection_while_the_removal_is_on_its_way_for_it_is_the_one_that_was_sent", async () => {
+    let release: (response: Response) => void = () => undefined;
+    const { result } = await editing(DAY, { "POST /api/points/remove": () => new Promise<Response>((resolve) => (release = resolve)) });
+    act(() => result.current.select([0, 1]));
+    act(() => result.current.removal.run());
+    await waitFor(() => expect(result.current.removal.pending).toBe(true));
+    const sent = result.current.selected;
+
+    act(() => result.current.toggle(2)); // a tap that the success would clear, and that was not sent
+    act(() => result.current.select([3]));
+    act(() => result.current.clear());
+
+    expect(result.current.selected).toBe(sent);
+    expect([...result.current.selected]).toEqual([0, 1]);
+
+    release(Response.json({ batch: BATCH, count: 2 }));
+    await waitFor(() => expect(result.current.removal.pending).toBe(false));
+    expect(result.current.selected.size).toBe(0);
+    act(() => result.current.toggle(2)); // and it is for use again
+    expect([...result.current.selected]).toEqual([2]);
+  });
+
   test("useEditPoints_clear_empties_the_selection_and_stays_in_edit_mode", async () => {
     const { result } = await editing();
     act(() => result.current.select([0, 1, 2]));
@@ -212,17 +234,46 @@ describe("useEditPoints selection", () => {
     expect(result.current.active).toBe(true);
   });
 
-  test("useEditPoints_drops_the_selection_when_the_points_it_is_of_change", async () => {
-    // The indices are those of the points: another list is other points, and the same indices would be selecting the wrong ones.
+  test("useEditPoints_keeps_the_selected_points_that_are_still_there_when_the_points_change_and_drops_the_gone_ones", async () => {
+    // The indices are those of the points, so they are remade for the new list: by the device and the exact time, which is what a point is.
     let served: DayPointsResponse = POINTS;
     const { result, client } = await editing(DAY, { "GET /api/day/2026-10-22/points": () => Response.json(served) });
-    act(() => result.current.select([1, 2]));
+    act(() => result.current.select([1, 2, 3])); // the watch's, and two of the phone's
 
-    served = { ...POINTS, points: POINTS.points.slice(2) }; // 0 and 1 were removed elsewhere
+    served = { ...POINTS, points: [POINTS.points[2]!, POINTS.points[3]!, [T0 + 120_000_004, 10.005, 59.005, 0]] }; // 0 and 1 are gone elsewhere, and one is new
     await act(() => client.invalidateQueries());
 
-    await waitFor(() => expect(result.current.points?.points).toHaveLength(2));
-    expect(result.current.selected.size).toBe(0);
+    await waitFor(() => expect(result.current.points?.points).toHaveLength(3));
+    expect([...result.current.selected].sort()).toEqual([0, 1]); // the two that are left, at their new indices; the new point is not selected
+    expect(result.current.points?.points[0]![0]).toBe(T0 + 60_000_002);
+  });
+
+  test("useEditPoints_remakes_the_selection_for_each_change_of_the_points_and_does_not_bring_back_a_point_that_went_between", async () => {
+    let served: DayPointsResponse = POINTS;
+    const { result, client } = await editing(DAY, { "GET /api/day/2026-10-22/points": () => Response.json(served) });
+    act(() => result.current.select([2, 3]));
+
+    served = { ...POINTS, points: POINTS.points.slice(0, 3) }; // 3 goes
+    await act(() => client.invalidateQueries());
+    await waitFor(() => expect(result.current.points?.points).toHaveLength(3));
+    expect([...result.current.selected]).toEqual([2]);
+
+    served = POINTS; // and is restored: it is not selected again
+    await act(() => client.invalidateQueries());
+    await waitFor(() => expect(result.current.points?.points).toHaveLength(4));
+    expect([...result.current.selected]).toEqual([2]);
+  });
+
+  test("useEditPoints_tells_a_point_from_another_of_the_same_time_by_its_device", async () => {
+    let served: DayPointsResponse = { ...POINTS, points: [[T0, 10, 59, 0], [T0, 10, 59, 1]] };
+    const { result, client } = await editing(DAY, { "GET /api/day/2026-10-22/points": () => Response.json(served) });
+    act(() => result.current.toggle(1)); // the watch's
+
+    served = { ...served, points: [[T0, 10, 59, 1], [T0, 10, 59, 0]] }; // the other way round
+    await act(() => client.invalidateQueries());
+
+    await waitFor(() => expect(result.current.points?.points[0]![3]).toBe(1));
+    expect([...result.current.selected]).toEqual([0]);
   });
 
   test("useEditPoints_keeps_the_selection_when_the_points_are_asked_for_again_and_are_the_same", async () => {
@@ -373,6 +424,39 @@ describe("useEditPoints removal", () => {
       await waitFor(() => expect(result.current.removal.error).toBeNull());
       act(() => result.current.clear());
     }
+  });
+
+  test("useEditPoints_forgets_the_failure_of_a_removal_when_edit_mode_ends_or_begins_so_that_it_is_not_there_on_another_day_or_when_it_is_back", async () => {
+    const { result, rerender } = await editing(DAY, { "POST /api/points/remove": () => refusal(400, "At most 50000 points can be removed at once.") });
+    act(() => result.current.toggle(0));
+    act(() => result.current.removal.run());
+    await waitFor(() => expect(result.current.removal.error).not.toBeNull());
+
+    act(() => result.current.done());
+    await waitFor(() => expect(result.current.removal.error).toBeNull());
+
+    act(() => result.current.start());
+    await waitFor(() => expect(result.current.points).toBeDefined()); // the points were not kept
+    act(() => result.current.toggle(0));
+    act(() => result.current.removal.run());
+    await waitFor(() => expect(result.current.removal.error).not.toBeNull());
+    rerender({ route: OTHER_DAY }); // edit mode ends by going to another day: the failure is of the day that was
+    act(() => result.current.start());
+    await waitFor(() => expect(result.current.removal.error).toBeNull()); // and is not there when edit mode begins on this one
+  });
+
+  test("useEditPoints_leaves_the_removal_that_is_on_its_way_alone_when_edit_mode_ends_and_begins_again", async () => {
+    let release: (response: Response) => void = () => undefined;
+    const { result } = await editing(DAY, { "POST /api/points/remove": () => new Promise<Response>((resolve) => (release = resolve)) });
+    act(() => result.current.toggle(0));
+    act(() => result.current.removal.run());
+    await waitFor(() => expect(result.current.removal.pending).toBe(true));
+
+    act(() => result.current.done());
+    act(() => result.current.start()); // the reset would have made the shell forget the write: its toast would never come
+    release(Response.json({ batch: BATCH, count: 1 }));
+
+    await waitFor(() => expect(result.current.toast?.kind).toBe("removed"));
   });
 
   test("useEditPoints_remove_finishes_after_the_owner_has_left_edit_mode_and_still_says_what_it_did", async () => {

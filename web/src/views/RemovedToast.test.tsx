@@ -87,6 +87,28 @@ describe("RemovedToast", () => {
     expect(edit.dismiss).toHaveBeenCalledTimes(1);
   });
 
+  test("RemovedToast_offers_no_undo_on_the_toast_once_an_undo_has_failed_so_that_a_refusal_cannot_be_sent_again", () => {
+    // A refusal (404: it is restored already) is refused again; a failure that may pass has the Retry of its alert, and the toast's Undo would be a second way to the same.
+    for (const status of [404, 409, 500, 503]) {
+      const edit = pointEditing({ toast: REMOVED, undo: { ...noUndo, error: new ApiError(status, "/api/points/removed/b-1", "DELETE") } });
+      const { unmount } = render(<RemovedToast edit={edit} />);
+
+      expect(screen.getByRole("status"), String(status)).toHaveTextContent("Removed 3 points"); // what was done is still said
+      expect(within(screen.getByRole("status")).queryByRole("button"), String(status)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Undo" }), String(status)).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  test("RemovedToast_has_its_undo_back_when_the_failure_has_been_dismissed_or_there_is_none", () => {
+    const { rerender } = render(<RemovedToast edit={pointEditing({ toast: REMOVED, undo: { ...noUndo, error: new ApiError(404, "/api/points/removed/b-1", "DELETE") } })} />);
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+
+    rerender(<RemovedToast edit={pointEditing({ toast: REMOVED })} />); // dismissed: the shell has reset the undo, and the next removal is a new toast
+
+    expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled();
+  });
+
   test("RemovedToast_says_a_404_with_no_words_of_the_servers_as_what_it_is", () => {
     render(<RemovedToast edit={pointEditing({ toast: REMOVED, undo: { ...noUndo, error: new ApiError(404, "/api/points/removed/b-1", "DELETE") } })} />);
 

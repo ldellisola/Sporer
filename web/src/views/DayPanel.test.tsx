@@ -690,6 +690,23 @@ describe("DayPanel edit points", () => {
     expect(editButton()).toHaveFocus();
   });
 
+  test("DayPanel_done_on_a_day_that_has_no_data_now_puts_the_focus_on_what_the_panel_says_of_it_and_not_on_nothing", async () => {
+    // Every point was removed and the day was rebuilt empty: there is no button to go back to, and the one that was pressed is gone with the bar.
+    stubApi({ "2026-10-22": day([]) });
+    const done = vi.fn(() => undefined);
+    const edit = { ...pointEditing(), done };
+    const { rerender } = mountEditing("2026-10-22", edit);
+    await screen.findByText("No data for this day");
+    within(bar()).getByRole("button", { name: "Done" }).focus();
+
+    fireEvent.click(within(bar()).getByRole("button", { name: "Done" }));
+    rerender({ ...edit, active: false });
+
+    expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument();
+    expect(screen.getByText("No data for this day")).toHaveFocus(); // read to whoever listens, and the next Tab goes on from there
+    expect(document.body).not.toHaveFocus();
+  });
+
   test("DayPanel_does_not_take_the_focus_for_the_button_when_edit_mode_ends_for_another_reason", async () => {
     // The owner went to another day, or left the day: the focus is wherever they put it, and not on a button they did not press.
     stubApi({ "2026-10-22": FLIGHT_DAY });

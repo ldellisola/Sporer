@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./base";
+import { LABEL_AIR, whereOnThePage } from "./fit";
 import { mockApi } from "./mockApi";
 import { inkIn, PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
 import { sheetAtRest } from "./sheet";
@@ -147,58 +148,6 @@ const CITIES = tripsFixture.trips.flatMap((trip) => trip.cities.map((city): [num
 const NEW_YORK: [number, number] = [-73.986, 40.755]; // the most to the west
 const LISBON: [number, number] = [-9.14, 38.72]; // where the most nights were, the biggest dot
 const COPENHAGEN: [number, number] = [12.57, 55.68]; // the most to the east
-
-/** A position as a point of the world on a map of Web Mercator, from 0 to 1 each way, y growing southward. */
-const worldOf = ([lon, lat]: [number, number]) => ({
-  x: (lon + 180) / 360,
-  y: (1 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / Math.PI) / 2,
-});
-
-/**
- * The air that the fit leaves at the left and at the right of what is free while a dot has a label, for the dots at the edges to lie in whole (`LABEL_AIR_PX`
- * of MapView). The cities of the trips are all named, so their fit has it; the padding that the controls are set in (`--map-padding-*`) has not. A label
- * goes toward the inside of the drawing, so none of them needs more room than this.
- */
-const LABEL_AIR = 24;
-
-/**
- * Where on the page `at` is once the map has been brought to all of `positions`, as the map is when it is fitted: what the bar and the panel
- * leave free (it is padded for them), less `sideAir` at the left and at the right, is filled by the box of the positions on the side that it
- * is longer, and the box is in the middle of it. A map that has been fitted to dots that carry no label has no `sideAir`. This is also the
- * check that the fit leaves the room for the labels: the dots of the easternmost and the westernmost city are drawn where the air puts them.
- *
- * A map is kept inside the world, which is as high as it is wide and ends at ±85° of latitude: the middle of the map is never nearer to the
- * top or to the bottom of it than half the map's height. A box that is wide and a free width that is narrow (a phone, with the air) fit at
- * a zoom at which the world is hardly higher than the map, and then the middle of the box is not where the middle of what is free is.
- */
-async function whereOnThePage(page: Page, positions: [number, number][], at: [number, number], sideAir = 0): Promise<{ x: number; y: number }> {
-  const free = await map(page).evaluate((element, air) => {
-    const read = (side: string) => parseFloat(element.style.getPropertyValue(`--map-padding-${side}`));
-    const box = element.getBoundingClientRect();
-    return {
-      left: box.left + read("left") + air,
-      top: box.top + read("top"),
-      width: box.width - read("left") - read("right") - 2 * air,
-      height: box.height - read("top") - read("bottom"),
-      mapMiddle: box.top + box.height / 2,
-      mapHeight: box.height,
-    };
-  }, sideAir);
-  const world = positions.map(worldOf);
-  const [west, east] = [Math.min(...world.map((p) => p.x)), Math.max(...world.map((p) => p.x))];
-  const [north, south] = [Math.min(...world.map((p) => p.y)), Math.max(...world.map((p) => p.y))];
-  // One position is where the map is brought to as close as it goes (`FIT_MAX_ZOOM`), and it is the middle of what is free.
-  if (east === west && north === south) return { x: Math.round(free.left + free.width / 2), y: Math.round(free.top + free.height / 2) };
-  const scale = Math.min(free.width / (east - west), free.height / (south - north)); // pixels for the width of the world
-  const target = worldOf(at);
-  const half = free.mapHeight / 2 / scale; // half the height of the map, as a share of the world's
-  const middleOfMap = (north + south) / 2 + (free.mapMiddle - (free.top + free.height / 2)) / scale; // where the map's middle is, if it is not kept in
-  const kept = Math.min(Math.max(middleOfMap, half), 1 - half);
-  return {
-    x: Math.round(free.left + free.width / 2 + (target.x - (west + east) / 2) * scale),
-    y: Math.round(free.mapMiddle + (target.y - kept) * scale),
-  };
-}
 
 /**
  * Waits until the camera has come to rest at (`x`, `y`) rather than for as long as its flight takes (600 ms of `FIT_DURATION_MS`, and the

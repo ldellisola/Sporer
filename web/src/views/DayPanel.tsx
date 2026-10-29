@@ -131,7 +131,8 @@ function GapRow({ gap }: { gap: GapSegment }) {
  * that turns edit mode on (`edit`) beside its chips, in the header, and edit mode has the bar of it (`EditBar`) at the top in its place: the bar is
  * there for a day that has no data now as well (every point was removed), for edit mode has to be left. The button is for the day asked for: edit mode
  * is that of the day on the address, and not of the one that stays on screen while it loads. Done puts the focus back on the button, which the owner
- * pressed to begin; edit mode that ends for another reason (the owner went to another day) leaves the focus where it is.
+ * pressed to begin, or, for a day that has no data now (every point was removed, and the rebuilt day is empty) and so has no button, on what the panel says
+ * of it; edit mode that ends for another reason (the owner went to another day) leaves the focus where it is.
  */
 function Day({ day, asked, loading, onFocus, edit }: { day: DayResponse; asked: boolean; loading: boolean; onFocus: DayPanelProps["onFocus"]; edit?: PointEditing }) {
   // The numbers are the map's: the pins are labelled from the same `stopOrders`, and the routes tapped are the lines it draws.
@@ -142,11 +143,12 @@ function Day({ day, asked, loading, onFocus, edit }: { day: DayResponse; asked: 
   const last = day.segments.length - 1;
   const editing = edit?.active === true;
   const editButton = useRef<HTMLButtonElement>(null);
+  const emptyNote = useRef<HTMLParagraphElement>(null);
   const refocus = useRef(false);
   useEffect(() => {
     if (editing || !refocus.current) return;
     refocus.current = false;
-    editButton.current?.focus();
+    (editButton.current ?? emptyNote.current)?.focus();
   });
 
   return (
@@ -181,7 +183,7 @@ function Day({ day, asked, loading, onFocus, edit }: { day: DayResponse; asked: 
       </div>
       {empty ? (
         // An empty day that is not the one asked for says nothing of the one that is.
-        asked ? <Empty message="No data for this day" /> : loading && <Loading />
+        asked ? <Empty ref={emptyNote} tabIndex={-1} message="No data for this day" /> : loading && <Loading />
       ) : (
         <ol className={styles.timeline}>
           {day.segments.map((segment, index) => {

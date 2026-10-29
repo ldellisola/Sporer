@@ -801,6 +801,24 @@ describe("pendingInterval", () => {
     expect(refreshInterval("2026-10-19", "2026-10-25", "pending", now)).toBe(30_000); // a period is not a day that was edited
   });
 
+  test("noteDayEdited_starts_the_two_minutes_again_for_a_second_edit_within_them", () => {
+    // Remove, and Undo a minute and a half later, or a second removal: the day is rebuilt again, and is asked for every 3 seconds for two minutes after the last.
+    vi.useFakeTimers();
+    vi.setSystemTime(EDITED);
+    noteDayEdited("2026-10-22");
+    vi.setSystemTime(EDITED + 100_000);
+    noteDayEdited("2026-10-22");
+    const asked = (since: number) => {
+      vi.setSystemTime(EDITED + since);
+      return refreshInterval("2026-10-22", "2026-10-22", "pending", "2026-12-01");
+    };
+
+    expect(asked(200_000)).toBe(3_000); // 200 s after the first edit, which on its own would be over: 100 s after the second
+    expect(asked(219_999)).toBe(3_000);
+    expect(asked(220_000)).toBe(30_000); // two minutes after the second
+    expect(asked(110_000)).toBe(3_000);
+  });
+
   test("noteDayEdited_marks_the_days_either_side_too_as_a_day_spans_into_them", () => {
     vi.useFakeTimers();
     vi.setSystemTime(EDITED);

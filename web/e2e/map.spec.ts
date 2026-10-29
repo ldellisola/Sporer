@@ -241,7 +241,7 @@ for (const [name, response] of BROKEN_STYLES) {
 
     await page.goto("/day/2026-10-22");
 
-    await expect(page.getByRole("status")).toHaveText("Map unavailable — Retry");
+    await expect(page.getByRole("status").filter({ hasText: "Map unavailable" })).toHaveText("Map unavailable — Retry"); // the toast's status is there too, and says nothing
     await expect(map(page)).toHaveAttribute("data-map-state", "unavailable");
     await expect(map(page).locator("canvas.maplibregl-canvas")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Thursday 22 October" })).toBeVisible(); // the rest of the page goes on

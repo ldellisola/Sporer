@@ -1,6 +1,7 @@
 import type { Locator, Page, Request } from "@playwright/test";
 import type { DayResponse, RawPoint } from "../src/api/types";
 import { expect, test } from "./base";
+import { fitOf, type LonLat } from "./fit";
 import dayFixture from "./fixtures/day-edit.json" with { type: "json" };
 import pointsFixture from "./fixtures/points-edit.json" with { type: "json" };
 import { mockApi, type Overrides, type Reply } from "./mockApi";
@@ -121,44 +122,29 @@ function editServer(): EditServer {
 const INK: Rgb = [28, 28, 30]; // a point, in the ink of the light scheme
 const RED: Rgb = [255, 59, 48]; // a selected one
 
-const mercatorX = (lon: number): number => (lon + 180) / 360;
-const mercatorY = (lat: number): number => (1 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / Math.PI) / 2;
+/** Where a position is on the page: the camera that the map comes to rest at once it is brought to the walk (`fit.ts`). */
+type Projector = (at: LonLat) => { x: number; y: number };
 
 /**
- * Where a position is on the page once the map has been brought to the day: the map has no handle in the page, and a test of what the map does with a
- * finger finds what it is going to touch the way the map put it there. The map is brought to the day's routes and pins (all of the walk), with the room
- * that is left at its edges (`--map-padding-*`) for the bar and the sheet, at the closest zoom that holds them, which is 16 at the most (512 px tiles,
- * the middle of what they cover at the middle of what is free). A point is where this says, to within a pixel; whether it is drawn there is read from
- * the pixel (`PIXEL_POLL`), which is also how a test knows that the camera has come to rest.
+ * Where a position is on the page once the map has been brought to the day's routes and pins (all of the walk), at the closest zoom that holds them, which
+ * is 16 at the most, with the room that is left at its edges for the bar and the sheet (`fitOf`, which the map has no handle for: a test of what the map does
+ * with a finger finds what it is going to touch the way the map put it there). A point is where this says, to within a pixel; whether it is drawn there
+ * is read from the pixel (`PIXEL_POLL`), which is also how a test knows that the camera has come to rest.
  */
-async function projector(page: Page): Promise<(lon: number, lat: number) => { x: number; y: number }> {
-  const free = await map(page).evaluate((element) => {
-    const read = (side: string) => parseFloat(element.style.getPropertyValue(`--map-padding-${side}`));
-    const box = element.getBoundingClientRect();
-    return { left: box.left + read("left"), top: box.top + read("top"), width: box.width - read("left") - read("right"), height: box.height - read("top") - read("bottom") };
-  });
-  const walk: [number, number][] = [];
+async function projector(page: Page): Promise<Projector> {
+  const walk: LonLat[] = [];
   for (const segment of DAY.segments) {
     if (segment.kind === "move") walk.push(...segment.geometry);
     else if (segment.kind === "stay" && segment.place !== null) walk.push([segment.place.lon, segment.place.lat]);
   }
-  const xs = walk.map(([lon]) => mercatorX(lon));
-  const ys = walk.map(([, lat]) => mercatorY(lat));
-  const [spanX, spanY] = [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)];
-  const zoom = Math.min(16, Math.log2(Math.min(free.width / (spanX * 512), free.height / (spanY * 512))));
-  const [centreX, centreY] = [(Math.max(...xs) + Math.min(...xs)) / 2, (Math.max(...ys) + Math.min(...ys)) / 2];
-  const world = 512 * 2 ** zoom;
-  return (lon, lat) => ({
-    x: Math.round(free.left + free.width / 2 + (mercatorX(lon) - centreX) * world),
-    y: Math.round(free.top + free.height / 2 + (mercatorY(lat) - centreY) * world),
-  });
+  return fitOf(page, walk);
 }
 
 /** Where the point at `index` of the day's points is on the page. */
-const placeOf = (project: Awaited<ReturnType<typeof projector>>, index: number): { x: number; y: number } => project(POINTS[index]![1], POINTS[index]![2]);
+const placeOf = (project: Projector, index: number): { x: number; y: number } => project([POINTS[index]![1], POINTS[index]![2]]);
 
 /** Waits until the pixel at the point is `colour`, which is how it is known that the point is drawn, as it is to be, and the camera is at rest. */
-async function expectDot(page: Page, project: Awaited<ReturnType<typeof projector>>, index: number, colour: Rgb | "none"): Promise<void> {
+async function expectDot(page: Page, project: Projector, index: number, colour: Rgb | "none"): Promise<void> {
   const { x, y } = placeOf(project, index);
   await expect
     .poll(async () => {
@@ -199,7 +185,7 @@ function boxAround(places: { x: number; y: number }[], margin: number): { from: 
 }
 
 /** Opens the day, brings it up, and turns edit mode on: returns where things are once the points are drawn. */
-async function intoEditMode(page: Page, overrides: Overrides): Promise<{ project: Awaited<ReturnType<typeof projector>>; writes: Awaited<ReturnType<typeof mockApi>>["writes"]; requests: string[] }> {
+async function intoEditMode(page: Page, overrides: Overrides): Promise<{ project: Projector; writes: Awaited<ReturnType<typeof mockApi>>["writes"]; requests: string[] }> {
   await fixToday(page);
   const api = await mockApi(page, overrides);
   await page.goto("/day/2026-10-22");
@@ -343,7 +329,7 @@ test("edit_points_a_tap_in_edit_mode_opens_no_place_and_leaving_the_day_ends_edi
   const { project } = await intoEditMode(page, server.overrides);
 
   // The pin of the café, where the stay is: in edit mode a tap is for the points.
-  const cafe = project(10.751, 59.9139);
+  const cafe = project([10.751, 59.9139]);
   await tap(page, cafe);
   await expect(page).toHaveURL(/\/day\/2026-10-22$/);
   await expect(bar(page).getByText("0 selected")).toBeVisible();
@@ -432,6 +418,8 @@ test("edit_points_says_in_the_servers_words_why_a_removal_was_refused_and_that_a
   const alert = bar(page).getByRole("alert");
   await expect(alert).toHaveText("Could not remove: At most 50000 points can be removed at once.");
   await expect(alert.getByRole("button")).toHaveCount(0);
+  await expect(bar(page).getByRole("button", { name: "Remove 1 point" })).toBeDisabled(); // the same selection is refused again: Remove waits for it to change
+  await expect(bar(page).getByRole("button", { name: "Clear" })).toBeEnabled(); // and that is the way back
   await expect(bar(page).getByText("1 selected")).toBeVisible(); // the selection is as it was: the owner can take some off and try again
   await expectDot(page, project, WALK(3), RED);
 
@@ -447,6 +435,8 @@ test("edit_points_says_in_the_servers_words_why_a_removal_was_refused_and_that_a
 
   await expect(page.getByRole("alert").filter({ hasText: "Could not undo: That removal has been undone already." })).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0); // it would be sent again and refused again: the toast has no Undo while this is there
+  await expect(toast(page)).toHaveText(/Removed 2 points/); // what was done is still said
   await expect.poll(() => server.pointReads()).toBeGreaterThan(reads); // and what is on screen is asked for again
   expect(writes.map((write) => write.method)).toEqual(["POST", "POST", "DELETE"]);
   await page.getByRole("button", { name: "Dismiss" }).click();

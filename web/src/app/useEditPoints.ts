@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { deleteJson, postJson } from "../api/client";
 import { useWrite } from "../api/mutations";
 import { noteDayEdited, useDayPoints } from "../api/queries";
-import type { DayPointsResponse, PointRef, RemovePointsResponse } from "../api/types";
+import type { DayPointsResponse, PointRef, RawPoint, RemovePointsResponse } from "../api/types";
 import type { Route } from "./router";
 
 // Edit mode for the points of a day: the one small place that holds it, so that the panel, the map and the toast share it. It is state of the
@@ -32,7 +32,10 @@ export interface PointEditing {
   points: DayPointsResponse | undefined;
   /** How loading them is going: on its way, failed, and the way to ask again. */
   load: { pending: boolean; error: Error | null; retry: () => void };
-  /** The selected points, by index into `points.points`. A new set for each change, which is never changed after. Empty when the points change. */
+  /**
+   * The selected points, by index into `points.points`. A new set for each change, which is never changed after. When the points change it is made for the
+   * new list: the points that are still there, by device and time, and not those that are gone. It does not change while a removal is on its way.
+   */
   selected: ReadonlySet<number>;
   /** Selects the point if it was not, and takes it off if it was. */
   toggle: (index: number) => void;
@@ -64,10 +67,27 @@ interface Selection {
 const EMPTY: ReadonlySet<number> = new Set();
 const NONE: Selection = { of: undefined, set: EMPTY };
 
+/** What a point is, which the server tells it by and an index into a list does not say: its device and its exact time. */
+const keyOf = (points: DayPointsResponse, [t, , , device]: RawPoint): string => `${points.devices[device]}\u0000${t}`;
+
+/**
+ * The selection made for another list of points: the points of it that are in `points` still (by device and time), at their indices there, and none of
+ * those that are gone. A point that is new, or that came back, is not selected: the owner did not select it.
+ */
+function remap({ of, set }: Selection, points: DayPointsResponse | undefined): ReadonlySet<number> {
+  if (of === undefined || points === undefined || set.size === 0) return EMPTY;
+  const keys = new Set([...set].map((index) => keyOf(of, of.points[index]!)));
+  const kept = new Set<number>();
+  points.points.forEach((point, index) => {
+    if (keys.has(keyOf(points, point))) kept.add(index);
+  });
+  return kept.size === 0 ? EMPTY : kept;
+}
+
 /**
  * Edit mode for the points of the day that `route` is (and for no other view): whether it is on, the points, the selection, the area, the removal
  * of what is selected and the Undo of it. The points are asked for only while it is on, and are not kept once it is off (they are heavy). The
- * selection is of the points that are loaded: it is empty whenever they change, since the indices of one list are not those of another. A removal
+ * selection is of the points that are loaded: when they change it is made again for the new list (`remap`), since the indices of one list are not those of another. A removal
  * and an Undo are the shell's, not a panel's, so that one that is on its way when the owner leaves edit mode still says what it did; each
  * has the day rebuilt, which is pending for a while (`noteDayEdited`: asked for every 3 seconds).
  */
@@ -81,7 +101,13 @@ export function useEditPoints(route: Route): PointEditing {
   const query = useDayPoints(active ? date : null);
   const points = active ? query.data : undefined;
   const [selection, setSelection] = useState<Selection>(NONE);
-  const selected = active && selection.of === points ? selection.set : EMPTY;
+  // Adjusting state while rendering again: other points have the selection made for them, once, so that a point that went between two lists is not brought back by a third.
+  let current = selection;
+  if (current.of !== points) {
+    current = { of: points, set: remap(current, points) };
+    setSelection(current);
+  }
+  const selected = current.set;
 
   const [toast, setToast] = useState<PointsToast | null>(null);
   const toasts = useRef(0);
@@ -98,9 +124,14 @@ export function useEditPoints(route: Route): PointEditing {
   });
 
   const change = (apply: (base: ReadonlySet<number>) => ReadonlySet<number>): void => {
-    if (!active || points === undefined) return;
+    if (!active || points === undefined || remove.isPending) return; // while it is on its way the selection is the one that was sent: a tap would only be cleared with it
     if (remove.isError) remove.reset(); // what the failure said was of the selection that was
-    setSelection((last) => ({ of: points, set: apply(last.of === points ? last.set : EMPTY) }));
+    setSelection((last) => ({ of: points, set: apply(last.of === points ? last.set : remap(last, points)) }));
+  };
+
+  /** Forgets the failure of a removal, which is of the selection and the day that it was: not for one that is on its way, which the reset would make the shell forget. */
+  const forgetFailure = (): void => {
+    if (!remove.isPending) remove.reset();
   };
 
   const runRemoval = (): void => {
@@ -132,10 +163,12 @@ export function useEditPoints(route: Route): PointEditing {
     active,
     start: () => {
       if (date === null) return;
+      forgetFailure();
       setEditing({ date, area: false });
       setSelection(NONE);
     },
     done: () => {
+      forgetFailure();
       setEditing(null);
       setSelection(NONE);
     },

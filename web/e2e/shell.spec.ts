@@ -226,7 +226,7 @@ test("status_banner_shows_progress_below_the_bar_and_not_over_the_map_buttons", 
   await mockApi(page, { status: { ...status, backfill: { ...status.backfill, percent: 42.7 } } });
   await page.goto("/day/2026-10-22");
 
-  const banner = page.getByRole("status");
+  const banner = page.getByRole("status").filter({ hasText: "Processing your history" }); // the status that a toast is said in is on every day, and empty
   await expect(banner).toHaveText("Processing your history… 42 %");
   const bar = (await page.getByRole("group", { name: "View" }).boundingBox())!;
   const box = (await banner.boundingBox())!;

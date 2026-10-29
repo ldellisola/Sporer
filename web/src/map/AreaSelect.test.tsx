@@ -1,17 +1,17 @@
 import { fireEvent, render } from "@testing-library/react";
 import { createRef } from "react";
 import { describe, expect, test, vi } from "vitest";
-import { AreaSelect } from "./AreaSelect";
+import { AreaSelect, type Insets } from "./AreaSelect";
 
 /** A map's element to put the selection over, with an element inside it for what the map would have under the finger (its canvas). */
-function mount(props: { active?: boolean } = {}) {
+function mount(props: { active?: boolean; within?: Insets } = {}) {
   const onBox = vi.fn();
   const onTap = vi.fn();
   const host = createRef<HTMLDivElement>();
   const ui = (active: boolean) => (
     <div ref={host} data-testid="host">
       <div data-testid="canvas" />
-      <AreaSelect active={active} host={host} onBox={onBox} onTap={onTap} />
+      <AreaSelect active={active} host={host} within={props.within} onBox={onBox} onTap={onTap} />
     </div>
   );
   const view = render(ui(props.active ?? false));
@@ -248,5 +248,139 @@ describe("AreaSelect with a shift-drag", () => {
 
     expect(seen).toHaveBeenCalledTimes(1);
     expect(onBox).not.toHaveBeenCalled();
+  });
+});
+
+/** The layer is as big as the map: 400 by 600, at the corner of the page (jsdom has no layout, and says everything has no size). */
+function sizeTheMap() {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    return this.className.includes("layer") ? ({ left: 0, top: 0, right: 400, bottom: 600, width: 400, height: 600, x: 0, y: 0 } as DOMRect) : ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 } as DOMRect);
+  });
+}
+
+describe("AreaSelect within what is free", () => {
+  // The map is padded for what covers it (the bar, the sheet or the sidebar) and the air round it: what is under them is not what the owner sees.
+  const FREE: Insets = { top: 50, right: 40, bottom: 80, left: 30 }; // the free part is 30 to 360 across and 50 to 520 down
+
+  test("AreaSelect_cuts_a_rectangle_that_goes_over_the_sheet_to_the_free_part_of_the_map_before_it_is_drawn_and_given", () => {
+    sizeTheMap();
+    const { surface, rectangle, onBox } = mount({ active: true, within: FREE });
+
+    fireEvent.pointerDown(surface()!, touch(100, 100));
+    fireEvent.pointerMove(surface()!, touch(390, 590)); // the finger is over the sheet at the bottom and past the free part at the right
+
+    expect(rectangle()).toHaveStyle({ left: "100px", top: "100px", width: "260px", height: "420px" });
+    fireEvent.pointerUp(surface()!, touch(390, 590));
+
+    expect(onBox).toHaveBeenCalledWith({ left: 100, top: 100, right: 360, bottom: 520 });
+  });
+
+  test("AreaSelect_cuts_a_rectangle_that_begins_under_the_bar_or_the_sidebar", () => {
+    sizeTheMap();
+    const { surface, onBox } = mount({ active: true, within: FREE });
+
+    fireEvent.pointerDown(surface()!, touch(5, 10));
+    fireEvent.pointerMove(surface()!, touch(200, 300));
+    fireEvent.pointerUp(surface()!, touch(200, 300));
+
+    expect(onBox).toHaveBeenCalledWith({ left: 30, top: 50, right: 200, bottom: 300 });
+  });
+
+  test("AreaSelect_gives_no_box_for_a_rectangle_that_is_all_over_what_covers_the_map", () => {
+    sizeTheMap();
+    const { surface, rectangle, onBox, onTap } = mount({ active: true, within: FREE });
+
+    fireEvent.pointerDown(surface()!, touch(100, 540));
+    fireEvent.pointerMove(surface()!, touch(300, 590)); // wholly in the 80 px of the sheet and the air over it
+    expect(rectangle()).toBeNull(); // nothing is drawn where nothing can be selected
+    fireEvent.pointerUp(surface()!, touch(300, 590));
+
+    expect(onBox).not.toHaveBeenCalled();
+    expect(onTap).not.toHaveBeenCalled(); // and it was a drag, not a tap
+  });
+
+  test("AreaSelect_cuts_a_shift_drag_too", () => {
+    sizeTheMap();
+    const { canvas, rectangle, onBox } = mount({ within: FREE });
+    const mouse = (x: number, y: number) => ({ clientX: x, clientY: y, button: 0, shiftKey: true });
+
+    fireEvent.mouseDown(canvas, mouse(100, 100));
+    fireEvent.mouseMove(window, mouse(390, 590));
+    expect(rectangle()).toHaveStyle({ left: "100px", top: "100px", width: "260px", height: "420px" });
+    fireEvent.mouseUp(window, mouse(390, 590));
+
+    expect(onBox).toHaveBeenCalledWith({ left: 100, top: 100, right: 360, bottom: 520 });
+  });
+
+  test("AreaSelect_cuts_nothing_when_it_is_told_nothing_of_what_covers_the_map", () => {
+    sizeTheMap();
+    const { surface, onBox } = mount({ active: true });
+
+    fireEvent.pointerDown(surface()!, touch(5, 10));
+    fireEvent.pointerMove(surface()!, touch(390, 590));
+    fireEvent.pointerUp(surface()!, touch(390, 590));
+
+    expect(onBox).toHaveBeenCalledWith({ left: 5, top: 10, right: 390, bottom: 590 });
+  });
+});
+
+describe("AreaSelect in the page", () => {
+  test("AreaSelect_puts_its_layer_in_the_element_of_the_map_wherever_it_is_made_which_lets_the_controls_that_make_it_stay_in_theirs", () => {
+    const host = createRef<HTMLDivElement>();
+    const { container } = render(
+      <div>
+        <div ref={host} data-testid="host" />
+        <div data-testid="controls">
+          <AreaSelect active host={host} onBox={() => undefined} onTap={() => undefined} />
+        </div>
+      </div>,
+    );
+
+    const layer = container.querySelector(".layer")!;
+    expect(layer.parentElement).toBe(host.current);
+    expect(container.querySelector("[data-testid=controls]")).not.toContainElement(layer as HTMLElement);
+    expect(host.current!.querySelector(".surface")).not.toBeNull();
+  });
+
+  test("AreaSelect_calls_the_handlers_it_has_when_the_pointer_lets_go_and_not_the_ones_it_had_when_it_came_down", () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const host = createRef<HTMLDivElement>();
+    const ui = (onBox: () => void, active = true) => (
+      <div ref={host}>
+        <AreaSelect active={active} host={host} onBox={onBox} onTap={() => undefined} />
+      </div>
+    );
+    const { container, rerender } = render(ui(first));
+    const surface = () => container.querySelector(".surface")!;
+    fireEvent.pointerDown(surface(), touch(10, 10));
+    fireEvent.pointerMove(surface(), touch(90, 90));
+
+    rerender(ui(second));
+    fireEvent.pointerUp(surface(), touch(90, 90));
+
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  test("AreaSelect_calls_the_handler_it_has_when_a_shift_drag_ends_which_is_a_listener_of_the_window", () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const host = createRef<HTMLDivElement>();
+    const ui = (onBox: () => void) => (
+      <div ref={host}>
+        <div data-testid="canvas" />
+        <AreaSelect active={false} host={host} onBox={onBox} onTap={() => undefined} />
+      </div>
+    );
+    const { getByTestId, rerender } = render(ui(first));
+    fireEvent.mouseDown(getByTestId("canvas"), { clientX: 10, clientY: 10, button: 0, shiftKey: true });
+    fireEvent.mouseMove(window, { clientX: 90, clientY: 90 });
+
+    rerender(ui(second));
+    fireEvent.mouseUp(window, { clientX: 90, clientY: 90 });
+
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
   });
 });

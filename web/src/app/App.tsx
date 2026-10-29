@@ -183,8 +183,8 @@ export function App() {
           {panel}
         </BottomSheet>
       )}
-      {/* There from the moment edit mode begins, empty, so that what it says is announced; it stays for as long as it has something to say. */}
-      {(edit.active || edit.toast !== null) && <RemovedToast edit={edit} />}
+      {/* There on every day, empty, so that what it says is announced whenever it comes (a removal can finish after Done); and for as long as it has something to say. */}
+      {(route.view === "day" || edit.toast !== null) && <RemovedToast edit={edit} />}
     </main>
   );
 }

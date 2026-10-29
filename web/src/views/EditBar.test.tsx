@@ -131,6 +131,43 @@ describe("EditBar", () => {
     expect(screen.getByRole("button", { name: "Clear" })).toBeEnabled();
   });
 
+  test("EditBar_cannot_send_a_refused_removal_again_unchanged_and_can_once_the_selection_has_changed", () => {
+    // Every 4xx but a 408 and a 429 is a refusal (P4-R29): the same selection is refused again. Changing the selection clears the error (the shell does), which is the way back.
+    for (const status of [400, 401, 404, 409, 413]) {
+      const error = new ApiError(status, "/api/points/remove", "POST", "No.");
+      const { unmount } = render(
+        <EditBar edit={pointEditing({ selected: new Set([0, 1]), removal: { run: vi.fn(), pending: false, error, reset: vi.fn() } })} onDone={() => undefined} />,
+      );
+
+      expect(screen.getByRole("button", { name: "Remove 2 points" }), String(status)).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Clear" }), String(status)).toBeEnabled(); // and the way back is there
+      unmount();
+    }
+    const { rerender } = render(
+      <EditBar
+        edit={pointEditing({ selected: new Set([0, 1]), removal: { run: vi.fn(), pending: false, error: new ApiError(400, "/api/points/remove", "POST"), reset: vi.fn() } })}
+        onDone={() => undefined}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Remove 2 points" })).toBeDisabled();
+
+    rerender(<EditBar edit={pointEditing({ selected: new Set([0]) })} onDone={() => undefined} />); // a point taken off: no error any more
+
+    expect(screen.getByRole("button", { name: "Remove 1 point" })).toBeEnabled();
+  });
+
+  test("EditBar_leaves_remove_on_for_a_failure_that_may_pass_which_is_sent_again_by_it_or_by_the_retry", () => {
+    for (const error of [new ApiError(408, "/api/points/remove", "POST"), new ApiError(429, "/api/points/remove", "POST"), new ApiError(502, "/api/points/remove", "POST"), new TypeError("Failed to fetch")]) {
+      const run = vi.fn();
+      const { unmount } = render(<EditBar edit={pointEditing({ selected: new Set([0]), removal: { run, pending: false, error, reset: vi.fn() } })} onDone={() => undefined} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Remove 1 point" }));
+
+      expect(run, String(error)).toHaveBeenCalledTimes(1);
+      unmount();
+    }
+  });
+
   test("EditBar_says_a_removal_that_failed_may_pass_with_a_retry_that_sends_it_again", () => {
     const run = vi.fn();
     const error = new ApiError(502, "/api/points/remove", "POST");

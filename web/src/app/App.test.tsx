@@ -339,6 +339,12 @@ describe("App layout", () => {
   });
 });
 
+/**
+ * The note over the map, which is a status: the page has another, the one that a toast is said in, which is there on every day and says nothing until it
+ * has something to say.
+ */
+const mapNote = () => screen.getAllByRole("status").find((status) => status.textContent !== "")!;
+
 describe("App map note", () => {
   test("App_notes_that_the_map_is_unavailable_until_a_style_loads", () => {
     stubApi();
@@ -346,7 +352,7 @@ describe("App map note", () => {
     expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
 
     act(() => mapProps().onStyleError?.(new Error("blocked"), false));
-    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable");
+    expect(mapNote()).toHaveTextContent("Map unavailable");
 
     act(() => mapProps().onStyleError?.(new Error("blocked again"), false));
     expect(screen.getAllByText(/Map unavailable/)).toHaveLength(1);
@@ -360,15 +366,15 @@ describe("App map note", () => {
     renderApp();
 
     act(() => mapProps().onStyleError?.(new Error("dark style blocked"), true)); // the system went dark with the network down
-    expect(screen.getByRole("status")).toHaveTextContent("Couldn't switch the map style — Retry");
+    expect(mapNote()).toHaveTextContent("Couldn't switch the map style — Retry");
     expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(map.retries).toBe(1);
 
     act(() => mapProps().onStyleError?.(new Error("still blocked"), true)); // the attempt failed again: still one note, still this one
-    expect(screen.getAllByRole("status")).toHaveLength(1);
-    expect(screen.getByRole("status")).toHaveTextContent("Couldn't switch the map style — Retry");
+    expect(screen.getAllByRole("status").filter((status) => status.textContent !== "")).toHaveLength(1);
+    expect(mapNote()).toHaveTextContent("Couldn't switch the map style — Retry");
 
     act(() => mapProps().onStyleLoad?.());
     expect(screen.queryByText(/Couldn't switch the map style/)).not.toBeInTheDocument();
@@ -380,15 +386,15 @@ describe("App map note", () => {
     renderApp();
 
     act(() => mapProps().onStyleError?.(new Error("no style"), false)); // MapLibre, or the first style
-    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable — Retry");
+    expect(mapNote()).toHaveTextContent("Map unavailable — Retry");
     expect(screen.queryByText(/Couldn't switch/)).not.toBeInTheDocument();
 
     act(() => mapProps().onStyleError?.(new Error("the switch"), true)); // the map came up, and then a switch failed
-    expect(screen.getByRole("status")).toHaveTextContent("Couldn't switch the map style");
+    expect(mapNote()).toHaveTextContent("Couldn't switch the map style");
     expect(screen.queryByText(/Map unavailable/)).not.toBeInTheDocument();
 
     act(() => mapProps().onStyleError?.(new Error("gone"), false)); // and the map went wrong again, with no basemap
-    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable");
+    expect(mapNote()).toHaveTextContent("Map unavailable");
   });
 
   test("App_offers_a_Retry_with_the_map_note_that_asks_the_map_to_try_again_once_for_each_press", () => {
@@ -397,12 +403,12 @@ describe("App map note", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
 
     act(() => mapProps().onStyleError?.(new Error("blocked"), false));
-    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable — Retry");
+    expect(mapNote()).toHaveTextContent("Map unavailable — Retry");
     expect(map.retries).toBe(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(map.retries).toBe(1);
-    expect(screen.getByRole("status")).toHaveTextContent("Map unavailable"); // the note stays until the map says that it has a style
+    expect(mapNote()).toHaveTextContent("Map unavailable"); // the note stays until the map says that it has a style
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(map.retries).toBe(2);
 
@@ -1627,6 +1633,52 @@ describe("App edit points", () => {
 
     expect(within(sidebar()).getByRole("group", { name: "Edit points" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Details" })).not.toBeInTheDocument();
+  });
+
+  test("App_keeps_a_status_for_the_toast_on_the_day_view_so_that_a_removal_that_finishes_after_done_is_announced_in_it", async () => {
+    let release: (response: Response) => void = () => undefined;
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? "GET"} ${path}`);
+        if (init?.method === "POST") return new Promise<Response>((resolve) => (release = resolve));
+        if (path === "/api/status") return Response.json(STATUS);
+        if (path.endsWith("/points")) return Response.json(POINTS);
+        return path.endsWith("2026-10-22") ? Response.json(flightDay) : answerEmpty(path);
+      }),
+    );
+    stubLayout(100);
+    renderApp();
+    await screen.findByRole("button", { name: "Edit points" });
+
+    // There before edit mode, and empty: it is what the message is put into, whenever it comes.
+    const empty = screen.getAllByRole("status").filter((status) => status.textContent === "");
+    expect(empty).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit points" }));
+    await waitFor(() => expect(mapProps().data.editPoints).toBeDefined());
+    act(() => edit().onToggle(1));
+    fireEvent.click(screen.getByRole("button", { name: "Remove 1 point" }));
+    await waitFor(() => expect(calls).toContain("POST /api/points/remove"));
+    fireEvent.click(within(screen.getByRole("group", { name: "Edit points" })).getByRole("button", { name: "Done" })); // the removal is still on its way
+    expect(screen.queryByRole("group", { name: "Edit points" })).not.toBeInTheDocument();
+
+    await act(async () => release(Response.json({ batch: "b-9", count: 1 })));
+
+    await waitFor(() => expect(empty[0]).toHaveTextContent("Removed 1 point")); // the one that was there: a region is announced when what is in it changes
+    expect(screen.getAllByRole("status").filter((status) => status.textContent === "")).toHaveLength(0);
+  });
+
+  test("App_has_no_status_for_toasts_on_the_other_views_until_there_is_a_toast", async () => {
+    stubEditing();
+    window.history.replaceState(null, "", "/week/2026-10-19");
+    stubLayout(100);
+
+    renderApp();
+
+    await screen.findByText("No data for this period");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   test("App_has_no_edit_points_button_on_the_other_views", async () => {
