@@ -6,7 +6,7 @@ import { navigate } from "../app/router";
 import { shortDayLabel } from "../time/dates";
 import { formatCount, formatDistance } from "../time/format";
 import { Chip, Chips, ONGOING } from "./Chips";
-import { EditActions } from "./editForms";
+import { EditActions, focusLost } from "./editForms";
 import rows from "./Rows.module.css";
 import { Empty, ErrorState, Loading } from "./States";
 import styles from "./TripPanel.module.css";
@@ -130,12 +130,20 @@ export function TripPanel({ id }: TripPanelProps) {
   const { gone, shown: found } = shownOf(trip);
   const kept = useKeptData(found, !gone);
   const shown = kept?.id === id ? kept : undefined;
+  // A trip that turns gone under a form or a question that has the focus (a 404 to a write, which has the trip asked for again): the focus was in what is
+  // gone with it, and goes to the way out. A trip that was never there (a page opened on it) is a page like any other, and takes nothing.
+  const toTrips = useRef<HTMLButtonElement>(null);
+  const wasShown = useRef(false);
+  useEffect(() => {
+    if (gone && wasShown.current && focusLost()) toTrips.current?.focus();
+    wasShown.current = shown !== undefined;
+  }, [gone, shown]);
   return (
     <>
       {gone && (
         <>
           <Empty message="This trip no longer exists" />
-          <button type="button" className={`${rows.tap} ${styles.toTrips}`} onClick={() => navigate({ view: "trips" })}>
+          <button ref={toTrips} type="button" className={`${rows.tap} ${styles.toTrips}`} onClick={() => navigate({ view: "trips" })}>
             See all trips
           </button>
         </>

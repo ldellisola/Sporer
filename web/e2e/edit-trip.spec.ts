@@ -30,9 +30,11 @@ async function openSheet(page: Page): Promise<void> {
 /** What the server remembers of a trip: what the list serves, and the id that detection gave it, which is the key that restores it. */
 interface Stored extends TripListItem {
   key: string;
-  /** What the trip is called when the owner has not named it, and the dates it was detected with. */
+  /** What the trip is called when the owner has not named it, and the dates it was detected with (the end of a trip that is still going on moves on). */
   automatic: string;
   detected: { start: string; end: string };
+  /** The dates of the owner's edit, where it has any: a trip that has one has it, whatever detection finds. */
+  edit: { start?: string; end?: string };
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -63,11 +65,30 @@ function tripServer() {
     key: trip.id,
     automatic: trip.name,
     detected: { start: trip.localStartDate, end: trip.localEndDate },
+    edit: {},
   }));
   let deleted: (DeletedTrip & { trip: Stored })[] = [];
 
   const newestFirst = (list: Stored[]): Stored[] => [...list].sort((a, b) => b.id.localeCompare(a.id));
-  const listed = ({ key: _key, automatic: _automatic, detected: _detected, ...item }: Stored): TripListItem => item;
+  const listed = ({ key: _key, automatic: _automatic, detected: _detected, edit: _edit, ...item }: Stored): TripListItem => item;
+
+  /** The trip as its dates are now: the owner's where it has them, else detection's. A trip whose end is the owner's has come back, whatever detection thinks. */
+  function dated(trip: Stored): void {
+    const start = trip.edit.start ?? trip.detected.start;
+    const end = trip.edit.end ?? trip.detected.end;
+    Object.assign(trip, {
+      id: start,
+      firstNight: start,
+      lastNight: addDays(end, -1),
+      nights: (Date.parse(end) - Date.parse(start)) / 86_400_000,
+      localStartDate: start,
+      localEndDate: end,
+      datesEdited: trip.edit.start !== undefined || trip.edit.end !== undefined,
+      edited: trip.ownName !== null || trip.edit.start !== undefined || trip.edit.end !== undefined,
+      ongoing: trip.key === ongoingKey && trip.edit.end === undefined,
+    });
+  }
+  const ongoingKey = tripsFixture.trips.find((trip) => trip.ongoing)!.id;
   const idOf = (request: Request): string => new URL(request.url()).pathname.split("/").pop() ?? "";
 
   const errors = (field: string, message: string) => ({ statusCode: 400, message: "One or more errors occurred!", errors: { [field]: [message] } });
@@ -89,8 +110,11 @@ function tripServer() {
       const trip = trips.find((candidate) => candidate.id === idOf(request));
       if (trip === undefined) return { status: 404, json: {} };
       const body = request.postDataJSON() as { name: string | null; startDate: string | null; endDate: string | null };
-      const start = body.startDate ?? trip.detected.start;
-      const end = body.endDate ?? trip.detected.end;
+      // As the server has it: a date that is the trip's own, where the trip has no date of its own, is as detected, and not the owner's.
+      const startDate = body.startDate === trip.localStartDate && trip.edit.start === undefined ? null : body.startDate;
+      const endDate = body.endDate === trip.localEndDate && trip.edit.end === undefined ? null : body.endDate;
+      const start = startDate ?? trip.detected.start;
+      const end = endDate ?? trip.detected.end;
       if (!inRange(start)) return { status: 400, json: errors("startDate", "The start date must be from 1970-01-01 to 2099-12-31.") };
       if (!inRange(end)) return { status: 400, json: errors("endDate", "The end date must be from 1970-01-01 to 2099-12-31.") };
       if (start >= end) return { status: 400, json: errors("endDate", "The start date must be before the end date.") };
@@ -100,17 +124,9 @@ function tripServer() {
         return { status: 409, json: errors("endDate", `The trip would have nights from ${start} to ${last}, and another trip has one of them.`) };
       }
       const name = body.name?.trim() ? body.name.trim() : null;
-      Object.assign(trip, {
-        id: start,
-        name: name ?? trip.automatic,
-        ownName: name,
-        firstNight: start,
-        lastNight: last,
-        nights: (Date.parse(end) - Date.parse(start)) / 86_400_000,
-        localStartDate: start,
-        localEndDate: end,
-        edited: name !== null || start !== trip.detected.start || end !== trip.detected.end,
-      });
+      trip.edit = { ...(startDate === null ? {} : { start: startDate }), ...(endDate === null ? {} : { end: endDate }) };
+      Object.assign(trip, { name: name ?? trip.automatic, ownName: name });
+      dated(trip);
       return { json: { id: trip.id } };
     },
     "DELETE trips/*": (request): Reply => {
@@ -133,31 +149,42 @@ function tripServer() {
       return { status: 204 };
     };
   }
-  return overrides;
+  /** The worker has processed another night: a trip that is still going on has its end date a day on (an edited end date stays where the owner put it). */
+  const advance = (): void => {
+    for (const trip of trips.filter((candidate) => candidate.key === ongoingKey)) {
+      trip.detected.end = addDays(trip.detected.end, 1);
+      dated(trip);
+    }
+  };
+  return { overrides, advance };
 }
 
 const LISBON = "Lisbon & Sintra";
 const edit = (page: Page): Locator => details(page).getByRole("button", { name: "Edit", exact: true });
+const detectedDates = (page: Page): Locator => details(page).getByRole("button", { name: "Use detected dates" });
 const nameField = (page: Page): Locator => details(page).getByRole("textbox", { name: "Name" });
 const startField = (page: Page): Locator => details(page).getByLabel("Start date");
 const endField = (page: Page): Locator => details(page).getByLabel("End date");
 const save = (page: Page): Locator => details(page).getByRole("button", { name: "Save", exact: true });
 const cards = (page: Page): Locator => details(page).getByRole("list", { name: "Trips" }).getByRole("button");
 
-/** Opens the trip of the 12th of September, with the sheet up (on a phone) and the trip shown. */
-async function openLisbon(page: Page, api: Overrides): Promise<Awaited<ReturnType<typeof mockApi>>> {
+/** Opens the trip `id`, which is called `name`, with the sheet up (on a phone) and the trip shown. */
+async function openTrip(page: Page, api: Overrides, id: string, name: string): Promise<Awaited<ReturnType<typeof mockApi>>> {
   await fixToday(page);
   const mocked = await mockApi(page, api);
-  await page.goto("/trip/2026-09-12");
+  await page.goto(`/trip/${id}`);
   await expect(map(page)).toHaveAttribute("data-map-state", "ready");
-  await expect(title(page)).toHaveText(LISBON);
+  await expect(title(page)).toHaveText(name);
   await openSheet(page);
   await expect(edit(page)).toBeVisible();
   return mocked;
 }
 
+/** Opens the trip of the 12th of September, with the sheet up (on a phone) and the trip shown. */
+const openLisbon = (page: Page, api: Overrides) => openTrip(page, api, "2026-09-12", LISBON);
+
 test("rename_a_trip_and_the_bar_the_list_and_the_trip_show_the_name_and_clearing_it_goes_back_to_the_automatic_one", async ({ page }) => {
-  const api = await openLisbon(page, tripServer());
+  const api = await openLisbon(page, tripServer().overrides);
 
   await edit(page).click();
 
@@ -173,8 +200,9 @@ test("rename_a_trip_and_the_bar_the_list_and_the_trip_show_the_name_and_clearing
   await expect(title(page)).toHaveText("Portugal 2026");
   await expect(nameField(page)).toHaveCount(0);
   await expect(edit(page)).toBeFocused(); // the focus was in the form, which is gone
+  // The dates are the trip's own, which the form was only filled in with: they are not sent.
   expect(api.writes).toEqual([
-    { method: "PUT", path: "/api/trips/2026-09-12", contentType: "application/json", body: { name: "Portugal 2026", startDate: "2026-09-12", endDate: "2026-09-16" } },
+    { method: "PUT", path: "/api/trips/2026-09-12", contentType: "application/json", body: { name: "Portugal 2026", startDate: null, endDate: null } },
   ]);
   await expect(page).toHaveURL(/\/trip\/2026-09-12$/); // the id is the same: nowhere to go
 
@@ -192,19 +220,20 @@ test("rename_a_trip_and_the_bar_the_list_and_the_trip_show_the_name_and_clearing
   await edit(page).click();
   await expect(nameField(page)).toHaveValue("Portugal 2026");
   await expect(nameField(page)).toHaveAttribute("placeholder", "Automatic name");
+  await expect(detectedDates(page)).toHaveCount(0); // a name is an edit, and there are no dates of the owner's to go back from
   await nameField(page).fill("");
   await save(page).click();
 
   await expect(title(page)).toHaveText(LISBON);
   expect(api.writes.map((write) => write.body)).toEqual([
-    { name: "Portugal 2026", startDate: "2026-09-12", endDate: "2026-09-16" },
-    { name: null, startDate: "2026-09-12", endDate: "2026-09-16" },
+    { name: "Portugal 2026", startDate: null, endDate: null },
+    { name: null, startDate: null, endDate: null },
   ]);
 });
 
 test("re_dating_a_trip_goes_to_the_trip_by_its_new_id_in_place_of_the_page_so_that_back_is_the_list", async ({ page }) => {
   await fixToday(page);
-  const api = await mockApi(page, tripServer());
+  const api = await mockApi(page, tripServer().overrides);
   await page.goto("/trips");
   await expect(map(page)).toHaveAttribute("data-map-state", "ready");
   await openSheet(page);
@@ -233,10 +262,31 @@ test("re_dating_a_trip_goes_to_the_trip_by_its_new_id_in_place_of_the_page_so_th
   await sheetAtRest(page);
   await expect(cards(page).filter({ hasText: "10 – 18 Sep 2026 · 8 nights" })).toHaveCount(1);
   await expect(cards(page)).toHaveCount(3);
+
+  // Forward is the trip under its new id, and the trips either side are the ones of the list as it is now: the arrows and the keys step from it.
+  await page.goForward();
+  await expect(page).toHaveURL(/\/trip\/2026-09-10$/);
+  await expect(title(page)).toHaveText(LISBON);
+  const older = page.getByRole("button", { name: "Older trip" });
+  const newer = page.getByRole("button", { name: "Newer trip" });
+  await expect(older).toBeEnabled();
+  await expect(newer).toBeEnabled();
+  await older.click();
+  await expect(page).toHaveURL(/\/trip\/2026-08-01$/);
+  await expect(title(page)).toHaveText("Copenhagen");
+  await newer.click();
+  await expect(page).toHaveURL(/\/trip\/2026-09-10$/);
+  await expect(title(page)).toHaveText(LISBON);
+  await page.keyboard.press("ArrowRight");
+  await expect(page).toHaveURL(/\/trip\/2026-10-22$/);
+  await expect(title(page)).toHaveText("New York");
+  await page.keyboard.press("ArrowLeft");
+  await expect(page).toHaveURL(/\/trip\/2026-09-10$/);
+  await expect(title(page)).toHaveText(LISBON);
 });
 
 test("a_trip_that_would_share_a_night_with_another_is_refused_in_the_words_of_the_server_with_no_retry_and_the_form_stays", async ({ page }) => {
-  const api = await openLisbon(page, tripServer());
+  const api = await openLisbon(page, tripServer().overrides);
   await edit(page).click();
   await endField(page).fill("2026-10-25"); // the New York trip has the nights of the 22nd and the 23rd of October
 
@@ -258,7 +308,7 @@ test("a_trip_that_would_share_a_night_with_another_is_refused_in_the_words_of_th
 });
 
 test("dates_that_the_form_can_tell_are_wrong_are_not_sent_and_the_server_says_the_rest", async ({ page }) => {
-  const api = await openLisbon(page, tripServer());
+  const api = await openLisbon(page, tripServer().overrides);
   await edit(page).click();
 
   await startField(page).fill("2026-09-16"); // the day the owner is back: the nights are from the start to the night before the end
@@ -280,7 +330,7 @@ test("dates_that_the_form_can_tell_are_wrong_are_not_sent_and_the_server_says_th
 });
 
 test("cancel_and_escape_close_the_form_and_the_question_and_write_nothing_with_the_focus_back_on_the_button", async ({ page }) => {
-  const api = await openLisbon(page, tripServer());
+  const api = await openLisbon(page, tripServer().overrides);
 
   await edit(page).click();
   await nameField(page).fill("Something else");
@@ -304,8 +354,16 @@ test("cancel_and_escape_close_the_form_and_the_question_and_write_nothing_with_t
   expect(api.writes).toEqual([]);
 });
 
-test("delete_a_trip_after_asking_goes_to_the_list_and_settings_has_it_to_restore", async ({ page }) => {
-  const api = await openLisbon(page, tripServer());
+test("delete_a_trip_after_asking_goes_to_the_list_in_place_of_the_trip_and_settings_has_it_to_restore", async ({ page }) => {
+  await fixToday(page);
+  const api = await mockApi(page, tripServer().overrides);
+  await page.goto("/trips");
+  await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+  await openSheet(page);
+  await cards(page).filter({ hasText: LISBON }).click();
+  await expect(page).toHaveURL(/\/trip\/2026-09-12$/);
+  await sheetAtRest(page);
+  const entries = await page.evaluate(() => window.history.length);
 
   await details(page).getByRole("button", { name: "Delete trip" }).click();
   await expect(details(page).getByText("Delete this trip? It stays deleted when your data is reprocessed. You can restore it in Settings.")).toBeVisible();
@@ -313,6 +371,7 @@ test("delete_a_trip_after_asking_goes_to_the_list_and_settings_has_it_to_restore
 
   await expect(page).toHaveURL(/\/trips$/);
   await sheetAtRest(page);
+  expect(await page.evaluate(() => window.history.length)).toBe(entries); // replaced: Back does not land on a trip that is gone
   await expect(details(page).getByRole("heading", { name: "Trips" })).toBeFocused(); // the question that had the focus is gone: the heading of the list has it
   await expect(cards(page)).toHaveCount(2);
   await expect(cards(page).filter({ hasText: LISBON })).toHaveCount(0);
@@ -342,7 +401,7 @@ test("delete_a_trip_after_asking_goes_to_the_list_and_settings_has_it_to_restore
 });
 
 test("a_re_dated_trip_that_is_deleted_comes_back_with_the_dates_the_owner_gave_it", async ({ page }) => {
-  await openLisbon(page, tripServer());
+  await openLisbon(page, tripServer().overrides);
   await edit(page).click();
   await startField(page).fill("2026-09-11");
   await save(page).click();
@@ -364,10 +423,8 @@ test("a_re_dated_trip_that_is_deleted_comes_back_with_the_dates_the_owner_gave_i
   await expect(cards(page).filter({ hasText: "11 – 16 Sep 2026 · 5 nights" })).toHaveCount(1);
 });
 
-const detectedDates = (page: Page): Locator => details(page).getByRole("button", { name: "Use detected dates" });
-
 test("use_detected_dates_goes_back_to_the_dates_that_detection_found_and_keeps_the_name_the_owner_gave", async ({ page }) => {
-  const api = await openLisbon(page, tripServer());
+  const api = await openLisbon(page, tripServer().overrides);
   await edit(page).click();
   await expect(detectedDates(page)).toHaveCount(0); // nothing of the trip was edited
 
@@ -378,7 +435,8 @@ test("use_detected_dates_goes_back_to_the_dates_that_detection_found_and_keeps_t
   await expect(page.getByText("10 – 16 Sep 2026")).toBeVisible();
   await sheetAtRest(page);
 
-  // The trip was edited now, and the form offers the way back for its dates: the name is the owner's and stays, whatever the form says of the dates.
+  // The trip has a start date of the owner's now, and the form offers the way back for its dates: the name is the field's (the owner's, which it has), whatever the
+  // form says of the dates.
   await edit(page).click();
   await expect(nameField(page)).toHaveValue("Portugal 2026");
   await expect(startField(page)).toHaveValue("2026-09-10");
@@ -390,7 +448,7 @@ test("use_detected_dates_goes_back_to_the_dates_that_detection_found_and_keeps_t
   await expect(page.getByText("12 – 16 Sep 2026")).toBeVisible();
   await expect(details(page).getByRole("heading", { name: "Day by day" })).toBeFocused();
   expect(api.writes.map((write) => write.body)).toEqual([
-    { name: "Portugal 2026", startDate: "2026-09-10", endDate: "2026-09-16" },
+    { name: "Portugal 2026", startDate: "2026-09-10", endDate: null }, // the end was not touched: it is the trip's own
     { name: "Portugal 2026", startDate: null, endDate: null },
   ]);
 });
@@ -398,7 +456,7 @@ test("use_detected_dates_goes_back_to_the_dates_that_detection_found_and_keeps_t
 test("a_trip_that_was_only_re_dated_has_no_name_of_the_owners_and_the_form_never_makes_the_automatic_one_theirs", async ({ page }) => {
   // The trip was edited, and its name is still the made-up one: the field is empty and the name is its placeholder, and sending the dates again sends no name,
   // so the name goes on being the one that is made from the nights the trip has.
-  const api = await openLisbon(page, tripServer());
+  const api = await openLisbon(page, tripServer().overrides);
   await edit(page).click();
   await endField(page).fill("2026-09-18");
   await save(page).click();
@@ -413,7 +471,31 @@ test("a_trip_that_was_only_re_dated_has_no_name_of_the_owners_and_the_form_never
 
   await expect(page.getByText("12 – 19 Sep 2026")).toBeVisible();
   expect(api.writes.map((write) => write.body)).toEqual([
-    { name: null, startDate: "2026-09-12", endDate: "2026-09-18" },
-    { name: null, startDate: "2026-09-12", endDate: "2026-09-19" },
+    { name: null, startDate: null, endDate: "2026-09-18" }, // the start was not touched
+    { name: null, startDate: "2026-09-12", endDate: "2026-09-19" }, // the trip has dates of its own now: either may be an edit, and a null would take it back
   ]);
+});
+
+test("renaming_a_trip_that_is_still_going_on_does_not_freeze_its_end_date_which_moves_on_as_nights_are_processed", async ({ page }) => {
+  const server = tripServer();
+  const api = await openTrip(page, server.overrides, "2026-10-22", "New York");
+  await expect(details(page).getByText("Ongoing")).toBeVisible();
+  await expect(page.getByText("22 – 24 Oct 2026")).toBeVisible(); // an ongoing trip ends the day after its last night
+
+  await edit(page).click();
+  await expect(endField(page)).toHaveValue("2026-10-24");
+  server.advance(); // while the form is open the worker has processed another night: the trip's end date is the 25th now
+  await nameField(page).fill("Manhattan");
+  await save(page).click();
+
+  // What was sent for the end is nothing: the 24th, which was only what the form was filled in with, would be the owner's end date, and the trip would
+  // have come back on the 24th and lost the night of the 24th.
+  await expect(title(page)).toHaveText("Manhattan");
+  expect(api.writes.map((write) => write.body)).toEqual([{ name: "Manhattan", startDate: null, endDate: null }]);
+  await expect(details(page).getByText("Ongoing")).toBeVisible();
+  await expect(page.getByText("22 – 25 Oct 2026")).toBeVisible();
+  await expect(detectedDates(page)).toHaveCount(0);
+  await edit(page).click();
+  await expect(detectedDates(page)).toHaveCount(0); // the dates were not touched, and are not the owner's
+  await expect(endField(page)).toHaveValue("2026-10-25");
 });

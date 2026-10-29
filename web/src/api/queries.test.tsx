@@ -57,6 +57,7 @@ function listed(id: string, nights = 2): TripListItem {
     ongoing: false,
     edited: false,
     ownName: null,
+    datesEdited: false,
     cities: [{ name: "Lisbon", country: "Portugal", nights, lat: 38.72, lon: -9.14 }],
     thumbnail: [
       [10.75, 59.91],

@@ -431,6 +431,7 @@ describe("tripsGeoJson", () => {
       ongoing: false,
       edited: false,
       ownName: null,
+      datesEdited: false,
       cities,
       thumbnail: [],
     };
@@ -554,6 +555,7 @@ describe("tripGeoJson", () => {
       ongoing: false,
       edited: false,
       ownName: null,
+      datesEdited: false,
       cities,
       stats: { flights: 0, cities: cities.length, places: 0, groundDistanceMeters: 0 },
       moves,

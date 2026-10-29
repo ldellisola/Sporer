@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import { postJson } from "../api/client";
+import { isNotFound, postJson } from "../api/client";
 import { useWrite } from "../api/mutations";
 import { deletedTripsQueryOptions, useDeletedTrips } from "../api/queries";
 import type { DeletedTrip } from "../api/types";
@@ -20,6 +20,12 @@ const NO_TRIPS: readonly DeletedTrip[] = [];
 /** What the focus is to go to when the list has no row left to take it: the note that says there is none. */
 const NO_ROW = "";
 
+/** The focus is to move to the button of the row `to` (or to the note, for `NO_ROW`), once the row `after` is off the list, if there is one that is to be. */
+interface Move {
+  to: string;
+  after?: string;
+}
+
 /**
  * The trips the owner deleted, newest first, each with the button that brings it back (it is a trip again as detection finds it, with the name and
  * the dates the owner had given it). The button says it is working while the request is on its way, and no button of the list can be pressed then;
@@ -28,7 +34,9 @@ const NO_ROW = "";
  * (P4-R28), and any other with a Retry that sends the same trip again; the list stays under it, and the list that was there stays under a failure to ask for it again.
  *
  * The focus was on the button of the row that is gone, and goes to the button of the next row (the one before it for the last), and when none is left to
- * the note that says so; a failure leaves it on the button that was pressed, which was off, when the page has it. It moves only if the owner has not put it elsewhere.
+ * the note that says so. That is also so when the row goes with the list that is asked for again after a 404 (the trip was restored somewhere else): the focus
+ * waits for the row to be gone. Any other failure leaves the row, and the focus goes back to its button, which was off. It moves only if the owner has not put
+ * it elsewhere.
  */
 export function DeletedTrips() {
   const client = useQueryClient();
@@ -37,17 +45,18 @@ export function DeletedTrips() {
   const list = deleted ?? NO_TRIPS;
   const buttons = useRef(new Map<string, HTMLButtonElement>());
   const none = useRef<HTMLParagraphElement>(null);
-  const focusAfter = useRef<string | null>(null);
+  const moving = useRef<Move | null>(null);
   const restore = useWrite((trip: DeletedTrip) => postJson(`/api/trips/deleted/${encodeURIComponent(trip.key)}/restore`));
   // A button that is off cannot take the focus, and all of them are while a restore is on its way: it waits for the answer and the list to be drawn as it is
   // to be, and is let go of once it has moved, when the owner has put the focus somewhere else, or when the button it was for is not there.
   useEffect(() => {
-    const target = focusAfter.current;
-    if (target === null) return;
-    const button = target === NO_ROW ? none.current : buttons.current.get(target);
-    if (button instanceof HTMLButtonElement && button.disabled) return;
-    focusAfter.current = null;
-    if (focusLost()) button?.focus();
+    const move = moving.current;
+    if (move === null) return;
+    if (move.after !== undefined && list.some((trip) => trip.key === move.after)) return; // the row is not gone yet
+    const target = move.to === NO_ROW ? none.current : buttons.current.get(move.to);
+    if (target instanceof HTMLButtonElement && target.disabled) return;
+    moving.current = null;
+    if (focusLost()) target?.focus();
   });
   const run = (trip: DeletedTrip) => {
     if (restore.isPending) return;
@@ -55,11 +64,12 @@ export function DeletedTrips() {
     const next = list[at + 1] ?? list[at - 1];
     restore.mutate(trip, {
       onSuccess: () => {
-        focusAfter.current = next?.key ?? NO_ROW;
+        moving.current = { to: next?.key ?? NO_ROW, after: trip.key };
         client.setQueryData<DeletedTrip[]>(deletedTripsQueryOptions().queryKey, (old) => old?.filter((candidate) => candidate.key !== trip.key));
       },
-      onError: () => {
-        focusAfter.current = trip.key;
+      onError: (error) => {
+        // A 404 has the list asked for again, which has not the row: the focus is to leave it then. Any other failure leaves the row where it is.
+        moving.current = isNotFound(error) ? { to: next?.key ?? NO_ROW, after: trip.key } : { to: trip.key };
       },
     });
   };

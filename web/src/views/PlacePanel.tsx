@@ -1,10 +1,10 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type Ref } from "react";
 import { placeQueryOptions, shownOf, usePlace } from "../api/queries";
 import type { PlaceCandidate, PlaceResponse, PlaceVisit } from "../api/types";
 import { goBack, navigate } from "../app/router";
 import { dateLabel, dateOf } from "../time/dates";
 import { formatDuration, formatInteger, formatTime } from "../time/format";
-import { EditActions } from "./editForms";
+import { EditActions, focusLost } from "./editForms";
 import { MergeConfirm, MergedPlaces, RenameForm, type EditProps } from "./PlaceEdits";
 import styles from "./PlacePanel.module.css";
 import { PlacePicker } from "./PlacePicker";
@@ -24,9 +24,9 @@ function whereIs(place: PlaceResponse): string | null {
 }
 
 /** The way out, which every state of the panel has: the view the owner came from, or today if the place was opened as a page (`goBack`). */
-function BackButton() {
+function BackButton({ ref }: { ref?: Ref<HTMLButtonElement> }) {
   return (
-    <button type="button" className={`${rows.tap} ${styles.back}`} onClick={() => goBack()}>
+    <button ref={ref} type="button" className={`${rows.tap} ${styles.back}`} onClick={() => goBack()}>
       <span aria-hidden="true">‹</span> Back
     </button>
   );
@@ -140,9 +140,17 @@ function Place({ place, id }: { place: PlaceResponse; id: number }) {
 export function PlacePanel({ id }: PlacePanelProps) {
   const place = usePlace(id);
   const { gone, shown } = shownOf(place);
+  // A place that turns gone under a form that has the focus (a 404 to a write, which has the place asked for again): the focus was in the form, which is
+  // gone with it, and goes to the way out. A place that was never there (a page opened on it) is a page like any other, and takes nothing.
+  const back = useRef<HTMLButtonElement>(null);
+  const wasShown = useRef(false);
+  useEffect(() => {
+    if (gone && wasShown.current && focusLost()) back.current?.focus();
+    wasShown.current = shown !== undefined;
+  }, [gone, shown]);
   return (
     <>
-      <BackButton />
+      <BackButton ref={back} />
       {gone && <Empty message="This place no longer exists" />}
       {!gone && place.isError && <ErrorState error={place.error} onRetry={() => void place.refetch()} />}
       {shown !== undefined ? <Place place={shown} id={id} /> : !gone && !place.isError && <Loading />}

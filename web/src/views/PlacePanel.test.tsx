@@ -105,6 +105,7 @@ describe("PlacePanel", () => {
     mount(9);
 
     expect(await screen.findByText("This place no longer exists")).toBeInTheDocument();
+    expect(document.body).toHaveFocus(); // a place that was not there to begin with is a page like any other: nothing takes the focus
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument(); // asking again cannot help
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
@@ -583,6 +584,7 @@ describe("PlacePanel focus", () => {
     expect(await screen.findByText("This place no longer exists")).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(back()).toHaveFocus(); // the form that had the focus is gone with the place: the way out has it
   });
 
   test("PlacePanel_puts_the_focus_on_the_next_merged_place_after_a_separate_and_on_the_name_when_the_section_goes", async () => {

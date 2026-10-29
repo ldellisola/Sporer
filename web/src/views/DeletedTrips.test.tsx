@@ -57,6 +57,7 @@ function mount() {
 
 /** What the notes over the map say: the section has a status of its own, which is empty until it has something to say. */
 const notes = (): string[] => screen.getAllByRole("status").map((status) => status.textContent ?? "");
+const refused = () => new Response("{}", { status: 404 });
 const deletedSection = () => screen.getByRole("region", { name: "Deleted trips" });
 
 describe("DeletedTrips", () => {
@@ -174,15 +175,68 @@ describe("DeletedTrips", () => {
     api.state.restore = () => new Response("{}", { status: 404 });
     mount();
     await within(deletedSection()).findByText(LISBON.label);
+    let answer: (response: Response) => void = () => undefined;
+    api.state.deleted = () => new Promise<Response>((resolve) => (answer = resolve)); // the list that a 404 has asked for again comes when the test says
 
-    api.state.deleted = []; // restored in another window: a 404 has the list asked for again
     fireEvent.click(restoreButton(LISBON.label));
 
     const alert = await within(deletedSection()).findByRole("alert");
     expect(alert).toHaveTextContent("Could not restore Lisbon · 12 – 16 Sep 2026: That trip is not deleted any more.");
     expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    await within(deletedSection()).findByText("No deleted trips"); // the row went with the list that was asked for again
+    expect(rowsOf()).toHaveLength(1); // not gone yet: the focus has nowhere to go from
+
+    answer(Response.json([])); // restored in another window
+    const none = await within(deletedSection()).findByText("No deleted trips"); // the row went with the list that was asked for again
+    await waitFor(() => expect(none).toHaveFocus()); // and the focus, which was on its button, is on the note that took its place
     expect(api.restores()).toHaveLength(1);
+  });
+
+  test("DeletedTrips_puts_the_focus_on_the_next_restore_button_when_the_row_of_a_refused_restore_goes_with_the_list_that_is_asked_for_again", async () => {
+    const api = stubApi();
+    api.state.deleted = [LISBON, COPENHAGEN, PORTO];
+    api.state.restore = () => new Response("{}", { status: 404 });
+    mount();
+    await within(deletedSection()).findByText(LISBON.label);
+    restoreButton(COPENHAGEN.label).focus();
+
+    api.state.deleted = [LISBON, PORTO]; // restored in another window
+    fireEvent.click(restoreButton(COPENHAGEN.label));
+
+    await within(deletedSection()).findByRole("alert");
+    await waitFor(() => expect(within(deletedSection()).queryByText(COPENHAGEN.label)).not.toBeInTheDocument());
+    await waitFor(() => expect(restoreButton(PORTO.label)).toHaveFocus());
+  });
+
+  test("DeletedTrips_leaves_the_focus_where_the_owner_has_put_it_when_the_row_of_a_refused_restore_goes", async () => {
+    const api = stubApi();
+    api.state.deleted = [LISBON, COPENHAGEN];
+    api.state.restore = () => new Response("{}", { status: 404 });
+    mount();
+    await within(deletedSection()).findByText(LISBON.label);
+    const outside = document.body.appendChild(document.createElement("button"));
+
+    api.state.deleted = [LISBON];
+    fireEvent.click(restoreButton(COPENHAGEN.label));
+    outside.focus(); // the owner has gone elsewhere
+    await waitFor(() => expect(within(deletedSection()).queryByText(COPENHAGEN.label)).not.toBeInTheDocument());
+
+    expect(outside).toHaveFocus();
+    outside.remove();
+  });
+
+  test("DeletedTrips_does_not_move_the_focus_for_a_refused_restore_whose_row_stays", async () => {
+    const api = stubApi();
+    api.state.deleted = [LISBON, COPENHAGEN];
+    api.state.restore = () => refused();
+    mount();
+    await within(deletedSection()).findByText(LISBON.label);
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.click(restoreButton(LISBON.label));
+    await within(deletedSection()).findByRole("alert");
+
+    expect(rowsOf()).toHaveLength(2); // the list that was asked for again still has it
+    expect(restoreButton(COPENHAGEN.label)).not.toHaveFocus(); // nothing has gone, so there is nowhere to move the focus from
   });
 
   test("DeletedTrips_offers_a_retry_for_a_restore_that_failed_and_sends_the_same_trip_again", async () => {

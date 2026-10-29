@@ -168,6 +168,7 @@ describe("TripPanel a trip that is gone", () => {
     mount("2026-01-01");
 
     expect(await screen.findByText("This trip no longer exists")).toBeInTheDocument();
+    expect(document.body).toHaveFocus(); // a trip that was not there to begin with is a page like any other: nothing takes the focus
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument(); // asking again cannot help
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
@@ -352,7 +353,7 @@ describe("TripPanel edits", () => {
 
     await waitFor(() => expect(screen.queryByRole("textbox", { name: "Name" })).not.toBeInTheDocument());
     expect(editButton()).toHaveFocus();
-    expect(api.writes().map((call) => call.body)).toEqual([{ name: "Portugal 2026", startDate: "2026-09-12", endDate: "2026-09-16" }]);
+    expect(api.writes().map((call) => call.body)).toEqual([{ name: "Portugal 2026", startDate: null, endDate: null }]);
     expect(await screen.findByText("3 flights")).toBeInTheDocument(); // everything is asked for again after a write
     expect(window.location.pathname).toBe("/trip/2026-09-12");
   });
@@ -400,8 +401,44 @@ describe("TripPanel edits", () => {
 
     expect(await screen.findByText("This trip no longer exists")).toBeInTheDocument(); // asked for again, as a 404 has it
     expect(screen.queryByText(/Delete this trip\?/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "See all trips" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "See all trips" })).toHaveFocus(); // the question that had the focus is gone with the trip: the way out has it
     expect(window.location.pathname).toBe("/trip/2026-09-12");
+  });
+
+  test("TripPanel_puts_the_focus_on_the_way_out_when_a_save_finds_the_trip_gone_and_not_when_the_owner_has_put_it_elsewhere", async () => {
+    let gone = false;
+    stubEdits({
+      [TRIP]: () => (gone ? new Response("{}", { status: 404 }) : Response.json(LISBON)),
+      [PUT]: () => {
+        gone = true;
+        return new Response("{}", { status: 404 });
+      },
+    });
+    const { client } = mount();
+    await screen.findByRole("list", { name: "Day by day" });
+    fireEvent.click(editButton());
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Portugal 2026" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("This trip no longer exists")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "See all trips" })).toHaveFocus();
+
+    // Where the owner is somewhere else when a trip turns gone, the focus stays there.
+    gone = false;
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["trip", "2026-09-12"] });
+    });
+    await screen.findByRole("list", { name: "Day by day" });
+    const outside = document.body.appendChild(document.createElement("button"));
+    outside.focus();
+    gone = true;
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["trip", "2026-09-12"] });
+    });
+
+    expect(await screen.findByText("This trip no longer exists")).toBeInTheDocument();
+    expect(outside).toHaveFocus();
+    outside.remove();
   });
 
   test("TripPanel_says_what_a_save_the_server_refuses_gets_in_its_words_and_keeps_the_form", async () => {

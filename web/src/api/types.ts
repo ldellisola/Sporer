@@ -249,6 +249,11 @@ export interface TripSummary {
    * made-up one when it is. A form that sends a name back sends this, so that a made-up name is never made the owner's.
    */
   ownName: string | null;
+  /**
+   * Whether the owner's edit of the trip has a start date or an end date. `edited` is true for a name alone too, and does not say this: a trip that has
+   * dates of its own can be put back to the dates that detection found it with.
+   */
+  datesEdited: boolean;
 }
 
 /** A trip of the list: its summary and the line to draw for it, home, the places it slept at, home (an ongoing trip has not come back, so it stops at the last place). */

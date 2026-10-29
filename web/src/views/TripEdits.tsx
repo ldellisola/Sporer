@@ -39,22 +39,32 @@ interface EditBody {
   endDate: string | null;
 }
 
+/** A write of the edit, and the button that sent it: a Retry sends the same, and the focus goes back to that button. */
+interface Write {
+  body: EditBody;
+  by: "save" | "detected";
+}
+
 /**
  * The name and the two dates of the trip as fields, with Save and Cancel. The dates are the trip's local dates: the day it begins and the day the
  * owner is back (the nights are those before it). The field is for the name that the owner gives the trip (`ownName`): it has the owner's name, and
  * is empty when the owner has given none, with the name that the trip is shown under as its placeholder, which is the made-up one then. An empty name
  * goes back to the made-up one. What is sent for a name that was not touched is `ownName` as it is, so that a made-up name is never made the owner's.
  *
- * The dates are sent as they are, and the server takes one that is the trip's own as detected. Nothing is sent when nothing was changed. A start
- * that is not before the end, or a date that is empty, is told by the form (on Save, and not as the dates are typed, which passes through such
- * dates), with the focus on the field to put right; every other refusal is the server's, in its words with no Retry (`WriteError`), and the form
- * stays as it was to be put right. The trip's id is its first night, so a new start date makes a new id: the page is replaced by the trip's new address,
- * where the heading of the panel takes the focus (the form that had it is gone). While the write is on its way Cancel and Escape wait: they cannot take
- * it back, and a form that is gone cannot go on to the trip's new address.
+ * What is sent for a date is only what the owner decided. A date that was not touched (it is what the form was filled in with) is null, which is "as
+ * detected": the trip is read once, and one that is still going on has its end date moved on as nights are processed, so an end date sent back would be
+ * stored as the owner's, and the trip would stop being ongoing and lose its latest night (P4-R41). The exception is a trip whose edit has dates
+ * (`datesEdited`): either of its dates may be an edit, which a null would take back (a write replaces the edit), so its untouched dates are sent as they
+ * are, and the server takes one that is the trip's own as detected. The end of a trip that is still going on cannot be an edit (an end date ends it), and is
+ * always null when it was not touched. Nothing is sent when nothing was changed. A start that is not before the end, or a date that is empty, is told by the
+ * form (on Save, and not as the dates are typed, which passes through such dates), with the focus on the field to put right; every other refusal is the
+ * server's, in its words with no Retry (`WriteError`), and the form stays as it was to be put right. The trip's id is its first night, so a new start date
+ * makes a new id: the page is replaced by the trip's new address, where the heading of the panel takes the focus (the form that had it is gone). While the
+ * write is on its way Cancel and Escape wait: they cannot take it back, and a form that is gone cannot go on to the trip's new address.
  *
- * **Use detected dates** is for a trip that was edited (which does not say that its dates were: a name is an edit too): it sends null for both dates, with
- * the owner's name as it is (what is typed in the form is not sent, and neither are its dates, which may be empty), so the trip has the dates that
- * detection found it with. A write that failed has its Retry send what failed, whichever button it was sent by.
+ * **Use detected dates** is for a trip whose edit has dates (`datesEdited`): it sends null for both dates, with the name as the field has it (trimmed, and null
+ * when empty), so the trip has the dates that detection found it with. The dates of the form are not sent, and may be empty. A write that failed has its
+ * Retry send what failed, whichever button sent it, and the focus goes back to that button.
  */
 export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: () => void }) {
   const nameId = useId();
@@ -69,17 +79,19 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
   const startField = useRef<HTMLInputElement>(null);
   const endField = useRef<HTMLInputElement>(null);
   const saveButton = useRef<HTMLButtonElement>(null);
-  const edit = useWrite((body: EditBody) => putJson<EditTripResponse>(`/api/trips/${trip.id}`, body));
-  // A button that is turned off while it is pressed may take the focus with it: it goes back to Save, which the owner presses again once the form is right.
+  const detectedButton = useRef<HTMLButtonElement>(null);
+  const edit = useWrite(({ body }: Write) => putJson<EditTripResponse>(`/api/trips/${trip.id}`, body));
+  // A button that is turned off while it is pressed may take the focus with it: it goes back to the one that sent the write, which the owner presses
+  // again once the form is right.
   useEffect(() => {
-    if (edit.isError && focusLost()) saveButton.current?.focus();
-  }, [edit.isError]);
+    if (edit.isError && focusLost()) (edit.variables.by === "detected" ? detectedButton : saveButton).current?.focus();
+  }, [edit.isError, edit.variables]);
   const onDate = (set: (date: string) => void) => (event: ChangeEvent<HTMLInputElement>) => {
     set(event.target.value);
     setProblem(null); // what it said was of the dates that were
   };
-  const send = (body: EditBody) =>
-    edit.mutate(body, {
+  const send = (write: Write) =>
+    edit.mutate(write, {
       onSuccess: ({ id }) => {
         if (id === trip.id) return onClose();
         const route = { view: "trip", id } as const;
@@ -97,15 +109,25 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
       return;
     }
     const text = name.trim();
-    if (text === initialName && start === trip.localStartDate && end === trip.localEndDate) return onClose();
-    send({ name: text === "" ? null : text, startDate: start, endDate: end });
+    const startTouched = start !== trip.localStartDate;
+    const endTouched = end !== trip.localEndDate;
+    if (text === initialName && !startTouched && !endTouched) return onClose();
+    send({
+      by: "save",
+      body: {
+        name: text === "" ? null : text,
+        startDate: startTouched || trip.datesEdited ? start : null,
+        endDate: endTouched || (trip.datesEdited && !trip.ongoing) ? end : null,
+      },
+    });
   };
   const detectedDates = () => {
     if (edit.isPending) return;
     setProblem(null);
-    send({ name: trip.ownName, startDate: null, endDate: null });
+    const text = name.trim();
+    send({ by: "detected", body: { name: text === "" ? null : text, startDate: null, endDate: null } });
   };
-  const detecting = edit.isPending && edit.variables.startDate === null;
+  const detecting = edit.isPending && edit.variables.by === "detected";
   /** What a date field says of itself when the form has found it wrong: that it is, and where the reason is. */
   const invalidIf = (field: Problem["field"]) => (problem?.field === field ? { "aria-invalid": true, "aria-describedby": problemId } : {});
   return (
@@ -167,9 +189,9 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
           />
         </div>
       </div>
-      {trip.edited && (
+      {trip.datesEdited && (
         <div className={styles.detected}>
-          <button type="button" className={forms.secondary} disabled={edit.isPending} onClick={detectedDates}>
+          <button ref={detectedButton} type="button" className={forms.secondary} disabled={edit.isPending} onClick={detectedDates}>
             {detecting ? "Using detected dates…" : "Use detected dates"}
           </button>
         </div>
@@ -197,7 +219,7 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
 /**
  * What deleting the trip is going to do, to be confirmed: it stays deleted when the data is processed again, and Settings brings it back. The
  * question takes the focus when it opens (it is read, and is not a button: Enter held down on the one that opened it would delete), so that Escape is
- * Cancel at once. The page goes to the list of trips when the trip is deleted, where the heading of the list takes the focus (the question that had it is
+ * Cancel at once. The page is replaced by the list of trips when the trip is deleted (Back must not land on a trip that is gone), where the heading of the list takes the focus (the question that had it is
  * gone). A refusal (the trip is gone already: 404) would be refused again: no Retry,
  * and Delete is off, with the focus on Cancel, which is the way on. While the write is on its way Cancel and Escape wait, as in the form of the edit.
  */
@@ -218,7 +240,7 @@ export function DeleteTripConfirm({ trip, onClose }: { trip: TripResponse; onClo
     remove.mutate(undefined, {
       onSuccess: () => {
         wantHeadingFocus({ view: "trips" });
-        navigate({ view: "trips" });
+        navigate({ view: "trips" }, { replace: true }); // the trip is gone: Back is not to go to it
       },
     });
   };
