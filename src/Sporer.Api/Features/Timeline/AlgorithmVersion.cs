@@ -7,7 +7,9 @@ namespace Sporer.Api.Features.Timeline;
 
 /// <summary>
 /// Names the algorithm that produced the stored timeline: the version of the detection code plus a fingerprint of the
-/// thresholds it ran with. When the name changes, what is stored is out of date and the whole history is processed again.
+/// thresholds it ran with. When the name changes, what is stored is out of date and the whole history is processed again. The thresholds
+/// are the configured ones: a distance for a trip that the owner has set (<c>app_setting</c>, see <c>SettingsStore</c>) is put over the
+/// configured one when the trips are worked out, and is no part of the fingerprint, so changing it rebuilds nothing.
 /// </summary>
 public static class AlgorithmVersion
 {

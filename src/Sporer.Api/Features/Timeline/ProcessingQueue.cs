@@ -178,6 +178,24 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
     }
 
     /// <summary>
+    /// Makes every failed dirty range due now, and returns how many that was: the ranges with <c>attempts</c> above zero, those that failed
+    /// on their own and the backfill steps that were set aside (<see cref="SetBackfillStepAsideAsync"/>), start again with no attempts and no
+    /// backoff to wait out, so the worker takes them on its next pass (<see cref="DueRangesAsync"/>). A range that is not failed is left alone
+    /// (it is waiting, which is not what is retried), and so is the state of the backfill: its cursor and its chunk attempts are not touched, so a
+    /// backfill that is held up by a step that keeps failing goes on as it did. The last error stays with the range, as what failed last; the
+    /// next failure replaces it, and a range that is done is deleted. A range recorded less than <see cref="ProcessingOptions.Debounce"/> ago (a
+    /// step that was set aside a moment ago) would still wait out the debounce, so it is recorded as if it had been that long ago, as the edits
+    /// of points are (<see cref="EnqueueNowAsync"/>): retrying is asking for it now.
+    /// </summary>
+    public async Task<int> RetryFailedAsync(DateTime nowUtc, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        return await connection.ExecuteAsync(new CommandDefinition(
+            "update dirty_range set attempts = 0, next_attempt_at = null, created_at = least(created_at, @DueBefore) where attempts > 0",
+            new { DueBefore = AsUtc(nowUtc) - options.Debounce }, cancellationToken: ct));
+    }
+
+    /// <summary>
     /// Sets a backfill chunk aside so that the backfill can go on: a failed dirty range (with <see cref="SetAsideAfterAttempts"/>
     /// attempts, retried after the usual backoff, behind the cursor) is recorded for <paramref name="fromUtc"/> to
     /// <paramref name="coveredToUtc"/>, and the cursor, which must be at <paramref name="fromUtc"/>, moves to

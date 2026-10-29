@@ -1,5 +1,7 @@
 using Dapper;
 using Npgsql;
+using Sporer.Api.Features.Homes;
+using Sporer.Api.Features.Settings;
 using Sporer.Api.Features.Timeline;
 using Sporer.Timeline;
 
@@ -26,8 +28,8 @@ public interface ITripRefresher
 
 /// <summary>
 /// The one path from the stored timeline to the nights, homes and trips: it builds the nights of the window that changed,
-/// then works out the home periods and the trips from all of them, and puts the owner's edits of the trips on the ones it finds.
-/// Whether a place is home depends on 90 nights, and a trip
+/// then works out the home periods from all of them, and the trips from those and the homes the owner set, and puts the owner's
+/// edits of the trips on the ones it finds. Whether a place is home depends on 90 nights, and a trip
 /// on the nights on both sides of it, so a change in one window can move either of them anywhere in the history. They are
 /// therefore not patched but recomputed in memory (a few thousand nights and the stays), and the new nights, homes and trips
 /// are written together in one transaction.
@@ -97,12 +99,25 @@ public sealed class TripRefresher(
             .Select(n => n.PlaceId is { } id && survivors.TryGetValue(id, out var survivor) ? n with { PlaceId = survivor } : n)
             .ToList();
 
-        // The position of every place the nights are at, read once: home detection groups the places that are near each other, and trip
-        // detection measures the nights from the homes' positions, which are among them (a home is a place of the nights).
-        var positions = await places.LoadPositionsAsync(all.Where(n => n.PlaceId is not null).Select(n => n.PlaceId!.Value), ct);
+        // What the owner set, read here, in the transaction that holds the lock, as the edits of the trips are: the homes they gave, and the
+        // distance that makes a night away. A home names the place the owner chose, which may have been merged into another since.
+        var userHomes = (await HomeStore.LoadUserAsync(connection, transaction, ct))
+            .Select(h => survivors.TryGetValue(h.PlaceId, out var survivor) ? h with { PlaceId = survivor } : h)
+            .ToList();
+        var tripDistance = await SettingsStore.LoadTripMinDistanceKmAsync(connection, transaction, ct);
 
+        // The position of every place the nights are at, read once: home detection groups the places that are near each other, and trip
+        // detection measures the nights from the homes' positions, which are among them (a home is a place of the nights). The places of the
+        // homes the owner set are read too: they need not be places that any night was at.
+        var positions = await places.LoadPositionsAsync(
+            all.Where(n => n.PlaceId is not null).Select(n => n.PlaceId!.Value).Concat(userHomes.Select(h => h.PlaceId)), ct);
+
+        // The homes detection found are what is stored of them, and what the owner set is put over them only to measure the nights from. The
+        // distance is the owner's if they set one (it is no part of the algorithm's version: see AlgorithmVersion), else the configured one.
         var homes = HomeDetector.Detect(all, positions, options);
-        var detected = TripDetector.Detect(all, homes, positions, await segments.LoadStayPositionsAsync(ct), options);
+        var tripOptions = tripDistance is { } kilometers ? options with { TripMinDistanceKm = kilometers } : options;
+        var detected = TripDetector.Detect(
+            all, HomeOverrides.Apply(homes, userHomes), positions, await segments.LoadStayPositionsAsync(ct), tripOptions);
 
         // The owner's edits of the trips, read here, in the transaction that holds the lock, so that an edit and a refresh never interleave:
         // what is written is made from the edits as they are once this has the lock. Detection is worked out afresh each time, and the edits

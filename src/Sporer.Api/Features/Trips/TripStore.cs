@@ -11,10 +11,12 @@ namespace Sporer.Api.Features.Trips;
 /// <summary>
 /// A stored trip with what a list of trips is drawn from. <paramref name="Nights"/> are its nights with a known position, in
 /// date order, each with the city and country of its surviving place (see <see cref="TripStore.ListAsync"/>);
-/// <paramref name="HomeAtStart"/> and <paramref name="HomeAtEnd"/> are the home in effect on its first and on its last night,
-/// null where no home period covers the night. The trip's own fields are those the detector found, with the dates of the owner's
-/// edit where it has given it any, and its id is its first night. <paramref name="Name"/> is the owner's name for it, null for the
-/// automatic one, and <paramref name="Edited"/> says that the trip has an edit (see <see cref="TripStore.ListAsync"/>).
+/// <paramref name="HomeAtStart"/> and <paramref name="HomeAtEnd"/> are the home in effect on its first night and on the night after its last,
+/// null where no home period covers the night: the home it left from and the one it came back to, which is another when the person moved
+/// house while away (a new home is in effect from the night after the trip, as <see cref="TripDetector"/> measures the return). The
+/// trip's own fields are those the detector found, with the dates of the owner's edit where it has given it any, and its id is its
+/// first night. <paramref name="Name"/> is the owner's name for it, null for the automatic one, and <paramref name="Edited"/> says that
+/// the trip has an edit (see <see cref="TripStore.ListAsync"/>).
 /// </summary>
 public sealed record StoredTrip(
     DetectedTrip Trip, IReadOnlyList<TripNight> Nights, GeoPoint? HomeAtStart, GeoPoint? HomeAtEnd, string? Name = null, bool Edited = false);
@@ -281,7 +283,7 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
                     .Select(n => new TripNight(ParseDate(n.Date), n.City, n.Country, new GeoPoint(n.Latitude, n.Longitude)));
 
                 return new StoredTrip(
-                    trip, [.. known], HomeOn(trip.FirstNight, homeList)?.Position, HomeOn(trip.LastNight, homeList)?.Position, t.Name, t.Edited);
+                    trip, [.. known], HomeOn(trip.FirstNight, homeList)?.Position, HomeOn(trip.LastNight.AddDays(1), homeList)?.Position, t.Name, t.Edited);
             }),
         ];
     }
