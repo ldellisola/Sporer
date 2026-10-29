@@ -19,14 +19,16 @@ public sealed class EditRecompute(
 {
     /// <summary>
     /// Works the homes and trips out again, or, when that fails, asks the worker to. It does not throw (a request that is cancelled
-    /// has its recompute stopped, and the worker is asked to do it all the same): the caller answers that the edit is done.
+    /// has its recompute stopped, and the worker is asked to do it all the same): the caller answers that the edit is done. True when
+    /// the homes and trips were worked out, false when they were left to the worker: an edit that answers with what the trips are
+    /// now (a trip's new id) says what it can work out for itself, then.
     /// </summary>
-    public async Task RecomputeAfterEditAsync(CancellationToken ct)
+    public async Task<bool> RecomputeAfterEditAsync(CancellationToken ct)
     {
         try
         {
             await refresher.RecomputeAsync(ct);
-            return;
+            return true;
         }
         catch (Exception ex)
         {
@@ -44,5 +46,7 @@ public sealed class EditRecompute(
         {
             logger.LogError(ex, "Asking the worker to work out the homes and trips failed; they stay as they were until the next refresh");
         }
+
+        return false;
     }
 }

@@ -10,21 +10,24 @@ public interface ITripRefresher
 {
     /// <summary>
     /// Refreshes after the timeline between <paramref name="fromUtc"/> and <paramref name="toUtc"/> was rebuilt. The window
-    /// says which nights to build again; the homes and the trips are always worked out afresh from every night.
+    /// says which nights to build again; the homes and the trips are always worked out afresh from every night, and the owner's
+    /// edits of the trips (<see cref="TripEditStore"/>) are put on the trips found.
     /// </summary>
     Task RefreshAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct);
 
     /// <summary>
     /// Works out the homes and the trips afresh from the nights as they are stored, and builds no night: it is for a change that
     /// moves the homes and trips but not the nights (places merged or separated, which the nights keep as they were and are read
-    /// through). It holds the same lock as <see cref="RefreshAsync"/>, so the two never interleave their reads and writes.
+    /// through) or the owner's edits of the trips (renamed, re-dated, deleted or brought back). It holds the same lock as
+    /// <see cref="RefreshAsync"/>, so the two never interleave their reads and writes.
     /// </summary>
     Task RecomputeAsync(CancellationToken ct);
 }
 
 /// <summary>
 /// The one path from the stored timeline to the nights, homes and trips: it builds the nights of the window that changed,
-/// then works out the home periods and the trips from all of them. Whether a place is home depends on 90 nights, and a trip
+/// then works out the home periods and the trips from all of them, and puts the owner's edits of the trips on the ones it finds.
+/// Whether a place is home depends on 90 nights, and a trip
 /// on the nights on both sides of it, so a change in one window can move either of them anywhere in the history. They are
 /// therefore not patched but recomputed in memory (a few thousand nights and the stays), and the new nights, homes and trips
 /// are written together in one transaction.
@@ -101,10 +104,16 @@ public sealed class TripRefresher(
         var homes = HomeDetector.Detect(all, positions, options);
         var detected = TripDetector.Detect(all, homes, positions, await segments.LoadStayPositionsAsync(ct), options);
 
+        // The owner's edits of the trips, read here, in the transaction that holds the lock, so that an edit and a refresh never interleave:
+        // what is written is made from the edits as they are once this has the lock. Detection is worked out afresh each time, and the edits
+        // are put on what it finds, so that they hold across refreshes and rebuilds of the timeline.
+        var edits = await TripEditStore.LoadAsync(connection, transaction, ct);
+        var edited = TripEdits.Apply(detected, edits, TripEdits.ZoneOfNearestNight(all));
+
         if (window is null)
-            await TripStore.ReplaceDetectedAsync(connection, transaction, homes, detected, ct);
+            await TripStore.ReplaceDetectedAsync(connection, transaction, homes, edited, ct);
         else
-            await trips.ReplaceAllAsync(connection, transaction, from, to, built, homes, detected, ct);
+            await trips.ReplaceAllAsync(connection, transaction, from, to, built, homes, edited, ct);
 
         await transaction.CommitAsync(ct);
     }

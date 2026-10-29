@@ -14,7 +14,9 @@ public sealed record TripsResponse(IReadOnlyList<TripDto> Trips);
 /// the person left and came back (ISO-8601 UTC, <c>Z</c>); <paramref name="End"/> is always there, and null while the trip is
 /// <paramref name="Ongoing"/>. The local dates are those of the start and end in <paramref name="StartTimeZone"/> and
 /// <paramref name="EndTimeZone"/>, the IANA zones they were in (for an ongoing trip the end date is the day after its last
-/// night). <paramref name="Name"/> is made up when asked for (see <see cref="TripNaming"/>), as are <paramref name="Cities"/>.
+/// night). <paramref name="Name"/> is the owner's name for the trip where it has one, and made up when asked for where not (see
+/// <see cref="TripNaming"/>), as are <paramref name="Cities"/>. <paramref name="Edited"/> says the owner has edited the trip: named it,
+/// or changed its dates (an edit of the dates is why <paramref name="Id"/> may not be the night detection found it on).
 /// </summary>
 /// <remarks>
 /// Not abstract, so that <see cref="TripMapping.Summary"/> can make one to build the others from; what the others add to it is
@@ -33,7 +35,8 @@ public record TripSummary(
     string LocalStartDate,
     string LocalEndDate,
     bool Ongoing,
-    IReadOnlyList<TripCityDto> Cities);
+    IReadOnlyList<TripCityDto> Cities,
+    bool Edited);
 
 /// <summary>
 /// A trip of the list: its <see cref="TripSummary"/>, and its <see cref="Thumbnail"/>, the line to draw for the trip,

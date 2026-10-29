@@ -32,6 +32,7 @@ builder.Services.AddSingleton<RangeStore>();
 builder.Services.AddSingleton<NightStore>();
 builder.Services.AddSingleton<NightBuilder>();
 builder.Services.AddSingleton<TripStore>();
+builder.Services.AddSingleton<TripEditStore>();
 builder.Services.AddSingleton<TripRefresher>();
 builder.Services.AddSingleton<ITripRefresher>(sp => sp.GetRequiredService<TripRefresher>());
 builder.Services.AddSingleton<EditRecompute>();
