@@ -44,6 +44,14 @@ function decoded(path: string): string {
   }
 }
 
+/**
+ * The files of the shell as a request has their paths: percent-encoded (a name with a space is asked for as `%20`), which is what
+ * `routeOf` and `isAppPage` compare with. The build gives the names as they are on disk.
+ */
+export function shellPaths(files: readonly string[], origin: string): Set<string> {
+  return new Set(files.map((file) => new URL(file, origin).pathname));
+}
+
 export function cacheName(version: string): string {
   return `${CACHE_PREFIX}${version}`;
 }
@@ -54,9 +62,32 @@ export function cachesToDelete(names: readonly string[], current: string): strin
 }
 
 /**
- * Whether the network's answer to a navigation is the app's page, to be kept as the page to show offline. Any other answer, a redirect
- * to the login included, is only handed to the browser.
+ * Whether the server's answer for /index.html can be the page of the app: ok, of this origin, and not what a redirect led to (a sign-in
+ * page): its body is then looked at (`isAppPage`). Any other answer is not kept.
  */
-export function isShellDocument(response: { ok: boolean; type: string; headers: { get(name: string): string | null } }): boolean {
-  return response.ok && response.type === "basic" && (response.headers.get("content-type") ?? "").trim().toLowerCase().startsWith("text/html");
+export function isShellDocument(response: { ok: boolean; type: string; redirected: boolean; headers: { get(name: string): string | null } }): boolean {
+  return (
+    response.ok &&
+    response.type === "basic" &&
+    !response.redirected &&
+    (response.headers.get("content-type") ?? "").trim().toLowerCase().startsWith("text/html")
+  );
+}
+
+// An attribute `src` or `href` and its value, quoted either way or not at all. (Not `data-src`: nothing before it that is part of a name.)
+const URL_ATTRIBUTE = /(?<![\w-])(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+const ROOT_ELEMENT = /<div\b[^>]*?(?<![\w-])id\s*=\s*(?:"root"|'root'|root(?![\w-]))/i;
+
+/**
+ * Whether `html` is the app's page of this build: it has the element the app mounts in, and every file it names under /assets/ is one of
+ * the worker's (`shellFiles`, as `shellPaths` gives them). A page of another build, or no page of the app at all, is not to be kept as the
+ * page that opens offline: it would open an app whose files are not there.
+ */
+export function isAppPage(html: string, shellFiles: ReadonlySet<string>): boolean {
+  if (!ROOT_ELEMENT.test(html)) return false;
+  for (const match of html.matchAll(URL_ATTRIBUTE)) {
+    const value = match[1] ?? match[2] ?? match[3] ?? "";
+    if (value.startsWith("/assets/") && !shellFiles.has(new URL(value, "https://page.invalid").pathname)) return false;
+  }
+  return true;
 }

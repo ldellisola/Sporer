@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { build, normalizePath, type Plugin, type ResolvedConfig } from "vite";
 
@@ -18,21 +18,30 @@ const WORKER_FILE = "sw.js";
 const NOT_IN_SHELL = new Set(["index.html", "test-style.json", WORKER_FILE]);
 
 /** The files of a build that the worker keeps, as root-relative paths in order. `names` are relative to the build's outDir. */
-export function shellFilesOf(names: Iterable<string>): string[] {
+function shellFilesOf(names: Iterable<string>): string[] {
   return [...new Set(names)]
     .filter((name) => !NOT_IN_SHELL.has(name) && !name.endsWith(".map") && !name.split("/").some((part) => part.startsWith(".")))
     .map((name) => `/${name}`)
     .sort();
 }
 
+async function sha256Hex(data: Uint8Array<ArrayBuffer> | string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", typeof data === "string" ? new TextEncoder().encode(data) : data));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 /**
- * Names the shell: a hash of the files' names and of the page. Vite names what it makes after its content (a file under assets/), so this
- * changes whenever anything of the app does, and stays when nothing does. scripts/check-sw.mjs makes the same hash, on its own.
+ * Names the shell: a hash of the files' names, of the page, and of the bytes of every file outside /assets/. Vite names what it makes after
+ * its content (a file under assets/), so a change to one shows in the names; what it copies from public/ (the manifest, the icons) keeps
+ * its name when its content changes, and so is hashed by its bytes: one `name<TAB>sha256` line each, in the order of the names.
+ * The input is the names (one a line), a blank line, the page, a blank line and those lines. scripts/check-sw.mjs makes the same hash,
+ * on its own.
  */
-export async function versionOf(files: readonly string[], indexHtml: string): Promise<string> {
-  const text = `${[...files].sort().join("\n")}\n\n${indexHtml}`;
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
-  return [...digest.slice(0, 8)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+async function versionOf(files: readonly string[], indexHtml: string, bytesOf: (file: string) => Promise<Uint8Array<ArrayBuffer>>): Promise<string> {
+  const sorted = [...files].sort();
+  const unhashed = await Promise.all(sorted.filter((file) => !file.startsWith("/assets/")).map(async (file) => `${file}\t${await sha256Hex(await bytesOf(file))}`));
+  const hash = await sha256Hex(`${sorted.join("\n")}\n\n${indexHtml}\n\n${unhashed.join("\n")}`);
+  return hash.slice(0, 16);
 }
 
 export function serviceWorker(): Plugin {
@@ -55,7 +64,7 @@ export function serviceWorker(): Plugin {
       // The bundle has what Vite makes; what it copies from public/ it does not list.
       const names = [...Object.keys(bundle), ...(await publicFiles(config))];
       const files = shellFilesOf(names);
-      const version = await versionOf(files, indexHtml);
+      const version = await versionOf(files, indexHtml, (file) => contentOf(config, bundle[file.slice(1)], file));
 
       const code = await buildWorker(config);
       // The constant first: sw.ts reads it as `self.__SHELL__`. A line of its own, so that scripts/check-sw.mjs can read it back.
@@ -70,6 +79,15 @@ async function publicFiles(config: ResolvedConfig): Promise<string[]> {
   if (!config.build.copyPublicDir || publicDir === "") return [];
   const entries = await readdir(publicDir, { recursive: true, withFileTypes: true });
   return entries.filter((entry) => entry.isFile()).map((entry) => normalizePath(relative(publicDir, join(entry.parentPath, entry.name))));
+}
+
+type Made = { type: "chunk"; code: string } | { type: "asset"; source: string | Uint8Array };
+
+// The bytes of a file of the output that is not under /assets/: Vite's own (a chunk or an asset of the bundle), else the file of public/.
+async function contentOf(config: ResolvedConfig, made: Made | undefined, file: string): Promise<Uint8Array<ArrayBuffer>> {
+  if (made?.type === "chunk") return new TextEncoder().encode(made.code);
+  if (made !== undefined) return typeof made.source === "string" ? new TextEncoder().encode(made.source) : new Uint8Array(made.source);
+  return readFile(join(config.publicDir, file.slice(1)));
 }
 
 async function buildWorker(config: ResolvedConfig): Promise<string> {

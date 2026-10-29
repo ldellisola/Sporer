@@ -8,6 +8,7 @@ declare module "node:fs/promises" {
     isFile(): boolean;
   }
   export function readdir(path: string, options: { recursive: true; withFileTypes: true }): Promise<Dirent[]>;
+  export function readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
 }
 declare module "node:path" {
   export function join(...parts: string[]): string;
