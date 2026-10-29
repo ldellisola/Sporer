@@ -31,6 +31,25 @@ describe("Toast", () => {
     expect(status).toBeEmptyDOMElement();
   });
 
+  test("Toast_says_a_line_of_progress_in_the_status_it_has_already_with_no_button_and_takes_it_away_when_it_is_null", () => {
+    const { rerender } = render(<Toast toast={null} onDismiss={() => undefined} progress={null} />);
+    const status = screen.getByRole("status");
+
+    rerender(<Toast toast={null} onDismiss={() => undefined} progress="Removing 3 points…" />);
+
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status).toHaveTextContent("Removing 3 points…");
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+
+    rerender(<Toast toast={removed()} onDismiss={() => undefined} progress="Removing 3 points…" />);
+
+    expect(status).toHaveTextContent("Removed 3 pointsRemoving 3 points…"); // beside a toast, in the same region
+
+    rerender(<Toast toast={null} onDismiss={() => undefined} progress={null} />);
+
+    expect(status).toBeEmptyDOMElement();
+  });
+
   test("Toast_says_its_message_as_a_status_and_has_no_button_unless_it_has_an_action", () => {
     render(<Toast toast={{ id: 1, message: "Trip deleted" }} onDismiss={() => undefined} />);
 

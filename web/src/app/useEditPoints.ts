@@ -192,7 +192,7 @@ export function useEditPoints(route: Route): PointEditing {
       noteDayEdited(date); // before the write is let go of, which has what is on screen asked for again: the day is pending by then
       setProgress((last) => (last?.id === id ? null : last));
       if (session !== 0 && session === live.current) setSelection(NONE); // the points that were sent are the selection of the session that sent them, and of no other
-      if (again) setFailure(null);
+      if (again) setFailure((last) => (last?.refs === refs ? null : last)); // its own card only: another removal's failure may have taken its place while it was on its way
       undo.reset();
       setToast(batch === null ? nextToast({ kind: "none" }) : nextToast({ kind: "removed", count, batch, date }));
     } catch (thrown) {

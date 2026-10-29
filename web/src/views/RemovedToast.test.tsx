@@ -200,6 +200,33 @@ describe("RemovedToast a failed removal", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  test("RemovedToast_says_that_the_removal_is_being_sent_again_in_its_live_region_so_that_a_screen_reader_user_hears_it", () => {
+    const ui = (failedRemoval: FailedRemoval | null) => <RemovedToast edit={pointEditing({ failedRemoval })} />;
+    const { rerender } = render(ui(failed(post(503))));
+    const status = screen.getByRole("status");
+    expect(status).toBeEmptyDOMElement(); // the region is there before it has anything to say: what is put into it is announced
+
+    rerender(ui(failed(post(503), { retrying: true }))); // Retry was pressed
+
+    expect(screen.getByRole("status")).toBe(status); // the same element, which the line is put into and is not made with
+    expect(status).toHaveTextContent("Removing 3 points…");
+
+    rerender(ui(failed(post(502)))); // and it failed again
+
+    expect(status).toBeEmptyDOMElement();
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't remove 3 points — Retry");
+  });
+
+  test("RemovedToast_says_that_it_is_being_sent_again_next_to_the_toast_of_another_removal_that_went_through", () => {
+    const edit = pointEditing({ toast: REMOVED, failedRemoval: failed(post(503), { retrying: true }) });
+    render(<RemovedToast edit={edit} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Removed 3 points");
+    expect(screen.getByRole("status")).toHaveTextContent("Removing 3 points…");
+    fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "Undo" })); // the one that went through can still be undone
+    expect(edit.undo.run).toHaveBeenCalledTimes(1);
+  });
+
   test("RemovedToast_shows_a_failed_removal_with_the_toast_of_another_that_went_through_and_leaves_its_undo", () => {
     const edit = pointEditing({ toast: REMOVED, failedRemoval: failed(post(400, "No.")) });
     render(<RemovedToast edit={edit} />);

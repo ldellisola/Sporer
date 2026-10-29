@@ -15,11 +15,3 @@
 .alert > div {
   margin: 0 0 8px;
 }
-
-/* A removal that is being sent again: a line in the card where the message was. */
-.progress {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink);
-}

@@ -621,6 +621,30 @@ describe("useEditPoints a removal that fails after Done", () => {
     expect(result.current.failedRemoval!.count).toBe(1);
   });
 
+  test("useEditPoints_leaves_the_failure_of_another_removal_when_a_retry_goes_through_for_that_card_is_not_the_one_that_was_retried", async () => {
+    const { result, answer, bodies } = await sent([0, 1]);
+    act(() => result.current.done());
+    await answer(new Response("{}", { status: 503 }));
+    await waitFor(() => expect(result.current.failedRemoval?.count).toBe(2));
+    act(() => result.current.failedRemoval!.retry()); // the second request, for the two points
+    await waitFor(() => expect(result.current.failedRemoval?.retrying).toBe(true));
+    act(() => result.current.start());
+    await waitFor(() => expect(result.current.points).toBeDefined());
+    act(() => result.current.toggle(3));
+    act(() => result.current.removal.run()); // a third, for one point, which the owner leaves and which is refused
+    await waitFor(() => expect(bodies).toHaveLength(3));
+    act(() => result.current.done());
+    await answer(refusal(400, "No."), 2);
+    await waitFor(() => expect(result.current.failedRemoval?.count).toBe(1)); // its card has taken the place of the one being retried
+    expect(result.current.failedRemoval!.retrying).toBe(false);
+
+    await answer(Response.json({ batch: BATCH, count: 2 }), 1); // the retry goes through
+
+    await waitFor(() => expect(result.current.toast?.kind).toBe("removed"));
+    expect(result.current.failedRemoval?.count).toBe(1); // the card of the refused one is still there to be read
+    expect((result.current.failedRemoval!.error as ApiError).detail).toBe("No.");
+  });
+
   test("useEditPoints_dismiss_takes_the_failure_of_a_removal_away", async () => {
     const { result, answer } = await sent([0]);
     act(() => result.current.done());

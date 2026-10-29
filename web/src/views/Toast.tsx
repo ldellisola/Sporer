@@ -22,6 +22,8 @@ export interface ToastProps {
   toast: ToastData | null;
   /** Called once when the time of the toast is up: the panel that shows it stops showing it. A press of the action does not call it. */
   onDismiss: () => void;
+  /** A line for what is on its way ("Removing 3 points…"): no time, no action, and gone when it is null. It is said in the live region with the toast, which is there before it is. */
+  progress?: string | null;
   /** What else is shown with it, in the same place under it, and is no status: an alert that says why something could not be done. */
   children?: ReactNode;
 }
@@ -78,11 +80,16 @@ function ToastCard({ toast, onDismiss }: { toast: ToastData; onDismiss: () => vo
  * The status it says it in is there whether it has anything to say or not, and the message is put into it: a screen reader announces a live
  * region when what is in it changes, and does not when it is made with its text. A panel that has another toast to show gives it another `id`.
  */
-export function Toast({ toast, onDismiss, children }: ToastProps) {
+export function Toast({ toast, onDismiss, progress = null, children }: ToastProps) {
   return createPortal(
     <div className={styles.region}>
       <div role="status" className={styles.live}>
         {toast !== null && <ToastCard key={toast.id} toast={toast} onDismiss={onDismiss} />}
+        {progress !== null && (
+          <div className={styles.toast}>
+            <span className={styles.message}>{progress}</span>
+          </div>
+        )}
       </div>
       {children}
     </div>,

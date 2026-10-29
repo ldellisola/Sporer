@@ -41,6 +41,7 @@ function focusIfLost(card: HTMLElement | null): void {
  *
  * Nothing here takes the focus as it appears: the owner is on the map. The Undo button is gone once an undo has failed, and the focus with it if it was
  * there: it goes to the alert's first button (Retry, or Dismiss for a refusal); and so it does for a failed removal that is sent again and fails again.
+ * "Removing 3 points…", while one is sent again, is said in the toast's live region, which is there before it is, so that a screen reader announces it.
  */
 export function RemovedToast({ edit }: { edit: PointEditing }) {
   const { undo, failedRemoval } = edit;
@@ -57,24 +58,18 @@ export function RemovedToast({ edit }: { edit: PointEditing }) {
     wasRetrying.current = retrying;
   });
   return (
-    <Toast toast={toastOf(edit)} onDismiss={edit.dismiss}>
-      {failedRemoval !== null && (
+    <Toast toast={toastOf(edit)} onDismiss={edit.dismiss} progress={failedRemoval?.retrying ? `Removing ${formatCount(failedRemoval.count, "point")}…` : null}>
+      {failedRemoval !== null && !retrying && (
         <div ref={removalAlert} className={styles.alert}>
-          {failedRemoval.retrying ? (
-            <p className={styles.progress}>{`Removing ${formatCount(failedRemoval.count, "point")}…`}</p>
-          ) : (
-            <>
-              <WriteError
-                what={`remove ${formatCount(failedRemoval.count, "point")}`}
-                error={failedRemoval.error}
-                onRetry={failedRemoval.retry}
-                gone="The day no longer exists."
-              />
-              <button type="button" className={forms.secondary} onClick={failedRemoval.dismiss}>
-                Dismiss
-              </button>
-            </>
-          )}
+          <WriteError
+            what={`remove ${formatCount(failedRemoval.count, "point")}`}
+            error={failedRemoval.error}
+            onRetry={failedRemoval.retry}
+            gone="The day no longer exists."
+          />
+          <button type="button" className={forms.secondary} onClick={failedRemoval.dismiss}>
+            Dismiss
+          </button>
         </div>
       )}
       {edit.toast !== null && undo.error !== null && (
