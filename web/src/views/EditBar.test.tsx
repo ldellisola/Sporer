@@ -164,8 +164,9 @@ describe("EditBar", () => {
     expect(screen.queryByText("Loading points…")).not.toBeInTheDocument();
   });
 
-  test("EditBar_keeps_the_count_as_it_is_when_a_later_load_fails_with_the_points_still_there", () => {
-    // A refetch that failed (the points of the day are asked for again after a removal): what is on screen is still there to select, and the owner is told under the row.
+  test("EditBar_says_a_later_failed_load_in_its_row_in_the_place_of_the_count_and_keeps_clear_remove_and_done", () => {
+    // A refetch that failed (the points of the day are asked for again after a removal or an Undo): what is on screen is still there to select, and a sheet at its
+    // lowest shows the row and nothing under it, so the words and the Retry are in the row as they are for a first load that failed.
     const retry = vi.fn();
     render(
       <EditBar
@@ -174,10 +175,52 @@ describe("EditBar", () => {
       />,
     );
 
-    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't load the points — Retry");
+    expect(alert.parentElement).toContainElement(screen.getByRole("button", { name: "Done" })); // in the row, where the sheet at its lowest shows it
+    expect(within(group()).getAllByRole("button").map((button) => button.textContent)).toEqual(["Retry", "Clear", "Remove 2 points", "Done"]);
+    expect(screen.getByRole("button", { name: "Clear" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Remove 2 points" })).toBeEnabled();
-    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  test("EditBar_says_what_a_later_load_failed_with_under_its_row_as_for_the_first_and_has_no_second_alert", () => {
+    render(
+      <EditBar
+        edit={pointEditing({ selected: new Set([0]), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } })}
+        onDone={() => undefined}
+      />,
+    );
+
+    const detail = screen.getByText("GET /api/day/2026-10-22/points failed with status 503");
+    expect(screen.getAllByRole("alert")).toHaveLength(1); // the one in the row: nothing under it that a sheet at its lowest would hide
+    expect(screen.getByRole("alert")).not.toContainElement(detail);
+    expect(screen.getByRole("button", { name: "Done" }).compareDocumentPosition(detail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // under the row, after its buttons
+  });
+
+  test("EditBar_keeps_the_count_in_the_page_for_a_screen_reader_while_a_later_load_failure_takes_its_place_on_screen", () => {
+    const failed = (selected: number[]) =>
+      pointEditing({ selected: new Set(selected), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } });
+    const { rerender } = render(<EditBar edit={pointEditing({ selected: new Set([0, 1]) })} onDone={() => undefined} />);
+    const count = screen.getByText("2 selected");
+    expect(count).not.toHaveClass("heardOnly");
+
+    rerender(<EditBar edit={failed([0, 1])} onDone={() => undefined} />);
+
+    expect(screen.getByText("2 selected")).toBe(count); // the same live region, which is not mounted again with its words (that may be said twice)
+    expect(count).toHaveAttribute("aria-live", "polite");
+    expect(count).toHaveClass("heardOnly"); // not on screen: the row has the alert in its place
+
+    rerender(<EditBar edit={failed([0, 1, 2])} onDone={() => undefined} />);
+
+    expect(screen.getByText("3 selected")).toBe(count); // and what is tapped while the alert is there is still said
+
+    rerender(<EditBar edit={pointEditing({ selected: new Set([0, 1, 2]) })} onDone={() => undefined} />); // the retry went through
+
+    expect(screen.getByText("3 selected")).toBe(count);
+    expect(count).not.toHaveClass("heardOnly");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   test("EditBar_has_the_one_live_region_for_what_its_row_says_of_the_points_and_of_the_count", () => {
@@ -291,5 +334,134 @@ describe("EditBar", () => {
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
 
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  describe("the focus", () => {
+    const sent = (over: Partial<ReturnType<typeof pointEditing>> = {}) =>
+      pointEditing({ selected: new Set([0, 1]), removal: { run: vi.fn(), pending: true, error: null, reset: vi.fn() }, ...over });
+    const failed = (status = 503) =>
+      pointEditing({ selected: new Set([0, 1]), removal: { run: vi.fn(), pending: false, error: new ApiError(status, "/api/points/remove", "POST"), reset: vi.fn() } });
+    const removed = () => pointEditing({ selected: new Set() }); // sent and gone through: the selection is cleared
+    const ui = (edit: ReturnType<typeof pointEditing>) => (
+      <div>
+        <button type="button">on the map</button>
+        <EditBar edit={edit} onDone={() => undefined} />
+      </div>
+    );
+
+    test("EditBar_puts_the_focus_on_done_when_a_removal_has_gone_through_and_the_focus_was_lost_with_the_button_that_was_pressed", () => {
+      const { rerender } = render(<EditBar edit={pointEditing({ selected: new Set([0, 1]) })} onDone={() => undefined} />);
+      expect(document.body).toHaveFocus();
+
+      rerender(<EditBar edit={sent()} onDone={() => undefined} />);
+      expect(document.body).toHaveFocus(); // not while it is on its way: the focus is looked at when the answer is there
+
+      rerender(<EditBar edit={removed()} onDone={() => undefined} />);
+
+      expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled(); // nothing is selected: Done is the one button that is on
+      expect(screen.getByRole("button", { name: "Done" })).toHaveFocus();
+    });
+
+    test("EditBar_puts_the_focus_on_clear_when_a_removal_failed_with_the_selection_still_there_and_the_focus_was_lost", () => {
+      for (const status of [503, 408, 429]) {
+        const { rerender, unmount } = render(<EditBar edit={sent()} onDone={() => undefined} />);
+        expect(document.body).toHaveFocus();
+
+        rerender(<EditBar edit={failed(status)} onDone={() => undefined} />);
+
+        expect(screen.getByRole("button", { name: "Clear" }), String(status)).toBeEnabled();
+        expect(screen.getByRole("button", { name: "Clear" }), String(status)).toHaveFocus();
+        unmount();
+      }
+    });
+
+    test("EditBar_takes_the_focus_from_remove_when_remove_is_off_and_had_it_which_a_browser_that_keeps_it_on_a_disabled_button_does", () => {
+      const quiet = pointEditing({ selected: new Set([0, 1]) });
+      const { rerender } = render(<EditBar edit={quiet} onDone={() => undefined} />);
+      screen.getByRole("button", { name: "Remove 2 points" }).focus();
+
+      rerender(<EditBar edit={sent()} onDone={() => undefined} />);
+      rerender(<EditBar edit={removed()} onDone={() => undefined} />);
+
+      expect(screen.getByRole("button", { name: "Done" })).toHaveFocus();
+    });
+
+    test("EditBar_leaves_the_focus_where_the_owner_has_put_it_when_a_removal_stops_being_on_its_way", () => {
+      for (const after of [removed(), failed()]) {
+        const { rerender, unmount } = render(ui(sent()));
+        screen.getByRole("button", { name: "on the map" }).focus();
+
+        rerender(ui(after));
+
+        expect(screen.getByRole("button", { name: "on the map" })).toHaveFocus();
+        unmount();
+      }
+      // A button of a toast, or the Undo that it has, is another's as well.
+      const toast = render(
+        <div>
+          <EditBar edit={sent()} onDone={() => undefined} />
+          <button type="button">Undo</button>
+        </div>,
+      );
+      screen.getByRole("button", { name: "Undo" }).focus();
+      toast.rerender(
+        <div>
+          <EditBar edit={removed()} onDone={() => undefined} />
+          <button type="button">Undo</button>
+        </div>,
+      );
+      expect(screen.getByRole("button", { name: "Undo" })).toHaveFocus();
+    });
+
+    test("EditBar_leaves_the_focus_on_a_button_of_the_bar_where_it_is_when_a_removal_stops_being_on_its_way", () => {
+      const { rerender } = render(<EditBar edit={sent()} onDone={() => undefined} />);
+      screen.getByRole("button", { name: "Done" }).focus();
+
+      rerender(<EditBar edit={removed()} onDone={() => undefined} />);
+
+      expect(screen.getByRole("button", { name: "Done" })).toHaveFocus();
+    });
+
+    test("EditBar_puts_the_focus_on_done_when_the_points_to_select_are_gone_with_the_buttons_that_had_the_focus", () => {
+      const gone = {
+        "the day has none now": pointEditing({ points: { date: "2026-10-22", devices: [], points: [] } }),
+        "they are on their way again": pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } }),
+      };
+      for (const [state, edit] of Object.entries(gone)) {
+        for (const name of ["Clear", "Remove 1 point"]) {
+          const { rerender, unmount } = render(<EditBar edit={pointEditing({ selected: new Set([0]) })} onDone={() => undefined} />);
+          screen.getByRole("button", { name }).focus();
+          expect(screen.getByRole("button", { name })).toHaveFocus();
+
+          rerender(<EditBar edit={edit} onDone={() => undefined} />);
+
+          expect(screen.queryByRole("button", { name: "Clear" }), state).not.toBeInTheDocument();
+          expect(screen.getByRole("button", { name: "Done" }), `${state}, ${name}`).toHaveFocus();
+          unmount();
+        }
+      }
+    });
+
+    test("EditBar_leaves_the_focus_where_the_owner_has_put_it_when_the_points_to_select_are_gone", () => {
+      const { rerender } = render(ui(pointEditing({ selected: new Set([0]) })));
+      screen.getByRole("button", { name: "on the map" }).focus();
+
+      rerender(ui(pointEditing({ points: { date: "2026-10-22", devices: [], points: [] } })));
+
+      expect(screen.getByRole("button", { name: "on the map" })).toHaveFocus();
+    });
+
+    test("EditBar_takes_no_focus_when_it_appears_or_when_the_points_come_or_while_nothing_has_changed", () => {
+      const { rerender } = render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } })} onDone={() => undefined} />);
+      expect(document.body).toHaveFocus();
+
+      rerender(<EditBar edit={pointEditing()} onDone={() => undefined} />); // the points came: there is something to select, which is the map's to do
+
+      expect(document.body).toHaveFocus();
+
+      rerender(<EditBar edit={pointEditing({ selected: new Set([2]) })} onDone={() => undefined} />); // a tap
+
+      expect(document.body).toHaveFocus();
+    });
   });
 });
