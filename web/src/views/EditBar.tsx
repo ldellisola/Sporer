@@ -27,8 +27,8 @@ export interface EditBarProps {
  * here takes it as the bar appears.
  *
  * What the row says is in a live region of its own (`aria-live`, and no `status`: a page has others, and they are told apart by what they say), which is
- * there from the first and whose words change, so that a screen reader hears the number as points are tapped. The words of a load that failed are an alert, as
- * everywhere (`ErrorState`), and are in the row too. While the removal is on its way the selection is held still: it is the one that was sent.
+ * there from the first and whose words change, so that a screen reader hears the number as points are tapped. The words of a first load that failed are an alert, as
+ * everywhere (`ErrorState`), and take the place of that region in the row while there is nothing to count. While the removal is on its way the selection is held still: it is the one that was sent.
  */
 export function EditBar({ edit, onDone }: EditBarProps) {
   const { points, load, removal, selected } = edit;
