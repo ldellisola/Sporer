@@ -149,8 +149,8 @@ public class TripEditTests(DatabaseFixture db)
         Assert.All(item.EnumerateObject().Where(p => p.Name != "thumbnail"),
             p => Assert.Equal(p.Value.GetRawText(), detail.RootElement.GetProperty(p.Name).GetRawText()));
         Assert.Equal(["id", "name"], detail.RootElement.EnumerateObject().Take(2).Select(p => p.Name));
-        Assert.Equal(["edited", "ownName", "datesEdited", "thumbnail"], item.EnumerateObject().TakeLast(4).Select(p => p.Name));
-        Assert.Equal(["edited", "ownName", "datesEdited", "stats", "moves", "days"], detail.RootElement.EnumerateObject().TakeLast(6).Select(p => p.Name));
+        Assert.Equal(["edited", "ownName", "startEdited", "endEdited", "thumbnail"], item.EnumerateObject().TakeLast(5).Select(p => p.Name));
+        Assert.Equal(["edited", "ownName", "startEdited", "endEdited", "stats", "moves", "days"], detail.RootElement.EnumerateObject().TakeLast(7).Select(p => p.Name));
 
         // The dates are as they were detected, and the edit is of this trip, with nothing but its name.
         var stored = Assert.Single(await StoredAsync(cs));
@@ -205,45 +205,47 @@ public class TripEditTests(DatabaseFixture db)
     }
 
     [Fact]
-    public async Task Trip_says_whether_its_edit_gave_it_dates()
+    public async Task Trip_says_which_of_its_dates_its_edit_gave_it()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using var api = new ApiFactory(cs);
         var client = api.CreateClient();
         await SeedAsync(cs, api);
 
-        // `edited` is true for a name too: `datesEdited` is true only when the edit has a start date or an end date, which is what a button that goes
-        // back to the dates that detection found is for. The list and the page say the same.
-        async Task<(bool Edited, bool DatesEdited)> StateAsync(string id)
+        // `edited` is true for a name too: `startEdited` and `endEdited` are true only for a date that the edit gave, each of its own, which is what tells a form
+        // which of the dates it may send back as they are (a date that is not an edit is detection's, and may have moved on since the form read it) and whether
+        // there is anything to go back to the detected dates from. The list and the page say the same.
+        async Task<(bool Edited, bool StartEdited, bool EndEdited)> StateAsync(string id)
         {
             var item = Assert.Single(await TripsAsync(client));
             using var detail = await GetAsync(client, $"/api/trips/{id}");
-            Assert.Equal(item.GetProperty("datesEdited").GetBoolean(), detail.RootElement.GetProperty("datesEdited").GetBoolean());
-            return (item.GetProperty("edited").GetBoolean(), item.GetProperty("datesEdited").GetBoolean());
+            foreach (var name in new[] { "startEdited", "endEdited" })
+                Assert.Equal(item.GetProperty(name).GetBoolean(), detail.RootElement.GetProperty(name).GetBoolean());
+            return (item.GetProperty("edited").GetBoolean(), item.GetProperty("startEdited").GetBoolean(), item.GetProperty("endEdited").GetBoolean());
         }
 
-        Assert.Equal((false, false), await StateAsync("2026-07-09")); // detected
+        Assert.Equal((false, false, false), await StateAsync("2026-07-09")); // detected
 
         using (var named = await JsonOf(await PutAsync(client, "2026-07-09", "Lisbon weekend"))) { }
-        Assert.Equal((true, false), await StateAsync("2026-07-09")); // a name is an edit, and not of the dates
+        Assert.Equal((true, false, false), await StateAsync("2026-07-09")); // a name is an edit, and not of the dates
 
         using (var sameDates = await JsonOf(await PutAsync(client, "2026-07-09", "Lisbon weekend", "2026-07-09", "2026-07-12"))) { }
-        Assert.Equal((true, false), await StateAsync("2026-07-09")); // dates that are the trip's own are as detected
+        Assert.Equal((true, false, false), await StateAsync("2026-07-09")); // dates that are the trip's own are as detected
 
         using (var end = await JsonOf(await PutAsync(client, "2026-07-09", "Lisbon weekend", null, "2026-07-13"))) { }
-        Assert.Equal((true, true), await StateAsync("2026-07-09")); // an end date alone
+        Assert.Equal((true, false, true), await StateAsync("2026-07-09")); // an end date alone
 
         using (var back = await JsonOf(await PutAsync(client, "2026-07-09", "Lisbon weekend"))) { } // null for both: as detected again
-        Assert.Equal((true, false), await StateAsync("2026-07-09"));
+        Assert.Equal((true, false, false), await StateAsync("2026-07-09"));
 
         using (var start = await JsonOf(await PutAsync(client, "2026-07-09", null, "2026-07-08", null))) { } // a start date alone, and no name: the id moves
-        Assert.Equal((true, true), await StateAsync("2026-07-08"));
+        Assert.Equal((true, true, false), await StateAsync("2026-07-08"));
 
-        using (var both = await JsonOf(await PutAsync(client, "2026-07-08", "Lisbon weekend", "2026-07-08", "2026-07-13"))) { } // a name and dates
-        Assert.Equal((true, true), await StateAsync("2026-07-08"));
+        using (var both = await JsonOf(await PutAsync(client, "2026-07-08", "Lisbon weekend", "2026-07-08", "2026-07-13"))) { } // a name and both dates
+        Assert.Equal((true, true, true), await StateAsync("2026-07-08"));
 
         using (var gone = await JsonOf(await PutAsync(client, "2026-07-08", null))) { } // nothing of it is left
-        Assert.Equal((false, false), await StateAsync("2026-07-09"));
+        Assert.Equal((false, false, false), await StateAsync("2026-07-09"));
     }
 
     [Fact]

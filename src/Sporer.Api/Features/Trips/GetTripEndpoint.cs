@@ -41,7 +41,7 @@ internal sealed class GetTripEndpoint(TripStore store) : EndpointWithoutRequest<
         var lines = VertexBudget.Fit([.. detail.Moves.Select(m => m.Line)]);
 
         await Send.OkAsync(new TripResponse(
-            TripMapping.Summary(trip, nights, detail.Name, detail.Edited, detail.DatesEdited),
+            TripMapping.Summary(trip, nights, detail.Name, detail.Edited, detail.StartEdited, detail.EndEdited),
             new TripStatsDto(stats.Flights, stats.Cities, stats.Places, stats.GroundDistanceMeters),
             [.. detail.Moves.Select((m, k) => new TripMoveDto(m.Id, m.Mode, m.DistanceM, TripMapping.LonLat(lines[k])))],
             [.. TripDays.Days(detail).Select(d => new TripDayDto(TripMapping.Text(d.Date), d.Description, d.Highlights, d.GroundDistanceMeters, d.Flights))]), ct);
