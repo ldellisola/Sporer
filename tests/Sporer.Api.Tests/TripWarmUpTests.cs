@@ -66,6 +66,9 @@ public class TripWarmUpTests(DatabaseFixture db)
 
     private static string CategoryOf<T>() => typeof(T).FullName!;
 
+    /// <summary>What the warm-up logs when it is done: the Information entry, which a warning for a failure is not.</summary>
+    private static bool Warmed(LogEntry entry) => entry.Category == CategoryOf<TripWarmUp>() && entry.Level == LogLevel.Information;
+
     private static async Task WaitForAsync(Func<bool> condition, string what)
     {
         var until = DateTime.UtcNow.AddSeconds(20);
@@ -179,8 +182,11 @@ public class TripWarmUpTests(DatabaseFixture db)
         await using var on = Api(cs, log, processing: true);
         var hosted = Assert.Single(on.Services.GetServices<IHostedService>().OfType<TripWarmUp>());
         Assert.Same(on.Services.GetRequiredService<TripWarmUp>(), hosted); // one warm-up, not a second copy
-        await WaitForAsync(() => log.Entries.Any(e => e.Category == CategoryOf<TripWarmUp>()), "the warm-up to run once the host is up");
-        Assert.Single(log.Entries, e => e.Category == CategoryOf<TripWarmUp>()); // once
+        await WaitForAsync(() => log.Entries.Any(Warmed), "the warm-up to run once the host is up");
+        // Once, and it worked: on the first start, with no night stored yet, it finds nothing and says so, not a failure.
+        var done = Assert.Single(log.Entries, e => e.Category == CategoryOf<TripWarmUp>());
+        Assert.Equal(LogLevel.Information, done.Level);
+        Assert.Contains("0 nights, 0 home periods, 0 trips", done.Message);
     }
 
     [Fact]
@@ -225,6 +231,7 @@ public class TripWarmUpTests(DatabaseFixture db)
         Assert.DoesNotContain(log.Entries, e => e.Category == CategoryOf<TripWarmUp>()); // still waiting for the table
 
         await transaction.RollbackAsync(Ct);
-        await WaitForAsync(() => log.Entries.Any(e => e.Category == CategoryOf<TripWarmUp>()), "the warm-up to finish once the table is free");
+        await WaitForAsync(() => log.Entries.Any(Warmed), "the warm-up to finish once the table is free");
+        Assert.DoesNotContain(log.Entries, e => e.Category == CategoryOf<TripWarmUp>() && e.Level >= LogLevel.Warning);
     }
 }

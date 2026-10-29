@@ -7,7 +7,8 @@
 # Starts `dotnet <api-dll>` itself (the environment says which database and where it listens: TSDB_CONNECTION_STRING, ASPNETCORE_URLS and so on,
 # as in the "Repeat it" section of the perf documents; Processing__Debounce is set here to zero, so that a refresh follows its batch at once),
 # over a finished backfill with the worker idle, and waits until the API answers `GET /api/status` (the time to that is printed too), and then for
-# a second more, so that the worker's first pass over the queue is done. Then, for each of the `kinds`, the first of them:
+# a second more, so that the worker's first pass over the queue is done (START_TIMEOUT, in seconds and 120 by default, is how long it waits for
+# that first answer, in case the API runs but not where ASPNETCORE_URLS says). Then, for each of the `kinds`, the first of them:
 #   refresh  the worker's refresh of the nights, homes and trips after a batch of points, timed as refresh-latency.sh does: from the database's log
 #            (every statement logged for the length of the refresh, and put back), between the worker's read of the window that waits and its emptying
 #   day      GET /api/day/{date}                  the middle date of the history
@@ -67,14 +68,32 @@ put_settings() { # json-body: prints "code seconds"
   curl -s -o "$workdir/body" -X PUT -H 'Content-Type: application/json' -H 'Accept-Encoding: br' -w '%{http_code} %{time_total}\n' --data "$1" "$base/api/settings"
 }
 
+# Where the script stands, for the end of a run and for the end of one that failed: the distance stored, and the trips that follow it.
+after_line() {
+  echo "after: the distance stored: $(psql_one "select coalesce((select value::text from app_setting where key = 'tripMinDistanceKm'), 'none')"); $(psql_one "select count(*) from trip") trips, $(psql_one "select count(*) from home_period") home periods"
+}
+
 # Always: the distance back through the running API (so that the homes and trips follow), the API stopped, the log settings of the database reset.
+# A distance that is not confirmed back is said, with what to do about it; a run that failed says where it stands.
 cleanup() {
+  local status=$? code= why
   trap - EXIT INT TERM
-  if [ -n "$pid" ] && kill -0 "$pid" 2> /dev/null; then
-    [ "$changed" = 0 ] || put_settings "$original_body" > /dev/null || true
-    stop_api
+  if [ "$changed" != 0 ]; then
+    if [ -n "$pid" ] && kill -0 "$pid" 2> /dev/null; then
+      code=$(put_settings "$original_body" 2> /dev/null | cut -d' ' -f1 || true)
+    fi
+    case $code in
+      2*) ;;
+      *)
+        why="the API is not running"
+        [ -z "$pid" ] || why="the API answered ${code:-nothing}"
+        echo "first-after-start.sh: the trip distance was not put back ($why): put $original_body back with" \
+          "curl -X PUT -H 'Content-Type: application/json' --data '$original_body' $base/api/settings, with the API running (a recompute follows)" >&2 ;;
+    esac
   fi
+  if [ -n "$pid" ] && kill -0 "$pid" 2> /dev/null; then stop_api; fi
   [ "$logging" = 0 ] || logging_off || true
+  [ "$status" = 0 ] || [ -z "${original_body:-}" ] || after_line >&2 || true
   rm -rf "$workdir"
 }
 trap cleanup EXIT
@@ -94,7 +113,7 @@ logging_off() {
 # Starts the API and waits until it answers: sets $ready_ms, the milliseconds from the start of the process to the first answer of /api/status
 # (polled every 50 ms), and refuses a history whose backfill is not finished.
 start_api() {
-  local began now status
+  local began now status deadline=$(( $(date +%s) + ${START_TIMEOUT:-120} ))
   began=$(date +%s%N)
   Processing__Debounce=00:00:00 dotnet "$dll" > "$workdir/api.log" 2>&1 &
   pid=$!
@@ -104,6 +123,9 @@ start_api() {
       now=$(date +%s%N)
       break
     fi
+    [ "$(date +%s)" -le "$deadline" ] ||
+      { echo "first-after-start.sh: the API runs but did not answer at $base/api/status within ${START_TIMEOUT:-120} s: is that where it listens (ASPNETCORE_URLS)? Its output:" >&2
+        tail -20 "$workdir/api.log" >&2; exit 1; }
     sleep 0.05
   done
   ready_ms=$(( (now - began) / 1000000 ))
@@ -247,4 +269,4 @@ report "GET /api/trips" trips
 report "PUT /api/settings (60 km)" edit
 
 # What was changed is as it was: the distance stored, and the trips that follow it.
-echo "after: the distance stored: $(psql_one "select coalesce((select value::text from app_setting where key = 'tripMinDistanceKm'), 'none')"); $(psql_one "select count(*) from trip") trips, $(psql_one "select count(*) from home_period") home periods"
+after_line

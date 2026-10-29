@@ -418,11 +418,13 @@ in the image. The web app is built in a Node stage of its own (`node:22-alpine`)
 whatever `web/node_modules`, `web/dist` or `src/Sporer.Api/wwwroot` hold locally is left out of the build.
 
 The API is published ReadyToRun: its code is compiled ahead of time, so that the first requests, the first edit and the first
-refresh after a start do not wait for the JIT. That code is for one architecture, taken from the platform being built (buildx's
-`TARGETARCH`: `amd64` gives `linux-x64`, `arm64` gives `linux-arm64`, and a build that is given no platform gives `linux-x64`);
-any other platform fails the build. The app stays framework-dependent, on the same `aspnet` image as before. After the migrations
-the app also reads the nights and works the homes and trips out once in the background, and throws the result away (it writes nothing and
-takes no lock, and a failure is only logged as a warning), for the same reason; the log says `Warmed up the homes and trips`.
+refresh after a start wait less for the JIT (they still wait for some of it). That code is for one architecture, taken from the
+platform being built: BuildKit, which `docker build` uses by default, sets `TARGETARCH` to the architecture of the build (the host's,
+unless `--platform` says another), and `amd64` gives `linux-x64` and `arm64` gives `linux-arm64`; only the classic builder leaves it
+empty, which gives `linux-x64`. Any other value fails the build. The app stays framework-dependent, on the same `aspnet` image as
+before. For the rest, after the migrations the app reads the nights and works the homes and trips out once in the background, and throws
+the result away, so that the first refresh and the first edit do not compile that code while you wait: it writes nothing and takes no
+lock, and a failure is only logged as a warning; the log says `Warmed up the homes and trips` when it is done.
 
 ### Front-end development
 

@@ -8,21 +8,16 @@ namespace Sporer.Api.Features.Trips;
 /// they are not the ones that wait for it to be compiled (see <see cref="TripRefresher.WarmUpAsync"/>).
 /// </summary>
 /// <remarks>
-/// It is only a warm-up, and so it is kept from doing any harm. It runs after the migrations (the hosted services start when the app does, which is
-/// after Program.cs has migrated), and it yields first, so that the start of the app and the first requests never wait for it, and nor does ingest,
-/// which it does not touch. It writes nothing and takes no lock (<see cref="TripRefresher.WarmUpAsync"/> reads in a read-only transaction), so
-/// it cannot hold up a refresh or an edit. A failure is logged as a warning and ignored: a background service that throws stops the host, and
-/// the app does not need this to work. It runs in the background only when processing does, as the worker does (and is there to be driven by
-/// hand when it does not, for the tests).
+/// It is only a warm-up, and so it is kept from doing any harm. It runs after the migrations (the hosted services start with <c>app.Run()</c>, after
+/// Program.cs has migrated). On .NET 10 <see cref="BackgroundService.StartAsync"/> does not wait for <see cref="ExecuteAsync"/>, so neither the
+/// start of the app nor the first requests wait for it, and nor does ingest, which it does not touch. It writes nothing and takes no lock
+/// (<see cref="TripRefresher.WarmUpAsync"/> reads in a read-only transaction), so it cannot hold up a refresh or an edit. A failure is logged as
+/// a warning and ignored: a background service that throws stops the host, and the app does not need this to work. It runs in the background
+/// only when processing does, as the worker does (and is there to be driven by hand when it does not, for the tests).
 /// </remarks>
 public sealed class TripWarmUp(TripRefresher refresher, ILogger<TripWarmUp> logger) : BackgroundService
 {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        // The start of the host runs this until its first await: that is the whole of what the start waits for.
-        await Task.Yield();
-        await RunAsync(stoppingToken);
-    }
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken) => await RunAsync(stoppingToken);
 
     /// <summary>Warms up once. Returns whether it did; it does not throw, whatever goes wrong, and says nothing of a stop.</summary>
     internal async Task<bool> RunAsync(CancellationToken ct)
