@@ -39,8 +39,16 @@ function mount(props: { onPick?: (candidate: PlaceCandidate) => void; onCancel?:
 
 const search = () => screen.getByRole("searchbox", { name: "Search places" });
 const type = (text: string) => fireEvent.change(search(), { target: { value: text } });
-/** Lets `ms` of the (fake) clock go by, and what is waiting for it run. */
-const wait = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+/**
+ * From here on the clock is a fake one, and it stands still until the test moves it: no time goes by that the test did not say. The list that the picker
+ * opens on is waited for before, on the real clock, and the fake one is only for what the typing sets going (the pause, and what the answer then sets going).
+ */
+const freeze = () => vi.useFakeTimers();
+/** Lets `ms` of the (fake) clock go by, and what is waiting for it run: the pause that was over, the request it made, and the answer's turn to be drawn. */
+const wait = async (ms: number) => {
+  await act(() => vi.advanceTimersByTimeAsync(ms));
+  await act(() => vi.advanceTimersByTimeAsync(0)); // what the answer set going for the next tick of the clock (a query tells its watchers on one)
+};
 
 afterEach(() => {
   vi.useRealTimers();
@@ -108,10 +116,10 @@ describe("PlacePicker", () => {
 
 describe("PlacePicker search", () => {
   test("PlacePicker_asks_once_300_ms_after_the_last_key_and_with_what_was_typed_last", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true }); // the clock runs, so that what waits for a request is found, and can be jumped over
     const paths = stubApi((path) => Response.json(path.includes("q=caf") ? [BISTRO] : [UNNAMED]));
     mount();
     await screen.findByRole("button", { name: /^Unnamed place/ });
+    freeze();
 
     type("c");
     await wait(100);
@@ -123,34 +131,34 @@ describe("PlacePicker search", () => {
     expect(paths).toEqual(["/api/places/2/candidates"]); // 299 ms after the last key: nothing yet, and never for "c" or "ca"
     await wait(1);
 
-    expect(await screen.findByRole("button", { name: /^Bistro/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Bistro/ })).toBeInTheDocument();
     expect(paths).toEqual(["/api/places/2/candidates", "/api/places/2/candidates?q=caf"]);
   });
 
   test("PlacePicker_sends_the_text_trimmed_and_escaped_and_goes_back_to_the_nearest_when_it_is_emptied", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
     const paths = stubApi((path) => Response.json(path.includes("q=") ? [BISTRO] : [UNNAMED]));
     mount();
     await screen.findByRole("button", { name: /^Unnamed place/ });
+    freeze();
 
     type("  Café & Co ");
     await wait(300);
-    await screen.findByRole("button", { name: /^Bistro/ });
+    expect(screen.getByRole("button", { name: /^Bistro/ })).toBeInTheDocument();
     expect(paths.at(-1)).toBe("/api/places/2/candidates?q=Caf%C3%A9%20%26%20Co"); // as typed, but for the spaces at the ends
 
     type("   "); // nothing but spaces is no search
     await wait(300);
 
-    expect(await screen.findByRole("button", { name: /^Unnamed place/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Unnamed place/ })).toBeInTheDocument();
     expect(paths.filter((path) => path.includes("q="))).toHaveLength(1); // the nearest were still fresh: no `q=` and no `q=%20`
   });
 
   test("PlacePicker_keeps_the_list_that_was_on_screen_and_says_it_is_busy_while_a_search_is_on_its_way", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
     stubApi((path) => (path.includes("q=") ? new Promise<Response>(() => undefined) : Response.json([BISTRO])));
     mount();
     const row = await screen.findByRole("button", { name: /^Bistro/ });
     expect(row.closest("[aria-busy]")).toHaveAttribute("aria-busy", "false");
+    freeze();
 
     type("off");
     await wait(300);
@@ -161,15 +169,15 @@ describe("PlacePicker search", () => {
   });
 
   test("PlacePicker_says_when_the_search_found_nothing", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
     stubApi((path) => Response.json(path.includes("q=") ? [] : [BISTRO]));
     mount();
     await screen.findByRole("button", { name: /^Bistro/ });
+    freeze();
 
     type("zzz");
     await wait(300);
 
-    expect(await screen.findByText("No places found")).toBeInTheDocument();
+    expect(screen.getByText("No places found")).toBeInTheDocument();
   });
 });
 
@@ -192,15 +200,15 @@ describe("PlacePicker failure", () => {
   });
 
   test("PlacePicker_keeps_the_list_under_the_error_of_a_search_that_failed", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
     stubApi((path) => (path.includes("q=") ? new Response("{}", { status: 500 }) : Response.json([BISTRO])));
     mount();
     await screen.findByRole("button", { name: /^Bistro/ });
+    freeze();
 
     type("off");
     await wait(300);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load — Retry");
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load — Retry");
     expect(screen.getByRole("button", { name: /^Bistro/ })).toBeInTheDocument(); // never a blank where the list was
   });
 });
