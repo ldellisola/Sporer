@@ -227,3 +227,23 @@ test("a_navigation_that_the_network_does_not_answer_within_3_seconds_shows_the_c
   expect(took).toBeGreaterThanOrEqual(2_900); // the worker gave the network its 3 seconds first
   release();
 });
+
+test("a_navigation_that_the_proxy_answers_with_a_503_shows_the_cached_shell_with_the_error_of_the_view", async ({ context, page }) => {
+  // The server is down behind its proxy, so the page is answered with the proxy's 503 and so is everything the app asks of the API.
+  await mockApi(page, { "day/*": () => ({ status: 503, json: { title: "Service Unavailable" } }) });
+  await openWithWorker(page, "/trips"); // a page whose data is there, so that the worker is installed and in control
+  let asked = 0;
+  await context.route(`**${DAY}`, (route) => {
+    asked += 1;
+    return route.fulfill({ status: 503, contentType: "text/html", body: "<!doctype html><title>Bad gateway</title><h1>Service Unavailable</h1>" });
+  });
+
+  await page.goto(DAY);
+
+  await expect(topBar(page)).toBeVisible(); // the app, from the worker's cache: not the proxy's page
+  await expect(page).toHaveTitle("Sporer");
+  await expect(page.getByRole("heading", { name: "Service Unavailable" })).toHaveCount(0);
+  await expect(page.getByRole("alert")).toContainText("Couldn't load"); // and the view says what went wrong, with its way to try again
+  await expect(retry(page)).toBeVisible();
+  expect(asked).toBe(1); // the network did answer, and it was not waited for 3 seconds
+});

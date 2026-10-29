@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { NAVIGATION_TIMEOUT_MS, cacheName, cachesToDelete, isAppPage, isShellDocument, routeOf, shellPaths } from "./shellPolicy";
+import { NAVIGATION_TIMEOUT_MS, cacheName, cachesToDelete, installCacheMode, isAppPage, isProxyError, isShellDocument, routeOf, shellPaths } from "./shellPolicy";
 
 const ORIGIN = "https://sporer.example";
 const SHELL = new Set(["/assets/index-abc.js", "/assets/index-abc.css", "/icons/icon-192.png", "/manifest.webmanifest"]);
@@ -80,9 +80,69 @@ describe("routeOf", () => {
     expect(route("/", { mode: "no-cors" })).toBe("pass");
   });
 
-  test("routeOf_takes_a_navigation_to_a_file_of_the_shell_for_a_navigation", () => {
-    // Opening a file's address in the tab is a navigation, and the network answers it first like any other page.
-    expect(route("/manifest.webmanifest", { mode: "navigate" })).toBe("navigation");
+  test("routeOf_passes_a_navigation_to_a_file_because_the_server_does_not_answer_it_with_the_page", () => {
+    // The server's fallback to index.html is for a path whose last segment has no extension (Program.cs): a file is the file, or a 404. Showing the
+    // cached page for one would put the app where the file should be, and a worker's own address is one of them.
+    expect(route("/sw.js", { mode: "navigate" })).toBe("pass");
+    expect(route("/icons/icon.svg", { mode: "navigate" })).toBe("pass");
+    expect(route("/manifest.webmanifest", { mode: "navigate" })).toBe("pass");
+    expect(route("/assets/index-abc.js?x=1", { mode: "navigate" })).toBe("pass");
+    expect(route("/index.html", { mode: "navigate" })).toBe("pass");
+    expect(route("/sw%2Ejs", { mode: "navigate" })).toBe("pass"); // the server decodes the path first
+    expect(route("/missing.txt#top", { mode: "navigate" })).toBe("pass");
+  });
+
+  test("routeOf_takes_a_navigation_to_a_path_with_a_dot_that_is_no_extension_for_a_page", () => {
+    // The server's rule is a dot and then letters or digits to the end of the path: a range's `..` is not one.
+    expect(route("/range/2026-10-01..2026-10-22", { mode: "navigate" })).toBe("navigation");
+    expect(route("/day/2026-01-01", { mode: "navigate" })).toBe("navigation");
+    expect(route("/trips", { mode: "navigate" })).toBe("navigation");
+    expect(route("/", { mode: "navigate" })).toBe("navigation");
+    expect(route("/places/a.b/", { mode: "navigate" })).toBe("navigation"); // a dot that does not end the path
+    expect(route("/places/ends-with-a-dot.", { mode: "navigate" })).toBe("navigation");
+  });
+
+  test("routeOf_passes_the_login_proxys_callback_under_outpost_goauthentik_io", () => {
+    // Authentik's forward auth sends the browser here to finish a sign-in; the worker answering with the cached page would stop it.
+    expect(route("/outpost.goauthentik.io/callback?x=1", { mode: "navigate" })).toBe("pass");
+    expect(route("/outpost.goauthentik.io/start", { mode: "navigate" })).toBe("pass");
+    expect(route("/outpost.goauthentik.io/auth/nginx", { mode: "navigate" })).toBe("pass");
+    expect(route("/Outpost.goauthentik.io/callback", { mode: "navigate" })).toBe("pass");
+    expect(route("/outpost%2Egoauthentik.io/callback", { mode: "navigate" })).toBe("pass");
+    expect(route("/outpost.goauthentik.io/callback")).toBe("pass");
+    expect(route("/outpost.goauthentik.io", { mode: "navigate" })).toBe("pass"); // a name with an extension, in any case
+    expect(route("/outpost.goauthentik.io-not/x", { mode: "navigate" })).toBe("navigation"); // under it is by segment
+  });
+});
+
+describe("isProxyError", () => {
+  test("isProxyError_is_true_for_the_answers_of_a_proxy_that_cannot_reach_the_app", () => {
+    expect(isProxyError({ status: 502 })).toBe(true);
+    expect(isProxyError({ status: 503 })).toBe(true);
+    expect(isProxyError({ status: 504 })).toBe(true);
+  });
+
+  test("isProxyError_is_false_for_every_other_answer_which_is_given_as_it_is", () => {
+    for (const status of [200, 204, 301, 302, 304, 307, 308, 400, 401, 403, 404, 429, 500, 501, 505]) expect(isProxyError({ status }), String(status)).toBe(false);
+    expect(isProxyError({ status: 0 })).toBe(false); // an opaque redirect: a navigation is made with redirect "manual", and the login's answer is its own
+  });
+});
+
+describe("installCacheMode", () => {
+  test("installCacheMode_asks_the_server_for_the_page_and_the_files_outside_assets", () => {
+    // These keep their names when they change, so what the browser's HTTP cache has of them may be of another build.
+    expect(installCacheMode("/index.html")).toBe("reload");
+    expect(installCacheMode("/manifest.webmanifest")).toBe("reload");
+    expect(installCacheMode("/icons/icon-192.png")).toBe("reload");
+    expect(installCacheMode("/icons/icon.svg")).toBe("reload");
+    expect(installCacheMode("/assetsfile.js")).toBe("reload"); // /assets is a directory
+  });
+
+  test("installCacheMode_lets_the_hashed_files_of_assets_come_from_the_browsers_cache", () => {
+    // Their names are their content: whatever the cache has under one is that file, never a mix of two builds.
+    expect(installCacheMode("/assets/index-BfJmJxUU.js")).toBe("default");
+    expect(installCacheMode("/assets/index-15BW97du.css")).toBe("default");
+    expect(installCacheMode("/assets/maplibre-Cy9aRMf-.js")).toBe("default");
   });
 });
 

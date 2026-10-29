@@ -14,14 +14,16 @@ export type RoutedRequest = { url: string; mode: string; method: string };
  * - `pass`: not the worker's to answer, the browser deals with it as if there were no worker.
  *
  * Only a GET of this origin is ever answered, and never anything under /api: the worker must not hold a private answer or hand one
- * out stale. Another origin (the map's tiles and style) is not the shell's either.
+ * out stale. Another origin (the map's tiles and style) is not the shell's either. Nor is a navigation that the server does not answer
+ * with the page (a path that ends in a file's extension: the worker's own address, an icon, the manifest) or that belongs to the login
+ * in front of the app (Authentik's forward-auth callback): the cached page would be shown in the place of what they are.
  */
 export function routeOf(request: RoutedRequest, origin: string, shellFiles: ReadonlySet<string>): "navigation" | "shell" | "pass" {
   if (request.method !== "GET") return "pass";
   const url = new URL(request.url);
   if (url.origin !== origin) return "pass";
-  if (isApiPath(url.pathname)) return "pass";
-  if (request.mode === "navigate") return "navigation";
+  if (isApiPath(url.pathname) || isLoginPath(url.pathname)) return "pass";
+  if (request.mode === "navigate") return hasExtension(url.pathname) ? "pass" : "navigation";
   return shellFiles.has(url.pathname) ? "shell" : "pass";
 }
 
@@ -34,6 +36,21 @@ function isApiPath(pathname: string): boolean {
 function isApi(path: string): boolean {
   const lower = path.toLowerCase();
   return lower === "/api" || lower.startsWith("/api/");
+}
+
+// Authentik's outpost, which a proxy of the login serves on the app's own host (/outpost.goauthentik.io/start, /callback, ...): by segment too.
+function isLoginPath(pathname: string): boolean {
+  return isLogin(pathname) || isLogin(decoded(pathname));
+}
+
+function isLogin(path: string): boolean {
+  return path.toLowerCase().startsWith("/outpost.goauthentik.io/");
+}
+
+// The server answers a path with the page unless it ends in a dot and letters or digits (the fallback in Program.cs, `(?!.*\.\w+$)`: the
+// `..` of a range is none): what does is a file or a 404, and is left to the browser.
+function hasExtension(pathname: string): boolean {
+  return /\.\w+$/.test(pathname) || /\.\w+$/.test(decoded(pathname));
 }
 
 function decoded(path: string): string {
@@ -50,6 +67,24 @@ function decoded(path: string): string {
  */
 export function shellPaths(files: readonly string[], origin: string): Set<string> {
   return new Set(files.map((file) => new URL(file, origin).pathname));
+}
+
+/**
+ * Whether an answer of the server to a navigation is a proxy's, not the app's: a 502, 503 or 504 comes from what stands in front of the
+ * app when it cannot reach it (a restart, a deploy). With the page kept, the worker shows that rather than the proxy's error page, and
+ * the views say what went wrong with a Retry. Every other answer, a redirect to the login included (status 0 here), is the network's own.
+ */
+export function isProxyError(response: { status: number }): boolean {
+  return response.status === 502 || response.status === 503 || response.status === 504;
+}
+
+/**
+ * How the install asks for a file of the shell (`RequestInit.cache`). The page and the files outside /assets/ keep their names when they
+ * change, so they are asked of the server (`reload`), and never of the browser's HTTP cache, which may have those of another build. A
+ * file under /assets/ is named by its content: what any cache has under that name is that file, so it is taken from there if it is (`default`).
+ */
+export function installCacheMode(path: string): "reload" | "default" {
+  return path.startsWith("/assets/") ? "default" : "reload";
 }
 
 export function cacheName(version: string): string {

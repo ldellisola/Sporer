@@ -43,6 +43,15 @@ describe("States", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
+  test("ErrorState_shows_the_detail_of_an_ApiError_that_has_one_after_what_failed", () => {
+    // The signed-out page has no way to sign in again but to close and reopen the app (client.ts): that is what the owner is told.
+    const detail = "Signed out at the login: close and reopen the app to sign in.";
+    render(<ErrorState error={new ApiError(0, "/api/day/2026-10-22", "GET", detail)} onRetry={() => undefined} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load — Retry");
+    expect(screen.getByText(`GET /api/day/2026-10-22 failed with status 0. ${detail}`)).toBeInTheDocument();
+  });
+
   test("ErrorState_copes_with_an_error_that_is_not_an_Error", () => {
     render(<ErrorState error="boom" onRetry={() => undefined} />);
 

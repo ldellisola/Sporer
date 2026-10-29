@@ -56,6 +56,9 @@ async function failure(response: Response, path: string, method: Method): Promis
 // redirecting from reloading it for ever. The call fails, and the view shows its error with Retry.
 const RELOAD_KEY = "sporer:signed-out-reload";
 const RELOAD_GAP_MS = 60_000;
+// What the error says (as its `detail`: the error state shows it) when the page was signed out, whether it reloads or is held back from it: a page
+// that is held back stays on its error, and the way out is to leave the app and come back, so that the login is asked for again.
+const SIGNED_OUT = "Signed out at the login: close and reopen the app to sign in.";
 
 /**
  * The time (as `Date.now()` has it) that the page last reloaded because it was signed out; null when it has not, or when what is stored is no
@@ -93,7 +96,7 @@ async function request(path: string, method: Method, init: RequestInit): Promise
   const response = await fetch(path, { ...init, redirect: "manual" });
   if (response.type === "opaqueredirect") {
     reloadSignedOutPage();
-    throw new ApiError(0, path, method); // the status of an opaque redirect is 0, which the response says too
+    throw new ApiError(0, path, method, SIGNED_OUT); // the status of an opaque redirect is 0, which the response says too
   }
   if (!response.ok) throw await failure(response, path, method);
   return response;

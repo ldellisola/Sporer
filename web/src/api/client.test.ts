@@ -366,6 +366,53 @@ describe("signed out", () => {
     }
   });
 
+  // What the owner reads under "Couldn't load" (the error state shows `detail`), for the page that reloads and for the one that is held back.
+  const SIGNED_OUT = "Signed out at the login: close and reopen the app to sign in.";
+
+  test("the_error_of_a_redirect_says_the_owner_is_signed_out_and_what_to_do_whether_the_page_reloads_or_not", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+    for (const [method, call] of calls) {
+      window.sessionStorage.clear();
+      reload.mockClear();
+      const reloaded = await fail(call); // nothing reloaded in the last minute: the page reloads
+      expect(reload, method).toHaveBeenCalledTimes(1);
+      expect((reloaded as ApiError).detail, `${method}, reloaded`).toBe(SIGNED_OUT);
+
+      reload.mockClear();
+      later(1_000);
+      const held = await fail(call); // the page reloaded a second ago: it does not
+      expect(reload, method).not.toHaveBeenCalled();
+      expect((held as ApiError).detail, `${method}, held back`).toBe(SIGNED_OUT);
+      expect((held as ApiError).status, method).toBe(0);
+      expect((held as ApiError).message, method).toMatch(new RegExp(`^${method} /api/\\S+ failed with status 0$`)); // what failed is still said as before
+    }
+  });
+
+  test("the_error_of_a_redirect_has_the_same_detail_when_the_storage_cannot_be_used", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+    const failure = await fail(calls[0]![1]);
+
+    expect(reload).not.toHaveBeenCalled();
+    expect((failure as ApiError).detail).toBe(SIGNED_OUT);
+  });
+
+  test("the_detail_of_any_other_failure_is_not_the_sign_out", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    vi.stubGlobal("fetch", vi.fn(async () => respond(503, "<html>Bad gateway</html>")));
+
+    const failure = await fail(calls[0]![1]);
+
+    expect((failure as ApiError).status).toBe(503);
+    expect((failure as ApiError).detail).toBeNull();
+  });
+
   test("a_second_redirect_within_60_seconds_does_not_reload_again_and_still_fails_the_call", async () => {
     pageAt("2026-10-22T12:00:00Z");
     vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));

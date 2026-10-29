@@ -8,6 +8,8 @@ COPY ./web/package.json ./web/package-lock.json ./
 RUN npm ci
 COPY ./web ./
 RUN npm run build -- --outDir /web-dist
+# The worker's list of files and its version are checked against what was built: a build whose precache is not the build's fails here, and so in CI.
+RUN node scripts/check-sw.mjs /web-dist
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build-backend
 # Set by buildx to the architecture being built (amd64, arm64); empty with the classic builder.
@@ -16,9 +18,9 @@ WORKDIR /src
 
 # The API is published ReadyToRun: its code and its packages' are compiled ahead of time, so that the first requests, the first edit and the first
 # refresh after a start wait less for the JIT (the warm-up in the app does the rest). That code is for one architecture, so restore and publish
-# both name its runtime identifier, taken from the architecture being built. It stays framework-dependent (the runtime is the aspnet image's, as before); the runtime pack and
-# the compiler that ReadyToRun needs are fetched here, at restore, which is why PublishReadyToRun is set there too. An architecture other
-# than these two fails the build, rather than publish code that would not run.
+# both name its runtime identifier, taken from the architecture being built. It stays framework-dependent (the runtime is the aspnet image's, as
+# before); the runtime pack and the compiler that ReadyToRun needs are fetched here, at restore, which is why PublishReadyToRun is set there too.
+# An architecture other than these two fails the build, rather than publish code that would not run.
 RUN case "${TARGETARCH:-amd64}" in \
       amd64) echo linux-x64 ;; \
       arm64) echo linux-arm64 ;; \

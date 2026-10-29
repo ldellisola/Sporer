@@ -4,7 +4,7 @@
 //
 // It never answers anything under /api or of another origin, and it keeps no answer of the API: see routeOf (shellPolicy.ts). It keeps
 // no answer to a navigation either: the page it shows offline is the one it fetched and checked when it was installed.
-import { NAVIGATION_TIMEOUT_MS, cacheName, cachesToDelete, isAppPage, isShellDocument, routeOf, shellPaths } from "./shellPolicy";
+import { NAVIGATION_TIMEOUT_MS, cacheName, cachesToDelete, installCacheMode, isAppPage, isProxyError, isShellDocument, routeOf, shellPaths } from "./shellPolicy";
 
 // The build puts this in front of the script: the version of the shell and the files of it, as root-relative paths.
 type Shell = { readonly version: string; readonly files: readonly string[] };
@@ -15,8 +15,9 @@ const CACHE = cacheName(version);
 const PAGE = "/index.html"; // every route of the app is answered with it (see Program.cs), so it is kept once, apart from the files
 const shellFiles: ReadonlySet<string> = shellPaths(files, sw.location.origin); // as a request's path has them: percent-encoded
 
-// Asked of the server and not of the browser's own HTTP cache, so that what is kept is the build's and never a mix of two.
-const fresh = (path: string) => new Request(path, { cache: "reload" });
+// The page and the files outside /assets/ are asked of the server and not of the browser's own HTTP cache (they keep their names when they
+// change), so that what is kept is the build's and never a mix of two. A hashed file under /assets/ may come from that cache: its name is its content.
+const forInstall = (path: string) => new Request(path, { cache: installCacheMode(path) });
 // Vary: Accept-Encoding on a file means nothing to what was stored: the browser decodes it either way.
 const lookup = { cacheName: CACHE, ignoreSearch: true, ignoreVary: true };
 
@@ -25,12 +26,12 @@ sw.addEventListener("install", (event) => {
   // file does), the worker that is running stays, and the next check for an update tries again.
   event.waitUntil(
     (async () => {
-      const page = await fetch(fresh(PAGE));
+      const page = await fetch(forInstall(PAGE));
       if (!isShellDocument(page) || !isAppPage(await page.clone().text(), shellFiles)) {
         throw new Error(`${PAGE} is not the page of the app that this worker keeps (${page.status} ${page.type}${page.redirected ? ", redirected" : ""}).`);
       }
       const cache = await caches.open(CACHE);
-      await cache.addAll(files.map(fresh));
+      await cache.addAll(files.map(forInstall));
       await cache.put(PAGE, page);
       await sw.skipWaiting();
     })(),
@@ -63,9 +64,10 @@ async function fromShell(request: Request): Promise<Response> {
   return (await caches.match(request, lookup)) ?? fetch(request);
 }
 
-// The network first, so that a page is never older than the server's, and the kept page only when the network fails or takes more
-// than NAVIGATION_TIMEOUT_MS. A redirect (the login) is the network's answer like any other: it is followed, not replaced. What the
-// network answers is never kept, whatever it is: the kept page is the one of the install.
+// The network first, so that a page is never older than the server's, and the kept page only when the network fails, takes more than
+// NAVIGATION_TIMEOUT_MS, or answers 502, 503 or 504 (a proxy that cannot reach the app: isProxyError; the views then show their own error
+// with a Retry). Any other answer is the network's like the rest: a redirect (the login) is followed, not replaced. What the network
+// answers is never kept, whatever it is: the kept page is the one of the install.
 async function navigate(request: Request): Promise<Response> {
   const network = fetch(request);
 
@@ -75,13 +77,13 @@ async function navigate(request: Request): Promise<Response> {
   });
   try {
     const answer = await Promise.race([network, timedOut]);
-    if (answer !== null) return answer;
+    if (answer !== null && !isProxyError(answer)) return answer;
   } catch {
     // the network failed: the kept page, below
   } finally {
     clearTimeout(timer);
   }
 
-  // No kept page: the network's own answer, whenever it comes, or its error.
+  // No kept page: the network's own answer (a proxy's error too), whenever it comes, or its error.
   return (await caches.match(PAGE, lookup)) ?? network;
 }

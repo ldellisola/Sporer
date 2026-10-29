@@ -86,7 +86,7 @@ cleanup() {
       2*) ;;
       *)
         why="the API is not running"
-        [ -z "$pid" ] || why="the API answered ${code:-nothing}"
+        if [ -n "$pid" ] && kill -0 "$pid" 2> /dev/null; then why="the API answered ${code:-nothing}"; fi
         echo "first-after-start.sh: the trip distance was not put back ($why): put $original_body back with" \
           "curl -X PUT -H 'Content-Type: application/json' --data '$original_body' $base/api/settings, with the API running (a recompute follows)" >&2 ;;
     esac

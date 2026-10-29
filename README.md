@@ -310,8 +310,8 @@ the app that the login answers with a redirect (every request of the app is made
 the proxy then sends to its login, and after signing in you are back in the app. The reload happens at most once a minute (the tab remembers when it
 last did), so a login that keeps redirecting cannot make the page reload for ever: the view that asked shows its error with a Retry instead, as it does
 when the browser will not let the tab remember anything (a private window). A request that gets no answer at all (no network) is not a sign-out and
-never reloads the page. The installed app's service worker is no part of this: it never answers a request of the
-API, and a page that the login redirects to is shown as the login sends it, never replaced by the saved page.
+never reloads the page. The installed app's service worker is no part of this: it never answers a request of the API, and a page that the login
+redirects to is shown as the login sends it, never replaced by the saved page unless the network gives no answer for 3 seconds.
 
 ## First release
 
@@ -403,9 +403,9 @@ timeline (an algorithm change, or any `Detection__*` change, makes one, and your
 - [ ] **The edit bar at the peek, at larger text.** With edit mode on and the sheet at its lowest (its peek), the edit bar's row (the note or the count,
   Clear and Done) is fully visible without pulling the sheet up, with Safari's text size (the page menu, aA, in the address bar of a page in Safari: the
   app on the Home Screen has no such menu) at 100 %, and again at 115 % and at 125 %. And again with Settings, Display & Brightness, Display Zoom, Larger
-  Text: it narrows the page, and it is the one size setting that also applies to the app on the Home Screen. So does a load error of the points (open a
-  day, turn on Airplane mode, then tap Edit points): its alert, with its Retry, is in that same row. At large text the row can need a third line and push
-  Done below the peek: say so, with the size, if it does.
+  Text: it narrows the page, and it is the one size setting that also applies to the app on the Home Screen. Check the same with a load error of the
+  points (open a day, turn on Airplane mode, then tap Edit points): its alert and its Retry must be in that row. At large text the row can need a third
+  line and push Done below the peek: say so, with the size, if it does.
 - [ ] **Re-date and rename a trip, delete one and restore it.** Open a trip, tap Edit, give it a name and another start or end date (the day you
   are back is the end date), Save. The trip, its days and the trips list show the new name and dates, and the address follows a new start
   date. **Use detected dates** puts the detected ones back. Delete another trip (Delete trip): it leaves the list, and is listed under Settings,
@@ -558,15 +558,15 @@ access gets a plain background instead of a map; the rest of the page works.
   | Run workflow by hand on `main` or on a `v*` tag | built and published |
   | Run workflow by hand on any other branch or tag | built, not published |
 
-The WebKit smoke set is the tests tagged `{ tag: "@smoke" }`: one or two of each flow (the app opens on today, day navigation, the month,
-opening a trip, renaming a place, Settings, and the service worker installing from a page that is not the app). Two kinds of test stay with
-Chromium. The test of removing points reads the pixels of the points right after edit mode sets them, and headless WebKit puts the last frame of a
-WebGL canvas into a screenshot late (the points are in the canvas, and in the screenshot only after another frame is drawn, which an idle map does not
-do; the trips test, whose map keeps moving, runs on WebKit too). The two service-worker cases that need the page's requests to reach the test's mocks
-are not routed by Playwright on WebKit while a worker controls the page. Edit mode on Safari is in the owner's iPhone checklist. The smoke set is a project called `webkit` that exists only when
-`PW_WEBKIT=1`, so only CI runs it by default; a plain `npm run e2e` is Chromium's two projects. The project uses Playwright's iPhone 14
-descriptor (WebKit, touch, the phone's pixel density). Where WebKit is installed (`npx playwright install webkit`; on Linux add `--with-deps`),
-run it with:
+The WebKit smoke set is the tests tagged `{ tag: "@smoke" }`: one or two of each flow (the app opens on today, day navigation, the month, opening a
+trip, renaming a place, Settings, a session that has ended at the login, and the service worker installing from a page that is not the app). Two
+kinds of test stay with Chromium. The test of removing points reads the pixels of the points right after edit mode sets them, and headless WebKit
+puts the last frame of a WebGL canvas into a screenshot late (the points are in the canvas, and in the screenshot only after another frame is drawn,
+which an idle map does not do; the trips test, whose map keeps moving, runs on WebKit too). The two service-worker cases that need the page's
+requests to reach the test's mocks stay too: their page requests are not routed by Playwright on WebKit while a worker controls the page. Edit mode
+on Safari is in the owner's iPhone checklist. The smoke set is a project called `webkit` that exists only when `PW_WEBKIT=1`, so only CI runs it by
+default; a plain `npm run e2e` is Chromium's two projects. The project uses Playwright's iPhone 14 descriptor (WebKit, touch, the phone's pixel
+density). Where WebKit is installed (`npx playwright install webkit`; on Linux add `--with-deps`), run it with:
 
 ```sh
 cd web
