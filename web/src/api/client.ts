@@ -51,31 +51,35 @@ async function failure(response: Response, path: string, method: Method): Promis
 //
 // The reload happens at most once per RELOAD_GAP_MS: if the login keeps redirecting (a page that is not the proxy's, say), the page would
 // otherwise reload for ever. The time of the last reload is kept for the tab in sessionStorage under RELOAD_KEY, which a reload keeps and
-// a new tab does not. Storage that is not there (a private window, blocked site data) is "never reloaded".
+// a new tab does not. Storage that cannot be used (a private window, blocked site data, a full quota) is "cannot tell", and not "never
+// reloaded" (P5-R8): the page then does not reload at all, for with no memory of the last reload nothing stops a login that keeps
+// redirecting from reloading it for ever. The call fails, and the view shows its error with Retry.
 const RELOAD_KEY = "sporer:signed-out-reload";
 const RELOAD_GAP_MS = 60_000;
 
-/** The time (as `Date.now()` has it) that the page last reloaded because it was signed out; null when it has not, or when that cannot be told. */
+/**
+ * The time (as `Date.now()` has it) that the page last reloaded because it was signed out; null when it has not, or when what is stored is no
+ * time. Throws when the storage cannot be read: that is not "never".
+ */
 function lastSignedOutReload(): number | null {
-  try {
-    const stored = window.sessionStorage.getItem(RELOAD_KEY);
-    if (stored === null || stored.trim() === "") return null;
-    const time = Number(stored);
-    return Number.isFinite(time) && time >= 0 ? time : null;
-  } catch {
-    return null;
-  }
+  const stored = window.sessionStorage.getItem(RELOAD_KEY);
+  if (stored === null || stored.trim() === "") return null;
+  const time = Number(stored);
+  return Number.isFinite(time) && time >= 0 ? time : null;
 }
 
-/** Reloads the page, unless it did so less than RELOAD_GAP_MS ago (a time that is ahead of the clock, which was set back since, is no such time). */
+/**
+ * Reloads the page, unless it did so less than RELOAD_GAP_MS ago (a time that is ahead of the clock, which was set back since, is no such
+ * time), or unless the storage cannot be read and written: the time is kept first, and only then is the page reloaded.
+ */
 function reloadSignedOutPage(): void {
   const now = Date.now();
-  const last = lastSignedOutReload();
-  if (last !== null && last <= now && now - last < RELOAD_GAP_MS) return;
   try {
+    const last = lastSignedOutReload();
+    if (last !== null && last <= now && now - last < RELOAD_GAP_MS) return;
     window.sessionStorage.setItem(RELOAD_KEY, String(now));
   } catch {
-    // Not kept: the next redirect reloads again.
+    return; // cannot tell whether it reloaded a moment ago, and could not note that it does now
   }
   window.location.reload();
 }

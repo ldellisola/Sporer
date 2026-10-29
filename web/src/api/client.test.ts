@@ -422,6 +422,20 @@ describe("signed out", () => {
     expect(Number(window.sessionStorage.getItem(window.sessionStorage.key(0)!))).toBe(Date.parse("2026-10-22T12:00:00Z"));
   });
 
+  test("the_time_is_kept_before_the_page_reloads", async () => {
+    pageAt("2026-10-22T12:00:00Z");
+    let keptAtReload: number | null = null;
+    reload.mockImplementation(() => {
+      keptAtReload = window.sessionStorage.length; // a reload that ends the page's scripts must find the time noted already
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
+
+    await fail(calls[0]![1]);
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(keptAtReload).toBe(1);
+  });
+
   test("something_in_sessionStorage_that_is_not_a_time_counts_as_no_reload_yet", async () => {
     pageAt("2026-10-22T12:00:00Z");
     vi.stubGlobal("fetch", vi.fn(async () => opaqueRedirect()));
@@ -449,16 +463,35 @@ describe("signed out", () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  describe("sessionStorage_that_throws_counts_as_never_reloaded", () => {
+  // A private window, blocked site data or a full quota (P5-R8): the page cannot tell whether it reloaded a moment ago, and so it does not reload.
+  describe("sessionStorage_that_cannot_be_used_means_no_reload_and_the_error_with_retry", () => {
+    const insecure = () => new DOMException("The operation is insecure.", "SecurityError");
+    const full = () => new DOMException("The quota has been exceeded.", "QuotaExceededError");
     const failures: [string, () => void][] = [
       [
         "getItem and setItem",
         () => {
           vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-            throw new DOMException("The operation is insecure.", "SecurityError");
+            throw insecure();
           });
           vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-            throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+            throw full();
+          });
+        },
+      ],
+      [
+        "getItem only",
+        () => {
+          vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+            throw insecure();
+          });
+        },
+      ],
+      [
+        "setItem only",
+        () => {
+          vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+            throw full();
           });
         },
       ],
@@ -466,7 +499,7 @@ describe("signed out", () => {
         "the sessionStorage property",
         () => {
           vi.spyOn(window, "sessionStorage", "get").mockImplementation(() => {
-            throw new DOMException("The operation is insecure.", "SecurityError");
+            throw insecure();
           });
         },
       ],
@@ -479,11 +512,16 @@ describe("signed out", () => {
 
       const failure = await fail(calls[0]![1]);
       later(1_000);
+      const again = await fail(calls[1]![1]);
+      later(120_000);
       await fail(calls[0]![1]);
 
-      expect(failure).toBeInstanceOf(ApiError); // no throw of the storage's reaches the caller
-      expect((failure as ApiError).status).toBe(0);
-      expect(reload).toHaveBeenCalledTimes(2); // nothing says it has reloaded
+      for (const error of [failure, again]) {
+        expect(error).toBeInstanceOf(ApiError); // no throw of the storage's reaches the caller: the view has its error to show
+        expect((error as ApiError).status).toBe(0);
+        expect(isRefusal(error)).toBe(false); // with a Retry
+      }
+      expect(reload).not.toHaveBeenCalled();
     });
   });
 

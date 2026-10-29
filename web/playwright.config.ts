@@ -7,6 +7,14 @@ declare const process: { env: Record<string, string | undefined> }; // this file
 const PORT = 4173;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
+// Playwright (1.56) lets a route, and the offline switch, reach the requests that a service worker makes itself (the page of a navigation, the files
+// of the shell at install) only when this is set: its network events for workers are still marked experimental. Without it those requests go to the
+// real network whatever a test says, and service-worker.spec.ts would be testing a worker that is never offline, never slow and never redirected.
+// It is set here, so for the whole run: the other specs are not affected, because they block service workers (`serviceWorkers: "block"` below), so
+// there is no worker target for it to apply to. It is read by the process that launches the browser, which is a test worker: a browser that
+// is not launched by it (a remote one, `PW_TEST_CONNECT_WS_ENDPOINT`) needs it set on its own server. Check it again when Playwright is upgraded.
+process.env["PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS"] = "1";
+
 // The container has no GPU. SwiftShader is Chrome's software WebGL, which MapLibre needs to draw at all.
 const WEBGL_ARGS = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"];
 

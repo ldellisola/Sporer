@@ -6,16 +6,9 @@ import { mockApi } from "./mockApi";
 // the API see every request). Every test has a browser context of its own, so each begins with no worker and installs one.
 //
 // What the page asks is seen by `page.route`, which is what `mockApi` and the guard (base.ts) use. What the worker itself asks of the network
-// (the page of a navigation, and the files of the shell at install) is not the page's request: it is seen by `context.route` only.
+// (the page of a navigation, and the files of the shell at install) is not the page's request: it is seen by `context.route` only, and only
+// because playwright.config.ts sets PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS (read there why).
 test.use({ serviceWorkers: "allow" });
-
-declare const process: { env: Record<string, string | undefined> }; // this file runs in Node, whose types the app does not take
-
-// Playwright (1.56) lets a route, and the offline switch, reach the requests of a service worker only when it is told to: its network events for
-// workers are still marked experimental. Without it a worker's own requests go to the real network whatever the test says, and a test of what
-// the worker does with a network that is down or slow would be testing nothing. It is read when a worker starts, in this process; a context
-// that blocks service workers (the rest of the suite) has no use for it.
-process.env["PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS"] = "1";
 
 const DAY = "/day/2026-10-22";
 
@@ -80,38 +73,44 @@ test("the_worker_keeps_the_files_of_the_shell_and_nothing_else", async ({ page }
 });
 
 test("the_worker_does_not_answer_the_api_and_without_the_mock_a_request_fails_as_it_does_without_a_worker", async ({ page, guard }) => {
+  const api = await mockApi(page); // the app's own requests; the path asked for below is one that this test answers itself, and takes the answer away
   let served = 0;
-  const api = await mockApi(page, { probe: () => ({ json: { served: ++served } }) });
+  const isProbe = (url: URL): boolean => url.pathname === "/api/probe";
+  const probe = (route: Route) => route.fulfill({ json: { served: ++served } });
+  await page.route(isProbe, probe); // after the mock's route, so asked before it
   await openWithWorker(page);
   const ask = () => page.evaluate(async () => (await fetch("/api/probe")).json() as Promise<{ served: number }>);
 
-  // Each request reaches the mock, and has an answer of its own: not the first one again (a cache), and not an answer in the worker's own words.
+  // Each request reaches the route, and has an answer of its own: not the first one again (a cache), and not an answer in the worker's own words.
   expect([await ask(), await ask(), await ask()]).toEqual([{ served: 1 }, { served: 2 }, { served: 3 }]);
-  expect(api.requests.filter((request) => request === "/api/probe")).toHaveLength(3);
 
   await page.reload(); // controlled from its first request: what the app asks for at start is the mock's to answer as well
   await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true);
   await expect.poll(() => api.requests.filter((request) => request === "/api/config")).toHaveLength(2);
 
-  // With nothing to answer the path, the guard's 501 is what comes back, though three answers of 200 have been had for it since: it is not remembered.
-  const without = await page.evaluate(async () => {
-    const response = await fetch("/api/not-mocked");
-    return response.status;
-  });
-  const found = guard.take();
+  // The mock removed: nothing answers the path any more, so it fails as any unmocked API call does, with the 501 of the guard, though three answers of
+  // 200 have been had for it since. A worker that kept the answers of the API would give one of them back.
+  await page.unroute(isProbe, probe);
+  const without = await page.evaluate(async () => (await fetch("/api/probe")).status);
+
   expect(without).toBe(501);
-  expect(found.unmockedApiRequests).toEqual(["GET /api/not-mocked"]);
+  const found = guard.take(); // the guard has found what it is there to find, on purpose
+  expect(found.unmockedApiRequests).toEqual(["GET /api/probe"]);
   expect(found.consoleErrors).toEqual([expect.stringContaining("Failed to load resource")]); // the browser's note of the 501
   expect(found.externalRequests).toEqual([]);
 });
 
 test("with_the_network_down_a_reload_shows_the_app_with_the_error_of_the_view_and_its_retry", async ({ context, page, guard }) => {
   const api = await mockApi(page);
+  const styled = page.waitForResponse((response) => new URL(response.url()).pathname === "/test-style.json");
   await openWithWorker(page);
   await expect.poll(() => api.requests).toContain("/api/day/2026-10-22");
+  await styled; // the map has its style: nothing of the page is left on the way to be cut off, and logged as an error, by what follows
 
   // Down: the worker's own requests fail, and so do the page's (a route that gives no answer, which is what a request with no network is).
   await context.setOffline(true);
+  const [worker] = context.serviceWorkers();
+  expect(await worker!.evaluate(() => fetch("/manifest.webmanifest").then(() => "reachable", () => "down"))).toBe("down"); // the switch reaches the worker
   await page.route(isApi, (route) => route.abort("internetdisconnected"));
   await page.reload();
 
