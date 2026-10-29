@@ -19,5 +19,10 @@
     "noFallthroughCasesInSwitch": true,
     "noEmit": true
   },
-  "include": ["src", "e2e", "*.config.ts"]
+  "include": ["src", "e2e", "*.config.ts"],
+  // The service worker (src/sw/sw.ts) is checked as a project of its own, for a worker's types, and the build's config (vite.config.ts,
+  // which runs in Node, and build/ with the plugin it uses) as another, which has the few declarations of Node that the plugin needs:
+  // `npm run typecheck` runs them all. The app is checked without them, so that code of the app that uses a worker's or Node's API fails
+  // its typecheck instead of the browser. shellPolicy.ts stays here, with its tests.
+  "exclude": ["src/sw/sw.ts", "vite.config.ts"]
 }
