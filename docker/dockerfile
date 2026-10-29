@@ -10,17 +10,30 @@ COPY ./web ./
 RUN npm run build -- --outDir /web-dist
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build-backend
+# Set by buildx to the architecture being built (amd64, arm64); empty with the classic builder.
+ARG TARGETARCH
 WORKDIR /src
+
+# The API is published ReadyToRun: its code and its packages' are compiled ahead of time, so that the first requests, the first edit and the first
+# refresh after a start do not wait for the JIT. That code is for one architecture, so restore and publish both name its runtime identifier,
+# taken from the architecture being built. It stays framework-dependent (the runtime is the aspnet image's, as before); the runtime pack and
+# the compiler that ReadyToRun needs are fetched here, at restore, which is why PublishReadyToRun is set there too. An architecture other
+# than these two fails the build, rather than publish code that would not run.
+RUN case "${TARGETARCH:-amd64}" in \
+      amd64) echo linux-x64 ;; \
+      arm64) echo linux-arm64 ;; \
+      *) echo "Unsupported TARGETARCH '${TARGETARCH}': the image is built for amd64 and arm64" >&2; exit 1 ;; \
+    esac > /runtime-identifier
 
 # Only the API and the timeline library are built. The solution also references the test projects, which are not
 # copied here, so it is never restored or built in the image.
 COPY ./src/Sporer.Api/Sporer.Api.csproj ./Sporer.Api/
 COPY ./src/Sporer.Timeline/Sporer.Timeline.csproj ./Sporer.Timeline/
-RUN dotnet restore ./Sporer.Api/Sporer.Api.csproj
+RUN dotnet restore ./Sporer.Api/Sporer.Api.csproj -r "$(cat /runtime-identifier)" -p:PublishReadyToRun=true
 
 COPY ./src/Sporer.Api ./Sporer.Api
 COPY ./src/Sporer.Timeline ./Sporer.Timeline
-RUN dotnet publish ./Sporer.Api/Sporer.Api.csproj -c Release -o /app --no-restore
+RUN dotnet publish ./Sporer.Api/Sporer.Api.csproj -c Release -r "$(cat /runtime-identifier)" --self-contained false -p:PublishReadyToRun=true -o /app --no-restore
 
 # The Ubuntu-based runtime image already ships /usr/share/zoneinfo, which converting UTC to a segment's local time
 # (TimeZoneInfo.FindSystemTimeZoneById with IANA ids such as Europe/Oslo) needs. Do not switch to an image without it.

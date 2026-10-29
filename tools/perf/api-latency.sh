@@ -10,7 +10,7 @@
 #   GET /api/trips                           `trips` requests, and GET /api/trips/{id} `trips` requests for each trip the list has
 #   GET /api/places/search                   `places` requests with no `q`, and `places` with a `q` of two or three letters (the home picker's)
 # The windows start on a random date, so they are not the calendar months and years the web app asks for; a window of 31 or
-# 365 days is the longest of them. Everything is picked with a generator of the script's own (see RNG below), so that a seed gives the
+# 365 days is the longest of them. Everything is picked with a generator of the scripts' own (see rng.awk), so that a seed gives the
 # same dates and windows every time and on every awk, and two runs can be compared on the same requests.
 #
 # Requests carry `Accept-Encoding: br`, as a browser's do, so the time is that of the compressed answer: curl's time_total,
@@ -42,12 +42,8 @@ trap 'rm -rf "$workdir"' EXIT
 
 date_at() { date -u -d "$first + $1 days" +%F; } # offset
 
-# A random number generator of our own for awk: the Park-Miller "minimal standard", in doubles (16807 * 2^31 is far below 2^53, so it
-# is exact), so that a seed gives the same numbers on every awk. awk's own srand(seed) does not: mawk, which is what Debian and
-# Ubuntu have, takes its numbers from arc4random and ignores the seed, so every run of the first pass drew other dates and windows.
-RNG='function seed_rnd(s) { x = ((s + 1234567) * 48271) % 2147483647; if (x == 0) x = 1; for (k = 0; k < 8; k++) rnd() }
-     function rnd() { x = (x * 16807) % 2147483647; return x / 2147483647 }'
-
+# The generator that draws the dates, the windows and the search terms (the Park-Miller "minimal standard", the same on every awk: see rng.awk).
+RNG=$(cat "$here/rng.awk")
 
 # count length seed: "from to" per line, the window `length` days long and inside the history
 random_windows() {

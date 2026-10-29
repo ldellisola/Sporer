@@ -50,6 +50,10 @@ public interface ITripRefresher
 /// recompute of its own afterwards, which waits for the lock and works from what is there then. The restart of a backfill
 /// (<c>ProcessingQueue.RestartBackfillAsync</c>) deletes the segments, nights, homes and trips, and does hold it (P4-R11).
 /// </para>
+/// <para>
+/// The one other thing that reads what a refresh reads, <see cref="WarmUpAsync"/>, takes no lock: it writes nothing, and what it works out is
+/// thrown away, so it has nothing to keep consistent.
+/// </para>
 /// </remarks>
 public sealed class TripRefresher(
     NpgsqlDataSource dataSource,
@@ -96,11 +100,53 @@ public sealed class TripRefresher(
             ? await builder.BuildAsync(rebuilt.From, rebuilt.To, ct)
             : (default, default, []);
 
+        var (_, homes, edited) = await WorkOutAsync(connection, transaction, window is null ? null : (from, to, built), ct);
+
+        if (window is null)
+            await TripStore.ReplaceDetectedAsync(connection, transaction, homes, edited, ct);
+        else
+            await trips.ReplaceAllAsync(connection, transaction, from, to, built, homes, edited, ct);
+
+        await transaction.CommitAsync(ct);
+    }
+
+    /// <summary>
+    /// Reads what a recompute reads and works the homes and trips out from it, as a recompute does, and writes nothing and takes no lock:
+    /// the result is thrown away. It is for <see cref="TripWarmUp"/>, which runs it once after a start, so that the code that the first refresh
+    /// and the first edit run (the queries, the mapping of their rows, home and trip detection) is compiled before the owner waits for it.
+    /// Returns what it found: how many nights, home periods and trips.
+    /// </summary>
+    /// <remarks>
+    /// Without the lock the reads may meet a refresh half way (the nights of one state, the homes of the other), which is no matter for a result
+    /// that nothing uses. The transaction is read only, so that the database itself refuses a write, and it is rolled back at the end.
+    /// </remarks>
+    public async Task<(int Nights, int Homes, int Trips)> WarmUpAsync(CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        await connection.ExecuteAsync(new CommandDefinition("set transaction read only", transaction: transaction, cancellationToken: ct));
+
+        var (found, homes, edited) = await WorkOutAsync(connection, transaction, null, ct);
+        return (found, homes.Count, edited.Count);
+    }
+
+    /// <summary>
+    /// What a refresh, a recompute and the warm-up have in common, which reads and writes nothing: the nights as they will be (every stored
+    /// night, with the ones <paramref name="rebuilt"/> in place of the stored ones of their dates), the home periods worked out from them and
+    /// the trips, with the owner's edits put on them. The reads of the owner's edits, homes and distance go through the caller's
+    /// <paramref name="transaction"/>, which is how the lock the caller holds, if it holds one, covers them.
+    /// </summary>
+    private async Task<(int Nights, IReadOnlyList<HomePeriod> Homes, IReadOnlyList<EditedTrip> Trips)> WorkOutAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction,
+        (DateOnly From, DateOnly To, IReadOnlyList<(Night Night, string Source)> Built)? rebuilt, CancellationToken ct)
+    {
         // Every stored night outside the window, and the built ones in it: the dates the builder left out have none now. (Without a
         // window, every stored night as it is.)
         var survivors = await places.LoadSurvivorsAsync(ct);
         var stored = await nights.LoadAllAsync(ct);
-        var all = (window is null ? stored : stored.Where(n => n.Date < from || n.Date > to).Concat(built.Select(b => b.Night)))
+        var all = (rebuilt is not { } window
+                ? stored
+                : stored.Where(n => n.Date < window.From || n.Date > window.To).Concat(window.Built.Select(b => b.Night)))
             .OrderBy(n => n.Date)
             // A night keeps the place its stay had, which may have been merged into another since: the home is the survivor.
             .Select(n => n.PlaceId is { } id && survivors.TryGetValue(id, out var survivor) ? n with { PlaceId = survivor } : n)
@@ -132,11 +178,6 @@ public sealed class TripRefresher(
         var edits = await TripEditStore.LoadAsync(connection, transaction, ct);
         var edited = TripEdits.Apply(detected, edits, TripEdits.ZoneOfNearestNight(all));
 
-        if (window is null)
-            await TripStore.ReplaceDetectedAsync(connection, transaction, homes, edited, ct);
-        else
-            await trips.ReplaceAllAsync(connection, transaction, from, to, built, homes, edited, ct);
-
-        await transaction.CommitAsync(ct);
+        return (all.Count, homes, edited);
     }
 }

@@ -417,6 +417,13 @@ The image builds `src/Sporer.Api` only. The solution also references the test pr
 in the image. The web app is built in a Node stage of its own (`node:22-alpine`) and copied into the image's `wwwroot`;
 whatever `web/node_modules`, `web/dist` or `src/Sporer.Api/wwwroot` hold locally is left out of the build.
 
+The API is published ReadyToRun: its code is compiled ahead of time, so that the first requests, the first edit and the first
+refresh after a start do not wait for the JIT. That code is for one architecture, taken from the platform being built (buildx's
+`TARGETARCH`: `amd64` gives `linux-x64`, `arm64` gives `linux-arm64`, and a build that is given no platform gives `linux-x64`);
+any other platform fails the build. The app stays framework-dependent, on the same `aspnet` image as before. After the migrations
+the app also reads the nights and works the homes and trips out once in the background, and throws the result away (it writes nothing and
+takes no lock, and a failure is only logged as a warning), for the same reason; the log says `Warmed up the homes and trips`.
+
 ### Front-end development
 
 The web app is in `web/`: React, TypeScript, Vite and MapLibre, with CSS Modules and no other UI libraries. You need
@@ -501,6 +508,8 @@ time the day view and ingest, `tools/perf/api-latency.sh` the range, heat, place
 places the way Nominatim would. For editing, `tools/perf/edit-latency.sh` times the edits that recompute the homes and trips,
 `tools/perf/points-latency.sh` the points of a day, `tools/perf/exclude-points.sql` removes a thousand points spread over the history (to time a
 backfill with removals) and `tools/perf/explain-edits.sql` shows the plans of the removal's anti-join, the day's points and the place search.
+`tools/perf/first-after-start.sh` starts the API itself and times the first refresh, edit and reads after each start (what ReadyToRun and the
+warm-up are for), and `tools/perf/rng.awk` is the seeded random generator that `api-latency.sh` and `day-latency.sh` share.
 The measurements at 10 million rows, and how to repeat them, are in
 `docs/superpowers/plans/2026-10-23-sporer-plan-1-perf.md` (server), `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md` (range, heat,
 place, the web app), `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md` (the nights, homes and trips: the backfill, the refresh,

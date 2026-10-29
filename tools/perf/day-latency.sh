@@ -3,8 +3,10 @@
 #
 #   tools/perf/day-latency.sh <base-url> <first-date> <last-date> [warmup=50] [samples=200] [seed=1]
 #
-# Dates are picked with awk's seeded generator, so a run can be repeated. The time is curl's time_total, in
-# ms; it includes connecting to the server (a local one, so a fraction of a millisecond).
+# Dates are picked with the generator of rng.awk (the one of api-latency.sh), which gives the same dates for a seed on every awk, so a run
+# can be repeated and two runs compared on the same requests (awk's own srand does not: mawk ignores the seed). The warm-up draws from the seed
+# and the measured dates from the seed after it, so that the two lists differ. The time is curl's time_total, in ms; it includes
+# connecting to the server (a local one, so a fraction of a millisecond).
 set -euo pipefail
 
 base=${1:?base url, e.g. http://127.0.0.1:5100}
@@ -17,8 +19,10 @@ seed=${6:-1}
 days=$(( ( $(date -u -d "$last" +%s) - $(date -u -d "$first" +%s) ) / 86400 + 1 ))
 here=$(cd "$(dirname "$0")" && pwd)
 
+RNG=$(cat "$here/rng.awk")
+
 random_dates() { # count seed
-  awk -v n="$1" -v days="$days" -v seed="$2" 'BEGIN { srand(seed); for (i = 0; i < n; i++) print int(rand() * days) }' |
+  awk -v n="$1" -v days="$days" -v seed="$2" "$RNG"' BEGIN { seed_rnd(seed); for (i = 0; i < n; i++) print int(rnd() * days) }' |
     while read -r offset; do date -u -d "$first + $offset days" +%F; done
 }
 
