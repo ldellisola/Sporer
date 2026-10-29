@@ -250,10 +250,12 @@ export interface TripSummary {
    */
   ownName: string | null;
   /**
-   * Whether the owner's edit of the trip has a start date or an end date. `edited` is true for a name alone too, and does not say this: a trip that has
-   * dates of its own can be put back to the dates that detection found it with.
+   * Whether the owner's edit of the trip has a start date, and an end date, each of its own: `edited` is true for a name alone too, and does not say this.
+   * A date that is not an edit is detection's and moves on (the end of a trip that is still going on does, every night), so a form sends back only the dates
+   * that are the owner's; and a trip that has either can be put back to the dates that detection found it with.
    */
-  datesEdited: boolean;
+  startEdited: boolean;
+  endEdited: boolean;
 }
 
 /** A trip of the list: its summary and the line to draw for it, home, the places it slept at, home (an ongoing trip has not come back, so it stops at the last place). */

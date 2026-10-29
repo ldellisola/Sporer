@@ -83,7 +83,8 @@ function tripServer() {
       nights: (Date.parse(end) - Date.parse(start)) / 86_400_000,
       localStartDate: start,
       localEndDate: end,
-      datesEdited: trip.edit.start !== undefined || trip.edit.end !== undefined,
+      startEdited: trip.edit.start !== undefined,
+      endEdited: trip.edit.end !== undefined,
       edited: trip.ownName !== null || trip.edit.start !== undefined || trip.edit.end !== undefined,
       ongoing: trip.key === ongoingKey && trip.edit.end === undefined,
     });
@@ -466,13 +467,14 @@ test("a_trip_that_was_only_re_dated_has_no_name_of_the_owners_and_the_form_never
   await edit(page).click();
   await expect(nameField(page)).toHaveValue("");
   await expect(nameField(page)).toHaveAttribute("placeholder", LISBON);
+  await expect(detectedDates(page)).toBeVisible(); // the end is the owner's now
   await endField(page).fill("2026-09-19");
   await save(page).click();
 
   await expect(page.getByText("12 – 19 Sep 2026")).toBeVisible();
   expect(api.writes.map((write) => write.body)).toEqual([
     { name: null, startDate: null, endDate: "2026-09-18" }, // the start was not touched
-    { name: null, startDate: "2026-09-12", endDate: "2026-09-19" }, // the trip has dates of its own now: either may be an edit, and a null would take it back
+    { name: null, startDate: null, endDate: "2026-09-19" }, // the start is still detection's, which is not sent; the end is touched
   ]);
 });
 

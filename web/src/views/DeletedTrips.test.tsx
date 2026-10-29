@@ -224,6 +224,26 @@ describe("DeletedTrips", () => {
     outside.remove();
   });
 
+  test("DeletedTrips_does_not_move_the_focus_later_for_a_refused_restore_whose_row_stayed_when_the_row_goes_with_another_list", async () => {
+    const api = stubApi();
+    api.state.deleted = [LISBON, COPENHAGEN];
+    api.state.restore = () => refused();
+    const { client } = mount();
+    await within(deletedSection()).findByText(LISBON.label);
+    (document.activeElement as HTMLElement | null)?.blur();
+    fireEvent.click(restoreButton(LISBON.label));
+    await within(deletedSection()).findByRole("alert");
+    await waitFor(() => expect(client.isFetching()).toBe(0)); // the list that the 404 asked for has come, with the row still on it: the row stays
+
+    api.state.deleted = [COPENHAGEN]; // and it goes some time later, for another reason
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["deleted-trips"] });
+    });
+
+    await waitFor(() => expect(within(deletedSection()).queryByText(LISBON.label)).not.toBeInTheDocument());
+    expect(document.body).toHaveFocus(); // what was to be done about that row was dropped, and the focus does not jump
+  });
+
   test("DeletedTrips_does_not_move_the_focus_for_a_refused_restore_whose_row_stays", async () => {
     const api = stubApi();
     api.state.deleted = [LISBON, COPENHAGEN];

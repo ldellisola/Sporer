@@ -49,38 +49,43 @@ interface Write {
  * The name and the two dates of the trip as fields, with Save and Cancel. The dates are the trip's local dates: the day it begins and the day the
  * owner is back (the nights are those before it). The field is for the name that the owner gives the trip (`ownName`): it has the owner's name, and
  * is empty when the owner has given none, with the name that the trip is shown under as its placeholder, which is the made-up one then. An empty name
- * goes back to the made-up one. What is sent for a name that was not touched is `ownName` as it is, so that a made-up name is never made the owner's.
+ * goes back to the made-up one. A name that was not touched is never made the owner's: what is sent for it is the owner's name as it is, null for none.
+ *
+ * The form is made for the trip as it was read when it opened (`read`, kept by the first render), and everything it judges is judged against that, whatever
+ * the trip that is read again says while the form is open (the window is focused again, or the trip is 30 seconds old): which dates were touched, whether
+ * the trip is ongoing, which dates are the owner's, and whether anything was changed. The one thing taken from the trip as it is now is the owner's name,
+ * when the field was not touched: the name that was set elsewhere in the meantime is not taken back by a field that was never changed.
  *
  * What is sent for a date is only what the owner decided. A date that was not touched (it is what the form was filled in with) is null, which is "as
- * detected": the trip is read once, and one that is still going on has its end date moved on as nights are processed, so an end date sent back would be
- * stored as the owner's, and the trip would stop being ongoing and lose its latest night (P4-R41). The exception is a trip whose edit has dates
- * (`datesEdited`): either of its dates may be an edit, which a null would take back (a write replaces the edit), so its untouched dates are sent as they
- * are, and the server takes one that is the trip's own as detected. The end of a trip that is still going on cannot be an edit (an end date ends it), and is
- * always null when it was not touched. Nothing is sent when nothing was changed. A start that is not before the end, or a date that is empty, is told by the
- * form (on Save, and not as the dates are typed, which passes through such dates), with the focus on the field to put right; every other refusal is the
- * server's, in its words with no Retry (`WriteError`), and the form stays as it was to be put right. The trip's id is its first night, so a new start date
- * makes a new id: the page is replaced by the trip's new address, where the heading of the panel takes the focus (the form that had it is gone). While the
- * write is on its way Cancel and Escape wait: they cannot take it back, and a form that is gone cannot go on to the trip's new address.
+ * detected": a trip that is still going on has its end date moved on as nights are processed, so an end date sent back would be stored as the owner's, and
+ * the trip would stop being ongoing and lose its latest night (P4-R41). The exception is a date that is the owner's already (`startEdited`, `endEdited`,
+ * each its own): a write replaces the edit, and a null would take it back, so it is sent as it is. The end of a trip that is still going on is null when it
+ * was not touched, whatever else is said of it. Nothing is sent when nothing was changed. A start that is not before the end, or a date that is empty, is
+ * told by the form (on Save, and not as the dates are typed, which passes through such dates), with the focus on the field to put right; every other
+ * refusal is the server's, in its words with no Retry (`WriteError`), and the form stays as it was to be put right. The trip's id is its first night, so a
+ * new start date makes a new id: the page is replaced by the trip's new address, where the heading of the panel takes the focus (the form that had it is
+ * gone). While the write is on its way Cancel and Escape wait: they cannot take it back, and a form that is gone cannot go on to the trip's new address.
  *
- * **Use detected dates** is for a trip whose edit has dates (`datesEdited`): it sends null for both dates, with the name as the field has it (trimmed, and null
- * when empty), so the trip has the dates that detection found it with. The dates of the form are not sent, and may be empty. A write that failed has its
- * Retry send what failed, whichever button sent it, and the focus goes back to that button.
+ * **Use detected dates** is for a trip whose edit has a start date or an end date: it sends null for both dates, with the name as the field has it (trimmed,
+ * and null when empty), so the trip has the dates that detection found it with. The dates of the form are not sent, and may be empty. A write that failed
+ * has its Retry send what failed, whichever button sent it, and the focus goes back to that button.
  */
 export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: () => void }) {
   const nameId = useId();
   const startId = useId();
   const endId = useId();
   const problemId = useId();
-  const initialName = trip.ownName ?? "";
+  const [read] = useState(() => trip);
+  const initialName = read.ownName ?? "";
   const [name, setName] = useState(initialName);
-  const [start, setStart] = useState(trip.localStartDate);
-  const [end, setEnd] = useState(trip.localEndDate);
+  const [start, setStart] = useState(read.localStartDate);
+  const [end, setEnd] = useState(read.localEndDate);
   const [problem, setProblem] = useState<Problem | null>(null);
   const startField = useRef<HTMLInputElement>(null);
   const endField = useRef<HTMLInputElement>(null);
   const saveButton = useRef<HTMLButtonElement>(null);
   const detectedButton = useRef<HTMLButtonElement>(null);
-  const edit = useWrite(({ body }: Write) => putJson<EditTripResponse>(`/api/trips/${trip.id}`, body));
+  const edit = useWrite(({ body }: Write) => putJson<EditTripResponse>(`/api/trips/${read.id}`, body));
   // A button that is turned off while it is pressed may take the focus with it: it goes back to the one that sent the write, which the owner presses
   // again once the form is right.
   useEffect(() => {
@@ -93,12 +98,18 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
   const send = (write: Write) =>
     edit.mutate(write, {
       onSuccess: ({ id }) => {
-        if (id === trip.id) return onClose();
+        if (id === read.id) return onClose();
         const route = { view: "trip", id } as const;
         wantHeadingFocus(route);
         navigate(route, { replace: true });
       },
     });
+  /** What the field says of the name: the name that was typed, and null for an empty one; a field that was not touched says the owner's name as it is now. */
+  const nameToSend = (): string | null => {
+    const text = name.trim();
+    if (text === initialName) return trip.ownName;
+    return text === "" ? null : text;
+  };
   const save = () => {
     if (edit.isPending) return;
     const found = problemOf(start, end);
@@ -108,24 +119,23 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
       (found.field === "start" ? startField : endField).current?.focus();
       return;
     }
-    const text = name.trim();
-    const startTouched = start !== trip.localStartDate;
-    const endTouched = end !== trip.localEndDate;
-    if (text === initialName && !startTouched && !endTouched) return onClose();
+    const nameTouched = name.trim() !== initialName;
+    const startTouched = start !== read.localStartDate;
+    const endTouched = end !== read.localEndDate;
+    if (!nameTouched && !startTouched && !endTouched) return onClose();
     send({
       by: "save",
       body: {
-        name: text === "" ? null : text,
-        startDate: startTouched || trip.datesEdited ? start : null,
-        endDate: endTouched || (trip.datesEdited && !trip.ongoing) ? end : null,
+        name: nameToSend(),
+        startDate: startTouched || read.startEdited ? start : null,
+        endDate: endTouched || (read.endEdited && !read.ongoing) ? end : null,
       },
     });
   };
   const detectedDates = () => {
     if (edit.isPending) return;
     setProblem(null);
-    const text = name.trim();
-    send({ by: "detected", body: { name: text === "" ? null : text, startDate: null, endDate: null } });
+    send({ by: "detected", body: { name: nameToSend(), startDate: null, endDate: null } });
   };
   const detecting = edit.isPending && edit.variables.by === "detected";
   /** What a date field says of itself when the form has found it wrong: that it is, and where the reason is. */
@@ -150,7 +160,7 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
         autoComplete="off"
         autoFocus
         maxLength={MAX_NAME_LENGTH}
-        placeholder={trip.ownName === null ? trip.name : "Automatic name"}
+        placeholder={read.ownName === null ? read.name : "Automatic name"}
         value={name}
         onFocus={(event) => event.currentTarget.select()}
         onChange={(event) => setName(event.target.value)}
@@ -189,7 +199,7 @@ export function EditTripForm({ trip, onClose }: { trip: TripResponse; onClose: (
           />
         </div>
       </div>
-      {trip.datesEdited && (
+      {(read.startEdited || read.endEdited) && (
         <div className={styles.detected}>
           <button ref={detectedButton} type="button" className={forms.secondary} disabled={edit.isPending} onClick={detectedDates}>
             {detecting ? "Using detected dates…" : "Use detected dates"}

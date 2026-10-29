@@ -52,7 +52,12 @@ export function DeletedTrips() {
   useEffect(() => {
     const move = moving.current;
     if (move === null) return;
-    if (move.after !== undefined && list.some((trip) => trip.key === move.after)) return; // the row is not gone yet
+    if (move.after !== undefined && list.some((trip) => trip.key === move.after)) {
+      // The row is not gone yet. While the list that a 404 asked for again is on its way it may yet go; once that has come it stays, and the focus is not to
+      // jump when it goes some other time.
+      if (!query.isFetching) moving.current = null;
+      return;
+    }
     const target = move.to === NO_ROW ? none.current : buttons.current.get(move.to);
     if (target instanceof HTMLButtonElement && target.disabled) return;
     moving.current = null;
