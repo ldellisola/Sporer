@@ -81,8 +81,11 @@ screen in a window of its own, without Safari's bars, on today.
   app switcher) runs on the version it started with until you close it: if it then needs a file that the release replaced, the view says it is
   unavailable, with a **Retry**, and closing the app and opening it again fixes it.
 - **If it ever seems stuck** (an old version that does not go, a view that says unavailable and will not load): close the app from the app
-  switcher and open it again. As a last resort, in Settings, Safari, Advanced, Website Data, remove the site `sporer.lud.ar`, and open the app
-  again: the first start fetches the shell once more.
+  switcher and open it again. As a last resort, **delete the app from the Home Screen** (touch and hold its icon, then Remove App, Delete App) and add
+  it again from Safari: an app on the Home Screen keeps its own website data, its worker and its saved shell included, apart from Safari's, and the
+  new one starts with none, so the first start fetches the shell once more. Nothing of yours is lost, for the worker keeps only the shell and your data is on
+  the server. Removing the site from Safari's Website Data is the other way, and may not reach the app on the Home Screen: on iOS 18 and later it is
+  Settings, Apps, Safari, Advanced, Website Data; on iOS 17 and earlier, Settings, Safari, Advanced, Website Data.
 
 ## Trips and home
 
@@ -398,9 +401,11 @@ timeline (an algorithm change, or any `Detection__*` change, makes one, and your
   engine. Open a day, tap Edit points: the points are drawn on the map; tap one (it is marked), Remove, and Undo; then turn on Select area and
   drag a box over some.
 - [ ] **The edit bar at the peek, at larger text.** With edit mode on and the sheet at its lowest (its peek), the edit bar's row (the note or the count,
-  Clear and Done) is fully visible without pulling the sheet up, with Safari's text size (the aA menu in the address bar of a page in Safari: the app on the home screen has no such menu) at 100 %, and again at
-  115 % and at 125 %. So does a load error of the points (open a day, turn on Airplane mode, then tap Edit points): its alert, with its Retry, is in that same row. At large text
-  the row can need a third line and push Done below the peek: say so, with the size, if it does.
+  Clear and Done) is fully visible without pulling the sheet up, with Safari's text size (the page menu, aA, in the address bar of a page in Safari: the
+  app on the Home Screen has no such menu) at 100 %, and again at 115 % and at 125 %. And again with Settings, Display & Brightness, Display Zoom, Larger
+  Text: it narrows the page, and it is the one size setting that also applies to the app on the Home Screen. So does a load error of the points (open a
+  day, turn on Airplane mode, then tap Edit points): its alert, with its Retry, is in that same row. At large text the row can need a third line and push
+  Done below the peek: say so, with the size, if it does.
 - [ ] **Re-date and rename a trip, delete one and restore it.** Open a trip, tap Edit, give it a name and another start or end date (the day you
   are back is the end date), Save. The trip, its days and the trips list show the new name and dates, and the address follows a new start
   date. **Use detected dates** puts the detected ones back. Delete another trip (Delete trip): it leaves the list, and is listed under Settings,
@@ -433,10 +438,12 @@ clock, not at the feel.
 - [ ] **Pan and zoom are smooth, the Year with its routes included.** On the Year, drag the map about and pinch in and out. Look for a stutter. This is the
   one line that no computer can answer: software drawing on the computer is far slower than your phone, so its frame times in the performance check are
   information and no verdict.
-- [ ] **Ingest stays fast while processing runs: p95 under 200 ms.** The next time the whole timeline is rebuilt (the first backfill, or after changing a
-  `Detection__*` setting), leave Overland sending and look at its log: every batch is accepted, none is retried, and `GET /api/status` shows
-  `pendingRanges` falling. (Do not use `tools/perf/ingest-latency.sh` for this: it posts made-up points, and a point that is stored is never deleted. It is for a
-  database of generated data.)
+- [ ] **Ingest stays fast while processing runs: p95 under 200 ms.** The performance check measured the p95 (34 ms with 1,000-point batches every 0.4 s
+  over a whole rebuild); the API logs no request times at its default level, so what you can check is that nothing is refused. The next time the whole timeline
+  is rebuilt (the first backfill, or after changing a `Detection__*` setting), leave Overland sending: every batch is accepted (Overland shows no failed
+  uploads, and none is retried; Traefik's access log has the times, if it is on), and once the rebuild has ended `pendingRanges` in `GET /api/status` is back
+  to 0 (the new points' ranges wait for the rebuild by design, so they rise while it runs). Do not use `tools/perf/ingest-latency.sh` for this: it posts
+  made-up points, and a point that is stored is never deleted. It is for a database of generated data.
 - [ ] **No unhandled error reaches a blank screen; a failure of one day's processing shows in Settings, for that day only.** Use the app for a while,
   and try the worst: open it with Airplane mode on (the views say they could not load, with a Retry, and nothing is blank), turn it off and tap Retry;
   look at Settings for failed ranges and warnings after a rebuild.
@@ -522,7 +529,7 @@ access gets a plain background instead of a map; the rest of the page works.
 
 | Command | What it does |
 | --- | --- |
-| `npm run typecheck` | `tsc --noEmit`, with `strict` on, for the app and, as a project of its own (`web/perf/tsconfig.json`), for the performance run. |
+| `npm run typecheck` | `tsc --noEmit`, with `strict` on, for four projects: the app, the service worker (`src/sw`), the build's configuration (`build`) and, with Node's few declarations, the performance run (`web/perf/tsconfig.json`). |
 | `npm test` | The unit and component tests (Vitest, jsdom). |
 | `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. With `PW_WEBKIT=1` it adds a WebKit project that runs only the tests tagged `@smoke` (see below). |
 | `npm run perf` | The web performance run (spec §8), on a phone-sized page with the processor held back 4 times and, unless `PERF_NETWORK=off`, a network like the VPN (60 ms round trip, 20 Mbit/s down, 5 up): the panel's rows and the map's idle for a day, a month and a year (and the step to the next, with its answer prefetched and not), the list of trips and each trip, edit mode on the day with the most points, the app opened on today as a first visit and as the installed app (the service worker active, its cache filled), and a scripted pan and zoom on the year with its routes. The API's answers are those recorded by `npm run perf:record` from a server over the synthetic history, served over real HTTP by `web/perf/serve.mjs` as the API serves them (Brotli, cache headers). Not part of `npm run e2e` or CI; takes about six minutes (94 tests). How to run it, and its results, are in `docs/superpowers/plans/2026-10-29-sporer-plan-5-perf.md` and, for the earlier plans, `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md`, `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md` and `docs/superpowers/plans/2026-10-28-sporer-plan-4-perf.md`. |

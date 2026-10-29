@@ -6,10 +6,11 @@
 //   node perf/serve.mjs [--port 4174] [--root ../src/Sporer.Api/wwwroot]
 //
 // It serves what the API serves, the way it serves it (Program.cs), and nothing else: the files of the web root with a strong ETag and a 304,
-// `Cache-Control: public, max-age=31536000, immutable` under /assets/ and `no-cache` for the rest, text compressed with Brotli at quality 4
-// (what `CompressionLevel.Optimal` is) or else gzip, every path that is no file and no /api/ call answered with index.html, and /api/ answered
-// from the recording. What it leaves out: the time the API takes (a few milliseconds to a few tens, see the performance document: the
-// recording is answered at once), and compressing on every request (it is done once and kept: 12 to 26 ms for a script at Optimal, Plan 2).
+// `Cache-Control: public, max-age=31536000, immutable` under /assets/ and `no-cache` for the rest, and for every /api/ answer too (as the API's
+// ConditionalGetMiddleware does), text compressed with Brotli at quality 4 (what `CompressionLevel.Optimal` is) or else gzip, every path that is no
+// file and no /api/ call answered with index.html, and /api/ answered from the recording. What it leaves out: the time the API takes (a few
+// milliseconds to a few tens, see the performance document: the recording is answered at once), and compressing on every request (it is done once
+// and kept: 12 to 26 ms for a script at Optimal, Plan 2).
 // A request for a path that was not recorded is answered 404 and noted: GET /__perf/unrecorded gives the list, and empties it, so that a run can
 // check that it asked for nothing else.
 import { createHash } from "node:crypto";
@@ -62,7 +63,7 @@ function send(request, response, found, cacheControl) {
   response.setHeader("Content-Type", found.type.startsWith("text/") || found.type === "application/json" ? `${found.type}; charset=utf-8` : found.type);
   response.setHeader("ETag", found.etag);
   response.setHeader("Vary", "Accept-Encoding");
-  if (cacheControl !== null) response.setHeader("Cache-Control", cacheControl);
+  response.setHeader("Cache-Control", cacheControl);
   if (request.headers["if-none-match"] === found.etag) {
     response.statusCode = 304;
     response.end();
@@ -95,7 +96,7 @@ createServer((request, response) => {
   }
 
   if (pathname.startsWith("/api/")) {
-    if (pathname === "/api/config") return send(request, response, entry("/api/config", config, "application/json"), null);
+    if (pathname === "/api/config") return send(request, response, entry("/api/config", config, "application/json"), "no-cache");
     const name = index.requests[pathname + url.search];
     if (name === undefined) {
       unrecorded.push(pathname + url.search);
@@ -104,7 +105,7 @@ createServer((request, response) => {
       response.end("{}");
       return;
     }
-    return send(request, response, entry(name, readFileSync(join(recorded, name)), "application/json"), null);
+    return send(request, response, entry(name, readFileSync(join(recorded, name)), "application/json"), "no-cache");
   }
 
   // A file of the web root; else, as the API does (Program.cs), a path whose last segment has no extension is a route of the app.
