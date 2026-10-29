@@ -213,7 +213,7 @@ async function intoEditMode(page: Page, overrides: Overrides): Promise<{ project
   return { project, writes: api.writes, requests: api.requests };
 }
 
-test("edit_points_remove_two_points_by_tap_see_the_day_rebuilt_and_undo", async ({ page }) => {
+test("edit_points_remove_two_points_by_tap_see_the_day_rebuilt_and_undo", { tag: "@smoke" }, async ({ page }) => {
   const server = editServer();
   const { project, writes } = await intoEditMode(page, server.overrides);
   const [a, b] = [WALK(3), WALK(8)];

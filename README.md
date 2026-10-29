@@ -385,7 +385,8 @@ The workflow runs the .NET tests and the web app's checks (type check, unit test
 image (the web app is built inside it) and publishes it as `ghcr.io/ldellisola/sporer` with the tags `1.2.3`, `1.2`, `1` and
 `latest` (among others). Only a `v*.*.*` tag publishes `latest`. The server pulls `:latest` daily. Pushes to `main` that touch
 `src/`, `tests/`, `web/`, `docker/dockerfile`, `.dockerignore` or the workflow file build and publish a branch-tagged image;
-pull requests run the tests and a build without publishing.
+pull requests run the tests and a build without publishing. A run started by hand on any other branch runs the tests only
+(see [Continuous integration](#continuous-integration)).
 
 ## Local development
 
@@ -435,12 +436,36 @@ access gets a plain background instead of a map; the rest of the page works.
 | --- | --- |
 | `npm run typecheck` | `tsc --noEmit`, with `strict` on, for the app and, as a project of its own (`web/perf/tsconfig.json`), for the performance run. |
 | `npm test` | The unit and component tests (Vitest, jsdom). |
-| `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. |
+| `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. With `PW_WEBKIT=1` it adds a WebKit project that runs only the tests tagged `@smoke` (see below). |
 | `npm run perf` | The web performance run (spec §8): times the panel's rows and the map's idle for a day, a month and a year, for the list of trips and for each trip, and, for edit mode, the time from the tap on Edit points to the points drawn on the day with the most points, on a phone-sized page with the processor held back 4 times, against API answers recorded by `npm run perf:record` from a server over the synthetic history. Not part of `npm run e2e` or CI; takes about four minutes (72 tests for the synthetic history's three trips). How to run it, and its results, are in `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md` and, for the trips and for editing, `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md` and `docs/superpowers/plans/2026-10-28-sporer-plan-4-perf.md`. |
 | `npm run perf:record` | Records those API answers, the trips' and the points of the day with the most of them among them (`node scripts/perf/record.mjs <api-url> <first-date> <last-date>`; it asks for the points of every day, which takes about half a minute), into `web/perf/recorded/`, which git ignores. |
 | `npm run perf:bundle` | After a build: the size of each JavaScript file of the production bundle, gzipped and Brotli-compressed. |
 | `npm run build` | Type checks and builds the web app into `src/Sporer.Api/wwwroot`, which the API serves (and git ignores). |
 | `npm run icons` | Draws the PNG icons in `public/icons/` again from `icon.svg`. Only when the icon changes. |
+
+### Continuous integration
+
+`.github/workflows/docker-publish.yml` (Create Docker Image) has three jobs:
+
+- `test`: the .NET tests (`dotnet test src/Sporer.sln`).
+- `web`: `npm ci`, `npm run typecheck`, `npm test` and `npm run e2e` (with `PW_WEBKIT=1`) in `web/`. The browser tests run in Chromium and a smoke
+  set of them also in WebKit, the engine of iOS Safari. The Playwright browsers are cached on the version in `web/package-lock.json`; a run
+  that finds them in the cache still installs the system packages they need.
+- `build`: builds the image, and publishes it from `main` and from `v*.*.*` tags only (see Releases).
+
+The WebKit smoke set is the tests tagged `{ tag: "@smoke" }`: one or two of each flow (the app opens on today, day navigation, the month,
+opening a trip, renaming a place, removing and restoring points, Settings, the service worker). It is a project called `webkit` that
+exists only when `PW_WEBKIT=1`, so only CI runs it by default; a plain `npm run e2e` is Chromium's two projects. The project uses Playwright's
+iPhone 14 descriptor (WebKit, touch, the phone's pixel density). Where WebKit is installed (`npx playwright install webkit`; on Linux add
+`--with-deps`), run it with:
+
+```sh
+cd web
+PW_WEBKIT=1 npx playwright test --project=webkit
+```
+
+To check a branch before it is merged, without publishing anything: Actions, Create Docker Image, Run workflow, and pick the branch. The
+`test` and `web` jobs run, and `build` is skipped: only `main` and version tags are built when the run is started by hand.
 
 ### Synthetic data and performance checks
 

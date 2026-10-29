@@ -20,7 +20,7 @@ const map = (page: Page): Locator => page.getByRole("region", { name: "Map view"
 const tripsButton = (page: Page): Locator => page.getByRole("button", { name: "Trips" });
 const views = (page: Page): Locator => page.getByRole("group", { name: "View" });
 
-test("trips_button_opens_the_trips_list", async ({ page }) => {
+test("trips_button_opens_the_trips_list", { tag: "@smoke" }, async ({ page }) => {
   await fixToday(page);
   const api = await mockApi(page);
   await page.goto("/day/2026-10-22");
@@ -283,7 +283,7 @@ const LISBON_TRIP: [number, number][] = [
 test.describe("a trip", () => {
   test.use({ deviceScaleFactor: 1 });
 
-  test("opening_a_trip_from_the_list_shows_its_days_and_steps_to_the_next_trip", async ({ page }) => {
+  test("opening_a_trip_from_the_list_shows_its_days_and_steps_to_the_next_trip", { tag: "@smoke" }, async ({ page }) => {
     // Four polls of PIXEL_POLL run one after the other (Lisbon's dot, Lisbon's dot again, Copenhagen's, and the background where Lisbon was), which is more
     // than the 30 s that Playwright gives a test (see PIXEL_POLL).
     test.setTimeout(30_000 + 4 * PIXEL_POLL.timeout);

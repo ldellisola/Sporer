@@ -114,7 +114,7 @@ async function openTheCafeFromTheDay(page: Page, name: string): Promise<void> {
   await sheetAtRest(page);
 }
 
-test("rename_a_place_then_merge_another_into_it_and_both_show_in_the_place_and_the_day", async ({ page }) => {
+test("rename_a_place_then_merge_another_into_it_and_both_show_in_the_place_and_the_day", { tag: "@smoke" }, async ({ page }) => {
   await fixToday(page);
   const server = placeServer();
   const api = await mockApi(page, server.overrides);

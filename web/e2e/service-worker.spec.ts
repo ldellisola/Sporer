@@ -29,7 +29,7 @@ const topBar = (page: Page) => page.getByRole("group", { name: "View" });
 /** The Retry of the view's error: the map's note has one of its own when the map has no style to draw. */
 const retry = (page: Page) => page.getByRole(page.viewportSize()!.width >= 900 ? "complementary" : "region", { name: "Details" }).getByRole("button", { name: "Retry" });
 
-test("the_worker_is_registered_for_the_whole_origin_and_controls_the_page_after_a_reload", async ({ page }) => {
+test("the_worker_is_registered_for_the_whole_origin_and_controls_the_page_after_a_reload", { tag: "@smoke" }, async ({ page }) => {
   await mockApi(page);
   await page.goto(DAY);
   const origin = new URL(page.url()).origin;
@@ -46,7 +46,7 @@ test("the_worker_is_registered_for_the_whole_origin_and_controls_the_page_after_
   await expect(topBar(page)).toBeVisible(); // and the app is as it always is
 });
 
-test("the_worker_keeps_the_files_of_the_shell_and_nothing_else", async ({ page }) => {
+test("the_worker_keeps_the_files_of_the_shell_and_nothing_else", { tag: "@smoke" }, async ({ page }) => {
   const api = await mockApi(page);
   await openWithWorker(page);
   // What the page asked for before the worker was in charge was never the worker's to see: reload, so that it is asked again, with the worker between.

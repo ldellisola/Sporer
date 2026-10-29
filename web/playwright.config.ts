@@ -1,4 +1,4 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices, type PlaywrightTestConfig } from "@playwright/test";
 
 declare const process: { env: Record<string, string | undefined> }; // this file runs in Node, whose types the app does not take
 
@@ -15,8 +15,28 @@ const ORIGIN = `http://127.0.0.1:${PORT}`;
 // is not launched by it (a remote one, `PW_TEST_CONNECT_WS_ENDPOINT`) needs it set on its own server. Check it again when Playwright is upgraded.
 process.env["PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS"] = "1";
 
-// The container has no GPU. SwiftShader is Chrome's software WebGL, which MapLibre needs to draw at all.
+// The container has no GPU. SwiftShader is Chrome's software WebGL, which MapLibre needs to draw at all. These are Chromium's flags: WebKit
+// refuses to launch with ones it does not know, so they are the Chromium projects' own (below) and not the whole run's.
 const WEBGL_ARGS = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"];
+
+const PHONE_VIEWPORT = { width: 390, height: 844 };
+
+// A WebKit project, for the owner's browser (iOS Safari), is there only when asked for: CI asks (see .github/workflows/docker-publish.yml), and a run
+// on one's own machine is the Chromium projects as always, with no WebKit installed. It runs only the tests tagged `@smoke`, one or two of each flow
+// (the app opens on today, the day, the month, a trip, the name of a place, removing points, Settings, the service worker): enough to know that the app
+// works in the engine of the phone, without a second run of the whole suite on a runner that is slow already. Tests that are not tagged are Chromium's.
+const webkit: PlaywrightTestConfig["projects"] =
+  process.env["PW_WEBKIT"] === "1"
+    ? [
+        {
+          name: "webkit",
+          // The descriptor of the iPhone 14 is WebKit (iOS Safari's engine), touch and mobile, at 3 pixels to the CSS pixel, as the phone project is;
+          // its viewport leaves out the browser's own bars, so the phone project's is put back, to be the same page as the phone project tests.
+          use: { ...devices["iPhone 14"], browserName: "webkit", viewport: PHONE_VIEWPORT },
+          grep: /@smoke/,
+        },
+      ]
+    : [];
 
 export default defineConfig({
   testDir: "./e2e",
@@ -34,14 +54,14 @@ export default defineConfig({
     // network and answer for files and pages itself, which `page.route` (what the API mocks and the guard of base.ts are made of) cannot see.
     serviceWorkers: "block",
     trace: "retain-on-failure",
-    launchOptions: { args: WEBGL_ARGS },
   },
   projects: [
     {
       name: "phone",
       use: {
         browserName: "chromium",
-        viewport: { width: 390, height: 844 },
+        launchOptions: { args: WEBGL_ARGS },
+        viewport: PHONE_VIEWPORT,
         deviceScaleFactor: 3,
         isMobile: true,
         hasTouch: true,
@@ -51,9 +71,11 @@ export default defineConfig({
       name: "desktop",
       use: {
         browserName: "chromium",
+        launchOptions: { args: WEBGL_ARGS },
         viewport: { width: 1280, height: 800 },
       },
     },
+    ...webkit,
   ],
   webServer: {
     // The production bundle, as the API serves it, not the dev server. `vite preview` answers deep links with index.html.

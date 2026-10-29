@@ -34,7 +34,7 @@ async function openTimeline(page: Page): Promise<void> {
 
 const DAYS = { "day/2026-10-22": osloDay, "day/2026-10-23": newYorkDay, "places/2": placeCafe }; // the place is what the name of a stop opens
 
-test("day_view_lists_timeline_and_steps_days", async ({ page }) => {
+test("day_view_lists_timeline_and_steps_days", { tag: "@smoke" }, async ({ page }) => {
   await fixToday(page);
   const api = await mockApi(page, DAYS);
   await page.goto("/day/2026-10-22");

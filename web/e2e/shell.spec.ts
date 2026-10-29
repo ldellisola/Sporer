@@ -37,7 +37,7 @@ function dayWith(date: string, segments: number): Reply {
   };
 }
 
-test("app_loads_and_redirects_to_today", async ({ page }) => {
+test("app_loads_and_redirects_to_today", { tag: "@smoke" }, async ({ page }) => {
   const api = await mockApi(page);
   await fixTime(page, "2026-10-22T22:30:00Z");
 
@@ -144,7 +144,7 @@ test("bottom_sheet_follows_a_drag_nearest_point_slow_next_point_flicked", async 
   await expect.poll(() => visibleSheetHeight(page)).toBe(PEEK);
 });
 
-test("arrow_buttons_and_keys_step_the_period", async ({ page }) => {
+test("arrow_buttons_and_keys_step_the_period", { tag: "@smoke" }, async ({ page }) => {
   await mockApi(page);
   await page.goto("/day/2026-10-22");
   const heading = page.getByRole("heading", { name: "Thursday 22 October" });
