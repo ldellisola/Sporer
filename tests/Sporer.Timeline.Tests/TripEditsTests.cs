@@ -121,7 +121,7 @@ public class TripEditsTests
     public void TripEdits_a_start_on_a_day_of_travel_begins_at_midnight_where_the_person_slept_the_night_before()
     {
         var detected = Trip(D(9, 16), D(9, 18));
-        // The person flies east on the 14th: the night of the 14th (read at 03:00 on the 15th) is in Oslo, the night of the 15th in Tokyo.
+        // The person flies east on the 15th: the night of the 14th (read at 03:00 on the 15th) is in Oslo, the night of the 15th in Tokyo.
         string? Eastbound(DateOnly night) => night <= D(9, 14) ? Oslo : Tokyo;
 
         // The trip is to begin on the 15th. The midnight that begins the 15th ends the night of the 14th, which was spent in Oslo, and it is
@@ -158,7 +158,7 @@ public class TripEditsTests
         Assert.Equal(Utc(9, 6, 4), over.Trip.EndUtc);
         Assert.Equal(D(9, 5), over.Trip.LocalEndDate);
 
-        // The days around it are as ordinary: 00:00 on the 8th is at UTC-3.
+        // The days around it are as ordinary: 00:00 on the 7th is at UTC-3.
         var after = Assert.Single(TripEdits.Apply([detected], [Edit(D(9, 8), D(9, 9), start: D(9, 7))], _ => Santiago));
         Assert.Equal(Utc(9, 7, 3), after.Trip.StartUtc);
     }

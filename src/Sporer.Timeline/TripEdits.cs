@@ -51,11 +51,11 @@ public static class TripEdits
     /// <b>What an edit does.</b> A deleted trip is dropped. A name is carried. A start date makes the date of the trip's first night, and
     /// its start the local midnight that begins that date, in the zone the night before it was read in: that night ends at the midnight, so
     /// it is where the person was when the date began, which on a day of travel is not where the night of the date was. An end date is the
-    /// day the person is back, which is a day of the trip: the trip ends at the local midnight that ends that date (the one after it,
-    /// 17 September 00:00 for an end date of the 16th), in the zone the night of the date was read in (three hours after the midnight),
-    /// so the day of the journey home, its moves and its stays, is inside the trip; its local end date is the end date itself; and its last night is the one before. The nights are those from
-    /// the first to the last, and a trip that was ongoing and is given an end date no longer is. A date the owner left out is as it was
-    /// detected, so a start date alone leaves the end of the trip alone, ongoing or not.
+    /// day the person is back, which is a day of the trip: the trip ends at the local midnight that ends that date (the one after it, 17
+    /// September 00:00 for an end date of the 16th), in the zone the night of the date was read in (three hours after the midnight), so the
+    /// day of the journey home, its moves and its stays, is inside the trip; its local end date is the end date itself; and its last night
+    /// is the one before. The nights are those from the first to the last, and a trip that was ongoing and is given an end date no longer
+    /// is. A date the owner left out is as it was detected, so a start date alone leaves the end of the trip alone, ongoing or not.
     /// </para>
     /// <para>
     /// <b>What an edit cannot do.</b> New dates are not applied (the name still is) when they would leave the trip with no night or end it

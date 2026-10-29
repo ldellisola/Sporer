@@ -252,7 +252,7 @@ public class TripEditTests(DatabaseFixture db)
         var t = trip.RootElement;
         Assert.Equal(("2026-07-08", "2026-07-12", 5), (t.GetProperty("firstNight").GetString(), t.GetProperty("lastNight").GetString(), t.GetProperty("nights").GetInt32()));
         Assert.Equal(("2026-07-08", "2026-07-13", false), (t.GetProperty("localStartDate").GetString(), t.GetProperty("localEndDate").GetString(), t.GetProperty("ongoing").GetBoolean()));
-        // Local midnights, in the zones of the nights: the one that begins the 8th (the night of the 8th is at home), and the one that ends the
+        // Local midnights, in the zones of the nights: the one that begins the 8th (the night of the 7th is at home), and the one that ends the
         // 13th, the day the person is back (the night of the 13th is at home too), which is the 14th at 00:00. Oslo is UTC+2 in July.
         Assert.Equal(("2026-07-07T22:00:00Z", "2026-07-13T22:00:00Z"), (t.GetProperty("start").GetString(), t.GetProperty("end").GetString()));
         Assert.Equal((Oslo, Oslo), (t.GetProperty("startTimeZone").GetString(), t.GetProperty("endTimeZone").GetString()));
