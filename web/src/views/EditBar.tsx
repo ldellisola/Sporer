@@ -54,6 +54,8 @@ export function EditBar({ edit, onDone }: EditBarProps) {
   const retryHadFocus = useRef(false);
   // Whether there is anything to select: while the points load, when they could not be had and when the day has none there is not, and the row is for saying so.
   const selectable = points !== undefined && points.points.length > 0;
+  // Whether the timeline ignores any of the points (a status other than 0): they are drawn hollow, and the hint says so.
+  const ignoredPoints = points?.points.some((point) => point[4] !== 0) === true;
   // The load that failed, which is what the alert in the row says.
   const failure = load.error;
   const failed = failure !== null;
@@ -123,7 +125,12 @@ export function EditBar({ edit, onDone }: EditBarProps) {
         </div>
       </div>
       {failure !== null && <p className={styles.note}>{failure.message}</p>}
-      {selectable && count === 0 && <p className={styles.note}>Tap a point, or use Select area on the map.</p>}
+      {selectable && count === 0 && (
+        <p className={styles.note}>
+          Tap a point, or use Select area on the map.
+          {ignoredPoints && " Hollow points are ones the timeline already ignores (no GPS, a glitch or a repeat)."}
+        </p>
+      )}
       {removal.error !== null && <WriteError what="remove" error={removal.error} onRetry={removal.run} gone="The day no longer exists." />}
     </div>
   );

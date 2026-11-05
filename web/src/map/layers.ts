@@ -49,11 +49,14 @@ export type LabelSide = "west" | "east";
 export type PlaceProperties = { id: number; radius: number; label?: string; side?: LabelSide };
 export type HeatProperties = { weight: number };
 
+/** What a point that the timeline ignores says of itself in edit mode. */
+export type EditPointProperties = Record<string, never> | { ignored: true };
+
 /**
- * A raw point of the day in edit mode: nothing but where it is, and its `id`, which is its index into the day's points (`editPointsGeoJson`) and
+ * A raw point of the day in edit mode: where it is, whether the timeline ignores it, and its `id`, which is its index into the day's points (`editPointsGeoJson`) and
  * is what a selection is made of. The map's feature state is keyed by it, and a tap finds it as the `id` of the feature.
  */
-export type EditPointFeature = Feature<Point, Record<string, never>> & { id: number };
+export type EditPointFeature = Feature<Point, EditPointProperties> & { id: number };
 export type EditPointCollection = { type: "FeatureCollection"; features: EditPointFeature[] };
 
 export type RouteCollection = FeatureCollection<LineString, RouteProperties>;
@@ -279,16 +282,18 @@ export function tripGeoJson(trip: TripResponse): { routes: RouteCollection; plac
 
 /** What every point of edit mode says of itself: nothing, so that one object does, and the worker is sent it once. */
 const NO_PROPERTIES: Record<string, never> = {};
+/** What a point that the timeline ignores (a status other than 0) says of itself: one object too. */
+const IGNORED: { ignored: true } = { ignored: true };
 
 /**
  * A point for each raw point of a day, for edit mode: at `[lon, lat]`, with the index of the point in `points` as its numeric `id` (a selection is a
- * set of those, and the map's feature state, which is what draws a point as selected, is keyed by it) and no properties. The time and the device
+ * set of those, and the map's feature state, which is what draws a point as selected, is keyed by it) and no properties, but for `ignored` on a point that the timeline ignores (its status is not 0: drawn hollow). The time and the device
  * stay in `points`: the map has no use for them, and a dense day has some 40,000 points.
  */
 export function editPointsGeoJson(points: readonly RawPoint[]): EditPointCollection {
   return {
     type: "FeatureCollection",
-    features: points.map(([, lon, lat], id) => ({ type: "Feature", id, properties: NO_PROPERTIES, geometry: { type: "Point", coordinates: [lon, lat] } })),
+    features: points.map(([, lon, lat, , status], id) => ({ type: "Feature", id, properties: status === 0 ? NO_PROPERTIES : IGNORED, geometry: { type: "Point", coordinates: [lon, lat] } })),
   };
 }
 
@@ -441,6 +446,11 @@ function placeLabels(id: string, filter: FilterSpecification, anchors: Anchors, 
 
 /** Whether a feature of the edit points is selected: the map's feature state, set by id (a feature that has none is not). */
 const IS_SELECTED: CircleRadius = ["boolean", ["feature-state", "selected"], false];
+/** Whether a point of the edit points is one that the timeline ignores (a property of the feature, which a used point has not). */
+const IS_IGNORED: CircleRadius = ["boolean", ["get", "ignored"], false];
+/** An ignored point is a ring of this grey, which reads on a light map and on a dark one, 1.5 pixels wide, with no fill. */
+const EDIT_IGNORED_COLOR = "#8E8E93";
+const EDIT_IGNORED_RING_WIDTH = 1.5;
 
 /** The edit points are drawn small, and a selected one larger and red: 4 and 7 pixels of radius. */
 const EDIT_POINT_RADIUS = 4;
@@ -535,20 +545,24 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       id: LAYER_IDS.editPointHalos,
       type: "circle",
       source: SOURCE_IDS.editPoints,
+      filter: ["!", IS_IGNORED], // an ignored point is a ring with nothing in it: a halo would fill it
       paint: {
         "circle-radius": ["case", IS_SELECTED, EDIT_POINT_SELECTED_RADIUS + EDIT_POINT_HALO_WIDTH, EDIT_POINT_RADIUS + EDIT_POINT_HALO_WIDTH],
         "circle-color": halo,
       },
     },
     {
-      // The raw points of the day in edit mode: dots in the ink of the scheme with a halo of the other (the layer under this), so that they read on a light map and on a dark
+      // The raw points of the day in edit mode: dots in the ink of the scheme (an ignored point is a grey ring, with no fill) with a halo of the other (the layer under this), so that they read on a light map and on a dark
       // one, and over a route of any colour. A selected one is bigger and red, by the feature state of its id (never by new data: a tap would redraw 40,000).
       id: LAYER_IDS.editPoints,
       type: "circle",
       source: SOURCE_IDS.editPoints,
       paint: {
         "circle-radius": ["case", IS_SELECTED, EDIT_POINT_SELECTED_RADIUS, EDIT_POINT_RADIUS],
-        "circle-color": ["case", IS_SELECTED, EDIT_SELECTED_COLOR, ink],
+        "circle-color": ["case", IS_SELECTED, EDIT_SELECTED_COLOR, IS_IGNORED, "rgba(0,0,0,0)", ink],
+        // The ring of an ignored point (hollow dots do not paint over the others, as a stroke on every dot would): not on a used dot, nor on a selected one.
+        "circle-stroke-color": EDIT_IGNORED_COLOR,
+        "circle-stroke-width": ["case", ["all", IS_IGNORED, ["!", IS_SELECTED]], EDIT_IGNORED_RING_WIDTH, 0],
       },
     },
     {

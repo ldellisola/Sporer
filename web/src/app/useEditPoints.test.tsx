@@ -20,13 +20,13 @@ const POINTS: DayPointsResponse = {
   date: "2026-10-22",
   devices: ["phone", "watch"],
   points: [
-    [T0, 10.001, 59.001, 0],
-    [T0 + 30_000_001, 10.002, 59.002, 1],
-    [T0 + 60_000_002, 10.003, 59.003, 0],
-    [T0 + 90_000_003, 10.004, 59.004, 0],
+    [T0, 10.001, 59.001, 0, 0],
+    [T0 + 30_000_001, 10.002, 59.002, 1, 0],
+    [T0 + 60_000_002, 10.003, 59.003, 0, 0],
+    [T0 + 90_000_003, 10.004, 59.004, 0, 0],
   ],
 };
-const OTHER_POINTS: DayPointsResponse = { ...POINTS, date: "2026-10-23", points: [[T0 + 86_400_000_000, 11, 60, 0]] };
+const OTHER_POINTS: DayPointsResponse = { ...POINTS, date: "2026-10-23", points: [[T0 + 86_400_000_000, 11, 60, 0, 0]] };
 const BATCH = "0b4d6f5e-2f0a-4e6c-9a39-6d5f7d3d1a11";
 
 function newClient(): QueryClient {
@@ -240,7 +240,7 @@ describe("useEditPoints selection", () => {
     const { result, client } = await editing(DAY, { "GET /api/day/2026-10-22/points": () => Response.json(served) });
     act(() => result.current.select([1, 2, 3])); // the watch's, and two of the phone's
 
-    served = { ...POINTS, points: [POINTS.points[2]!, POINTS.points[3]!, [T0 + 120_000_004, 10.005, 59.005, 0]] }; // 0 and 1 are gone elsewhere, and one is new
+    served = { ...POINTS, points: [POINTS.points[2]!, POINTS.points[3]!, [T0 + 120_000_004, 10.005, 59.005, 0, 0]] }; // 0 and 1 are gone elsewhere, and one is new
     await act(() => client.invalidateQueries());
 
     await waitFor(() => expect(result.current.points?.points).toHaveLength(3));
@@ -265,11 +265,11 @@ describe("useEditPoints selection", () => {
   });
 
   test("useEditPoints_tells_a_point_from_another_of_the_same_time_by_its_device", async () => {
-    let served: DayPointsResponse = { ...POINTS, points: [[T0, 10, 59, 0], [T0, 10, 59, 1]] };
+    let served: DayPointsResponse = { ...POINTS, points: [[T0, 10, 59, 0, 0], [T0, 10, 59, 1, 0]] };
     const { result, client } = await editing(DAY, { "GET /api/day/2026-10-22/points": () => Response.json(served) });
     act(() => result.current.toggle(1)); // the watch's
 
-    served = { ...served, points: [[T0, 10, 59, 1], [T0, 10, 59, 0]] }; // the other way round
+    served = { ...served, points: [[T0, 10, 59, 1, 0], [T0, 10, 59, 0, 0]] }; // the other way round
     await act(() => client.invalidateQueries());
 
     await waitFor(() => expect(result.current.points?.points[0]![3]).toBe(1));

@@ -125,11 +125,14 @@ export interface RangeDay {
 // --- GET /api/day/{date}/points (Features/Points) and the removal of points ---
 
 /**
- * One raw point of a day: `[t, lon, lat, device]`. `t` is the exact time in epoch microseconds, a whole number that a JavaScript number holds exactly:
+ * One raw point of a day: `[t, lon, lat, device, status]`. `t` is the exact time in epoch microseconds, a whole number that a JavaScript number holds exactly:
  * it is never rounded or turned into milliseconds, and is sent back as it came, for it is what the point is told from the others by. `device` is
- * the index into `devices` of the answer.
+ * the index into `devices` of the answer. `status` is whether the timeline uses the point: 0 used, 1 poor accuracy, 2 glitch, 3 duplicate (the last three are ignored).
  */
-export type RawPoint = [t: number, lon: number, lat: number, device: number];
+export type RawPoint = [t: number, lon: number, lat: number, device: number, status: PointStatus];
+
+/** What the server made of a point of a day: 0 is used by the timeline; 1 (poor accuracy), 2 (a glitch) and 3 (a repeat of an earlier point) are ignored. */
+export type PointStatus = 0 | 1 | 2 | 3;
 
 /** The points of a day in time order, those removed earlier left out. A point may be on the neighbouring day too: a day spans the zones of its segments. */
 export interface DayPointsResponse {
