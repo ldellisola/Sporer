@@ -828,7 +828,7 @@ describe("layerSpecs", () => {
     expect(paint(find("day", LAYER_IDS.editPointHalos, true))["circle-color"]).toBe("#1C1C1E");
   });
 
-  test("layerSpecs_draw_an_ignored_edit_point_hollow_with_a_grey_ring_and_leave_it_out_of_the_halos_in_both_schemes", () => {
+  test("layerSpecs_draw_an_ignored_edit_point_hollow_with_a_ring_in_the_muted_ink_of_the_scheme_and_give_it_no_halo_unless_selected", () => {
     const ignored = ["boolean", ["get", "ignored"], false];
     const selected = ["boolean", ["feature-state", "selected"], false];
     for (const dark of [false, true]) {
@@ -837,11 +837,13 @@ describe("layerSpecs", () => {
 
       // Selected is red whatever it is; else an ignored one has no fill, and a used one is ink.
       expect(dots["circle-color"], `dark ${dark}`).toEqual(["case", selected, EDIT_SELECTED_COLOR, ignored, "rgba(0,0,0,0)", ink]);
-      expect(dots["circle-stroke-color"], `dark ${dark}`).toBe("#8E8E93");
+      expect(dots["circle-stroke-color"], `dark ${dark}`).toBe(dark ? "#8E8E93" : "#6C6C70"); // --ink-muted of the scheme
       // The ring is only on an ignored dot that is not selected: a used dot has no stroke, which would paint over the dots before it and make a dense track a white band.
       expect(dots["circle-stroke-width"], `dark ${dark}`).toEqual(["case", ["all", ignored, ["!", selected]], 1.5, 0]);
-      // The halo is not drawn for an ignored point, or the ring would be filled with it.
-      expect((find("day", LAYER_IDS.editPointHalos, dark) as { filter?: unknown }).filter, `dark ${dark}`).toEqual(["!", ["boolean", ["get", "ignored"], false]]);
+      // The halo is not drawn for an ignored point that is not selected (radius 0), or the ring would be filled with it; a selected one, ignored or not, has the selected halo.
+      const halos = find("day", LAYER_IDS.editPointHalos, dark);
+      expect((halos as { filter?: unknown }).filter, `dark ${dark}`).toBeUndefined();
+      expect(paint(halos)["circle-radius"], `dark ${dark}`).toEqual(["case", selected, 8, ignored, 0, 5]);
     }
   });
 
@@ -851,8 +853,8 @@ describe("layerSpecs", () => {
     expect(halos.type).toBe("circle");
     expect(LAYER_IDS.editPointHalos).toBe("sporer-edit-point-halos");
     expect((halos as { source: string }).source).toBe(SOURCE_IDS.editPoints);
-    // The dot's radius and the pixel of its edge, as before: 4 + 1 and 7 + 1.
-    expect(paint(halos)["circle-radius"]).toEqual(["case", ["boolean", ["feature-state", "selected"], false], 8, 5]);
+    // The dot's radius and the pixel of its edge, as before: 4 + 1 and 7 + 1 (and none for an ignored point that is not selected: the test above).
+    expect(paint(halos)["circle-radius"]).toEqual(["case", ["boolean", ["feature-state", "selected"], false], 8, ["boolean", ["get", "ignored"], false], 0, 5]);
     expect(layout(halos)["visibility"] ?? "visible").toBe("visible");
     expect(paint(halos)["circle-stroke-width"]).toBeUndefined();
   });

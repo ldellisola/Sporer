@@ -188,7 +188,7 @@ describe("query hooks", () => {
   });
 
   test("useDayPoints_keeps_the_points_of_no_other_day_for_the_day_that_loads", async () => {
-    stubApi((url) => (url.includes("2026-10-23") ? new Promise<Response>(() => undefined) : json({ date: "2026-10-22", devices: ["a"], points: [[1, 10, 59, 0]] })));
+    stubApi((url) => (url.includes("2026-10-23") ? new Promise<Response>(() => undefined) : json({ date: "2026-10-22", devices: ["a"], points: [[1, 10, 59, 0, 0]] })));
     const { result, rerender } = renderHook(({ date }: { date: string }) => useDayPoints(date), {
       wrapper: wrapperFor(newClient()),
       initialProps: { date: "2026-10-22" },

@@ -134,7 +134,7 @@ function editServer(): EditServer {
 
 const INK: Rgb = [28, 28, 30]; // a point, in the ink of the light scheme
 const RED: Rgb = [255, 59, 48]; // a selected one
-const IGNORED_GREY: Rgb = [142, 142, 147]; // the ring of a point the timeline ignores
+const IGNORED_GREY: Rgb = [108, 108, 112]; // the ring of a point the timeline ignores, in the light scheme (--ink-muted)
 
 /** Where a position is on the page: the camera that the map comes to rest at once it is brought to the walk (`fit.ts`). */
 type Projector = (at: LonLat) => { x: number; y: number };
@@ -263,28 +263,31 @@ test("edit_points_remove_two_points_by_tap_see_the_day_rebuilt_and_undo", async 
   expect(server.gone()).toEqual([]);
 });
 
-test("edit_points_draw_a_point_the_timeline_ignores_hollow_and_it_still_selects_red", async ({ page }) => {
+test("edit_points_draw_the_points_the_timeline_ignores_hollow_and_one_still_selects_red", async ({ page }) => {
   const server = editServer();
   const { project } = await intoEditMode(page, server.overrides);
-  const IGNORED_POINT = POINTS.findIndex((point) => point[4] !== 0);
-  expect(IGNORED_POINT).toBeGreaterThan(-1);
-  const { x, y } = placeOf(project, IGNORED_POINT);
+  // One of each status: poor accuracy (1), a glitch (2) and a repeat (3).
+  const ignored = POINTS.flatMap((point, index) => (point[4] !== 0 ? [index] : []));
+  expect(ignored.map((index) => POINTS[index]![4]).sort()).toEqual([1, 2, 3]);
+  await expectDot(page, project, WALK(3), INK); // a used point is ink
 
-  // The middle of it is not ink (it has no fill), and a used point's is; the ring is grey, 4 pixels from the middle.
-  await expectDot(page, project, IGNORED_POINT, "none");
-  await expectDot(page, project, WALK(3), INK);
-  await expect
-    .poll(async () => {
-      for (const [dx, dy] of [[4, 0], [-4, 0], [0, 4], [0, -4]] as const) if (sameColour(await pixelAt(page, x + dx, y + dy), IGNORED_GREY, 40)) return true;
-      return false;
-    }, PIXEL_POLL)
-    .toBe(true);
+  for (const index of ignored) {
+    const { x, y } = placeOf(project, index);
+    // The middle of it is not ink (it has no fill); the ring is the grey of the scheme, 4 pixels from the middle.
+    await expectDot(page, project, index, "none");
+    await expect
+      .poll(async () => {
+        for (const [dx, dy] of [[4, 0], [-4, 0], [0, 4], [0, -4]] as const) if (sameColour(await pixelAt(page, x + dx, y + dy), IGNORED_GREY, 30)) return true;
+        return false;
+      }, PIXEL_POLL)
+      .toBe(true);
+  }
   await expect(bar(page).getByText(/Hollow points are ones the timeline already ignores/)).toBeVisible();
 
-  // It is selected by a tap like any other, and red.
-  await tap(page, { x, y });
+  // One is selected by a tap like any other, and red.
+  await tap(page, placeOf(project, ignored[0]!));
   await expect(bar(page).getByText("1 selected")).toBeVisible();
-  await expectDot(page, project, IGNORED_POINT, RED);
+  await expectDot(page, project, ignored[0]!, RED);
 });
 
 test("edit_points_remove_a_cluster_by_area_and_undo", async ({ page }) => {

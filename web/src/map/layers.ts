@@ -49,12 +49,15 @@ export type LabelSide = "west" | "east";
 export type PlaceProperties = { id: number; radius: number; label?: string; side?: LabelSide };
 export type HeatProperties = { weight: number };
 
-/** What a point that the timeline ignores says of itself in edit mode. */
+/**
+ * What a point says of itself in edit mode: nothing for a point that the timeline uses, and `ignored: true` for one that it does not (its status is not 0).
+ * Those are the only properties: the time and the device stay in the day's points.
+ */
 export type EditPointProperties = Record<string, never> | { ignored: true };
 
 /**
- * A raw point of the day in edit mode: where it is, whether the timeline ignores it, and its `id`, which is its index into the day's points (`editPointsGeoJson`) and
- * is what a selection is made of. The map's feature state is keyed by it, and a tap finds it as the `id` of the feature.
+ * A raw point of the day in edit mode: where it is, whether the timeline ignores it, and its `id`, which is its index into the day's points
+ * (`editPointsGeoJson`) and is what a selection is made of. The map's feature state is keyed by it, and a tap finds it as the `id` of the feature.
  */
 export type EditPointFeature = Feature<Point, EditPointProperties> & { id: number };
 export type EditPointCollection = { type: "FeatureCollection"; features: EditPointFeature[] };
@@ -448,8 +451,8 @@ function placeLabels(id: string, filter: FilterSpecification, anchors: Anchors, 
 const IS_SELECTED: CircleRadius = ["boolean", ["feature-state", "selected"], false];
 /** Whether a point of the edit points is one that the timeline ignores (a property of the feature, which a used point has not). */
 const IS_IGNORED: CircleRadius = ["boolean", ["get", "ignored"], false];
-/** An ignored point is a ring of this grey, which reads on a light map and on a dark one, 1.5 pixels wide, with no fill. */
-const EDIT_IGNORED_COLOR = "#8E8E93";
+/** An ignored point is a ring with no fill, 1.5 pixels wide, in the muted ink of the scheme (`--ink-muted`: darker on a light map, so that it reads there). */
+const EDIT_IGNORED_COLOR = { light: "#6C6C70", dark: "#8E8E93" } as const;
 const EDIT_IGNORED_RING_WIDTH = 1.5;
 
 /** The edit points are drawn small, and a selected one larger and red: 4 and 7 pixels of radius. */
@@ -545,15 +548,16 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       id: LAYER_IDS.editPointHalos,
       type: "circle",
       source: SOURCE_IDS.editPoints,
-      filter: ["!", IS_IGNORED], // an ignored point is a ring with nothing in it: a halo would fill it
       paint: {
-        "circle-radius": ["case", IS_SELECTED, EDIT_POINT_SELECTED_RADIUS + EDIT_POINT_HALO_WIDTH, EDIT_POINT_RADIUS + EDIT_POINT_HALO_WIDTH],
+        // An ignored point that is not selected has no halo (radius 0): it is a ring with nothing in it, and a halo would fill it. Selected, it is like any other.
+        "circle-radius": ["case", IS_SELECTED, EDIT_POINT_SELECTED_RADIUS + EDIT_POINT_HALO_WIDTH, IS_IGNORED, 0, EDIT_POINT_RADIUS + EDIT_POINT_HALO_WIDTH],
         "circle-color": halo,
       },
     },
     {
-      // The raw points of the day in edit mode: dots in the ink of the scheme (an ignored point is a grey ring, with no fill) with a halo of the other (the layer under this), so that they read on a light map and on a dark
-      // one, and over a route of any colour. A selected one is bigger and red, by the feature state of its id (never by new data: a tap would redraw 40,000).
+      // The raw points of the day in edit mode: dots in the ink of the scheme (an ignored point is a grey ring, with no fill) with a halo of the other (the layer
+      // under this), so that they read on a light map and on a dark one, and over a route of any colour. A selected one is bigger and red, by the feature state of
+      // its id (never by new data: a tap would redraw 40,000).
       id: LAYER_IDS.editPoints,
       type: "circle",
       source: SOURCE_IDS.editPoints,
@@ -561,7 +565,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
         "circle-radius": ["case", IS_SELECTED, EDIT_POINT_SELECTED_RADIUS, EDIT_POINT_RADIUS],
         "circle-color": ["case", IS_SELECTED, EDIT_SELECTED_COLOR, IS_IGNORED, "rgba(0,0,0,0)", ink],
         // The ring of an ignored point (hollow dots do not paint over the others, as a stroke on every dot would): not on a used dot, nor on a selected one.
-        "circle-stroke-color": EDIT_IGNORED_COLOR,
+        "circle-stroke-color": dark ? EDIT_IGNORED_COLOR.dark : EDIT_IGNORED_COLOR.light,
         "circle-stroke-width": ["case", ["all", IS_IGNORED, ["!", IS_SELECTED]], EDIT_IGNORED_RING_WIDTH, 0],
       },
     },
