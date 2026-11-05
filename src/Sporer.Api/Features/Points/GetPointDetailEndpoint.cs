@@ -10,7 +10,7 @@ namespace Sporer.Api.Features.Points;
 /// names it, by its device and its exact time (<c>t</c>, microseconds since the epoch, see <see cref="PointTime"/>). A missing or empty
 /// <c>device</c>, and a <c>t</c> that is missing, not a whole number or not a time a point can have, are a 400; a point that is not stored is a 404.
 /// A point the owner removed is answered, with the status <c>removed</c>: it is in <c>locationlog</c> still. Any other status is what
-/// <see cref="PointCleaner.Classify"/> makes of the point among its own neighbours, the nearest points before and after it that are not removed.
+/// <see cref="PointCleaner.Classify"/> makes of the point among the <see cref="PointSpan.Margin"/> points on each side of it that are not removed, as the day's list does.
 /// Reads only.
 /// </summary>
 internal sealed class GetPointDetailEndpoint(PointStore points, SegmentStore segments, PlaceStore places, DetectionOptions options)
@@ -50,16 +50,7 @@ internal sealed class GetPointDetailEndpoint(PointStore points, SegmentStore seg
             status = PointStatusName.Removed;
         else
         {
-            // As the cleaning meets it: the neighbours around the point (and around any twin of it, which comes after it).
-            List<TrackPoint> judged = [];
-            if (full.Before is { } before)
-                judged.Add(before);
-            var at = judged.Count;
-            judged.Add(point);
-            judged.AddRange(full.Twins);
-            if (full.After is { } after)
-                judged.Add(after);
-            status = PointStatusName.Of(PointCleaner.Classify(judged, options)[at]);
+            status = PointStatusName.Of(full.Window.Classify(options)[0]); // as the day's list judges it, among the same points around it
         }
 
         var zone = LocalTime.TimeZoneAt(point.Position);

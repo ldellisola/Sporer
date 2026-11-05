@@ -11,7 +11,7 @@ namespace Sporer.Api.Features.Points;
 /// <see cref="DayZone.FindPointSpanAsync"/>): from the earliest local midnight to the latest next one, so no point is on no day, and on a
 /// day of travel the points of the days next to it overlap. A day with no points has an empty list. A date that is not written
 /// <c>yyyy-MM-dd</c> is a 400, as for the day. Each point says what the timeline made of it (<see cref="PointStatus"/>), judged with the
-/// nearest point before the day and after it and the detection options in effect, so that it is what the processor's cleaning does with it. Reads only.
+/// points next to the day (<see cref="PointSpan.Margin"/> before it and after it) and the detection options in effect, so that it is what the processor's cleaning does with it. Reads only.
 /// </summary>
 internal sealed class GetDayPointsEndpoint(SegmentStore segments, PointStore points, DetectionOptions options) : EndpointWithoutRequest<DayPointsResponse>
 {
@@ -33,15 +33,7 @@ internal sealed class GetDayPointsEndpoint(SegmentStore segments, PointStore poi
         var (fromUtc, toUtc) = await DayZone.FindPointSpanAsync(segments, date, ct);
         var span = await points.LoadSpanAsync(fromUtc, toUtc, ct);
 
-        // The day's points with the nearest one on each side, which are what decides a glitch at the day's edges.
-        var judged = new List<TrackPoint>(span.Points.Count + 2);
-        if (span.Before is { } before)
-            judged.Add(before);
-        var first = judged.Count;
-        judged.AddRange(span.Points);
-        if (span.After is { } after)
-            judged.Add(after);
-        var status = PointCleaner.Classify(judged, options);
+        var status = span.Classify(options); // with the points next to the day, which decide a glitch at its edges
 
         var devices = new List<string>();
         var indexOf = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -56,7 +48,7 @@ internal sealed class GetDayPointsEndpoint(SegmentStore segments, PointStore poi
                 devices.Add(point.Device);
             }
 
-            result.Add(new DayPoint(PointTime.ToMicros(point.TimeUtc), point.Longitude, point.Latitude, device, (int)status[first + i]));
+            result.Add(new DayPoint(PointTime.ToMicros(point.TimeUtc), point.Longitude, point.Latitude, device, (int)status[i]));
         }
 
         await Send.OkAsync(new DayPointsResponse(DayDate.ToText(date), devices, result), ct);

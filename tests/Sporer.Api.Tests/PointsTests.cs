@@ -430,6 +430,64 @@ public class PointsTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task Points_of_a_day_are_judged_with_several_points_before_it()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8)); // the day starts at 19 October 22:00 UTC
+        // The day first point jumps away and back; the points before the day are close together, and the latest of them decides it.
+        await PointSeeder.InsertAsync(cs,
+        [
+            Fix(Utc(10, 19, 21, 59, 20)), Fix(Utc(10, 19, 21, 59, 30)), Fix(Utc(10, 19, 21, 59, 40)),
+            Fix(Utc(10, 19, 22, 0, 0), lon: 20), Fix(Utc(10, 19, 22, 0, 10)),
+        ], Ct);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+
+        Assert.Equal([2, 0], day.Statuses);
+    }
+
+    [Fact] // a glitch next to a poor fix is still a glitch, for the day and for the point alike
+    public async Task The_day_and_the_detail_agree_when_a_poor_fix_is_next_to_a_glitch()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8));
+        var start = Utc(10, 20, 10);
+        await PointSeeder.InsertAsync(cs,
+            [Fix(start), Fix(start.AddSeconds(10), accuracy: 500), Fix(start.AddSeconds(20), lon: 20), Fix(start.AddSeconds(30))], Ct);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+        using var detail = await JsonOf(await client.GetAsync(DetailUrl("phone", start.AddSeconds(20)), Ct));
+
+        Assert.Equal([0, 1, 2, 0], day.Statuses);
+        Assert.Equal("glitch", detail.RootElement.GetProperty("status").GetString());
+    }
+
+    [Fact] // points of two devices at one time: the order of the day's list (time, device) puts one before the other, in the day and in the detail
+    public async Task The_day_and_the_detail_agree_on_points_of_two_devices_at_one_time()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8));
+        var start = Utc(10, 20, 10);
+        await PointSeeder.InsertAsync(cs,
+        [
+            Fix(start), Fix(start.AddSeconds(10), lon: 20), Fix(start.AddSeconds(10), lon: 20, device: "watch"), Fix(start.AddSeconds(20)),
+        ], Ct);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+        using var phone = await JsonOf(await client.GetAsync(DetailUrl("phone", start.AddSeconds(10)), Ct));
+        using var watch = await JsonOf(await client.GetAsync(DetailUrl("watch", start.AddSeconds(10)), Ct));
+
+        Assert.Equal([0, 0, 0, 0], day.Statuses);
+        Assert.Equal(["used", "used"], [phone.RootElement.GetProperty("status").GetString(), watch.RootElement.GetProperty("status").GetString()]);
+    }
+
+    [Fact]
     public async Task Points_of_a_day_use_the_options_in_effect()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
