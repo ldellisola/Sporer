@@ -26,7 +26,7 @@ public sealed record PointSpan(IReadOnlyList<TrackPoint> Before, IReadOnlyList<T
 /// <paramref name="Window"/> is the point with the <see cref="PointSpan.Margin"/> points before and after it in the order of the day's list
 /// (time, then device), not removed, to judge it by; <paramref name="Before"/> and <paramref name="After"/> are the nearest points of any
 /// device strictly before and after it in time that are not removed. <c>locationlog</c> has no key, so a re-sent batch can leave twin rows
-/// (same device and time, identical); the point is the first of them, and the others are left out of the window (they are always duplicates).
+/// (same device and time, identical, so which of them is described does not matter); the point is one of them, and the others are left out of the window (they are always duplicates).
 /// </summary>
 public sealed record FullPoint(
     TrackPoint Point, double Altitude, bool Removed, PointSpan Window, TrackPoint? Before, TrackPoint? After);
@@ -77,7 +77,7 @@ public sealed class PointStore(NpgsqlDataSource dataSource)
 
     /// <summary>
     /// The points with <c>fromUtc &lt;= time &lt; toUtc</c> (the end is exclusive, as a local day's is) that are not removed, ordered by time and
-    /// then device (identical rows of one device and time, which a re-sent batch leaves, in the order they are stored), with the
+    /// then device with the
     /// <see cref="PointSpan.Margin"/> nearest points before <paramref name="fromUtc"/> and from <paramref name="toUtc"/> on. For telling
     /// which of a day's points the cleaning keeps: the speed and motion of each are of no use to it and are not read.
     /// </summary>
@@ -85,15 +85,47 @@ public sealed class PointStore(NpgsqlDataSource dataSource)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         var rows = await connection.QueryAsync<PointRow>(new CommandDefinition(
-            Judged + " where l.time >= @FromUtc and l.time < @ToUtc and " + NotExcluded + " order by l.time, l.device, l.ctid",
+            Judged + " where l.time >= @FromUtc and l.time < @ToUtc and " + NotExcluded + " order by l.time, l.device",
             new { FromUtc = fromUtc, ToUtc = toUtc }, cancellationToken: ct));
-        var before = await connection.QueryAsync<PointRow>(new CommandDefinition(
-            Judged + " where l.time < @FromUtc and " + NotExcluded + $" order by l.time desc, l.device desc, l.ctid desc limit {PointSpan.Margin}",
-            new { FromUtc = fromUtc }, cancellationToken: ct));
-        var after = await connection.QueryAsync<PointRow>(new CommandDefinition(
-            Judged + " where l.time >= @ToUtc and " + NotExcluded + $" order by l.time, l.device, l.ctid limit {PointSpan.Margin}",
-            new { ToUtc = toUtc }, cancellationToken: ct));
-        return new PointSpan([.. before.Reverse().Select(ToTrackPoint)], [.. rows.Select(ToTrackPoint)], [.. after.Select(ToTrackPoint)]);
+        var before = await NearestAsync(connection, Judged, "l.time < @P", fromUtc, null, before: true, PointSpan.Margin, ct);
+        var after = await NearestAsync(connection, Judged, "l.time >= @P", toUtc, null, before: false, PointSpan.Margin, ct);
+        return new PointSpan(before, [.. rows.Select(ToTrackPoint)], after);
+    }
+
+    /// <summary>How far from a point the first look for its neighbours goes: a day has far more points than a window needs, and a query bounded in time reads only the chunks it names (compressed ones are decompressed to be read).</summary>
+    private static readonly TimeSpan FirstLook = TimeSpan.FromDays(1);
+
+    /// <summary>The instant moved by <paramref name="by"/>, held to the times a <see cref="DateTime"/> has (the first and last days there are are asked for too).</summary>
+    private static DateTime Shift(DateTime instant, TimeSpan by)
+    {
+        var ticks = Math.Clamp(instant.Ticks + by.Ticks, DateTime.MinValue.Ticks, DateTime.MaxValue.Ticks);
+        return new DateTime(ticks, DateTimeKind.Utc);
+    }
+
+    /// <summary>
+    /// The <paramref name="count"/> points nearest to <paramref name="pivot"/> on one side that are not removed, in time order (oldest first), as
+    /// <paramref name="condition"/> (over <c>l.time</c>, <c>l.device</c>, <c>@P</c> and <c>@D</c>) says which are on that side. Ordered by time and then device,
+    /// as the day's list is. The first look is within <see cref="FirstLook"/> of the pivot; only when it finds fewer than <paramref name="count"/> does
+    /// the search go on without a bound, so that a dense history is never read further back than it has to be.
+    /// </summary>
+    private static async Task<IReadOnlyList<TrackPoint>> NearestAsync(
+        NpgsqlConnection connection, string select, string condition, DateTime pivot, string? device, bool before, int count, CancellationToken ct)
+    {
+        async Task<List<PointRow>> RunAsync(string bound, object parameters)
+            => [.. await connection.QueryAsync<PointRow>(new CommandDefinition(
+                select + " where " + condition + bound + " and " + NotExcluded
+                + (before ? " order by l.time desc, l.device desc" : " order by l.time, l.device") + $" limit {count}",
+                parameters, cancellationToken: ct))];
+
+        var rows = await RunAsync(
+            before ? " and l.time >= @Bound" : " and l.time <= @Bound",
+            new { P = pivot, D = device, Bound = before ? Shift(pivot, -FirstLook) : Shift(pivot, FirstLook) });
+        if (rows.Count < count)
+            rows = await RunAsync("", new { P = pivot, D = device });
+
+        if (before)
+            rows.Reverse();
+        return [.. rows.Select(ToTrackPoint)];
     }
 
     /// <summary>
@@ -105,7 +137,7 @@ public sealed class PointStore(NpgsqlDataSource dataSource)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         var rows = (await connection.QueryAsync<PointRow>(new CommandDefinition(
-            SelectFull + " where l.time = @Time and l.device = @Device order by l.ctid limit 1",
+            SelectFull + " where l.time = @Time and l.device = @Device limit 1",
             new { Time = timeUtc, Device = device }, cancellationToken: ct))).ToList();
         if (rows.Count == 0)
             return null;
@@ -115,25 +147,16 @@ public sealed class PointStore(NpgsqlDataSource dataSource)
             new { Time = timeUtc, Device = device }, cancellationToken: ct));
         // The window is in the day's order, (time, device): a point of another device at the same time is on the side that order puts it. The
         // time bounds keep the time index in play, which the row comparison alone would not.
-        var windowBefore = await connection.QueryAsync<PointRow>(new CommandDefinition(
-            Judged + " where l.time <= @Time and (l.time, l.device) < (@Time, @Device) and " + NotExcluded
-            + $" order by l.time desc, l.device desc, l.ctid desc limit {PointSpan.Margin}",
-            new { Time = timeUtc, Device = device }, cancellationToken: ct));
-        var windowAfter = await connection.QueryAsync<PointRow>(new CommandDefinition(
-            Judged + " where l.time >= @Time and (l.time, l.device) > (@Time, @Device) and " + NotExcluded
-            + $" order by l.time, l.device, l.ctid limit {PointSpan.Margin}",
-            new { Time = timeUtc, Device = device }, cancellationToken: ct));
-        var before = await connection.QueryAsync<PointRow>(new CommandDefinition(
-            Select + " where l.time < @Time and " + NotExcluded + " order by l.time desc, l.device desc, l.ctid desc limit 1",
-            new { Time = timeUtc }, cancellationToken: ct));
-        var after = await connection.QueryAsync<PointRow>(new CommandDefinition(
-            Select + " where l.time > @Time and " + NotExcluded + " order by l.time, l.device, l.ctid limit 1",
-            new { Time = timeUtc }, cancellationToken: ct));
+        var windowBefore = await NearestAsync(
+            connection, Judged, "l.time <= @P and (l.time, l.device) < (@P, @D)", timeUtc, device, before: true, PointSpan.Margin, ct);
+        var windowAfter = await NearestAsync(
+            connection, Judged, "l.time >= @P and (l.time, l.device) > (@P, @D)", timeUtc, device, before: false, PointSpan.Margin, ct);
+        var before = (await NearestAsync(connection, Select, "l.time < @P", timeUtc, null, before: true, 1, ct)).SingleOrDefault();
+        var after = (await NearestAsync(connection, Select, "l.time > @P", timeUtc, null, before: false, 1, ct)).SingleOrDefault();
 
         return new FullPoint(
             ToTrackPoint(rows[0]), rows[0].Altitude, removed,
-            new PointSpan([.. windowBefore.Reverse().Select(ToTrackPoint)], [ToTrackPoint(rows[0])], [.. windowAfter.Select(ToTrackPoint)]),
-            before.Select(ToTrackPoint).SingleOrDefault(), after.Select(ToTrackPoint).SingleOrDefault());
+            new PointSpan(windowBefore, [ToTrackPoint(rows[0])], windowAfter), before, after);
     }
 
     /// <summary>

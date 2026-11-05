@@ -487,6 +487,51 @@ public class PointsTests(DatabaseFixture db)
         Assert.Equal(["used", "used"], [phone.RootElement.GetProperty("status").GetString(), watch.RootElement.GetProperty("status").GetString()]);
     }
 
+    [Fact] // the 20 nearest points before the day: the latest ones, whatever the earlier ones are
+    public async Task Points_of_a_day_are_judged_with_the_latest_of_many_points_before_it()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8));
+        var far = Enumerable.Range(0, 5).Select(i => Fix(Utc(10, 19, 21, i, 0), lon: 20));              // the earliest: elsewhere
+        var near = Enumerable.Range(0, 24).Select(i => Fix(Utc(10, 19, 21, 56, 0).AddSeconds(10 * i))); // 21:56:00 to 21:59:50, at home
+        await PointSeeder.InsertAsync(cs, [.. far, .. near, Fix(Utc(10, 19, 22, 0, 0), lon: 20), Fix(Utc(10, 19, 22, 0, 10))], Ct);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+
+        Assert.Equal([2, 0], day.Statuses);
+    }
+
+    [Fact] // a compressed chunk cannot be asked for its ctid, and is read only when the neighbours are not nearer
+    public async Task Points_and_detail_answer_over_compressed_history()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient(); // starting the host runs the migrations
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8));
+        // Test setup on a throwaway database only; the application never alters compression.
+        await Sql.ExecAsync(cs, "ALTER TABLE locationlog SET (timescaledb.compress, timescaledb.compress_segmentby = 'device')", ct: Ct);
+        var start = Utc(10, 20, 10);
+        await PointSeeder.InsertAsync(cs,
+        [
+            .. Enumerable.Range(0, 5).Select(i => Fix(Utc(9, 1, 10).AddSeconds(10 * i))), // an old chunk, which is the margin before the day
+            Fix(start), Fix(start.AddSeconds(10), lon: 20), Fix(start.AddSeconds(20)),
+        ], Ct);
+        var compressed = await Sql.ScalarAsync<long>(cs,
+            "select count(compress_chunk(c)) from show_chunks('locationlog', older_than => @t) c", new { t = Utc(10, 12) }, Ct);
+        Assert.True(compressed > 0);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+        using var detail = await JsonOf(await client.GetAsync(DetailUrl("phone", start), Ct));
+        using var glitch = await JsonOf(await client.GetAsync(DetailUrl("phone", start.AddSeconds(10)), Ct));
+
+        Assert.Equal([0, 2, 0], day.Statuses);
+        Assert.Equal("used", detail.RootElement.GetProperty("status").GetString());
+        Assert.Equal("glitch", glitch.RootElement.GetProperty("status").GetString());
+        Assert.Equal(Micros(Utc(9, 1, 10, 0, 40)), detail.RootElement.GetProperty("previous").GetProperty("t").GetInt64());
+    }
+
     [Fact]
     public async Task Points_of_a_day_use_the_options_in_effect()
     {
