@@ -147,6 +147,55 @@ export interface PointRef {
   t: number;
 }
 
+/** Why the card says a point is as it is: the timeline uses it (`used`), ignores it (the next three) or the owner removed it (`removed`). */
+export type PointDetailStatus = "used" | "poorAccuracy" | "glitch" | "duplicate" | "removed";
+
+/** The nearest point before or after a point (of any device, not removed): when, how far away in time and space, and the speed that makes. */
+export interface PointNeighbour {
+  /** Epoch microseconds, as everywhere. */
+  t: number;
+  gapSeconds: number;
+  distanceM: number;
+  speedKmh: number;
+}
+
+/** The stay, move or gap that covers a point. A stay has its place (the name is null while it has none), a move its mode. */
+export interface PointSegment {
+  kind: "stay" | "move" | "gap";
+  startUtc: string;
+  endUtc: string;
+  place?: { id: number; name: string | null };
+  mode?: string;
+}
+
+/**
+ * One point in full, from `GET /api/points/detail?device=…&t=…`. `localTime` is `yyyy-MM-ddTHH:mm:ss` on the clock of `zone` (an IANA name); `timeUtc` is
+ * the same instant. What the device did not send is null (`accuracyM`, `speedMps`, `motion`); `speedMps` is metres a second.
+ */
+export interface PointDetailResponse {
+  device: string;
+  t: number;
+  timeUtc: string;
+  localTime: string;
+  zone: string;
+  lat: number;
+  lon: number;
+  accuracyM: number | null;
+  speedMps: number | null;
+  altitudeM: number;
+  motion: string[] | null;
+  status: PointDetailStatus;
+  previous: PointNeighbour | null;
+  next: PointNeighbour | null;
+  segment: PointSegment | null;
+}
+
+/** The point of the day that edit mode shows the card of: what names it (`PointRef`) and where it is, for the card to be put there. */
+export interface InspectedPoint extends PointRef {
+  lon: number;
+  lat: number;
+}
+
 /** The answer to `POST /api/points/remove`: the batch to restore it by, or null when nothing was removed (the points were removed already), and how many points it holds. */
 export interface RemovePointsResponse {
   batch: string | null;

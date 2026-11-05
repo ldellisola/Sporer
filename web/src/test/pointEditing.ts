@@ -22,6 +22,8 @@ export function pointEditing(over: Partial<PointEditing> = {}): PointEditing {
     points: FAKE_POINTS,
     load: { pending: false, error: null, retry: vi.fn() },
     selected: new Set<number>(),
+    inspected: null,
+    closeInspected: vi.fn(),
     toggle: vi.fn(),
     select: vi.fn(),
     clear: vi.fn(),

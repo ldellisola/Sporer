@@ -1961,6 +1961,8 @@ describe("MapView", () => {
       onAreaChange: vi.fn(),
       onToggle: vi.fn(),
       onSelect: vi.fn(),
+      inspected: null,
+      onInspectClose: vi.fn(),
       ...over,
     });
     const withData = (editPoints: EditPointCollection | undefined, over: Partial<MapViewProps> = {}): Partial<MapViewProps> => ({
@@ -2086,6 +2088,21 @@ describe("MapView", () => {
       expect(onToggle).toHaveBeenCalledTimes(1);
       expect(onToggle).toHaveBeenCalledWith(0);
       expect(onPlaceTap).not.toHaveBeenCalled(); // in edit mode a tap is for the points
+    });
+
+    test("MapView_closes_the_card_of_a_point_by_a_tap_on_no_point_and_not_by_a_tap_on_one", async () => {
+      const onToggle = vi.fn<(id: number) => void>();
+      const onInspectClose = vi.fn<() => void>();
+      const { map } = await up(withData(POINTS, { edit: edit({ onToggle, onInspectClose }) }));
+      drawPoints(map, POINTS);
+
+      map.pointer("click", 101, 100); // on a point: it is the card of that one that opens, by the toggle
+      expect(onToggle).toHaveBeenCalledWith(0);
+      expect(onInspectClose).not.toHaveBeenCalled();
+
+      map.pointer("click", 200, 200); // on the map
+      expect(onInspectClose).toHaveBeenCalledTimes(1);
+      expect(onToggle).toHaveBeenCalledTimes(1);
     });
 
     test("MapView_looks_for_points_in_a_box_of_12px_round_the_tap_in_their_layer_only", async () => {

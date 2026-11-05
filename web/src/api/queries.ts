@@ -12,6 +12,7 @@ import type {
   PlaceCandidate,
   PlaceResponse,
   PlaceSearchResult,
+  PointDetailResponse,
   RangeResponse,
   RemovedBatch,
   SettingsResponse,
@@ -102,6 +103,22 @@ export function dayPointsQueryOptions(date: string | null) {
     queryFn: date === null ? skipToken : ({ signal }) => getJson<DayPointsResponse>(`/api/day/${date}/points`, signal),
     staleTime: STALE_MS,
     gcTime: 0, // not kept once nothing shows them: tens of thousands of points, and the points of a day that was edited since would be old
+  });
+}
+
+/**
+ * One raw point in full, by its device and exact time (epoch microseconds): what the card of edit mode shows. Nothing is asked for while `point` is null. A
+ * point is what it was stored as, so what comes stays fresh for a while; what the timeline made of it may change when its neighbours do (a removal), which
+ * is why the card is asked again after one (the day's points are, and the card goes with a point that is gone).
+ */
+export function pointDetailQueryOptions(point: { device: string; t: number } | null) {
+  return queryOptions({
+    queryKey: ["point", point?.device ?? null, point?.t ?? null] as const,
+    queryFn:
+      point === null
+        ? skipToken
+        : ({ signal }) => getJson<PointDetailResponse>(`/api/points/detail?device=${encodeURIComponent(point.device)}&t=${point.t}`, signal),
+    staleTime: STALE_MS,
   });
 }
 
@@ -255,6 +272,9 @@ export const useDay = (date: string | null, keepPrevious = true) => useQuery(day
 
 /** The points of a day for edit mode; nothing is asked for while `enabled` is false, or while there is no date. */
 export const useDayPoints = (date: string | null, enabled = true) => useQuery({ ...dayPointsQueryOptions(date), enabled });
+
+/** One point in full, for the card; nothing is asked for while it is null. */
+export const usePointDetail = (point: { device: string; t: number } | null) => useQuery(pointDetailQueryOptions(point));
 
 export const useRange = (from: string | null, to: string | null, keepPrevious = true) => useQuery(rangeQueryOptions(from, to, keepPrevious));
 

@@ -1,5 +1,6 @@
 import type { MapLibreMap } from "maplibre-gl";
 import { useEffect } from "react";
+import type { InspectedPoint } from "../api/types";
 import type { Pixel, PixelBox } from "./AreaSelect";
 import { LAYER_IDS, type EditPointCollection } from "./layers";
 import { nearestTapped } from "./taps";
@@ -23,6 +24,10 @@ export interface MapEdit {
   onToggle: (id: number) => void;
   /** Called with the ids of every point inside a rectangle that was drawn. */
   onSelect: (ids: readonly number[]) => void;
+  /** The point whose card (`PointCard`) is open, which the map puts at the point; null for none. A tap on a point opens it (`onToggle`), and nothing else does. */
+  inspected: InspectedPoint | null;
+  /** Called to close the card: its ×, Escape, and a tap on the map that is on no point. */
+  onInspectClose: () => void;
 }
 
 /**

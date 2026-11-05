@@ -32,6 +32,7 @@ import {
   type RouteView,
   type StopCollection,
 } from "./layers";
+import { PointCard } from "./PointCard";
 import { loadMapLibre, type MapLibreLoader, type MapLibreModule } from "./maplibre";
 import styles from "./MapView.module.css";
 import { loadStyle, type StyleSpecification } from "./style";
@@ -638,6 +639,7 @@ function MapSurface({
       if (editing !== undefined) {
         const id = editPointAt(map, point, current.editPoints);
         if (id !== undefined) editing.onToggle(id);
+        else editing.onInspectClose(); // a tap on the map that is on no point closes the card
         return;
       }
       const id = placeAt(map, point);
@@ -744,6 +746,7 @@ function MapSurface({
         )}
         {edit !== undefined && <EditControls edit={edit} map={map} points={editPoints} host={rootRef} within={padding} />}
       </div>
+      {edit?.inspected != null && <PointCard map={map} point={edit.inspected} within={padding} onClose={edit.onInspectClose} />}
     </div>
   );
 }

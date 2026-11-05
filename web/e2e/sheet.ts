@@ -21,7 +21,7 @@ const isWide = (page: Page): boolean => page.viewportSize()!.width >= 900;
  */
 export async function sheetAtRest(page: Page, content?: Locator): Promise<void> {
   if (content !== undefined) await content.first().waitFor({ state: "visible" });
-  const details = page.getByRole(isWide(page) ? "complementary" : "region", { name: "Details" });
+  const details = page.getByRole(isWide(page) ? "complementary" : "region", { name: "Details", exact: true });
   await details.evaluate(async (sheet) => {
     let still = 0;
     while (still < 3) {

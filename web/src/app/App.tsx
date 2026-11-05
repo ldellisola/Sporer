@@ -150,7 +150,7 @@ export function App() {
           heatToggle={map.heat.available ? { on: heatOn, onChange: setHeatOn } : undefined}
           edit={
             edit.active
-              ? { selected: edit.selected, area: edit.area, onAreaChange: edit.setArea, onToggle: edit.toggle, onSelect: edit.select }
+              ? { selected: edit.selected, area: edit.area, onAreaChange: edit.setArea, onToggle: edit.toggle, onSelect: edit.select, inspected: edit.inspected, onInspectClose: edit.closeInspected }
               : undefined
           }
           onPlaceTap={(id) => navigate({ view: "place", id })}
