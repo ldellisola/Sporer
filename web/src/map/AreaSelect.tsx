@@ -141,6 +141,7 @@ export function AreaSelect({ active, host, within, onBox, onTap }: AreaSelectPro
     if (element === null || active) return;
     const onMouseDown = (event: MouseEvent): void => {
       if (!event.shiftKey || event.button !== 0) return;
+      if (event.target instanceof Element && event.target.closest("[data-no-area-select]") !== null) return; // something over the map that has its own text (a card)
       event.stopPropagation();
       event.preventDefault(); // no text is selected, and nothing takes the focus
       const from = at(event);

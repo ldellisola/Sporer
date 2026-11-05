@@ -746,7 +746,7 @@ function MapSurface({
         )}
         {edit !== undefined && <EditControls edit={edit} map={map} points={editPoints} host={rootRef} within={padding} />}
       </div>
-      {edit?.inspected != null && <PointCard map={map} point={edit.inspected} within={padding} onClose={edit.onInspectClose} />}
+      {edit !== undefined && edit.inspected !== null && <PointCard map={map} point={edit.inspected} within={padding} onClose={edit.onInspectClose} />}
     </div>
   );
 }

@@ -11,20 +11,30 @@ import {
   zoneName,
 } from "./pointCardText";
 
+/** What is said, with the no-break spaces between a number and its unit as plain ones, to read. */
+const plain = (text: string | null): string | null => (text === null ? null : text.replace(/\u00a0/g, " "));
+
 describe("pointCardText", () => {
   test("formatGap_says_the_leading_unit_and_the_one_under_it_and_leaves_out_a_zero", () => {
-    expect(formatGap(45)).toBe("45 s");
-    expect(formatGap(0)).toBe("0 s");
-    expect(formatGap(61)).toBe("1 min 1 s");
-    expect(formatGap(120)).toBe("2 min");
-    expect(formatGap(2 * 3600 + 3 * 60 + 40)).toBe("2 h 3 min");
-    expect(formatGap(3 * 3600)).toBe("3 h");
-    expect(formatGap(60.6)).toBe("1 min 1 s"); // whole seconds
+    expect(plain(formatGap(45))).toBe("45 s");
+    expect(plain(formatGap(0))).toBe("0 s");
+    expect(plain(formatGap(61))).toBe("1 min 1 s");
+    expect(plain(formatGap(120))).toBe("2 min");
+    expect(plain(formatGap(2 * 3600 + 3 * 60 + 40))).toBe("2 h 3 min");
+    expect(plain(formatGap(3 * 3600))).toBe("3 h");
+    expect(plain(formatGap(60.6))).toBe("1 min 1 s"); // whole seconds
+  });
+
+  test("a_number_and_its_unit_are_not_parted_by_a_line_break", () => {
+    for (const text of [formatGap(61), formatSpeedMps(20), statusText({ status: "poorAccuracy", accuracyM: 1414, maxAccuracyM: 100 }), neighbourText({ t: 1, gapSeconds: 61, distanceM: 1234, speedKmh: 72 }, "next")]) {
+      expect(text).not.toMatch(/\d (m|km|s|min|h|km\/h)\b/);
+      expect(text).toMatch(/\d\u00a0(m|km|s|min|h|km\/h)\b/);
+    }
   });
 
   test("formatSpeedMps_is_kilometres_an_hour_with_one_decimal", () => {
-    expect(formatSpeedMps(20)).toBe("72.0 km/h");
-    expect(formatSpeedMps(1.4)).toBe("5.0 km/h");
+    expect(plain(formatSpeedMps(20))).toBe("72.0 km/h");
+    expect(plain(formatSpeedMps(1.4))).toBe("5.0 km/h");
   });
 
   test("formatCoordinates_has_six_decimals", () => {
@@ -45,29 +55,33 @@ describe("pointCardText", () => {
   });
 
   test("statusText_says_why_a_point_is_ignored", () => {
-    expect(statusText({ status: "used", accuracyM: 5 })).toBe("Used by the timeline");
-    expect(statusText({ status: "poorAccuracy", accuracyM: 1414.2 })).toBe("Ignored: the GPS accuracy was 1,414 m (more than 100 m)");
-    expect(statusText({ status: "poorAccuracy", accuracyM: -1 })).toBe("Ignored: the GPS accuracy was not valid");
-    expect(statusText({ status: "glitch", accuracyM: 5 })).toBe("Ignored: an out-and-back jump");
-    expect(statusText({ status: "duplicate", accuracyM: 5 })).toBe("Ignored: a repeat of an earlier point");
-    expect(statusText({ status: "removed", accuracyM: 5 })).toBe("Removed by you");
+    expect(plain(statusText({ status: "used", accuracyM: 5, maxAccuracyM: 100 }))).toBe("Used by the timeline");
+    expect(plain(statusText({ status: "poorAccuracy", accuracyM: 1414.2, maxAccuracyM: 100 }))).toBe("Ignored: the GPS accuracy was 1,414 m (more than 100 m)");
+    expect(plain(statusText({ status: "poorAccuracy", accuracyM: -1, maxAccuracyM: 100 }))).toBe("Ignored: the GPS accuracy was not valid");
+    // The limit is the server's, whatever it is set to; and a value that rounds to the limit says so with a decimal and not "100 m (more than 100 m)".
+    expect(plain(statusText({ status: "poorAccuracy", accuracyM: 70, maxAccuracyM: 50 }))).toBe("Ignored: the GPS accuracy was 70 m (more than 50 m)");
+    expect(plain(statusText({ status: "poorAccuracy", accuracyM: 100.4, maxAccuracyM: 100 }))).toBe("Ignored: the GPS accuracy was 100.4 m (more than 100 m)");
+    expect(plain(statusText({ status: "glitch", accuracyM: 5, maxAccuracyM: 100 }))).toBe("Ignored: an out-and-back jump");
+    expect(plain(statusText({ status: "duplicate", accuracyM: 5, maxAccuracyM: 100 }))).toBe("Ignored: a repeat of an earlier point");
+    expect(plain(statusText({ status: "removed", accuracyM: 5, maxAccuracyM: 100 }))).toBe("Removed by you");
   });
 
   test("segmentText_says_where_in_the_day_the_point_is_with_the_times_on_the_clock_of_the_zone", () => {
     const times = { startUtc: "2026-10-22T06:00:00Z", endUtc: "2026-10-22T07:30:00Z" };
-    expect(segmentText({ kind: "stay", ...times, place: { id: 3, name: "Café" } }, "Europe/Oslo")).toBe("In a stay at Café (08:00–09:30)");
-    expect(segmentText({ kind: "stay", ...times, place: { id: 3, name: null } }, "Europe/Oslo")).toBe("In a stay at a place with no name (08:00–09:30)");
-    expect(segmentText({ kind: "move", ...times, mode: "walk" }, "Europe/Oslo")).toBe("In a move by walk (08:00–09:30)");
-    expect(segmentText({ kind: "move", ...times }, "Europe/Oslo")).toBe("In a move (08:00–09:30)");
-    expect(segmentText({ kind: "gap", ...times }, "Europe/Oslo")).toBe("In a gap (08:00–09:30)");
+    expect(plain(segmentText({ kind: "stay", ...times, place: { id: 3, name: "Café" } }, "Europe/Oslo"))).toBe("In a stay at Café (08:00–09:30)");
+    expect(plain(segmentText({ kind: "stay", ...times, place: { id: 3, name: null } }, "Europe/Oslo"))).toBe("In a stay at a place with no name (08:00–09:30)");
+    expect(plain(segmentText({ kind: "move", ...times, mode: "walk" }, "Europe/Oslo"))).toBe("In a move: Walk (08:00–09:30)");
+    expect(plain(segmentText({ kind: "move", ...times }, "Europe/Oslo"))).toBe("In a move (08:00–09:30)");
+    expect(plain(segmentText({ kind: "move", ...times, mode: "unknown" }, "Europe/Oslo"))).toBe("In a move (08:00–09:30)");
+    expect(plain(segmentText({ kind: "gap", ...times }, "Europe/Oslo"))).toBe("In a gap (08:00–09:30)");
     expect(segmentText(null, "Europe/Oslo")).toBeNull();
   });
 
   test("neighbourText_says_how_long_and_how_far_and_how_fast_and_that_there_is_none_at_the_end", () => {
     const near = { t: 1, gapSeconds: 61, distanceM: 1234, speedKmh: 72.04 };
-    expect(neighbourText(near, "previous")).toBe("1 min 1 s and 1.2 km after the previous point (72.0 km/h)");
-    expect(neighbourText({ ...near, gapSeconds: 45, distanceM: 80 }, "next")).toBe("45 s and 80 m before the next point (72.0 km/h)");
-    expect(neighbourText(null, "previous")).toBe("No earlier point");
-    expect(neighbourText(null, "next")).toBe("No later point");
+    expect(plain(neighbourText(near, "previous"))).toBe("1 min 1 s and 1.2 km after the previous point (72.0 km/h)");
+    expect(plain(neighbourText({ ...near, gapSeconds: 45, distanceM: 80 }, "next"))).toBe("45 s and 80 m before the next point (72.0 km/h)");
+    expect(plain(neighbourText(null, "previous"))).toBe("No earlier point");
+    expect(plain(neighbourText(null, "next"))).toBe("No later point");
   });
 });

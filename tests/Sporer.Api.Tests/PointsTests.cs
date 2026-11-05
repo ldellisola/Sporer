@@ -547,6 +547,26 @@ public class PointsTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task Detail_says_the_accuracy_limit_in_effect()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var at = Utc(10, 20, 10);
+        await using var narrow = new ApiFactory(cs, new Dictionary<string, string?> { ["Detection:MaxAccuracyMeters"] = "50" });
+        await using var standard = new ApiFactory(cs);
+        var narrowClient = narrow.CreateClient(); // the schema is made when the app starts
+        var standardClient = standard.CreateClient();
+        await PointSeeder.InsertAsync(cs, [Fix(at, accuracy: 60)], Ct);
+
+        using var body = await JsonOf(await standardClient.GetAsync(DetailUrl("phone", at), Ct));
+        Assert.Equal(100, body.RootElement.GetProperty("maxAccuracyM").GetDouble());
+        Assert.Equal("used", body.RootElement.GetProperty("status").GetString());
+
+        using var configured = await JsonOf(await narrowClient.GetAsync(DetailUrl("phone", at), Ct));
+        Assert.Equal(50, configured.RootElement.GetProperty("maxAccuracyM").GetDouble());
+        Assert.Equal("poorAccuracy", configured.RootElement.GetProperty("status").GetString());
+    }
+
+    [Fact]
     public async Task Points_of_a_day_keep_the_etag_and_the_304()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
@@ -594,7 +614,7 @@ public class PointsTests(DatabaseFixture db)
         var root = body.RootElement;
 
         Assert.Equal(
-            ["device", "t", "timeUtc", "localTime", "zone", "lat", "lon", "accuracyM", "speedMps", "altitudeM", "motion", "status", "previous", "next", "segment"],
+            ["device", "t", "timeUtc", "localTime", "zone", "lat", "lon", "accuracyM", "speedMps", "altitudeM", "motion", "status", "maxAccuracyM", "previous", "next", "segment"],
             root.EnumerateObject().Select(p => p.Name));
         Assert.Equal("phone", root.GetProperty("device").GetString());
         Assert.Equal(Micros(at), root.GetProperty("t").GetInt64());

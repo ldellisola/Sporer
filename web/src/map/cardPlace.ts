@@ -11,8 +11,8 @@ export interface Area {
 export interface CardPlace {
   left: number;
   top: number;
-  /** Which side of the point the card is on, or `over` when neither has room for it and it lies over the point. */
-  side: "above" | "below" | "over";
+  /** Which side of the point the card is on, `over` when neither has room for it and it lies over the point, or `away` when the point is out of the area (the card is kept in sight and has no pointer, for it points at nothing). */
+  side: "above" | "below" | "over" | "away";
   /** The most the card may be as high as, so that it fits in what is free (it scrolls inside). */
   maxHeight: number;
   /** The most it may be as wide as. */
@@ -36,9 +36,11 @@ export function placeCard(at: { x: number; y: number }, size: { width: number; h
   const pointerX = clamp(at.x - left, 14, width - 14);
   const above = at.y - gap - height;
   const below = at.y + gap;
-  if (above >= area.top && at.y - gap <= area.bottom) return { left, top: above, side: "above", maxHeight, maxWidth, pointerX };
-  if (below + height <= area.bottom && below >= area.top) return { left, top: below, side: "below", maxHeight, maxWidth, pointerX };
-  return { left, top: clamp(at.y - height / 2, area.top, area.bottom - height), side: "over", maxHeight, maxWidth, pointerX };
+  const inside = at.x >= area.left && at.x <= area.right && at.y >= area.top && at.y <= area.bottom;
+  const place = (top: number, side: CardPlace["side"]): CardPlace => ({ left, top, side: inside ? side : "away", maxHeight, maxWidth, pointerX });
+  if (above >= area.top && at.y - gap <= area.bottom) return place(above, "above");
+  if (below + height <= area.bottom && below >= area.top) return place(below, "below");
+  return place(clamp(at.y - height / 2, area.top, area.bottom - height), "over");
 }
 
 /** Whether two places are the same to within half a pixel, so that a map that moves a hair does not have the card drawn again. */

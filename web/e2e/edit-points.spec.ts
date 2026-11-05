@@ -53,6 +53,8 @@ interface EditServer {
   refuse: (reply: Reply | undefined) => void;
   /** The first so many requests for the points are answered with a 500. */
   failPoints: (times: number) => void;
+  /** The point at this index is no longer known to the server, which answers a 404 for it. */
+  forgetPoint: (index: number) => void;
   /** The first so many requests for a point in full are answered with a 500. */
   failDetail: (times: number) => void;
   /** The points that the page was answered in full, as the indices of the day's points. */
@@ -74,6 +76,7 @@ function editServer(): EditServer {
   let refusal: Reply | undefined;
   let failing = 0;
   let failingDetail = 0;
+  const unknown = new Set<number>();
   const detailsRead: number[] = [];
   let held: Promise<Reply> | undefined;
   const gone = (): number[] => [...removed.values()].flat();
@@ -101,7 +104,7 @@ function editServer(): EditServer {
     "points/detail": (request: Request): Reply => {
       const { searchParams } = new URL(request.url());
       const index = POINTS.findIndex((point) => String(point[0]) === searchParams.get("t") && DEVICES[point[3]] === searchParams.get("device"));
-      if (index < 0 || gone().includes(index)) return { status: 404, json: { statusCode: 404 } };
+      if (index < 0 || unknown.has(index)) return { status: 404, json: { statusCode: 404 } }; // a point that is not stored; a removed one is, and is answered
       if (failingDetail > 0) {
         failingDetail -= 1;
         return { status: 500, json: { title: "Internal Server Error" } };
@@ -120,7 +123,8 @@ function editServer(): EditServer {
         speedMps: null,
         altitudeM: 12,
         motion: ["walking"],
-        status: (["used", "poorAccuracy", "glitch", "duplicate"] as const)[status],
+        status: gone().includes(index) ? "removed" : (["used", "poorAccuracy", "glitch", "duplicate"] as const)[status],
+        maxAccuracyM: 100,
         previous: index === 0 ? null : { t: POINTS[index - 1]![0], gapSeconds: 61, distanceM: 1234, speedKmh: 72 },
         next: { t: POINTS[index + 1]?.[0] ?? t, gapSeconds: 45, distanceM: 80, speedKmh: 6.4 },
         segment: null,
@@ -158,6 +162,7 @@ function editServer(): EditServer {
     forget: (batch) => void removed.delete(batch),
     refuse: (reply) => void (refusal = reply),
     failPoints: (times) => void (failing = times),
+    forgetPoint: (index) => void unknown.add(index),
     failDetail: (times) => void (failingDetail = times),
     detailReads: () => detailsRead,
     hold: () => {
@@ -747,6 +752,12 @@ test("edit_points_a_tap_opens_the_card_of_the_point_another_replaces_it_and_it_c
   // It is on the map, above the point (or below it), and inside the part of the map that is free: the whole of it is on screen, at 390 px wide too.
   await expect(pointCard(page)).toBeInViewport({ ratio: 1 });
   const box = (await pointCard(page).boundingBox())!;
+  // It keeps clear of the map's own buttons (Recenter, Heat, Select area), which it is over otherwise: no part of any of them is under the card.
+  for (const name of ["Recenter map", "Heat map", "Select area"]) {
+    const button = await map(page).getByRole("button", { name }).boundingBox();
+    if (button === null) continue;
+    expect(box.x + box.width <= button.x || button.x + button.width <= box.x || box.y + box.height <= button.y || button.y + button.height <= box.y, `the card is over ${name}`).toBe(true);
+  }
   const at = placeOf(project, WALK(3));
   expect(box.x).toBeLessThanOrEqual(at.x);
   expect(box.x + box.width).toBeGreaterThanOrEqual(at.x);
@@ -826,4 +837,16 @@ test("edit_points_the_card_says_when_it_could_not_be_loaded_with_a_retry_that_wo
   await expect(pointCard(page)).toContainText("Used by the timeline");
   await expect(pointCard(page).getByRole("alert")).toHaveCount(0);
   expect(server.detailReads()).toEqual([WALK(3)]); // the ones that failed are not counted: the one that came
+});
+
+test("edit_points_the_card_says_a_point_the_server_does_not_know_is_gone_with_no_retry", async ({ page }) => {
+  const server = editServer();
+  server.forgetPoint(WALK(3));
+  const { project } = await intoEditMode(page, server.overrides);
+
+  await tap(page, placeOf(project, WALK(3)));
+
+  await expect(pointCard(page)).toContainText("This point no longer exists");
+  await expect(pointCard(page).getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(pointCard(page).getByRole("button", { name: "Close point details" })).toBeVisible();
 });

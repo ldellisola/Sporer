@@ -185,6 +185,8 @@ export interface PointDetailResponse {
   altitudeM: number;
   motion: string[] | null;
   status: PointDetailStatus;
+  /** The accuracy (metres) above which the timeline ignores a point: the server's setting, which a `poorAccuracy` status is judged against. */
+  maxAccuracyM: number;
   previous: PointNeighbour | null;
   next: PointNeighbour | null;
   segment: PointSegment | null;

@@ -22,8 +22,8 @@ import {
 
 /** How far the card is from the point, which leaves room for its pointer. */
 const GAP = 12;
-/** What the map's buttons take at the right (44 px and the margin they have): the card keeps clear of them, so that Select area is still there to turn off. */
-const CONTROLS_AIR = 56;
+/** What the map's buttons take at the right, beyond the padding: their margin (12 px), their width (44 px) and a gap: the card keeps clear of them, so that Select area is still there to turn off. */
+const CONTROLS_AIR = 12 + 44 + 8;
 
 export interface PointCardProps {
   /** The map, which the point is put on the screen by: the card follows it as it moves. */
@@ -93,7 +93,7 @@ export function PointCard({ map, point, within, onClose }: PointCardProps) {
     const host = element?.parentElement;
     if (map === null || element === null || inside === null || host === null || host === undefined) return;
     const at = map.project([point.lon, point.lat]);
-    const area = { left: within.left, top: within.top, right: host.clientWidth - Math.max(within.right, CONTROLS_AIR), bottom: host.clientHeight - within.bottom };
+    const area = { left: within.left, top: within.top, right: host.clientWidth - within.right - CONTROLS_AIR, bottom: host.clientHeight - within.bottom };
     const size = { width: element.offsetWidth, height: inside.scrollHeight + 2 }; // and its border
     setPlace((last) => {
       const next = placeCard(at, size, area, GAP);
@@ -115,22 +115,32 @@ export function PointCard({ map, point, within, onClose }: PointCardProps) {
     };
   }, [map, arrange]);
 
+  // Closing it while the focus is in it (the × by the keyboard, Escape after Tab) would drop the focus on the page: it goes to the map, which is where the owner was.
+  const close = useCallback((): void => {
+    if (card.current?.contains(document.activeElement)) map?.getCanvas().focus();
+    onClose();
+  }, [map, onClose]);
+  const closeButton = useRef<HTMLButtonElement>(null);
+
   // Escape closes it, from wherever the focus is, unless something else took the key (a field that gives up on it, say) or the focus is in a field.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const target = event.target;
       if (target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
-      onClose();
+      close();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [close]);
 
   let body;
   if (data !== undefined) body = <Details detail={data} />;
   else if (isNotFound(error)) body = <p className={styles.note}>This point no longer exists</p>;
-  else if (error !== null) body = <ErrorState error={error} onRetry={() => void refetch()} message="Couldn't load the point" />;
+  else if (error !== null) body = <ErrorState error={error} onRetry={() => {
+          closeButton.current?.focus(); // Retry is replaced by the loading state, which would leave the focus on the page
+          void refetch();
+        }} message="Couldn't load the point" />;
   else body = <p className={styles.note}>Loading…</p>;
 
   return (
@@ -140,13 +150,14 @@ export function PointCard({ map, point, within, onClose }: PointCardProps) {
       aria-label="Point details"
       className={styles.card}
       data-side={place?.side}
+      data-no-area-select="" // a shift-drag that starts on the card is not the map's
       style={
         place === null
           ? { visibility: "hidden" }
           : { left: place.left, top: place.top, maxHeight: place.maxHeight, maxWidth: place.maxWidth, ["--pointer-x" as string]: `${place.pointerX}px` }
       }
     >
-      <button type="button" className={styles.close} aria-label="Close point details" title="Close point details" onClick={onClose}>
+      <button ref={closeButton} type="button" className={styles.close} aria-label="Close point details" title="Close point details" onClick={close}>
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
           <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
         </svg>

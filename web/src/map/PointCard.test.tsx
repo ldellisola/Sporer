@@ -6,7 +6,7 @@ import type { PointDetailResponse } from "../api/types";
 import { stubEdits } from "../test/stubEdits";
 import { PointCard } from "./PointCard";
 
-const T = 1_761_120_072_123_456; // 2026-10-22T08:01:12Z
+const T = 1_792_656_072_123_456; // 2026-10-22T08:01:12Z
 const POINT = { device: "phone", t: T, lon: 10.754321, lat: 59.912345 };
 const DETAIL: PointDetailResponse = {
   device: "phone",
@@ -21,6 +21,7 @@ const DETAIL: PointDetailResponse = {
   altitudeM: 23.6,
   motion: ["walking", "stationary"],
   status: "used",
+  maxAccuracyM: 100,
   previous: { t: T - 61_000_000, gapSeconds: 61, distanceM: 1234, speedKmh: 72.04 },
   next: { t: T + 45_000_000, gapSeconds: 45, distanceM: 80, speedKmh: 6.4 },
   segment: { kind: "stay", startUtc: "2026-10-22T06:00:00Z", endUtc: "2026-10-22T09:30:00Z", place: { id: 3, name: "Café" } },
@@ -31,12 +32,15 @@ const WITHIN = { top: 80, right: 16, bottom: 120, left: 16 };
 function fakeMap() {
   const listeners = new Map<string, Set<() => void>>();
   const at = { current: { x: 200, y: 450 } };
+  const canvas = document.body.appendChild(document.createElement("canvas")); // MapLibre's canvas takes the focus (it has a tabindex)
+  canvas.tabIndex = 0;
   const map = {
+    getCanvas: () => canvas,
     project: () => at.current,
     on: (event: string, listener: () => void) => void (listeners.get(event) ?? listeners.set(event, new Set()).get(event)!).add(listener),
     off: (event: string, listener: () => void) => void listeners.get(event)?.delete(listener),
   };
-  return { map: map as unknown as MapLibreMap, at, emit: (event: string) => listeners.get(event)?.forEach((listener) => listener()), listening: (event: string) => listeners.get(event)?.size ?? 0 };
+  return { map: map as unknown as MapLibreMap, canvas, at, emit: (event: string) => listeners.get(event)?.forEach((listener) => listener()), listening: (event: string) => listeners.get(event)?.size ?? 0 };
 }
 
 function mount(routes: Parameters<typeof stubEdits>[0], over: Partial<Parameters<typeof PointCard>[0]> = {}) {
@@ -79,7 +83,7 @@ describe("PointCard", () => {
 
     expect(api.calls).toHaveLength(1);
     expect(api.calls[0]).toMatchObject({ path: "/api/points/detail", search: `?device=phone&t=${T}` });
-    const text = card().textContent ?? "";
+    const text = (card().textContent ?? "").replace(/\u00a0/g, " ");
     expect(text).toContain("10:01:12 CEST"); // the clock of the place, with seconds and the zone
     expect(text).toContain("22 Oct 2026");
     const rows = within(card());
@@ -96,6 +100,12 @@ describe("PointCard", () => {
     expect(text).toContain("In a stay at Café (08:00–11:30)");
     expect(text).toContain("1 min 1 s and 1.2 km after the previous point (72.0 km/h)");
     expect(text).toContain("45 s and 80 m before the next point (6.4 km/h)");
+  });
+
+  test("PointCard_says_the_limit_that_the_server_judged_by", async () => {
+    mount({ [DETAIL_ROUTE]: () => Response.json({ ...DETAIL, status: "poorAccuracy", accuracyM: 70, maxAccuracyM: 50 }) });
+
+    await screen.findByText("Ignored: the GPS accuracy was 70 m (more than 50 m)");
   });
 
   test("PointCard_says_not_recorded_for_what_the_device_did_not_send_and_why_a_point_is_ignored", async () => {
@@ -138,6 +148,40 @@ describe("PointCard", () => {
     field.remove();
   });
 
+  test("PointCard_gives_the_focus_to_the_map_when_it_closes_with_the_focus_in_it_and_otherwise_leaves_it_where_it_is", async () => {
+    const { canvas, onClose } = mount({ [DETAIL_ROUTE]: () => Response.json(DETAIL) });
+    await screen.findByText("Used by the timeline");
+    const cross = screen.getByRole("button", { name: "Close point details" });
+
+    cross.focus(); // by Tab
+    fireEvent.click(cross);
+    expect(canvas).toHaveFocus();
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    cross.focus();
+    fireEvent.keyDown(cross, { key: "Escape" });
+    expect(canvas).toHaveFocus();
+    expect(onClose).toHaveBeenCalledTimes(2);
+
+    const elsewhere = document.body.appendChild(document.createElement("button"));
+    elsewhere.focus(); // the focus is not in the card: Escape does not take it
+    fireEvent.keyDown(elsewhere, { key: "Escape" });
+    expect(elsewhere).toHaveFocus();
+    expect(onClose).toHaveBeenCalledTimes(3);
+    elsewhere.remove();
+  });
+
+  test("PointCard_has_no_pointer_while_its_point_is_out_of_sight", async () => {
+    const { at, emit } = mount({ [DETAIL_ROUTE]: () => Response.json(DETAIL) });
+    await screen.findByText("Used by the timeline");
+    expect(card()).toHaveAttribute("data-side", "above");
+
+    at.current = { x: 900, y: 450 };
+    act(() => emit("move"));
+
+    expect(card()).toHaveAttribute("data-side", "away");
+  });
+
   test("PointCard_stops_listening_when_it_goes", async () => {
     const { onClose, unmount, listening } = mount({ [DETAIL_ROUTE]: () => Response.json(DETAIL) });
     await screen.findByText("Used by the timeline");
@@ -165,7 +209,10 @@ describe("PointCard", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load the point");
 
     fail = false;
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    const retry = screen.getByRole("button", { name: "Retry" });
+    retry.focus();
+    fireEvent.click(retry);
+    expect(screen.getByRole("button", { name: "Close point details" })).toHaveFocus(); // Retry goes, and the focus does not fall to the page
 
     await screen.findByText("Used by the timeline");
     expect(api.calls).toHaveLength(2);
@@ -175,8 +222,9 @@ describe("PointCard", () => {
     const { at, emit } = mount({ [DETAIL_ROUTE]: () => Response.json(DETAIL) });
     await screen.findByText("Used by the timeline");
 
-    // 288 wide and centred on x 200 would be 56 to 344, but the buttons of the map keep the right 56 px (334): 46 to 334. 300 high and 12 from the point (y 450): 138.
-    expect(card()).toHaveStyle({ left: "46px", top: "138px" });
+    // 288 wide and centred on x 200 would be 56 to 344, but the buttons of the map are at the right of the padding (16) and take 12 + 44 px and a gap of 8: the card ends at
+    // 390 - 16 - 64 = 310, which is 22 to 310. 300 high and 12 from the point (y 450): 138.
+    expect(card()).toHaveStyle({ left: "22px", top: "138px" });
     expect(card()).toHaveAttribute("data-side", "above");
 
     at.current = { x: 200, y: 200 };

@@ -8,7 +8,8 @@ namespace Sporer.Api.Features.Points;
 /// and <paramref name="Motion"/> are null on rows that came without them), its time as UTC and as the clock of the place it is at
 /// (<paramref name="LocalTime"/> is <c>yyyy-MM-ddTHH:mm:ss</c> with no offset, <paramref name="Zone"/> the IANA zone it was worked out in), and
 /// <paramref name="Status"/>: <c>used</c>, <c>poorAccuracy</c>, <c>glitch</c>, <c>duplicate</c> or <c>removed</c>. <paramref name="T"/> is the
-/// time as microseconds since the epoch, as everywhere a point is named.
+/// time as microseconds since the epoch, as everywhere a point is named. <paramref name="MaxAccuracyM"/> is the accuracy (metres) above which the timeline ignores a
+/// point, the server's <c>DetectionOptions.MaxAccuracyMeters</c> in effect: what a status of <c>poorAccuracy</c> is judged against.
 /// </summary>
 public sealed record PointDetailResponse(
     string Device,
@@ -23,6 +24,7 @@ public sealed record PointDetailResponse(
     double AltitudeM,
     string[]? Motion,
     string Status,
+    double MaxAccuracyM,
     PointNeighbour? Previous,
     PointNeighbour? Next,
     PointSegment? Segment);

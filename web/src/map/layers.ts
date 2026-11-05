@@ -75,6 +75,8 @@ export const MODE_COLORS: Record<Mode, string> = {
   drive: "#007AFF",
   flight: "#FF9500",
 };
+/** The word for each mode of a move, as the app writes it ("Walk · 1.2 km"); an unknown mode is just a "Move". */
+export const MODE_WORDS = { walk: "Walk", cycle: "Cycle", drive: "Drive", flight: "Flight", unknown: "Move" } as const;
 const UNKNOWN_MODE_COLOR = "#8E8E93";
 export const PIN_COLOR = "#FF375F";
 /** What a selected point of edit mode is drawn in. */

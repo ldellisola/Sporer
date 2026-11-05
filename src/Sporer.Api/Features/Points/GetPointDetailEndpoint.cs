@@ -60,7 +60,7 @@ internal sealed class GetPointDetailEndpoint(PointStore points, SegmentStore seg
         await Send.OkAsync(new PointDetailResponse(
             point.Device, PointTime.ToMicros(point.TimeUtc), point.TimeUtc,
             local.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture), zone,
-            point.Latitude, point.Longitude, point.AccuracyMeters, point.SpeedMps, full.Altitude, point.Motion, status,
+            point.Latitude, point.Longitude, point.AccuracyMeters, point.SpeedMps, full.Altitude, point.Motion, status, options.MaxAccuracyMeters,
             full.Before is { } b ? Hop(point, b) : null, full.After is { } n ? Hop(point, n) : null,
             segment is null ? null : await ToSegmentAsync(segment, ct)), ct);
     }

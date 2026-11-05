@@ -37,6 +37,13 @@ describe("placeCard", () => {
     expect(place).toMatchObject({ maxHeight: 170, maxWidth: 184, side: "over", left: 16, top: 80 });
   });
 
+  test("placeCard_has_no_pointer_for_a_point_that_is_out_of_the_area_and_keeps_one_for_a_point_in_it", () => {
+    expect(placeCard({ x: 195, y: 450 }, CARD, AREA, 10).side).toBe("above");
+    expect(placeCard({ x: 500, y: 450 }, CARD, AREA, 10).side).toBe("away"); // to the right of what is shown
+    expect(placeCard({ x: 195, y: 20 }, CARD, AREA, 10).side).toBe("away"); // under the bar
+    expect(placeCard({ x: 195, y: 900 }, CARD, AREA, 10).side).toBe("away"); // under the sheet
+  });
+
   test("placeCard_puts_a_card_on_a_point_that_is_off_the_area_into_the_area", () => {
     const place = placeCard({ x: 195, y: 900 }, CARD, AREA, 10); // under the sheet
     expect(place.top + CARD.height).toBeLessThanOrEqual(AREA.bottom);
