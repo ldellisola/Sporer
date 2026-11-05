@@ -8,6 +8,21 @@ namespace Sporer.Api.Features.Timeline;
 public sealed record PointPosition(DateTime TimeUtc, string Device, double Longitude, double Latitude);
 
 /// <summary>
+/// The raw points of a stretch that are not removed, with the nearest one before it and the first one at or after its end (the neighbours that
+/// decide whether a point at its edge is a glitch). They carry what the cleaning judges them by: position and accuracy, but no speed or motion.
+/// </summary>
+public sealed record PointSpan(TrackPoint? Before, IReadOnlyList<TrackPoint> Points, TrackPoint? After);
+
+/// <summary>
+/// One stored point in full, as <see cref="PointStore.FindFullAsync"/> reads it. <paramref name="Removed"/> is whether the owner removed it;
+/// <paramref name="Twins"/> are the other rows with the same device and exact time (<c>locationlog</c> has no key, so a re-sent batch can
+/// leave them), which the cleaning calls duplicates; <paramref name="Before"/> and <paramref name="After"/> are the nearest points of any
+/// device before and after it that are not removed.
+/// </summary>
+public sealed record FullPoint(
+    TrackPoint Point, double Altitude, bool Removed, IReadOnlyList<TrackPoint> Twins, TrackPoint? Before, TrackPoint? After);
+
+/// <summary>
 /// Reads raw points from <c>locationlog</c>. The timeline never writes to that table. Every read leaves out the points the owner
 /// removed (the rows of <c>excluded_point</c>, see <see cref="NotExcluded"/>): they are raw points still, and are in no timeline.
 /// </summary>
@@ -67,6 +82,56 @@ public sealed class PointStore(NpgsqlDataSource dataSource)
     }
 
     /// <summary>
+    /// The points with <c>fromUtc &lt;= time &lt; toUtc</c> (the end is exclusive, as a local day's is) that are not removed, ordered by time and
+    /// then device, with the nearest point before <paramref name="fromUtc"/> and the first at or after <paramref name="toUtc"/>. For telling
+    /// which of a day's points the cleaning keeps: the speed and motion of each are of no use to it and are not read.
+    /// </summary>
+    public async Task<PointSpan> LoadSpanAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var rows = await connection.QueryAsync<PointRow>(new CommandDefinition(
+            Judged + " where l.time >= @FromUtc and l.time < @ToUtc and " + NotExcluded + " order by l.time, l.device",
+            new { FromUtc = fromUtc, ToUtc = toUtc }, cancellationToken: ct));
+        var before = await connection.QueryAsync<PointRow>(new CommandDefinition(
+            Judged + " where l.time < @FromUtc and " + NotExcluded + " order by l.time desc, l.device desc limit 1",
+            new { FromUtc = fromUtc }, cancellationToken: ct));
+        var after = await connection.QueryAsync<PointRow>(new CommandDefinition(
+            Judged + " where l.time >= @ToUtc and " + NotExcluded + " order by l.time, l.device limit 1",
+            new { ToUtc = toUtc }, cancellationToken: ct));
+        return new PointSpan(
+            before.Select(ToTrackPoint).SingleOrDefault(), [.. rows.Select(ToTrackPoint)], after.Select(ToTrackPoint).SingleOrDefault());
+    }
+
+    /// <summary>
+    /// The point of <paramref name="device"/> at exactly <paramref name="timeUtc"/>, whether the owner removed it or not, or null when there
+    /// is none (see <see cref="FullPoint"/>). The nearest points before and after it are strictly before and after its time, and never
+    /// removed ones.
+    /// </summary>
+    public async Task<FullPoint?> FindFullAsync(string device, DateTime timeUtc, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var rows = (await connection.QueryAsync<PointRow>(new CommandDefinition(
+            SelectFull + " where l.time = @Time and l.device = @Device order by l.ctid",
+            new { Time = timeUtc, Device = device }, cancellationToken: ct))).ToList();
+        if (rows.Count == 0)
+            return null;
+
+        var removed = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "select exists (select 1 from excluded_point where device = @Device and time = @Time)",
+            new { Time = timeUtc, Device = device }, cancellationToken: ct));
+        var before = await connection.QueryAsync<PointRow>(new CommandDefinition(
+            Select + " where l.time < @Time and " + NotExcluded + " order by l.time desc, l.device desc limit 1",
+            new { Time = timeUtc }, cancellationToken: ct));
+        var after = await connection.QueryAsync<PointRow>(new CommandDefinition(
+            Select + " where l.time > @Time and " + NotExcluded + " order by l.time, l.device limit 1",
+            new { Time = timeUtc }, cancellationToken: ct));
+
+        return new FullPoint(
+            ToTrackPoint(rows[0]), rows[0].Altitude, removed, [.. rows.Skip(1).Select(ToTrackPoint)],
+            before.Select(ToTrackPoint).SingleOrDefault(), after.Select(ToTrackPoint).SingleOrDefault());
+    }
+
+    /// <summary>
     /// The time of the oldest point, or null when there are none: where a backfill starts. A point that was removed counts, which can
     /// only make the backfill start earlier than it needs to, over a stretch with no points in it.
     /// </summary>
@@ -109,6 +174,15 @@ public sealed class PointStore(NpgsqlDataSource dataSource)
         "select l.time as Time, l.device as Device, l.latitude as Latitude, l.longitude as Longitude, l.speed as Speed, "
         + "l.horizontal_accuracy as HorizontalAccuracy, l.motion as Motion from locationlog l";
 
+    private const string SelectFull =
+        "select l.time as Time, l.device as Device, l.latitude as Latitude, l.longitude as Longitude, l.speed as Speed, "
+        + "l.horizontal_accuracy as HorizontalAccuracy, l.motion as Motion, l.altitude::double precision as Altitude from locationlog l";
+
+    /// <summary>What the cleaning judges a point by: the time, device, position and accuracy.</summary>
+    private const string Judged =
+        "select l.time as Time, l.device as Device, l.latitude as Latitude, l.longitude as Longitude, "
+        + "l.horizontal_accuracy as HorizontalAccuracy from locationlog l";
+
     private static TrackPoint ToTrackPoint(PointRow r) => new(
         DateTime.SpecifyKind(r.Time, DateTimeKind.Utc), r.Device, r.Latitude, r.Longitude, r.Speed, r.HorizontalAccuracy, r.Motion);
 
@@ -130,5 +204,6 @@ public sealed class PointStore(NpgsqlDataSource dataSource)
         public double? Speed { get; set; }
         public double? HorizontalAccuracy { get; set; }
         public string[]? Motion { get; set; }
+        public double Altitude { get; set; }
     }
 }

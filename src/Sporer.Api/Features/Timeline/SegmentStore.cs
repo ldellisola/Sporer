@@ -47,6 +47,9 @@ public sealed record DaySegment(
 /// <summary>A place as shown on a stay: <see cref="Name"/> is the owner's name, else the one from OpenStreetMap, else null.</summary>
 public sealed record DayPlace(long Id, string? Name, string? City, string? Country, double Latitude, double Longitude);
 
+/// <summary>The stored segment that covers an instant: its kind (<c>stay</c>, <c>move</c> or <c>gap</c>), its two times, its place (a stay's, as stored: not followed up merges) and its mode (a move's).</summary>
+public sealed record SegmentAt(string Kind, DateTime StartUtc, DateTime EndUtc, long? PlaceId, string? Mode);
+
 /// <summary>Reads and rewrites the derived timeline in <c>segment</c>.</summary>
 public sealed class SegmentStore(NpgsqlDataSource dataSource)
 {
@@ -265,6 +268,35 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
         return await connection.QuerySingleOrDefaultAsync<string?>(new CommandDefinition(
             "select end_tz from segment where kind = 'stay' and local_end_date < @Date order by start_utc desc limit 1",
             new { Date = date }, cancellationToken: ct));
+    }
+
+    /// <summary>
+    /// The stored segment whose time covers <paramref name="instantUtc"/> (both of its ends count), or null when none does. Segments do not
+    /// overlap (see <see cref="FindLastEndAsync"/>), so the only one that can is the last that starts at or before the instant, and the lookup
+    /// is one step on <c>ix_segment_start</c>. An instant on the edge between two segments is in the later one.
+    /// </summary>
+    public async Task<SegmentAt?> FindAtAsync(DateTime instantUtc, CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var row = await connection.QuerySingleOrDefaultAsync<AtRow>(new CommandDefinition(
+            """
+            select kind as Kind, start_utc as StartUtc, end_utc as EndUtc, place_id as PlaceId, mode as Mode
+            from segment where start_utc <= @Instant order by start_utc desc, id desc limit 1
+            """,
+            new { Instant = instantUtc }, cancellationToken: ct));
+
+        return row is null || AsUtc(row.EndUtc) < instantUtc
+            ? null
+            : new SegmentAt(row.Kind, AsUtc(row.StartUtc), AsUtc(row.EndUtc), row.PlaceId, row.Mode);
+    }
+
+    private sealed class AtRow
+    {
+        public string Kind { get; set; } = string.Empty;
+        public DateTime StartUtc { get; set; }
+        public DateTime EndUtc { get; set; }
+        public long? PlaceId { get; set; }
+        public string? Mode { get; set; }
     }
 
     private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
