@@ -148,6 +148,17 @@ describe("PointCard", () => {
     expect(card()).not.toHaveTextContent("Stored twice");
   });
 
+  test("PointCard_does_not_say_the_timeline_uses_the_first_of_a_point_stored_twice_when_it_ignores_it", async () => {
+    mount(
+      { [DETAIL_ROUTE]: () => Response.json({ ...DETAIL, status: "poorAccuracy", accuracyM: 1500 }) },
+      { point: { ...POINT, status: 3 } },
+    );
+    await screen.findByText(/^Ignored/);
+
+    expect(card()).toHaveTextContent("Stored twice: this is the repeat, and the card describes the first.");
+    expect(card()).not.toHaveTextContent("the timeline uses the first");
+  });
+
   test("PointCard_gives_the_date_of_the_end_of_its_segment_that_is_on_another_day", async () => {
     mount({ [DETAIL_ROUTE]: () => Response.json({ ...DETAIL, segment: { kind: "gap", startUtc: "2026-10-22T06:00:00Z", endUtc: "2026-10-24T09:30:00Z" } }) });
 

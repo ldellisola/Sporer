@@ -49,8 +49,15 @@ function Row({ label, children }: { label: string; children: string }) {
   );
 }
 
-/** The card says the same of both rows of a point that is stored twice, for it is of the first: the repeat is told by what the owner tapped. */
-const REPEAT = "Stored twice: this is the repeat, and the timeline uses the first.";
+/**
+ * The card says the same of both rows of a point that is stored twice, for it is of the first: the repeat is told by what the owner tapped.
+ * Only a first row the timeline uses is said to be used; one it ignores is already explained by the status line above.
+ */
+function repeatText(status: PointDetailResponse["status"]): string {
+  return status === "used"
+    ? "Stored twice: this is the repeat, and the timeline uses the first."
+    : "Stored twice: this is the repeat, and the card describes the first.";
+}
 
 function Details({ detail, repeat }: { detail: PointDetailResponse; repeat: boolean }) {
   const place = segmentText(detail.segment, detail.zone, detail.localTime);
@@ -63,7 +70,7 @@ function Details({ detail, repeat }: { detail: PointDetailResponse; repeat: bool
         <span className={styles.date}>{localDate(detail.localTime)}</span>
       </p>
       <p className={detail.status === "used" ? styles.status : `${styles.status} ${styles.ignored}`}>{statusText(detail)}</p>
-      {repeat && <p className={styles.line}>{REPEAT}</p>}
+      {repeat && <p className={styles.line}>{repeatText(detail.status)}</p>}
       <dl className={styles.rows}>
         <Row label="Device">{detail.device}</Row>
         <Row label="Coordinates">{formatCoordinates(detail.lat, detail.lon)}</Row>
