@@ -2,8 +2,8 @@
 
 ## What's new
 
-- **Hollow points.** In edit mode, the points the timeline already ignores (no GPS fix, a glitch, a repeat) are drawn hollow, with a hint under the row saying why.
-- **The point's card.** Tap a point in edit mode to see everything known about it: its time and zone, accuracy, speed, altitude, the stay or move it is in and how far it is from the points either side. It closes with the ×, Escape or a tap on the empty map.
+- **Hollow points.** In edit mode, the points the timeline already ignores (no GPS fix, a glitch, a repeat) are drawn hollow, with a line of hint in the edit bar saying why.
+- **The point's card.** Tap a point in edit mode to see everything known about it: its time and zone, accuracy, speed, altitude, whether the timeline uses it (and why not), the stay or move it is in and how far it is from the points either side. It closes with the ×, Escape or a tap on the empty map.
 - **Routes at full strength.** Settings, Map, "Fade routes in weeks, months and years" (on, as before): turn it off to draw the routes of weeks, months and years as strongly as a day's. It is kept per device.
 
 ## API
@@ -13,4 +13,4 @@
 
 ## Upgrading
 
-No migrations and nothing to configure: pull the new image.
+No migrations and nothing to configure: pull the new image. The app on the Home Screen picks the release up when it is next started.
