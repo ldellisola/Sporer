@@ -1,4 +1,5 @@
 import type { MapLibreMap } from "maplibre-gl";
+import type { RefObject } from "react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isNotFound } from "../api/client";
 import { usePointDetail } from "../api/queries";
@@ -22,14 +23,16 @@ import {
 
 /** How far the card is from the point, which leaves room for its pointer. */
 const GAP = 12;
-/** What the map's buttons take at the right, beyond the padding: their margin (12 px), their width (44 px) and a gap: the card keeps clear of them, so that Select area is still there to turn off. */
-const CONTROLS_AIR = 12 + 44 + 8;
+/** The air between the card and the map's buttons, which it keeps clear of so that Select area is still there to turn off. */
+const CONTROLS_AIR = 8;
 
 export interface PointCardProps {
   /** The map, which the point is put on the screen by: the card follows it as it moves. */
   map: MapLibreMap | null;
   /** The point the card is of. */
   point: InspectedPoint;
+  /** The map's buttons, whose rectangle the card keeps clear of (it is measured when the card is placed); none when there are none. */
+  controls?: RefObject<HTMLElement | null>;
   /** The part of the map that is covered, and the air round it: the card is kept in what is free. */
   within: Insets;
   /** Called for the ×, and for Escape. */
@@ -46,8 +49,11 @@ function Row({ label, children }: { label: string; children: string }) {
   );
 }
 
-function Details({ detail }: { detail: PointDetailResponse }) {
-  const place = segmentText(detail.segment, detail.zone);
+/** The card says the same of both rows of a point that is stored twice, for it is of the first: the repeat is told by what the owner tapped. */
+const REPEAT = "Stored twice: this is the repeat, and the timeline uses the first.";
+
+function Details({ detail, repeat }: { detail: PointDetailResponse; repeat: boolean }) {
+  const place = segmentText(detail.segment, detail.zone, detail.localTime);
   return (
     <>
       <p className={styles.heading}>
@@ -57,11 +63,12 @@ function Details({ detail }: { detail: PointDetailResponse }) {
         <span className={styles.date}>{localDate(detail.localTime)}</span>
       </p>
       <p className={detail.status === "used" ? styles.status : `${styles.status} ${styles.ignored}`}>{statusText(detail)}</p>
+      {repeat && <p className={styles.line}>{REPEAT}</p>}
       <dl className={styles.rows}>
         <Row label="Device">{detail.device}</Row>
         <Row label="Coordinates">{formatCoordinates(detail.lat, detail.lon)}</Row>
         <Row label="Accuracy">{detail.accuracyM === null ? NOT_RECORDED : formatMetres(detail.accuracyM)}</Row>
-        <Row label="Speed">{detail.speedMps === null ? NOT_RECORDED : formatSpeedMps(detail.speedMps)}</Row>
+        <Row label="Speed">{detail.speedMps === null || detail.speedMps < 0 ? NOT_RECORDED : formatSpeedMps(detail.speedMps)}</Row>
         <Row label="Altitude">{formatMetres(detail.altitudeM)}</Row>
         <Row label="Motion">{detail.motion === null || detail.motion.length === 0 ? NOT_RECORDED : detail.motion.join(", ")}</Row>
       </dl>
@@ -79,7 +86,7 @@ function Details({ detail }: { detail: PointDetailResponse }) {
  * map, and the map keeps the focus; the keyboard goes on from there): the × is a button, and Escape closes it as well. A point that is gone says so (a 404,
  * which asking again cannot change), and any other failure has Retry.
  */
-export function PointCard({ map, point, within, onClose }: PointCardProps) {
+export function PointCard({ map, point, controls, within, onClose }: PointCardProps) {
   const detail = usePointDetail(point);
   const { data, error, isPending, refetch } = detail;
   const card = useRef<HTMLDivElement>(null);
@@ -93,13 +100,24 @@ export function PointCard({ map, point, within, onClose }: PointCardProps) {
     const host = element?.parentElement;
     if (map === null || element === null || inside === null || host === null || host === undefined) return;
     const at = map.project([point.lon, point.lat]);
-    const area = { left: within.left, top: within.top, right: host.clientWidth - within.right - CONTROLS_AIR, bottom: host.clientHeight - within.bottom };
+    const area = { left: within.left, top: within.top, right: host.clientWidth - within.right, bottom: host.clientHeight - within.bottom };
+    const buttons = controls?.current?.getBoundingClientRect();
+    const origin = host.getBoundingClientRect();
+    const avoid =
+      buttons === undefined
+        ? null
+        : {
+            left: buttons.left - origin.left - CONTROLS_AIR,
+            top: buttons.top - origin.top - CONTROLS_AIR,
+            right: buttons.right - origin.left + CONTROLS_AIR,
+            bottom: buttons.bottom - origin.top + CONTROLS_AIR,
+          };
     const size = { width: element.offsetWidth, height: inside.scrollHeight + 2 }; // and its border
     setPlace((last) => {
-      const next = placeCard(at, size, area, GAP);
+      const next = placeCard(at, size, area, GAP, avoid);
       return last !== null && samePlace(last, next) ? last : next; // a card that is where it was is not drawn again
     });
-  }, [map, point, within]);
+  }, [map, point, controls, within]);
 
   useLayoutEffect(() => {
     arrange();
@@ -135,13 +153,15 @@ export function PointCard({ map, point, within, onClose }: PointCardProps) {
   }, [close]);
 
   let body;
-  if (data !== undefined) body = <Details detail={data} />;
+  if (data !== undefined) body = <Details detail={data} repeat={point.status === 3} />;
   else if (isNotFound(error)) body = <p className={styles.note}>This point no longer exists</p>;
-  else if (error !== null) body = <ErrorState error={error} onRetry={() => {
-          closeButton.current?.focus(); // Retry is replaced by the loading state, which would leave the focus on the page
-          void refetch();
-        }} message="Couldn't load the point" />;
-  else body = <p className={styles.note}>Loading…</p>;
+  else if (error !== null) {
+    const retry = (): void => {
+      closeButton.current?.focus(); // Retry is replaced by the loading state, which would leave the focus on the page
+      void refetch();
+    };
+    body = <ErrorState error={error} onRetry={retry} message="Couldn't load the point" />;
+  } else body = <p className={styles.note}>Loading…</p>;
 
   return (
     <div

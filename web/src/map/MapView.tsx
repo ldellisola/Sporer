@@ -228,13 +228,13 @@ const usePrefersDark = (): boolean => useSyncExternalStore(subscribeToScheme, pr
 const SOURCE_KEYS = ["heat", "routes", "places", "stops", "editPoints"] as const;
 type SourceKey = (typeof SOURCE_KEYS)[number];
 
-/** What has been given to the map since its style last loaded: a new style has none of it, and its routes are as the specs have them. */
+/** What has been given to the map since its style last loaded: a new style has none of it, and its routes are as the specs of the setting have them. */
 interface Pushed {
   collections: Partial<Record<SourceKey, object>>;
   view?: RouteView;
   /** Whether the routes have been faded for a heat layer. */
   underHeat: boolean;
-  /** Whether the routes of the periods were given the faint opacity (as the specs of a new style have them) or the full one. */
+  /** Whether the routes of the periods were given the faint opacity or the full one: the setting that the specs of the style were made for. */
   fade: boolean;
   /** The ids that have the feature state `selected` in the map: a style has none of it, and a new set of points has had it taken away. */
   selected: ReadonlySet<number>;
@@ -259,9 +259,10 @@ function syncSelection(map: MapLibreMap, selected: ReadonlySet<number>, pushed: 
  * Brings the sources and layers of `map` up to date with `data`, doing only what is needed: a source that is not there yet (a
  * style has just loaded) is added with its data, one that is gets `setData` if its data is not the one it has; layers are added
  * once, only their visibility changes when the view changes between a day and a period, and only their opacity when a heat layer
- * comes or goes (a heat with no cell in it has no glow, so it does not fade them) or when the owner sets the routes of the periods to full strength or back. The points of edit mode are one source like the others, set
- * in one `setData` as they come; which are selected is the feature state of their ids (`syncSelection`), re-applied when a style has loaded. Call it
- * once a style has loaded, with a fresh `pushed` for it, and again whenever the data or the selection changes.
+ * comes or goes (a heat with no cell in it has no glow, so it does not fade them) or when the owner sets the routes of the periods to full strength or
+ * back. The points of edit mode are one source like the others, set in one `setData` as they come; which are selected is the feature state of their
+ * ids (`syncSelection`), re-applied when a style has loaded. Call it once a style has loaded, with a fresh `pushed` for it, and again whenever the data
+ * or the selection changes.
  */
 function syncData(map: MapLibreMap, data: MapData, dark: boolean, fade: boolean, pushed: Pushed, selected: ReadonlySet<number>): void {
   const view: RouteView = data.view ?? (data.stops === undefined ? "range" : "day");
@@ -442,6 +443,7 @@ function MapSurface({
   loadMapLibre: load = loadMapLibre,
 }: SurfaceProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   /** The map, once MapLibre has arrived and has made it; null before that, and the effects below wait for it. */
   const [map, setMap] = useState<MapLibreMap | null>(null);
@@ -721,7 +723,7 @@ function MapSurface({
   return (
     <div ref={rootRef} className={styles.root} role="region" aria-label="Map view" style={paddingVariables(padding)}>
       <div ref={containerRef} className={styles.map} />
-      <div className={styles.controls}>
+      <div ref={controlsRef} className={styles.controls}>
         <button
           type="button"
           className={styles.button}
@@ -753,7 +755,7 @@ function MapSurface({
         )}
         {edit !== undefined && <EditControls edit={edit} map={map} points={editPoints} host={rootRef} within={padding} />}
       </div>
-      {edit !== undefined && edit.inspected !== null && <PointCard map={map} point={edit.inspected} within={padding} onClose={edit.onInspectClose} />}
+      {edit !== undefined && edit.inspected !== null && <PointCard map={map} point={edit.inspected} controls={controlsRef} within={padding} onClose={edit.onInspectClose} />}
     </div>
   );
 }

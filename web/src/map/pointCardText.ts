@@ -1,5 +1,5 @@
 import type { PointDetailResponse, PointNeighbour, PointSegment } from "../api/types";
-import { dateRangeLabel } from "../time/dates";
+import { dateOf, dateRangeLabel, shortDayLabel } from "../time/dates";
 import { formatDistance, formatInteger, formatTime } from "../time/format";
 import { MODE_WORDS } from "./layers";
 
@@ -15,8 +15,10 @@ const NBSP = "\u00a0";
 /** "12 m": whole metres, grouped by thousands. */
 export const formatMetres = (metres: number): string => `${formatInteger(Math.round(metres))}${NBSP}m`;
 
-/** "72.0 km/h" from kilometres an hour, and "5.0 km/h" for 1.4 metres a second. */
-export const formatKmh = (kmh: number): string => `${kmh.toFixed(1)}${NBSP}km/h`;
+const oneDecimal = new Intl.NumberFormat("en-GB", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+/** "72.0 km/h" from kilometres an hour, and "5.0 km/h" for 1.4 metres a second; grouped by thousands as the distances are ("36,000.0 km/h"). */
+export const formatKmh = (kmh: number): string => `${oneDecimal.format(kmh)}${NBSP}km/h`;
 export const formatSpeedMps = (mps: number): string => formatKmh(mps * 3.6);
 
 /** "45 s", "1 min 1 s", "2 min", "2 h 3 min", "3 h": whole seconds, and the unit below the leading one left out when it is zero. */
@@ -77,13 +79,21 @@ export function statusText({ status, accuracyM, maxAccuracyM }: Pick<PointDetail
   }
 }
 
-/** Where the point is in the day: "In a stay at Home (08:00–09:30)", "In a move: Drive (…)", "In a gap (…)"; null when no segment covers it. */
-export function segmentText(segment: PointSegment | null, zone: string): string | null {
+/**
+ * Where the point is in the day: "In a stay at Home (08:00–09:30)", "In a move: Drive (…)", "In a gap (…)"; null when no segment covers it. The times are on the clock
+ * of `zone`, and an end that falls on another date than the point (`localTime`, the point's own) says its date too: "In a gap (Wed 4 Nov 09:00–17:00)".
+ */
+export function segmentText(segment: PointSegment | null, zone: string, localTime: string): string | null {
   if (segment === null) return null;
-  const times = `${formatTime(segment.startUtc, zone)}–${formatTime(segment.endUtc, zone)}`;
+  const pointDate = localTime.slice(0, 10);
+  const end = (isoUtc: string): string => {
+    const date = dateOf(isoUtc, zone);
+    return date === pointDate ? formatTime(isoUtc, zone) : `${shortDayLabel(date)} ${formatTime(isoUtc, zone)}`;
+  };
+  const times = `${end(segment.startUtc)}–${end(segment.endUtc)}`;
   if (segment.kind === "stay") return `In a stay at ${segment.place?.name ?? "a place with no name"} (${times})`;
   if (segment.kind === "move") {
-    const mode = segment.mode !== undefined && segment.mode in MODE_WORDS ? MODE_WORDS[segment.mode as keyof typeof MODE_WORDS] : MODE_WORDS.unknown;
+    const mode = segment.mode !== undefined && Object.hasOwn(MODE_WORDS, segment.mode) ? MODE_WORDS[segment.mode as keyof typeof MODE_WORDS] : MODE_WORDS.unknown;
     return `In a move${mode === MODE_WORDS.unknown ? "" : `: ${mode}`} (${times})`;
   }
   return `In a gap (${times})`;

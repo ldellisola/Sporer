@@ -201,7 +201,7 @@ public class PointCleanerTests
         var status = PointCleaner.Classify(t, new());
 
         Assert.Equal(t.Count, status.Count);
-        var glitch = Assert.Single(Enumerable.Range(0, t.Count).Where(i => status[i] == PointStatus.Glitch));
+        var glitch = Assert.Single(Enumerable.Range(0, t.Count), i => status[i] == PointStatus.Glitch);
         Assert.True(Geo.DistanceMeters(t[glitch].Position, Spots.Home) > 1_000);
         Assert.All(Enumerable.Range(0, t.Count).Where(i => i != glitch), i => Assert.Equal(PointStatus.Used, status[i]));
     }

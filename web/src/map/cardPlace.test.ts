@@ -49,4 +49,35 @@ describe("placeCard", () => {
     expect(place.top + CARD.height).toBeLessThanOrEqual(AREA.bottom);
     expect(place.top).toBeGreaterThanOrEqual(AREA.top);
   });
+
+  describe("with the map's buttons to keep clear of", () => {
+    // The buttons are at the top right: 64 wide at the right of a 390 px map, from 80 to 220, with air round them.
+    const BUTTONS: Area = { left: 310, top: 72, right: 390, bottom: 228 };
+
+    test("placeCard_ends_the_card_before_the_buttons_where_it_is_level_with_them", () => {
+      const place = placeCard({ x: 340, y: 420 }, CARD, AREA, 10, BUTTONS); // above the point: 110 to 410, level with the buttons
+      expect(place).toMatchObject({ top: 110, side: "above" });
+      expect(place.left + CARD.width).toBeLessThanOrEqual(BUTTONS.left);
+      expect(place.maxWidth).toBe(BUTTONS.left - AREA.left);
+    });
+
+    test("placeCard_points_at_a_point_in_the_right_strip_below_the_buttons", () => {
+      for (const x of [320, 340, 370]) {
+        const place = placeCard({ x, y: 500 }, CARD, AREA, 10, BUTTONS);
+        expect(place.side).toBe("above"); // above, with a pointer, as for any point that is not under a button
+        expect(place.top).toBe(190); // 500 - 10 - 300: level with the buttons, so it ends before them
+        expect(place.left + CARD.width).toBeLessThanOrEqual(BUTTONS.left);
+        expect(place.pointerX).toBe(CARD.width - 14); // on the card's right edge, nearest the point
+      }
+    });
+
+    test("placeCard_uses_the_whole_width_where_the_card_is_below_the_buttons", () => {
+      const place = placeCard({ x: 370, y: 560 }, { width: 288, height: 300 }, { ...AREA, bottom: 900 }, 10, BUTTONS);
+      expect(place).toMatchObject({ side: "above", top: 250, left: 374 - 288 });
+    });
+
+    test("placeCard_has_no_pointer_for_a_point_under_a_button", () => {
+      expect(placeCard({ x: 350, y: 150 }, CARD, AREA, 10, BUTTONS).side).toBe("away");
+    });
+  });
 });

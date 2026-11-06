@@ -123,7 +123,8 @@ function editServer(): EditServer {
         speedMps: null,
         altitudeM: 12,
         motion: ["walking"],
-        status: gone().includes(index) ? "removed" : (["used", "poorAccuracy", "glitch", "duplicate"] as const)[status],
+        // A (device, time) that is stored twice is described as its first row, which the timeline uses: the endpoint never answers `duplicate`.
+        status: gone().includes(index) ? "removed" : (["used", "poorAccuracy", "glitch", "used"] as const)[status],
         maxAccuracyM: 100,
         previous: index === 0 ? null : { t: POINTS[index - 1]![0], gapSeconds: 61, distanceM: 1234, speedKmh: 72 },
         next: { t: POINTS[index + 1]?.[0] ?? t, gapSeconds: 45, distanceM: 80, speedKmh: 6.4 },
@@ -218,11 +219,12 @@ async function tap(page: Page, at: { x: number; y: number }): Promise<void> {
 }
 
 /** One-finger drag on a phone (real touch events, through the browser's own protocol: Playwright has only taps) and a drag of the mouse on a desktop. */
-async function drag(page: Page, from: { x: number; y: number }, to: { x: number; y: number }): Promise<void> {
+async function drag(page: Page, from: { x: number; y: number }, to: { x: number; y: number }, holdMs = 0): Promise<void> {
   if (isWide(page)) {
     await page.mouse.move(from.x, from.y);
     await page.mouse.down();
     await page.mouse.move(to.x, to.y, { steps: 8 });
+    await page.waitForTimeout(holdMs);
     await page.mouse.up();
     return;
   }
@@ -231,6 +233,7 @@ async function drag(page: Page, from: { x: number; y: number }, to: { x: number;
     session.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x: at.x, y: at.y }] });
   await touch("touchStart", from);
   for (let step = 1; step <= 8; step++) await touch("touchMove", { x: from.x + ((to.x - from.x) * step) / 8, y: from.y + ((to.y - from.y) * step) / 8 });
+  await page.waitForTimeout(holdMs);
   await touch("touchEnd", to);
   await session.detach();
 }
@@ -359,6 +362,7 @@ test("edit_points_remove_a_cluster_by_area_and_undo", async ({ page }) => {
   await expect(bar(page).getByText("7 selected")).toBeVisible();
   await tap(page, placeOf(project, WALK(4))); // and a tap on one of them takes it off
   await expect(bar(page).getByText("6 selected")).toBeVisible();
+  await expect(pointCard(page)).toHaveCount(0); // a tap with Select area on opens no card, which would be in the way of the next rectangle
   await expectDot(page, project, WALK(4), INK);
 
   await bar(page).getByRole("button", { name: "Clear" }).click();
@@ -752,12 +756,6 @@ test("edit_points_a_tap_opens_the_card_of_the_point_another_replaces_it_and_it_c
   // It is on the map, above the point (or below it), and inside the part of the map that is free: the whole of it is on screen, at 390 px wide too.
   await expect(pointCard(page)).toBeInViewport({ ratio: 1 });
   const box = (await pointCard(page).boundingBox())!;
-  // It keeps clear of the map's own buttons (Recenter, Heat, Select area), which it is over otherwise: no part of any of them is under the card.
-  for (const name of ["Recenter map", "Heat map", "Select area"]) {
-    const button = await map(page).getByRole("button", { name }).boundingBox();
-    if (button === null) continue;
-    expect(box.x + box.width <= button.x || button.x + button.width <= box.x || box.y + box.height <= button.y || button.y + button.height <= box.y, `the card is over ${name}`).toBe(true);
-  }
   const at = placeOf(project, WALK(3));
   expect(box.x).toBeLessThanOrEqual(at.x);
   expect(box.x + box.width).toBeGreaterThanOrEqual(at.x);
@@ -794,10 +792,15 @@ test("edit_points_a_tap_opens_the_card_of_the_point_another_replaces_it_and_it_c
   await expect(pointCard(page)).toHaveCount(0);
   await expect(bar(page)).toBeVisible(); // edit mode is not left by it
 
-  // An area selects and opens nothing.
+  // Turning Select area on closes a card that is open; then an area selects and opens nothing, and neither does a tap.
+  await tap(page, placeOf(project, WALK(7)));
+  await expect(pointCard(page)).toBeVisible();
   await selectArea(page).click();
+  await expect(pointCard(page)).toHaveCount(0);
   const { from, to } = boxAround([placeOf(project, WALK(4)), placeOf(project, WALK(5))], 3);
   await drag(page, from, to);
+  await expect(pointCard(page)).toHaveCount(0);
+  await tap(page, placeOf(project, WALK(9)));
   await expect(pointCard(page)).toHaveCount(0);
   await selectArea(page).click();
 
@@ -822,6 +825,39 @@ test("edit_points_the_card_of_a_point_the_timeline_ignores_says_why_and_goes_wit
   await bar(page).getByRole("button", { name: "Remove 1 point" }).click();
   await expect(toast(page)).toHaveText(/Removed 1 point/);
   await expect(pointCard(page)).toHaveCount(0); // the point is gone
+});
+
+test("edit_points_the_card_of_the_rightmost_point_keeps_clear_of_the_map_buttons_and_points_at_the_point", async ({ page }) => {
+  const server = editServer();
+  const { project } = await intoEditMode(page, server.overrides);
+  const area = (await map(page).boundingBox())!;
+  const sheet = (await (isWide(page) ? details(page) : grip(page)).boundingBox())!;
+  // The point that is furthest to the right of those that are in the free part of the map: the card, centred on it, would be over the buttons.
+  const free = POINTS.map((_, index) => ({ index, ...placeOf(project, index) })).filter(
+    (at) => at.x > area.x && at.x < area.x + area.width && at.y > area.y + 120 && (isWide(page) ? at.x > sheet.x + sheet.width : at.y < sheet.y - 20),
+  );
+  const found = free.reduce((best, at) => (at.x > best.x ? at : best));
+  // The map is brought down until the card, which is above the point, is level with the buttons: where the point is high the card is below it, under the buttons.
+  const buttons = (await selectArea(page).boundingBox())!;
+  const lift = buttons.y + buttons.height + 160 - found.y; // the point is to be 160 px under the buttons: a card that is 270 high and above it is level with them
+  const grab = { x: (isWide(page) ? sheet.x + sheet.width : area.x) + 60, y: area.y + 450 }; // anywhere on the map: a drag pans it, over a point or not
+  await drag(page, grab, { x: grab.x, y: grab.y + lift }, 400); // held before it is let go, so that the map does not run on
+  const rightmost = { x: found.x, y: found.y + lift };
+
+  await tap(page, rightmost);
+
+  await expect(pointCard(page)).toBeVisible();
+  await expect(pointCard(page)).toHaveAttribute("data-side", /^(above|below)$/); // it has a pointer: this point is not under a button
+  const box = (await pointCard(page).boundingBox())!;
+  for (const name of ["Recenter map", "Heat map", "Select area"]) {
+    const button = await map(page).getByRole("button", { name }).boundingBox();
+    if (button === null) continue;
+    expect(box.x + box.width <= button.x || button.x + button.width <= box.x || box.y + box.height <= button.y || button.y + button.height <= box.y, `the card is over ${name}`).toBe(true);
+  }
+  expect(box.y < buttons.y + buttons.height && box.y + box.height > buttons.y, "the card is level with the buttons").toBe(true); // so that this is a test of keeping clear of them
+  expect(box.x + box.width).toBeLessThanOrEqual(buttons.x); // and it ends before them
+  expect(box.x).toBeLessThanOrEqual(rightmost.x);
+  await expect(pointCard(page)).toBeInViewport({ ratio: 1 });
 });
 
 test("edit_points_the_card_says_when_it_could_not_be_loaded_with_a_retry_that_works", async ({ page }) => {

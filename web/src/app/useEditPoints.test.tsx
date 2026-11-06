@@ -306,10 +306,10 @@ describe("useEditPoints inspected point", () => {
     expect(result.current.inspected).toBeNull();
 
     act(() => result.current.toggle(1));
-    expect(result.current.inspected).toEqual({ device: "watch", t: T0 + 30_000_001, lon: 10.002, lat: 59.002 });
+    expect(result.current.inspected).toEqual({ device: "watch", t: T0 + 30_000_001, lon: 10.002, lat: 59.002, status: 0 });
 
     act(() => result.current.toggle(2)); // another tap: the card is replaced
-    expect(result.current.inspected).toEqual({ device: "phone", t: T0 + 60_000_002, lon: 10.003, lat: 59.003 });
+    expect(result.current.inspected).toEqual({ device: "phone", t: T0 + 60_000_002, lon: 10.003, lat: 59.003, status: 0 });
 
     act(() => result.current.toggle(2)); // taking it off opens the card as well
     expect(result.current.selected.has(2)).toBe(false);
@@ -317,6 +317,29 @@ describe("useEditPoints inspected point", () => {
 
     act(() => result.current.select([0, 3])); // an area does not
     expect(result.current.inspected?.t).toBe(T0 + 60_000_002);
+  });
+
+  test("useEditPoints_inspected_says_the_status_of_the_row_that_was_tapped_and_a_tap_with_select_area_on_opens_no_card", async () => {
+    const twins: DayPointsResponse = { ...POINTS, points: [[T0, 10.001, 59.001, 0, 0], [T0, 10.001, 59.001, 0, 3], [T0 + 60_000_002, 10.003, 59.003, 0, 1]] };
+    const { result } = await editing(DAY, { "GET /api/day/2026-10-22/points": () => Response.json(twins) });
+
+    act(() => result.current.toggle(1)); // the repeat of the point at T0
+    expect(result.current.inspected).toMatchObject({ t: T0, status: 3 });
+    act(() => result.current.toggle(0)); // the first
+    expect(result.current.inspected).toMatchObject({ t: T0, status: 0 });
+    act(() => result.current.toggle(2));
+    expect(result.current.inspected).toMatchObject({ t: T0 + 60_000_002, status: 1 });
+
+    act(() => result.current.clear());
+    act(() => result.current.setArea(true)); // turning Select area on closes the card
+    expect(result.current.inspected).toBeNull();
+    act(() => result.current.toggle(0)); // and a tap picks the point without opening one
+    expect([...result.current.selected]).toEqual([0]);
+    expect(result.current.inspected).toBeNull();
+
+    act(() => result.current.setArea(false));
+    act(() => result.current.toggle(0)); // with it off again a tap opens the card as ever
+    expect(result.current.inspected).toMatchObject({ t: T0, status: 0 });
   });
 
   test("useEditPoints_closeInspected_closes_it_and_leaves_the_selection", async () => {

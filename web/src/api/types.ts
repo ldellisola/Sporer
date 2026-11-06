@@ -192,10 +192,12 @@ export interface PointDetailResponse {
   segment: PointSegment | null;
 }
 
-/** The point of the day that edit mode shows the card of: what names it (`PointRef`) and where it is, for the card to be put there. */
+/** The point of the day that edit mode shows the card of: what names it (`PointRef`), where it is, for the card to be put there, and its status in the day's list. */
 export interface InspectedPoint extends PointRef {
   lon: number;
   lat: number;
+  /** What the day's list says of the point that was tapped: 3 for the later of two stored rows of one device and time (the card is of the first). */
+  status: PointStatus;
 }
 
 /** The answer to `POST /api/points/remove`: the batch to restore it by, or null when nothing was removed (the points were removed already), and how many points it holds. */

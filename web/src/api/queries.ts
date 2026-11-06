@@ -1,4 +1,4 @@
-import { keepPreviousData, QueryClient, queryOptions, skipToken, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, QueryClient, queryOptions, skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, MAX_RANGE_DAYS, step, periodDays, periodRange, today } from "../time/dates";
 import { isPeriodRoute, type Route } from "../app/router";
 import { ApiError, getJson, isNotFound } from "./client";
@@ -273,8 +273,23 @@ export const useDay = (date: string | null, keepPrevious = true) => useQuery(day
 /** The points of a day for edit mode; nothing is asked for while `enabled` is false, or while there is no date. */
 export const useDayPoints = (date: string | null, enabled = true) => useQuery({ ...dayPointsQueryOptions(date), enabled });
 
-/** One point in full, for the card; nothing is asked for while it is null. */
-export const usePointDetail = (point: { device: string; t: number } | null) => useQuery(pointDetailQueryOptions(point));
+/**
+ * How long until the card of a point is asked for again: as the day it is on is (`pendingInterval`) while that day is pending, which is when a removal has
+ * it rebuilt and the segment that the card names may change; never otherwise. `state` is that of the day as it is in the cache, if it is there.
+ */
+export function pointRefreshInterval(point: PointDetailResponse | undefined, state: string | undefined): number | false {
+  if (point === undefined || state !== "pending") return false;
+  return pendingInterval(editedAt.get(point.localTime.slice(0, 10)));
+}
+
+/** One point in full, for the card; nothing is asked for while it is null. While the day of the point is pending it is asked for as the day is, to follow its rebuild. */
+export function usePointDetail(point: { device: string; t: number } | null) {
+  const client = useQueryClient();
+  return useQuery({
+    ...pointDetailQueryOptions(point),
+    refetchInterval: (query) => pointRefreshInterval(query.state.data, client.getQueryData<DayResponse>(["day", query.state.data?.localTime.slice(0, 10) ?? null])?.state),
+  });
+}
 
 export const useRange = (from: string | null, to: string | null, keepPrevious = true) => useQuery(rangeQueryOptions(from, to, keepPrevious));
 

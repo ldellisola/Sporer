@@ -10,6 +10,7 @@ import {
   forgetEditedDays,
   noteDayEdited,
   pendingInterval,
+  pointRefreshInterval,
   prefetchNeighbours,
   rangeQueryOptions,
   refreshInterval,
@@ -25,6 +26,7 @@ import {
   useHeat,
   useHomes,
   usePlace,
+  usePointDetail,
   usePlaceSearch,
   useRange,
   useRemovedPoints,
@@ -39,6 +41,7 @@ import type {
   HomesResponse,
   LoadState,
   PlaceResponse,
+  PointDetailResponse,
   RangeResponse,
   RemovedBatch,
   SettingsResponse,
@@ -791,6 +794,53 @@ describe("query hooks", () => {
     await tick(31_000);
 
     expect(urls).toHaveLength(2);
+  });
+});
+
+describe("the card of a point follows the rebuild of its day", () => {
+  const DETAIL = { device: "phone", t: 1, localTime: "2026-10-22T10:01:12" } as PointDetailResponse;
+
+  test.each([
+    ["pending", 30_000, "pending, not edited by this page"],
+    ["done", false, "done: nothing is changing"],
+    [undefined, false, "the day is not in the cache"],
+  ] as const)("pointRefreshInterval_a_day_that_is_%s_is_%s_(%s)", (state, interval, _what) => {
+    expect(pointRefreshInterval(DETAIL, state)).toBe(interval);
+    expect(pointRefreshInterval(undefined, state)).toBe(false); // not loaded yet
+  });
+
+  test("pointRefreshInterval_is_every_3_seconds_for_a_day_that_was_just_edited", () => {
+    noteDayEdited("2026-10-22");
+    expect(pointRefreshInterval(DETAIL, "pending")).toBe(3_000);
+  });
+
+  test("usePointDetail_is_asked_for_again_while_its_day_is_pending_and_no_more_when_it_is_done", async () => {
+    let calls = 0;
+    stubApi(() => {
+      calls += 1;
+      return json(DETAIL);
+    });
+    const client = newClient();
+    noteDayEdited("2026-10-22");
+    client.setQueryData(["day", "2026-10-22"], day("2026-10-22", "pending"));
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval", "Date"] });
+    try {
+      const { result } = renderHook(() => usePointDetail({ device: "phone", t: 1 }), { wrapper: wrapperFor(client) });
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(result.current.data).toBeDefined();
+      expect(calls).toBe(1);
+
+      await act(() => vi.advanceTimersByTimeAsync(3_100));
+      expect(calls).toBe(2); // the day is pending: asked for again after 3 seconds
+
+      client.setQueryData(["day", "2026-10-22"], day("2026-10-22", "done"));
+      await act(() => vi.advanceTimersByTimeAsync(3_100));
+      expect(calls).toBe(3); // the poll that had been set: it learns the day is done
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(calls).toBe(3); // and does not go on
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

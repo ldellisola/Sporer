@@ -14,6 +14,8 @@ import {
 /** What is said, with the no-break spaces between a number and its unit as plain ones, to read. */
 const plain = (text: string | null): string | null => (text === null ? null : text.replace(/\u00a0/g, " "));
 
+const AT = "2026-10-22T08:30:00"; // the local time of a point
+
 describe("pointCardText", () => {
   test("formatGap_says_the_leading_unit_and_the_one_under_it_and_leaves_out_a_zero", () => {
     expect(plain(formatGap(45))).toBe("45 s");
@@ -66,15 +68,33 @@ describe("pointCardText", () => {
     expect(plain(statusText({ status: "removed", accuracyM: 5, maxAccuracyM: 100 }))).toBe("Removed by you");
   });
 
+  test("segmentText_gives_the_date_of_an_end_that_is_on_another_date_than_the_point", () => {
+    const gap = { kind: "gap" as const, startUtc: "2026-11-04T07:00:00Z", endUtc: "2026-11-07T15:00:00Z" };
+    expect(plain(segmentText(gap, "Europe/Oslo", "2026-11-05T12:00:00"))).toBe("In a gap (Wed 4 Nov 08:00–Sat 7 Nov 16:00)");
+    expect(plain(segmentText(gap, "Europe/Oslo", "2026-11-04T09:00:00"))).toBe("In a gap (08:00–Sat 7 Nov 16:00)");
+    // The dates are those of the zone, not the browser's: 23:30 UTC is the next day in Oslo.
+    const stay = { kind: "stay" as const, startUtc: "2026-11-03T23:30:00Z", endUtc: "2026-11-04T08:15:00Z", place: { id: 3, name: "Home" } };
+    expect(plain(segmentText(stay, "Europe/Oslo", "2026-11-04T01:00:00"))).toBe("In a stay at Home (00:30–09:15)");
+  });
+
+  test("segmentText_does_not_take_a_name_that_every_object_has_for_a_mode", () => {
+    const mode = "toString" as never;
+    expect(plain(segmentText({ kind: "move", startUtc: "2026-10-22T06:00:00Z", endUtc: "2026-10-22T07:30:00Z", mode }, "Europe/Oslo", AT))).toBe("In a move (08:00–09:30)");
+  });
+
+  test("formatSpeedMps_groups_thousands", () => {
+    expect(plain(formatSpeedMps(10_000))).toBe("36,000.0 km/h");
+  });
+
   test("segmentText_says_where_in_the_day_the_point_is_with_the_times_on_the_clock_of_the_zone", () => {
     const times = { startUtc: "2026-10-22T06:00:00Z", endUtc: "2026-10-22T07:30:00Z" };
-    expect(plain(segmentText({ kind: "stay", ...times, place: { id: 3, name: "Café" } }, "Europe/Oslo"))).toBe("In a stay at Café (08:00–09:30)");
-    expect(plain(segmentText({ kind: "stay", ...times, place: { id: 3, name: null } }, "Europe/Oslo"))).toBe("In a stay at a place with no name (08:00–09:30)");
-    expect(plain(segmentText({ kind: "move", ...times, mode: "walk" }, "Europe/Oslo"))).toBe("In a move: Walk (08:00–09:30)");
-    expect(plain(segmentText({ kind: "move", ...times }, "Europe/Oslo"))).toBe("In a move (08:00–09:30)");
-    expect(plain(segmentText({ kind: "move", ...times, mode: "unknown" }, "Europe/Oslo"))).toBe("In a move (08:00–09:30)");
-    expect(plain(segmentText({ kind: "gap", ...times }, "Europe/Oslo"))).toBe("In a gap (08:00–09:30)");
-    expect(segmentText(null, "Europe/Oslo")).toBeNull();
+    expect(plain(segmentText({ kind: "stay", ...times, place: { id: 3, name: "Café" } }, "Europe/Oslo", AT))).toBe("In a stay at Café (08:00–09:30)");
+    expect(plain(segmentText({ kind: "stay", ...times, place: { id: 3, name: null } }, "Europe/Oslo", AT))).toBe("In a stay at a place with no name (08:00–09:30)");
+    expect(plain(segmentText({ kind: "move", ...times, mode: "walk" }, "Europe/Oslo", AT))).toBe("In a move: Walk (08:00–09:30)");
+    expect(plain(segmentText({ kind: "move", ...times }, "Europe/Oslo", AT))).toBe("In a move (08:00–09:30)");
+    expect(plain(segmentText({ kind: "move", ...times, mode: "unknown" }, "Europe/Oslo", AT))).toBe("In a move (08:00–09:30)");
+    expect(plain(segmentText({ kind: "gap", ...times }, "Europe/Oslo", AT))).toBe("In a gap (08:00–09:30)");
+    expect(segmentText(null, "Europe/Oslo", AT)).toBeNull();
   });
 
   test("neighbourText_says_how_long_and_how_far_and_how_fast_and_that_there_is_none_at_the_end", () => {

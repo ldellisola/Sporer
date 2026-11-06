@@ -1,13 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { MapLibreMap } from "maplibre-gl";
+import type { RefObject } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { PointDetailResponse } from "../api/types";
+import type { PointDetailResponse, PointStatus } from "../api/types";
 import { stubEdits } from "../test/stubEdits";
 import { PointCard } from "./PointCard";
 
 const T = 1_792_656_072_123_456; // 2026-10-22T08:01:12Z
-const POINT = { device: "phone", t: T, lon: 10.754321, lat: 59.912345 };
+const POINT = { device: "phone", t: T, lon: 10.754321, lat: 59.912345, status: 0 as PointStatus };
 const DETAIL: PointDetailResponse = {
   device: "phone",
   t: T,
@@ -43,15 +44,23 @@ function fakeMap() {
   return { map: map as unknown as MapLibreMap, canvas, at, emit: (event: string) => listeners.get(event)?.forEach((listener) => listener()), listening: (event: string) => listeners.get(event)?.size ?? 0 };
 }
 
+/** The map's buttons: 44 wide at 12 from the padding (16) at the right of a map 390 wide, from 92 to 136 high. */
+function fakeControls(): RefObject<HTMLElement | null> {
+  const element = document.createElement("div");
+  element.getBoundingClientRect = () => ({ left: 318, right: 362, top: 92, bottom: 136, width: 44, height: 44, x: 318, y: 92, toJSON: () => ({}) });
+  return { current: element };
+}
+
 function mount(routes: Parameters<typeof stubEdits>[0], over: Partial<Parameters<typeof PointCard>[0]> = {}) {
   const api = stubEdits(routes);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const onClose = vi.fn();
   const maps = fakeMap();
+  const controls = fakeControls();
   const ui = (
     <QueryClientProvider client={client}>
       <div data-testid="host">
-        <PointCard map={maps.map} point={POINT} within={WITHIN} onClose={onClose} {...over} />
+        <PointCard map={maps.map} point={POINT} controls={controls} within={WITHIN} onClose={onClose} {...over} />
       </div>
     </QueryClientProvider>
   );
@@ -118,6 +127,33 @@ describe("PointCard", () => {
     expect(rows.getByText("Motion").nextElementSibling).toHaveTextContent("not recorded");
     expect(card()).toHaveTextContent("No earlier point");
     expect(card()).not.toHaveTextContent("In a stay");
+  });
+
+  test("PointCard_takes_a_negative_speed_for_not_recorded", async () => {
+    mount({ [DETAIL_ROUTE]: () => Response.json({ ...DETAIL, speedMps: -1 }) });
+
+    await screen.findByText("Used by the timeline");
+
+    expect(within(card()).getByText("Speed").nextElementSibling).toHaveTextContent("not recorded");
+  });
+
+  test("PointCard_says_that_the_tapped_row_is_the_repeat_of_a_point_stored_twice_and_otherwise_does_not", async () => {
+    const twice = mount({ [DETAIL_ROUTE]: () => Response.json(DETAIL) }, { point: { ...POINT, status: 3 } });
+    await screen.findByText("Used by the timeline"); // the card is of the first row, which the timeline uses
+    expect(card()).toHaveTextContent("Stored twice: this is the repeat, and the timeline uses the first.");
+    twice.unmount();
+
+    mount({ [DETAIL_ROUTE]: () => Response.json(DETAIL) });
+    await screen.findByText("Used by the timeline");
+    expect(card()).not.toHaveTextContent("Stored twice");
+  });
+
+  test("PointCard_gives_the_date_of_the_end_of_its_segment_that_is_on_another_day", async () => {
+    mount({ [DETAIL_ROUTE]: () => Response.json({ ...DETAIL, segment: { kind: "gap", startUtc: "2026-10-22T06:00:00Z", endUtc: "2026-10-24T09:30:00Z" } }) });
+
+    await screen.findByText("Used by the timeline");
+
+    expect(card().textContent?.replace(/\u00a0/g, " ")).toContain("In a gap (08:00–Sat 24 Oct 11:30)");
   });
 
   test("PointCard_is_a_region_named_point_details_that_does_not_take_the_focus_and_has_a_close_button", async () => {
@@ -222,8 +258,8 @@ describe("PointCard", () => {
     const { at, emit } = mount({ [DETAIL_ROUTE]: () => Response.json(DETAIL) });
     await screen.findByText("Used by the timeline");
 
-    // 288 wide and centred on x 200 would be 56 to 344, but the buttons of the map are at the right of the padding (16) and take 12 + 44 px and a gap of 8: the card ends at
-    // 390 - 16 - 64 = 310, which is 22 to 310. 300 high and 12 from the point (y 450): 138.
+    // 288 wide and centred on x 200 would be 56 to 344, but it is 138 to 438 high, level with the buttons of the map (92 to 136 and a gap of 8 each way: 84 to 144), which are at
+    // 318 from the left: the card ends at 318 - 8 = 310, which is 22 to 310. 300 high and 12 from the point (y 450): 138.
     expect(card()).toHaveStyle({ left: "22px", top: "138px" });
     expect(card()).toHaveAttribute("data-side", "above");
 
@@ -232,6 +268,17 @@ describe("PointCard", () => {
 
     expect(card()).toHaveStyle({ top: "212px" }); // no room above (80 is the top): below the point
     expect(card()).toHaveAttribute("data-side", "below");
+  });
+
+  test("PointCard_uses_the_width_of_the_map_where_it_is_not_level_with_the_buttons", async () => {
+    const { at, emit } = mount({ [DETAIL_ROUTE]: () => Response.json(DETAIL) });
+    await screen.findByText("Used by the timeline");
+
+    at.current = { x: 340, y: 520 }; // a point in the strip at the right, far below the buttons: 288 from 86 to 374 ends at the padding, and the pointer is on it
+    act(() => emit("move"));
+
+    expect(card()).toHaveStyle({ left: "86px", top: "208px" });
+    expect(card()).toHaveAttribute("data-side", "above");
   });
 
   test("PointCard_is_not_shown_where_it_has_no_place_to_be_before_the_map_is_there", async () => {
