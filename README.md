@@ -51,8 +51,8 @@ on a phone), and a place with the time you have spent at it. The address says wh
 and the Back button works: `/day/2026-10-22`, `/week/2026-10-19`, `/month/2026-10`, `/year/2026`,
 `/range/2026-10-01..2026-10-22`, `/place/7`, `/trips` (the list of your trips, opened by the Trips button of the card at the top of the
 map), `/trip/2026-09-12` (one trip, named by the date of its first night; see "Trips and home") and `/settings` (the gear: processing,
-your homes, the trip distance, the map's routes, and what you deleted or removed, see "Editing"). Anything else opens today. The map
-follows the light or dark setting of the device, and the ◐ button of the map draws where the time of a period was spent as a heat layer.
+your homes, the trip distance, the map's routes, and what you deleted or removed, see "Editing"). Anything else opens today. The
+map follows the light or dark setting of the device, and the ◐ button of the map draws where the time of a period was spent as a heat layer.
 Settings, Map, has one switch, "Fade routes in weeks, months and years": on by default, and off draws the routes of a week, a month, a year or a
 range as strongly as a day's. It applies at once and is kept per browser: the app on the Home Screen keeps its own, apart from Safari's.
 
