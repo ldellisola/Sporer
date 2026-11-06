@@ -27,7 +27,6 @@ export interface DayPanelProps {
   edit?: PointEditing;
 }
 
-
 const secondsOf = (segment: { start: string; end: string }): number => (Date.parse(segment.end) - Date.parse(segment.start)) / 1000;
 
 /**

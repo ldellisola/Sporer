@@ -494,8 +494,9 @@ public class PointsTests(DatabaseFixture db)
         await using var api = new ApiFactory(cs);
         var client = api.CreateClient();
         await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8));
-        var far = Enumerable.Range(0, 5).Select(i => Fix(Utc(10, 19, 21, i, 0), lon: 20));              // the earliest: elsewhere
-        var near = Enumerable.Range(0, 24).Select(i => Fix(Utc(10, 19, 21, 56, 0).AddSeconds(10 * i))); // 21:56:00 to 21:59:50, at home
+        // The 20 earliest (21:00 to 21:19) are elsewhere, as many as the margin: taken from the wrong end they are all that the day's glitch is judged by.
+        var far = Enumerable.Range(0, 20).Select(i => Fix(Utc(10, 19, 21, i, 0), lon: 20));
+        var near = Enumerable.Range(0, 5).Select(i => Fix(Utc(10, 19, 21, 59, 10).AddSeconds(10 * i))); // 21:59:10 to 21:59:50, at home
         await PointSeeder.InsertAsync(cs, [.. far, .. near, Fix(Utc(10, 19, 22, 0, 0), lon: 20), Fix(Utc(10, 19, 22, 0, 10))], Ct);
 
         var day = await DayPointsAsync(client, "2026-10-20");

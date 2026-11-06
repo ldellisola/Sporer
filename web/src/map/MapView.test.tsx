@@ -2526,6 +2526,36 @@ describe("MapView", () => {
 
       expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([1, 1, 1, 1, 1]);
     });
+
+    test("MapView_gives_a_style_that_loads_after_the_routes_were_set_to_full_strength_the_specs_of_the_setting_as_it_is_now", async () => {
+      goodStyle();
+      const data = { routes: routes(1) };
+      const { rerender } = render(view({ data, fadeRoutes: true }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      rerender(view({ data, fadeRoutes: false })); // set at run time, with no reload
+
+      map.setStyle({ version: 8, sources: {}, layers: [] }, { diff: false }); // a theme switch: the layers are made again
+      map.emit("style.load");
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([undefined, undefined, undefined, 1, 1]); // the new layers are as the specs say, for the setting as it is now
+      expect(map.paintCalls.filter(([, , value]) => value === 0.35)).toEqual([]); // and no stale faint value was pushed to them
+    });
+
+    test("MapView_returns_the_routes_to_their_setting_when_the_heat_goes_while_they_are_faded", async () => {
+      goodStyle();
+      const data = { routes: routes(1), heat: heatCells() };
+      const { rerender } = render(view({ data, fadeRoutes: true }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
+
+      rerender(view({ data: { routes: data.routes }, fadeRoutes: true }));
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([1, 1, 1, 0.35, 0.35]); // a day's are solid, a period's faint again
+    });
   });
 
   describe("camera", () => {

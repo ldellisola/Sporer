@@ -1,10 +1,10 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { useStoredFlag } from "../app/useStoredFlag";
+import { useFadeRoutes } from "../app/useStoredFlag";
 import { MapSettings } from "./MapSettings";
 
 function Probe() {
-  const [fade] = useStoredFlag("fadeRoutes", true);
+  const [fade] = useFadeRoutes();
   return <output aria-label="fade">{String(fade)}</output>;
 }
 

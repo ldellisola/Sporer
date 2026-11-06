@@ -11,7 +11,8 @@ namespace Sporer.Api.Features.Points;
 /// <see cref="DayZone.FindPointSpanAsync"/>): from the earliest local midnight to the latest next one, so no point is on no day, and on a
 /// day of travel the points of the days next to it overlap. A day with no points has an empty list. A date that is not written
 /// <c>yyyy-MM-dd</c> is a 400, as for the day. Each point says what the timeline made of it (<see cref="PointStatus"/>), judged with the
-/// points next to the day (<see cref="PointSpan.Margin"/> before it and after it) and the detection options in effect, so that it is what the processor's cleaning does with it. Reads only.
+/// points next to the day (<see cref="PointSpan.Margin"/> before it and after it) and the detection options in effect, so that it is what the
+/// processor's cleaning does with it. Reads only.
 /// </summary>
 internal sealed class GetDayPointsEndpoint(SegmentStore segments, PointStore points, DetectionOptions options) : EndpointWithoutRequest<DayPointsResponse>
 {

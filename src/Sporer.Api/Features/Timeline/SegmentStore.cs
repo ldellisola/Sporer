@@ -47,7 +47,10 @@ public sealed record DaySegment(
 /// <summary>A place as shown on a stay: <see cref="Name"/> is the owner's name, else the one from OpenStreetMap, else null.</summary>
 public sealed record DayPlace(long Id, string? Name, string? City, string? Country, double Latitude, double Longitude);
 
-/// <summary>The stored segment that covers an instant: its kind (<c>stay</c>, <c>move</c> or <c>gap</c>), its two times, its place (a stay's, as stored: not followed up merges) and its mode (a move's).</summary>
+/// <summary>
+/// The stored segment that covers an instant: its kind (<c>stay</c>, <c>move</c> or <c>gap</c>), its two times, its place (a stay's, as stored: not
+/// followed up merges) and its mode (a move's).
+/// </summary>
 public sealed record SegmentAt(string Kind, DateTime StartUtc, DateTime EndUtc, long? PlaceId, string? Mode);
 
 /// <summary>Reads and rewrites the derived timeline in <c>segment</c>.</summary>

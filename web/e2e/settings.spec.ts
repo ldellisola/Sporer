@@ -67,7 +67,7 @@ test("gear_opens_settings_with_processing_and_about_and_leaves_the_map", { tag: 
   await expect(page.getByRole("group", { name: "View" }).getByRole("button", { pressed: true })).toHaveCount(0); // no view is the current one
   await openSheet(page);
 
-  // The sections are in the order of the plan: Home, Trips, Deleted trips, Removed points, Processing, About.
+  // The sections are in the order of the plan: Home, Trips, Deleted trips, Removed points, Processing, Map, About.
   await expect(details(page).getByRole("heading", { level: 2 })).toHaveText(["Home", "Trips", "Deleted trips", "Removed points", "Processing", "Map", "About"]);
   // Home: none is known here, and one can be set. Trips: the distance, as it is in effect.
   await expect(homeSection(page).getByText("No home yet")).toBeVisible();

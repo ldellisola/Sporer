@@ -26,7 +26,8 @@ public sealed record PointSpan(IReadOnlyList<TrackPoint> Before, IReadOnlyList<T
 /// <paramref name="Window"/> is the point with the <see cref="PointSpan.Margin"/> points before and after it in the order of the day's list
 /// (time, then device), not removed, to judge it by; <paramref name="Before"/> and <paramref name="After"/> are the nearest points of any
 /// device strictly before and after it in time that are not removed. <c>locationlog</c> has no key, so a re-sent batch can leave twin rows
-/// (same device and time, identical, so which of them is described does not matter); the point is one of them, and the others are left out of the window (they are always duplicates).
+/// (same device and time, identical, so which of them is described does not matter); the point is one of them, and the others are left out of the
+/// window (they are always duplicates).
 /// </summary>
 public sealed record FullPoint(
     TrackPoint Point, double Altitude, bool Removed, PointSpan Window, TrackPoint? Before, TrackPoint? After);
@@ -77,8 +78,7 @@ public sealed class PointStore(NpgsqlDataSource dataSource)
 
     /// <summary>
     /// The points with <c>fromUtc &lt;= time &lt; toUtc</c> (the end is exclusive, as a local day's is) that are not removed, ordered by time and
-    /// then device with the
-    /// <see cref="PointSpan.Margin"/> nearest points before <paramref name="fromUtc"/> and from <paramref name="toUtc"/> on. For telling
+    /// then device, with the <see cref="PointSpan.Margin"/> nearest points before <paramref name="fromUtc"/> and from <paramref name="toUtc"/> on. For telling
     /// which of a day's points the cleaning keeps: the speed and motion of each are of no use to it and are not read.
     /// </summary>
     public async Task<PointSpan> LoadSpanAsync(DateTime fromUtc, DateTime toUtc, CancellationToken ct = default)
@@ -92,7 +92,10 @@ public sealed class PointStore(NpgsqlDataSource dataSource)
         return new PointSpan(before, [.. rows.Select(ToTrackPoint)], after);
     }
 
-    /// <summary>How far from a point the first look for its neighbours goes: a day has far more points than a window needs, and a query bounded in time reads only the chunks it names (compressed ones are decompressed to be read).</summary>
+    /// <summary>
+    /// How far from a point the first look for its neighbours goes: a day has far more points than a window needs, and a query bounded in time reads
+    /// only the chunks it names (compressed ones are decompressed to be read).
+    /// </summary>
     private static readonly TimeSpan FirstLook = TimeSpan.FromDays(1);
 
     /// <summary>The instant moved by <paramref name="by"/>, held to the times a <see cref="DateTime"/> has (the first and last days there are are asked for too).</summary>

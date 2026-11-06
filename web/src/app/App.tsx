@@ -24,7 +24,7 @@ import { useEditPoints, type PointEditing } from "./useEditPoints";
 import { useLastDay } from "./useLastDay";
 import { useMediaQuery } from "./useMediaQuery";
 import { useSideInsets } from "./useSideInsets";
-import { useStoredFlag } from "./useStoredFlag";
+import { useFadeRoutes, useStoredFlag } from "./useStoredFlag";
 import { useViewMap } from "./useViewMap";
 import { useViewportHeight } from "./useViewportHeight";
 
@@ -67,7 +67,7 @@ export function App() {
   const viewportHeight = useViewportHeight();
   const lastDay = useLastDay(route);
   const [heatOn, setHeatOn] = useStoredFlag("heat", false);
-  const [fadeRoutes] = useStoredFlag("fadeRoutes", true); // set in the settings (`MapSettings`)
+  const [fadeRoutes] = useFadeRoutes(); // set in the settings (`MapSettings`)
   const edit = useEditPoints(route);
   const map = useViewMap(route, heatOn, edit.points);
   const sheetRef = useRef<BottomSheetHandle>(null);
@@ -152,7 +152,15 @@ export function App() {
           heatToggle={map.heat.available ? { on: heatOn, onChange: setHeatOn } : undefined}
           edit={
             edit.active
-              ? { selected: edit.selected, area: edit.area, onAreaChange: edit.setArea, onToggle: edit.toggle, onSelect: edit.select, inspected: edit.inspected, onInspectClose: edit.closeInspected }
+              ? {
+                  selected: edit.selected,
+                  area: edit.area,
+                  onAreaChange: edit.setArea,
+                  onToggle: edit.toggle,
+                  onSelect: edit.select,
+                  inspected: edit.inspected,
+                  onInspectClose: edit.closeInspected,
+                }
               : undefined
           }
           onPlaceTap={(id) => navigate({ view: "place", id })}

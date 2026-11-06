@@ -292,13 +292,19 @@ const IGNORED: { ignored: true } = { ignored: true };
 
 /**
  * A point for each raw point of a day, for edit mode: at `[lon, lat]`, with the index of the point in `points` as its numeric `id` (a selection is a
- * set of those, and the map's feature state, which is what draws a point as selected, is keyed by it) and no properties, but for `ignored` on a point that the timeline ignores (its status is not 0: drawn hollow). The time and the device
- * stay in `points`: the map has no use for them, and a dense day has some 40,000 points.
+ * set of those, and the map's feature state, which is what draws a point as selected, is keyed by it) and no properties, but for `ignored` on a point
+ * that the timeline ignores (its status is not 0: drawn hollow). The time and the device stay in `points`: the map has no use for them, and a dense day
+ * has some 40,000 points.
  */
 export function editPointsGeoJson(points: readonly RawPoint[]): EditPointCollection {
   return {
     type: "FeatureCollection",
-    features: points.map(([, lon, lat, , status], id) => ({ type: "Feature", id, properties: status === 0 ? NO_PROPERTIES : IGNORED, geometry: { type: "Point", coordinates: [lon, lat] } })),
+    features: points.map(([, lon, lat, , status], id) => ({
+      type: "Feature",
+      id,
+      properties: status === 0 ? NO_PROPERTIES : IGNORED,
+      geometry: { type: "Point", coordinates: [lon, lat] },
+    })),
   };
 }
 
@@ -342,8 +348,8 @@ export const LAYER_IDS = {
 } as const;
 
 /**
- * A day is drawn bold, with pins; a period (week, month, year, range) is drawn faint, with dots; the trips are the dots of their cities,
- * with no routes; a trip is drawn bold as a day is, with the dots of its cities.
+ * A day is drawn bold, with pins; a period (week, month, year, range) is drawn faint by default (the owner may have it at full strength), with dots;
+ * the trips are the dots of their cities, with no routes; a trip is drawn bold as a day is, with the dots of its cities.
  */
 export type RouteView = "day" | "range" | "trips" | "trip";
 
@@ -365,8 +371,9 @@ const FLIGHT_DASH: [number, number] = [2, 2];
 const ROUTE_OPACITY_UNDER_HEAT = 0.2;
 
 /**
- * The route layers, with the opacity each has when nothing is under it: a day's are solid (the specs give them no opacity), a
- * period's are faint already. The heat fades all of them by a change of this paint property, so the layers are not made again.
+ * The route layers, with the opacity each has when nothing is under it: a day's are solid (the specs give them no opacity), a period's are faint by
+ * default (and the owner may set them to full strength: `routeOpacity`). The heat fades all of them by a change of this paint property, so the layers
+ * are not made again.
  */
 const ROUTE_OPACITY: Record<string, number> = {
   [LAYER_IDS.routeCasing]: 1,
@@ -470,11 +477,11 @@ const EDIT_POINT_SELECTED_RADIUS = 7;
 const EDIT_POINT_HALO_WIDTH = 1;
 
 /**
- * Every layer the map draws, from the bottom up: the heat, the routes, the points of edit mode (their halos, then the dots), the place dots with their labels, the stop pins with their
- * names and their numbers (or the house, on the pin of home). The points are over the routes and under the pins: they are
- * drawn in edit mode only (the source of every other view is empty). Layers of the routes of the other views are there but hidden, so that going
- * from a day to a month, or back, only changes their visibility: a day's routes (bold, over a casing) are shown for a day and for a trip, a
- * period's (faint) for a period, and the list of trips shows no routes at all. The dots, their labels and the pins are not hidden by any
+ * Every layer the map draws, from the bottom up: the heat, the routes, the points of edit mode (their halos, then the dots), the place dots with
+ * their labels, the stop pins with their names and their numbers (or the house, on the pin of home). The points are over the routes and under the
+ * pins: they are drawn in edit mode only (the source of every other view is empty). Layers of the routes of the other views are there but hidden, so
+ * that going from a day to a month, or back, only changes their visibility: a day's routes (bold, over a casing) are shown for a day and for a trip,
+ * a period's (faint by default) for a period, and the list of trips shows no routes at all. The dots, their labels and the pins are not hidden by any
  * view; the source of the ones that a view does not draw is empty. `dark` is for the text on the map, which is dark on a light map and
  * light on a dark one.
  */
