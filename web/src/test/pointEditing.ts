@@ -6,10 +6,10 @@ export const FAKE_POINTS = {
   date: "2026-10-22",
   devices: ["phone"],
   points: [
-    [1_761_120_000_000_000, 10.001, 59.001, 0],
-    [1_761_120_030_000_000, 10.002, 59.002, 0],
-    [1_761_120_060_000_000, 10.003, 59.003, 0],
-    [1_761_120_090_000_000, 10.004, 59.004, 0],
+    [1_761_120_000_000_000, 10.001, 59.001, 0, 0],
+    [1_761_120_030_000_000, 10.002, 59.002, 0, 0],
+    [1_761_120_060_000_000, 10.003, 59.003, 0, 0],
+    [1_761_120_090_000_000, 10.004, 59.004, 0, 0],
   ],
 } satisfies NonNullable<PointEditing["points"]>;
 
@@ -22,6 +22,8 @@ export function pointEditing(over: Partial<PointEditing> = {}): PointEditing {
     points: FAKE_POINTS,
     load: { pending: false, error: null, retry: vi.fn() },
     selected: new Set<number>(),
+    inspected: null,
+    closeInspected: vi.fn(),
     toggle: vi.fn(),
     select: vi.fn(),
     clear: vi.fn(),

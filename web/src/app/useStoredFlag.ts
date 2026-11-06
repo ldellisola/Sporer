@@ -42,3 +42,6 @@ export function useStoredFlag(key: string, initial: boolean): [flag: boolean, se
   const setFlag = useCallback((value: boolean) => write(key, value), [key]);
   return [flag, setFlag];
 }
+
+/** Whether the routes of the period views are faded: on by default. The one place that says its key and default, for the switch in the settings and the map. */
+export const useFadeRoutes = (): [flag: boolean, setFlag: (value: boolean) => void] => useStoredFlag("fadeRoutes", true);

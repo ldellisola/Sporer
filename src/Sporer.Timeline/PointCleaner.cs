@@ -11,48 +11,73 @@ public static class PointCleaner
 
     /// <summary>
     /// Cleans <paramref name="points"/> and returns them sorted by <see cref="TrackPoint.TimeUtc"/>, all devices
-    /// merged into one timeline. Rules, in order:
-    /// <list type="number">
-    /// <item>Drop exact duplicates by (<see cref="TrackPoint.Device"/>, <see cref="TrackPoint.TimeUtc"/>); the first one seen wins.</item>
-    /// <item>Drop points whose accuracy is worse than <see cref="DetectionOptions.MaxAccuracyMeters"/>, or negative
-    /// (iOS reports -1 for an invalid fix). Unknown (null) accuracy is kept.</item>
-    /// <item>Drop out-and-back glitches: a point (never the first or last) that both the hop to it and the hop from it
-    /// exceed <see cref="DetectionOptions.GlitchSpeedKmh"/>, while its neighbours are close together.</item>
-    /// </list>
+    /// merged into one timeline: the points <see cref="Classify"/> calls <see cref="PointStatus.Used"/>, and no others.
     /// </summary>
     public static IReadOnlyList<TrackPoint> Clean(IEnumerable<TrackPoint> points, DetectionOptions o)
     {
         ArgumentNullException.ThrowIfNull(points);
         ArgumentNullException.ThrowIfNull(o);
 
-        var seen = new HashSet<(string Device, DateTime TimeUtc)>();
-        var usable = new List<TrackPoint>();
-        foreach (var p in points)
+        var input = points as IReadOnlyList<TrackPoint> ?? points.ToList();
+        var status = Classify(input, o);
+        var used = new List<TrackPoint>(input.Count);
+        for (var i = 0; i < input.Count; i++)
         {
-            if (seen.Add((p.Device, p.TimeUtc)) && HasUsableAccuracy(p, o))
-                usable.Add(p);
+            if (status[i] == PointStatus.Used)
+                used.Add(input[i]);
         }
 
-        var sorted = usable.OrderBy(p => p.TimeUtc).ToList(); // stable: equal times keep their input order
-        return DropGlitches(sorted, o);
+        return [.. used.OrderBy(p => p.TimeUtc)]; // stable: equal times keep their input order
     }
 
-    private static bool HasUsableAccuracy(TrackPoint p, DetectionOptions o)
-        => p.AccuracyMeters is not { } accuracy || accuracy >= 0 && accuracy <= o.MaxAccuracyMeters;
-
-    private static List<TrackPoint> DropGlitches(List<TrackPoint> sorted, DetectionOptions o)
+    /// <summary>
+    /// Says for each of <paramref name="points"/> (the answer is in the same order) whether the cleaning keeps it, and if not why. Rules, in order:
+    /// <list type="number">
+    /// <item><see cref="PointStatus.Duplicate"/>: a repeat of (<see cref="TrackPoint.Device"/>, <see cref="TrackPoint.TimeUtc"/>);
+    /// the first one seen wins.</item>
+    /// <item><see cref="PointStatus.PoorAccuracy"/>: accuracy worse than <see cref="DetectionOptions.MaxAccuracyMeters"/>, or negative
+    /// (iOS reports -1 for an invalid fix). Unknown (null) accuracy is kept.</item>
+    /// <item><see cref="PointStatus.Glitch"/>: an out-and-back jump, judged among the points that passed both rules, in time order: a point
+    /// (never the first or last) that both the hop to it and the hop from it exceed <see cref="DetectionOptions.GlitchSpeedKmh"/>,
+    /// while its neighbours are close together.</item>
+    /// </list>
+    /// </summary>
+    public static IReadOnlyList<PointStatus> Classify(IReadOnlyList<TrackPoint> points, DetectionOptions o)
     {
-        var result = new List<TrackPoint>(sorted.Count);
+        ArgumentNullException.ThrowIfNull(points);
+        ArgumentNullException.ThrowIfNull(o);
+
+        var status = new PointStatus[points.Count];
+        var seen = new HashSet<(string Device, DateTime TimeUtc)>();
+        var usable = new List<int>();
+        for (var i = 0; i < points.Count; i++)
+        {
+            var p = points[i];
+            if (!seen.Add((p.Device, p.TimeUtc)))
+                status[i] = PointStatus.Duplicate;
+            else if (!HasUsableAccuracy(p, o))
+                status[i] = PointStatus.PoorAccuracy;
+            else
+                usable.Add(i);
+        }
+
+        var sorted = usable.OrderBy(i => points[i].TimeUtc).ToList(); // stable: equal times keep their input order
+        var kept = new List<int>(sorted.Count);
         for (var k = 0; k < sorted.Count; k++)
         {
             // The previous neighbour is the last point kept, so a dropped glitch is not compared against again.
             var isInterior = k > 0 && k < sorted.Count - 1;
-            if (isInterior && IsGlitch(result[^1], sorted[k], sorted[k + 1], o))
-                continue;
-            result.Add(sorted[k]);
+            if (isInterior && IsGlitch(points[kept[^1]], points[sorted[k]], points[sorted[k + 1]], o))
+                status[sorted[k]] = PointStatus.Glitch;
+            else
+                kept.Add(sorted[k]);
         }
-        return result;
+
+        return status;
     }
+
+    private static bool HasUsableAccuracy(TrackPoint p, DetectionOptions o)
+        => p.AccuracyMeters is not { } accuracy || accuracy >= 0 && accuracy <= o.MaxAccuracyMeters;
 
     private static bool IsGlitch(TrackPoint previous, TrackPoint point, TrackPoint next, DetectionOptions o)
     {
@@ -70,4 +95,13 @@ public static class PointCleaner
         => elapsed <= TimeSpan.Zero
             ? meters > 0 ? double.PositiveInfinity : 0
             : meters / elapsed.TotalSeconds * 3.6;
+}
+
+/// <summary>What the cleaning makes of a raw point (see <see cref="PointCleaner.Classify"/>); the numbers are what the day's points carry on the wire.</summary>
+public enum PointStatus
+{
+    Used = 0,
+    PoorAccuracy = 1,
+    Glitch = 2,
+    Duplicate = 3,
 }

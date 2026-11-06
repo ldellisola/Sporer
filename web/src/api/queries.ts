@@ -1,4 +1,4 @@
-import { keepPreviousData, QueryClient, queryOptions, skipToken, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, QueryClient, queryOptions, skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, MAX_RANGE_DAYS, step, periodDays, periodRange, today } from "../time/dates";
 import { isPeriodRoute, type Route } from "../app/router";
 import { ApiError, getJson, isNotFound } from "./client";
@@ -12,6 +12,7 @@ import type {
   PlaceCandidate,
   PlaceResponse,
   PlaceSearchResult,
+  PointDetailResponse,
   RangeResponse,
   RemovedBatch,
   SettingsResponse,
@@ -102,6 +103,22 @@ export function dayPointsQueryOptions(date: string | null) {
     queryFn: date === null ? skipToken : ({ signal }) => getJson<DayPointsResponse>(`/api/day/${date}/points`, signal),
     staleTime: STALE_MS,
     gcTime: 0, // not kept once nothing shows them: tens of thousands of points, and the points of a day that was edited since would be old
+  });
+}
+
+/**
+ * One raw point in full, by its device and exact time (epoch microseconds): what the card of edit mode shows. Nothing is asked for while `point` is null. A
+ * point is what it was stored as, so what comes stays fresh for a while; what the timeline made of it may change when its neighbours do (a removal), which
+ * is why the card is asked again after one (the day's points are, and the card goes with a point that is gone).
+ */
+export function pointDetailQueryOptions(point: { device: string; t: number } | null) {
+  return queryOptions({
+    queryKey: ["point", point?.device ?? null, point?.t ?? null] as const,
+    queryFn:
+      point === null
+        ? skipToken
+        : ({ signal }) => getJson<PointDetailResponse>(`/api/points/detail?device=${encodeURIComponent(point.device)}&t=${point.t}`, signal),
+    staleTime: STALE_MS,
   });
 }
 
@@ -255,6 +272,24 @@ export const useDay = (date: string | null, keepPrevious = true) => useQuery(day
 
 /** The points of a day for edit mode; nothing is asked for while `enabled` is false, or while there is no date. */
 export const useDayPoints = (date: string | null, enabled = true) => useQuery({ ...dayPointsQueryOptions(date), enabled });
+
+/**
+ * How long until the card of a point is asked for again: as the day it is on is (`pendingInterval`) while that day is pending, which is when a removal has
+ * it rebuilt and the segment that the card names may change; never otherwise. `state` is that of the day as it is in the cache, if it is there.
+ */
+export function pointRefreshInterval(point: PointDetailResponse | undefined, state: string | undefined): number | false {
+  if (point === undefined || state !== "pending") return false;
+  return pendingInterval(editedAt.get(point.localTime.slice(0, 10)));
+}
+
+/** One point in full, for the card; nothing is asked for while it is null. While the day of the point is pending it is asked for as the day is, to follow its rebuild. */
+export function usePointDetail(point: { device: string; t: number } | null) {
+  const client = useQueryClient();
+  return useQuery({
+    ...pointDetailQueryOptions(point),
+    refetchInterval: (query) => pointRefreshInterval(query.state.data, client.getQueryData<DayResponse>(["day", query.state.data?.localTime.slice(0, 10) ?? null])?.state),
+  });
+}
 
 export const useRange = (from: string | null, to: string | null, keepPrevious = true) => useQuery(rangeQueryOptions(from, to, keepPrevious));
 

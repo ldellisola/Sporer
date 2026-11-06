@@ -120,9 +120,10 @@ describe("SettingsPanel", () => {
       "Deleted trips",
       "Removed points",
       "Processing",
+      "Map",
       "About",
     ]);
-    for (const name of ["Home", "Trips", "Deleted trips", "Removed points", "Processing", "About"]) {
+    for (const name of ["Home", "Trips", "Deleted trips", "Removed points", "Processing", "Map", "About"]) {
       expect(screen.getByRole("region", { name })).toBeInTheDocument();
     }
   });

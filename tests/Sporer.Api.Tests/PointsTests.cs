@@ -79,7 +79,7 @@ public class PointsTests(DatabaseFixture db)
         Assert.Equal("""{"batch":null,"count":0}""", text);
     }
 
-    private sealed record DayPoints(string Date, string[] Devices, (long T, double Lon, double Lat, int Device)[] Points);
+    private sealed record DayPoints(string Date, string[] Devices, (long T, double Lon, double Lat, int Device)[] Points, int[] Statuses);
 
     private static async Task<DayPoints> DayPointsAsync(HttpClient client, string date)
     {
@@ -90,9 +90,10 @@ public class PointsTests(DatabaseFixture db)
             [.. body.RootElement.GetProperty("devices").EnumerateArray().Select(d => d.GetString()!)],
             [.. body.RootElement.GetProperty("points").EnumerateArray().Select(p =>
             {
-                Assert.Equal(4, p.GetArrayLength());
+                Assert.Equal(5, p.GetArrayLength());
                 return (p[0].GetInt64(), p[1].GetDouble(), p[2].GetDouble(), p[3].GetInt32());
-            })]);
+            })],
+            [.. body.RootElement.GetProperty("points").EnumerateArray().Select(p => p[4].GetInt32())]);
     }
 
     private static Task<long> CountAsync(string cs, string table) => Sql.ScalarAsync<long>(cs, $"select count(*) from {table}", ct: Ct);
@@ -363,6 +364,461 @@ public class PointsTests(DatabaseFixture db)
         var client = api.CreateClient();
 
         Assert.Empty((await DayPointsAsync(client, date)).Points);
+    }
+
+    // ---- which points the timeline ignores ---------------------------------------------------------------------------------
+
+    private static TrackPoint Fix(DateTime time, double lon = 10.75, double lat = 59.92, double? accuracy = 10, string device = "phone",
+        double? speed = null, string[]? motion = null)
+        => new(time, device, lat, lon, speed, accuracy, motion);
+
+    [Fact]
+    public async Task Points_of_a_day_say_which_ones_the_timeline_ignores()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8)); // the day is 19 October 22:00 UTC to 20 October 22:00 UTC
+        var start = Utc(10, 20, 10);
+        List<TrackPoint> track =
+        [
+            Fix(Utc(10, 19, 21)),                                   // before the day: only a neighbour
+            .. Enumerable.Range(0, 10).Select(i => Fix(start.AddSeconds(10 * i),
+                lon: i == 6 ? 20 : 10.75,                           // a jump out and back: a glitch
+                accuracy: i == 3 ? 500 : 10)),                      // a poor fix
+            Fix(start.AddSeconds(20)),                              // a second row of the same device and time: a duplicate
+            Fix(Utc(10, 20, 23)),                                   // after the day: only a neighbour
+        ];
+        await PointSeeder.InsertAsync(cs, track, Ct);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+
+        Assert.Equal(11, day.Points.Length);
+        var byTime = day.Points.Zip(day.Statuses).GroupBy(p => p.First.T).ToDictionary(g => g.Key, g => g.Select(p => p.Second).Order().ToArray());
+        Assert.Equal(10, byTime.Count);
+        for (var i = 0; i < 10; i++)
+        {
+            int[] expected = i switch { 2 => [0, 3], 3 => [1], 6 => [2], _ => [0] };
+            Assert.Equal(expected, byTime[Micros(start.AddSeconds(10 * i))]);
+        }
+
+        // The used ones are exactly what the processor's cleaning keeps of the span.
+        var store = api.Services.GetRequiredService<PointStore>();
+        var kept = PointCleaner.Clean(await store.LoadAsync(Utc(10, 19, 22), Utc(10, 20, 22), includeNextPoint: false, Ct), api.Services.GetRequiredService<DetectionOptions>());
+        Assert.Equal(
+            kept.Select(p => Micros(p.TimeUtc)),
+            day.Points.Zip(day.Statuses).Where(p => p.Second == 0).Select(p => p.First.T));
+    }
+
+    [Fact]
+    public async Task Points_of_a_day_are_judged_with_the_points_next_to_it()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8));
+        // The day's last point is a jump out and back with the points on both sides of it close together: only the one after the day shows it.
+        await PointSeeder.InsertAsync(cs,
+        [
+            Fix(Utc(10, 20, 21, 59, 40)), Fix(Utc(10, 20, 21, 59, 50), lon: 20),
+            Fix(Utc(10, 20, 22, 0, 0)),
+        ], Ct);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+
+        Assert.Equal([0, 2], day.Statuses);
+    }
+
+    [Fact]
+    public async Task Points_of_a_day_are_judged_with_several_points_before_it()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8)); // the day starts at 19 October 22:00 UTC
+        // The day first point jumps away and back; the points before the day are close together, and the latest of them decides it.
+        await PointSeeder.InsertAsync(cs,
+        [
+            Fix(Utc(10, 19, 21, 59, 20)), Fix(Utc(10, 19, 21, 59, 30)), Fix(Utc(10, 19, 21, 59, 40)),
+            Fix(Utc(10, 19, 22, 0, 0), lon: 20), Fix(Utc(10, 19, 22, 0, 10)),
+        ], Ct);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+
+        Assert.Equal([2, 0], day.Statuses);
+    }
+
+    [Fact] // a glitch next to a poor fix is still a glitch, for the day and for the point alike
+    public async Task The_day_and_the_detail_agree_when_a_poor_fix_is_next_to_a_glitch()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8));
+        var start = Utc(10, 20, 10);
+        await PointSeeder.InsertAsync(cs,
+            [Fix(start), Fix(start.AddSeconds(10), accuracy: 500), Fix(start.AddSeconds(20), lon: 20), Fix(start.AddSeconds(30))], Ct);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+        using var detail = await JsonOf(await client.GetAsync(DetailUrl("phone", start.AddSeconds(20)), Ct));
+
+        Assert.Equal([0, 1, 2, 0], day.Statuses);
+        Assert.Equal("glitch", detail.RootElement.GetProperty("status").GetString());
+    }
+
+    [Fact] // points of two devices at one time: the order of the day's list (time, device) puts one before the other, in the day and in the detail
+    public async Task The_day_and_the_detail_agree_on_points_of_two_devices_at_one_time()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8));
+        var start = Utc(10, 20, 10);
+        await PointSeeder.InsertAsync(cs,
+        [
+            Fix(start), Fix(start.AddSeconds(10), lon: 20), Fix(start.AddSeconds(10), lon: 20, device: "watch"), Fix(start.AddSeconds(20)),
+        ], Ct);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+        using var phone = await JsonOf(await client.GetAsync(DetailUrl("phone", start.AddSeconds(10)), Ct));
+        using var watch = await JsonOf(await client.GetAsync(DetailUrl("watch", start.AddSeconds(10)), Ct));
+
+        Assert.Equal([0, 0, 0, 0], day.Statuses);
+        Assert.Equal(["used", "used"], [phone.RootElement.GetProperty("status").GetString(), watch.RootElement.GetProperty("status").GetString()]);
+    }
+
+    [Fact] // the 20 nearest points before the day: the latest ones, whatever the earlier ones are
+    public async Task Points_of_a_day_are_judged_with_the_latest_of_many_points_before_it()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8));
+        // The 20 earliest (21:00 to 21:19) are elsewhere, as many as the margin: taken from the wrong end they are all that the day's glitch is judged by.
+        var far = Enumerable.Range(0, 20).Select(i => Fix(Utc(10, 19, 21, i, 0), lon: 20));
+        var near = Enumerable.Range(0, 5).Select(i => Fix(Utc(10, 19, 21, 59, 10).AddSeconds(10 * i))); // 21:59:10 to 21:59:50, at home
+        await PointSeeder.InsertAsync(cs, [.. far, .. near, Fix(Utc(10, 19, 22, 0, 0), lon: 20), Fix(Utc(10, 19, 22, 0, 10))], Ct);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+
+        Assert.Equal([2, 0], day.Statuses);
+    }
+
+    [Fact] // a compressed chunk cannot be asked for its ctid, and is read only when the neighbours are not nearer
+    public async Task Points_and_detail_answer_over_compressed_history()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient(); // starting the host runs the migrations
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8));
+        // Test setup on a throwaway database only; the application never alters compression.
+        await Sql.ExecAsync(cs, "ALTER TABLE locationlog SET (timescaledb.compress, timescaledb.compress_segmentby = 'device')", ct: Ct);
+        var start = Utc(10, 20, 10);
+        await PointSeeder.InsertAsync(cs,
+        [
+            .. Enumerable.Range(0, 5).Select(i => Fix(Utc(9, 1, 10).AddSeconds(10 * i))), // an old chunk, which is the margin before the day
+            Fix(start), Fix(start.AddSeconds(10), lon: 20), Fix(start.AddSeconds(20)),
+        ], Ct);
+        var compressed = await Sql.ScalarAsync<long>(cs,
+            "select count(compress_chunk(c)) from show_chunks('locationlog', older_than => @t) c", new { t = Utc(10, 12) }, Ct);
+        Assert.True(compressed > 0);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+        using var detail = await JsonOf(await client.GetAsync(DetailUrl("phone", start), Ct));
+        using var glitch = await JsonOf(await client.GetAsync(DetailUrl("phone", start.AddSeconds(10)), Ct));
+
+        Assert.Equal([0, 2, 0], day.Statuses);
+        Assert.Equal("used", detail.RootElement.GetProperty("status").GetString());
+        Assert.Equal("glitch", glitch.RootElement.GetProperty("status").GetString());
+        Assert.Equal(Micros(Utc(9, 1, 10, 0, 40)), detail.RootElement.GetProperty("previous").GetProperty("t").GetInt64());
+    }
+
+    [Fact]
+    public async Task Points_of_a_day_use_the_options_in_effect()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs, new Dictionary<string, string?> { ["Detection:MaxAccuracyMeters"] = "50" });
+        var client = api.CreateClient();
+        await StayInAsync(cs, "Europe/Oslo", Utc(10, 20, 6), Utc(10, 20, 8));
+        await PointSeeder.InsertAsync(cs, [Fix(Utc(10, 20, 10), accuracy: 60), Fix(Utc(10, 20, 10, 0, 10), accuracy: 40)], Ct);
+
+        var day = await DayPointsAsync(client, "2026-10-20");
+
+        Assert.Equal([1, 0], day.Statuses);
+    }
+
+    [Fact]
+    public async Task Detail_says_the_accuracy_limit_in_effect()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        var at = Utc(10, 20, 10);
+        await using var narrow = new ApiFactory(cs, new Dictionary<string, string?> { ["Detection:MaxAccuracyMeters"] = "50" });
+        await using var standard = new ApiFactory(cs);
+        var narrowClient = narrow.CreateClient(); // the schema is made when the app starts
+        var standardClient = standard.CreateClient();
+        await PointSeeder.InsertAsync(cs, [Fix(at, accuracy: 60)], Ct);
+
+        using var body = await JsonOf(await standardClient.GetAsync(DetailUrl("phone", at), Ct));
+        Assert.Equal(100, body.RootElement.GetProperty("maxAccuracyM").GetDouble());
+        Assert.Equal("used", body.RootElement.GetProperty("status").GetString());
+
+        using var configured = await JsonOf(await narrowClient.GetAsync(DetailUrl("phone", at), Ct));
+        Assert.Equal(50, configured.RootElement.GetProperty("maxAccuracyM").GetDouble());
+        Assert.Equal("poorAccuracy", configured.RootElement.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Points_of_a_day_keep_the_etag_and_the_304()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await PointSeeder.InsertAsync(cs, [Fix(Utc(10, 20, 10))], Ct);
+
+        await AssertEtagAnd304Async(client, "/api/day/2026-10-20/points");
+    }
+
+    private static async Task AssertEtagAnd304Async(HttpClient client, string url)
+    {
+        using var first = await client.GetAsync(url, Ct);
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        var etag = first.Headers.ETag;
+        Assert.NotNull(etag);
+        Assert.False(etag.IsWeak);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.IfNoneMatch.Add(etag);
+        using var second = await client.SendAsync(request, Ct);
+        Assert.Equal(HttpStatusCode.NotModified, second.StatusCode);
+        Assert.Equal(etag, second.Headers.ETag);
+    }
+
+    // ---- one point in full -------------------------------------------------------------------------------------------------
+
+    private static string DetailUrl(string device, DateTime time) => $"/api/points/detail?device={Uri.EscapeDataString(device)}&t={Micros(time)}";
+
+    [Fact]
+    public async Task Detail_of_a_used_point_with_both_neighbours_and_a_stay()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var place = await TimelineSeeder.InsertPlaceAsync(cs, userName: "Home", osmName: "Elm Street 1");
+        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, 20, 9), Utc(10, 20, 11), D(10, 20), D(10, 20), placeId: place);
+        var at = Utc(10, 20, 10, 0, 10, 123_456);
+        var before = Fix(Utc(10, 20, 10), lon: 10.7490);
+        var point = Fix(at, lon: 10.7500, accuracy: 12.5, speed: 1.5, motion: ["walking", "stationary"]);
+        var after = Fix(Utc(10, 20, 10, 0, 30), lon: 10.7510, device: "watch");
+        await PointSeeder.InsertAsync(cs, [before, point, after], Ct);
+
+        using var body = await JsonOf(await client.GetAsync(DetailUrl("phone", at), Ct));
+        var root = body.RootElement;
+
+        Assert.Equal(
+            ["device", "t", "timeUtc", "localTime", "zone", "lat", "lon", "accuracyM", "speedMps", "altitudeM", "motion", "status", "maxAccuracyM", "previous", "next", "segment"],
+            root.EnumerateObject().Select(p => p.Name));
+        Assert.Equal("phone", root.GetProperty("device").GetString());
+        Assert.Equal(Micros(at), root.GetProperty("t").GetInt64());
+        Assert.Equal(at, root.GetProperty("timeUtc").GetDateTime().ToUniversalTime());
+        Assert.Equal("2026-10-20T12:00:10", root.GetProperty("localTime").GetString()); // Oslo is UTC+2 until 25 October
+        Assert.Equal("Europe/Oslo", root.GetProperty("zone").GetString());
+        Assert.Equal(59.92, root.GetProperty("lat").GetDouble());
+        Assert.Equal(10.75, root.GetProperty("lon").GetDouble());
+        Assert.Equal(12.5, root.GetProperty("accuracyM").GetDouble());
+        Assert.Equal(1.5, root.GetProperty("speedMps").GetDouble());
+        Assert.Equal(10, root.GetProperty("altitudeM").GetDouble());
+        Assert.Equal(["walking", "stationary"], root.GetProperty("motion").EnumerateArray().Select(m => m.GetString()));
+        Assert.Equal("used", root.GetProperty("status").GetString());
+
+        var previous = root.GetProperty("previous");
+        var meters = Geo.DistanceMeters(before.Position, point.Position);
+        Assert.Equal(Micros(before.TimeUtc), previous.GetProperty("t").GetInt64());
+        Assert.Equal(10.123456, previous.GetProperty("gapSeconds").GetDouble(), 6);
+        Assert.Equal(meters, previous.GetProperty("distanceM").GetDouble(), 6);
+        Assert.Equal(meters / 10.123456 * 3.6, previous.GetProperty("speedKmh").GetDouble(), 6);
+        var next = root.GetProperty("next"); // a point of another device counts
+        Assert.Equal(Micros(after.TimeUtc), next.GetProperty("t").GetInt64());
+        Assert.Equal(19.876544, next.GetProperty("gapSeconds").GetDouble(), 6);
+        Assert.Equal(Geo.DistanceMeters(point.Position, after.Position), next.GetProperty("distanceM").GetDouble(), 6);
+
+        var segment = root.GetProperty("segment");
+        Assert.Equal("stay", segment.GetProperty("kind").GetString());
+        Assert.Equal(Utc(10, 20, 9), segment.GetProperty("startUtc").GetDateTime().ToUniversalTime());
+        Assert.Equal(Utc(10, 20, 11), segment.GetProperty("endUtc").GetDateTime().ToUniversalTime());
+        Assert.Equal(place, segment.GetProperty("place").GetProperty("id").GetInt64());
+        Assert.Equal("Home", segment.GetProperty("place").GetProperty("name").GetString());
+        Assert.False(segment.TryGetProperty("mode", out _));
+    }
+
+    [Fact]
+    public async Task Detail_of_a_stay_names_the_place_that_survives_a_merge_and_may_have_no_name()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var survivor = await TimelineSeeder.InsertPlaceAsync(cs, userName: "Office");
+        var merged = await TimelineSeeder.InsertPlaceAsync(cs, osmName: "Old name", mergedInto: survivor);
+        var unnamed = await TimelineSeeder.InsertPlaceAsync(cs);
+        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, 20, 9), Utc(10, 20, 11), D(10, 20), D(10, 20), placeId: merged);
+        await TimelineSeeder.InsertSegmentAsync(cs, "stay", Utc(10, 20, 11), Utc(10, 20, 13), D(10, 20), D(10, 20), placeId: unnamed);
+        await PointSeeder.InsertAsync(cs, [Fix(Utc(10, 20, 10)), Fix(Utc(10, 20, 12))], Ct);
+
+        using var first = await JsonOf(await client.GetAsync(DetailUrl("phone", Utc(10, 20, 10)), Ct));
+        using var second = await JsonOf(await client.GetAsync(DetailUrl("phone", Utc(10, 20, 12)), Ct));
+
+        var place = first.RootElement.GetProperty("segment").GetProperty("place");
+        Assert.Equal((survivor, "Office"), (place.GetProperty("id").GetInt64(), place.GetProperty("name").GetString()));
+        var other = second.RootElement.GetProperty("segment").GetProperty("place");
+        Assert.Equal(unnamed, other.GetProperty("id").GetInt64());
+        Assert.Equal(JsonValueKind.Null, other.GetProperty("name").ValueKind);
+    }
+
+    [Fact]
+    public async Task Detail_of_a_point_in_a_move_has_its_mode_and_one_in_no_segment_has_none()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await TimelineSeeder.InsertSegmentAsync(cs, "move", Utc(10, 20, 9), Utc(10, 20, 11), D(10, 20), D(10, 20), mode: "drive");
+        await PointSeeder.InsertAsync(cs, [Fix(Utc(10, 20, 10)), Fix(Utc(10, 20, 15))], Ct);
+
+        using var inMove = await JsonOf(await client.GetAsync(DetailUrl("phone", Utc(10, 20, 10)), Ct));
+        using var nowhere = await JsonOf(await client.GetAsync(DetailUrl("phone", Utc(10, 20, 15)), Ct));
+
+        var segment = inMove.RootElement.GetProperty("segment");
+        Assert.Equal(("move", "drive"), (segment.GetProperty("kind").GetString(), segment.GetProperty("mode").GetString()));
+        Assert.False(segment.TryGetProperty("place", out _));
+        Assert.Equal(JsonValueKind.Null, nowhere.RootElement.GetProperty("segment").ValueKind);
+    }
+
+    [Fact]
+    public async Task Detail_of_the_first_point_of_the_history_has_no_previous_and_missing_columns_are_null()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await PointSeeder.InsertAsync(cs, [Fix(Utc(10, 20, 10), accuracy: null), Fix(Utc(10, 20, 10, 0, 10))], Ct);
+
+        using var body = await JsonOf(await client.GetAsync(DetailUrl("phone", Utc(10, 20, 10)), Ct));
+        var root = body.RootElement;
+
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("previous").ValueKind);
+        Assert.Equal(10, root.GetProperty("next").GetProperty("gapSeconds").GetDouble());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("accuracyM").ValueKind);
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("speedMps").ValueKind);
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("motion").ValueKind);
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("segment").ValueKind);
+        Assert.Equal("used", root.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Detail_of_the_last_point_has_no_next()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await PointSeeder.InsertAsync(cs, [Fix(Utc(10, 20, 10)), Fix(Utc(10, 20, 10, 0, 10))], Ct);
+
+        using var body = await JsonOf(await client.GetAsync(DetailUrl("phone", Utc(10, 20, 10, 0, 10)), Ct));
+
+        Assert.Equal(JsonValueKind.Null, body.RootElement.GetProperty("next").ValueKind);
+        Assert.Equal(10, body.RootElement.GetProperty("previous").GetProperty("gapSeconds").GetDouble());
+    }
+
+    [Fact]
+    public async Task Detail_says_poor_accuracy_glitch_or_used_as_the_cleaning_judges_among_its_neighbours()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var start = Utc(10, 20, 10);
+        await PointSeeder.InsertAsync(cs,
+        [
+            Fix(start), Fix(start.AddSeconds(10), accuracy: 500), Fix(start.AddSeconds(20)), Fix(start.AddSeconds(30), lon: 20),
+            Fix(start.AddSeconds(40)),
+        ], Ct);
+
+        async Task<string> StatusAsync(int seconds)
+        {
+            using var body = await JsonOf(await client.GetAsync(DetailUrl("phone", start.AddSeconds(seconds)), Ct));
+            return body.RootElement.GetProperty("status").GetString()!;
+        }
+
+        Assert.Equal(["used", "poorAccuracy", "used", "glitch", "used"], [await StatusAsync(0), await StatusAsync(10), await StatusAsync(20), await StatusAsync(30), await StatusAsync(40)]);
+    }
+
+    [Fact]
+    public async Task Detail_of_a_repeated_row_describes_the_first_of_them()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await PointSeeder.InsertAsync(cs, [Fix(Utc(10, 20, 10)), Fix(Utc(10, 20, 10)), Fix(Utc(10, 20, 10, 0, 10))], Ct);
+
+        using var body = await JsonOf(await client.GetAsync(DetailUrl("phone", Utc(10, 20, 10)), Ct));
+
+        Assert.Equal("used", body.RootElement.GetProperty("status").GetString()); // the repeat is the duplicate; the two cannot be told apart by name
+        Assert.Equal(10, body.RootElement.GetProperty("next").GetProperty("gapSeconds").GetDouble()); // the twin is not a neighbour
+    }
+
+    [Fact]
+    public async Task Detail_of_a_removed_point_says_removed_and_skips_it_as_a_neighbour()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await PointSeeder.InsertAsync(cs, [Fix(Utc(10, 20, 10)), Fix(Utc(10, 20, 10, 0, 10)), Fix(Utc(10, 20, 10, 0, 20)), Fix(Utc(10, 20, 10, 0, 30))], Ct);
+        await RemoveOkAsync(client, new Pt(Utc(10, 20, 10, 0, 10)), new Pt(Utc(10, 20, 10, 0, 20)));
+
+        using var removed = await JsonOf(await client.GetAsync(DetailUrl("phone", Utc(10, 20, 10, 0, 10)), Ct));
+        using var first = await JsonOf(await client.GetAsync(DetailUrl("phone", Utc(10, 20, 10)), Ct));
+
+        Assert.Equal("removed", removed.RootElement.GetProperty("status").GetString());
+        Assert.Equal(Micros(Utc(10, 20, 10, 0, 30)), removed.RootElement.GetProperty("next").GetProperty("t").GetInt64());
+        Assert.Equal(Micros(Utc(10, 20, 10)), removed.RootElement.GetProperty("previous").GetProperty("t").GetInt64());
+        Assert.Equal(Micros(Utc(10, 20, 10, 0, 30)), first.RootElement.GetProperty("next").GetProperty("t").GetInt64());
+    }
+
+    [Fact]
+    public async Task Detail_of_a_point_that_is_not_stored_is_a_404()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await PointSeeder.InsertAsync(cs, [Fix(Utc(10, 20, 10))], Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(DetailUrl("phone", Utc(10, 20, 10, 0, 1)), Ct)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(DetailUrl("watch", Utc(10, 20, 10)), Ct)).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("/api/points/detail")]
+    [InlineData("/api/points/detail?t=1760954400000000")]
+    [InlineData("/api/points/detail?device=&t=1760954400000000")]
+    [InlineData("/api/points/detail?device=phone")]
+    [InlineData("/api/points/detail?device=phone&t=")]
+    [InlineData("/api/points/detail?device=phone&t=abc")]
+    [InlineData("/api/points/detail?device=phone&t=1.5")]
+    [InlineData("/api/points/detail?device=phone&t=99999999999999999999")]
+    [InlineData("/api/points/detail?device=phone&t=-99999999999999999")]
+    public async Task Detail_with_a_missing_or_malformed_parameter_is_a_400(string url)
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync(url, Ct)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Detail_keeps_the_etag_and_the_304()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        await PointSeeder.InsertAsync(cs, [Fix(Utc(10, 20, 10))], Ct);
+
+        await AssertEtagAnd304Async(client, DetailUrl("phone", Utc(10, 20, 10)));
     }
 
     // ---- reads leave removed points out ----------------------------------------------------------------------------------

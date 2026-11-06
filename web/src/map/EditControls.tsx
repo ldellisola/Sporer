@@ -32,6 +32,7 @@ export function EditControls({ edit, map, points, host, within }: EditControlsPr
   const onTap = (point: Pixel): void => {
     const id = map === null ? undefined : editPointAt(map, point, points);
     if (id !== undefined) edit.onToggle(id);
+    else edit.onInspectClose(); // a tap on no point closes the card, as on the map itself
   };
   return (
     <>

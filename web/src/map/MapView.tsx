@@ -32,6 +32,7 @@ import {
   type RouteView,
   type StopCollection,
 } from "./layers";
+import { PointCard } from "./PointCard";
 import { loadMapLibre, type MapLibreLoader, type MapLibreModule } from "./maplibre";
 import styles from "./MapView.module.css";
 import { loadStyle, type StyleSpecification } from "./style";
@@ -123,6 +124,8 @@ export interface MapViewProps {
   padding?: MapPadding;
   /** The heat button, a button of the map's own like Recenter. Given only where there is a period to show the heat of: without it there is no button. */
   heatToggle?: HeatToggle;
+  /** Whether the routes of the periods (week, month, year, range) are drawn faint, as they are by default, or as strongly as a day's. Changes at once. */
+  fadeRoutes?: boolean;
   /**
    * Called with the id of the place when one is tapped (clicked, on a desktop): a dot of a period, or a pin of a day (the number on it
    * too), or the one nearest to the point of those within 12 px of it, so that a finger need not hit a dot of 8 px. The map does not know
@@ -225,17 +228,19 @@ const usePrefersDark = (): boolean => useSyncExternalStore(subscribeToScheme, pr
 const SOURCE_KEYS = ["heat", "routes", "places", "stops", "editPoints"] as const;
 type SourceKey = (typeof SOURCE_KEYS)[number];
 
-/** What has been given to the map since its style last loaded: a new style has none of it, and its routes are as the specs have them. */
+/** What has been given to the map since its style last loaded: a new style has none of it, and its routes are as the specs of the setting have them. */
 interface Pushed {
   collections: Partial<Record<SourceKey, object>>;
   view?: RouteView;
   /** Whether the routes have been faded for a heat layer. */
   underHeat: boolean;
+  /** Whether the routes of the periods were given the faint opacity or the full one: the setting that the specs of the style were made for. */
+  fade: boolean;
   /** The ids that have the feature state `selected` in the map: a style has none of it, and a new set of points has had it taken away. */
   selected: ReadonlySet<number>;
 }
 
-const newPushed = (): Pushed => ({ collections: {}, underHeat: false, selected: NO_SELECTION });
+const newPushed = (): Pushed => ({ collections: {}, underHeat: false, fade: true, selected: NO_SELECTION });
 
 /**
  * Sets the feature state `selected` of the edit points that are in `selected` and were not, and takes it off those that were and are not: only the
@@ -254,11 +259,12 @@ function syncSelection(map: MapLibreMap, selected: ReadonlySet<number>, pushed: 
  * Brings the sources and layers of `map` up to date with `data`, doing only what is needed: a source that is not there yet (a
  * style has just loaded) is added with its data, one that is gets `setData` if its data is not the one it has; layers are added
  * once, only their visibility changes when the view changes between a day and a period, and only their opacity when a heat layer
- * comes or goes (a heat with no cell in it has no glow, so it does not fade them). The points of edit mode are one source like the others, set
- * in one `setData` as they come; which are selected is the feature state of their ids (`syncSelection`), re-applied when a style has loaded. Call it
- * once a style has loaded, with a fresh `pushed` for it, and again whenever the data or the selection changes.
+ * comes or goes (a heat with no cell in it has no glow, so it does not fade them) or when the owner sets the routes of the periods to full strength or
+ * back. The points of edit mode are one source like the others, set in one `setData` as they come; which are selected is the feature state of their
+ * ids (`syncSelection`), re-applied when a style has loaded. Call it once a style has loaded, with a fresh `pushed` for it, and again whenever the data
+ * or the selection changes.
  */
-function syncData(map: MapLibreMap, data: MapData, dark: boolean, pushed: Pushed, selected: ReadonlySet<number>): void {
+function syncData(map: MapLibreMap, data: MapData, dark: boolean, fade: boolean, pushed: Pushed, selected: ReadonlySet<number>): void {
   const view: RouteView = data.view ?? (data.stops === undefined ? "range" : "day");
   const collections = {
     routes: data.routes,
@@ -280,16 +286,18 @@ function syncData(map: MapLibreMap, data: MapData, dark: boolean, pushed: Pushed
     }
   }
   if (pushed.view !== view) {
-    for (const spec of layerSpecs(view, dark)) {
+    for (const spec of layerSpecs(view, dark, fade)) {
       if (map.getLayer(spec.id) === undefined) map.addLayer(spec);
       else map.setLayoutProperty(spec.id, "visibility", spec.layout?.visibility ?? "visible");
     }
+    if (pushed.view === undefined) pushed.fade = fade; // a style's layers are made as the specs have them: for this setting
     pushed.view = view;
   }
   const underHeat = collections.heat.features.length > 0;
-  if (pushed.underHeat !== underHeat) {
-    for (const id of ROUTE_LAYERS) map.setPaintProperty(id, "line-opacity", routeOpacity(id, underHeat));
+  if (pushed.underHeat !== underHeat || pushed.fade !== fade) {
+    for (const id of ROUTE_LAYERS) map.setPaintProperty(id, "line-opacity", routeOpacity(id, underHeat, fade));
     pushed.underHeat = underHeat;
+    pushed.fade = fade;
   }
   syncSelection(map, selected, pushed);
 }
@@ -427,6 +435,7 @@ function MapSurface({
   home,
   padding = NO_PADDING,
   heatToggle,
+  fadeRoutes = true,
   edit,
   onPlaceTap,
   onStyleError,
@@ -434,6 +443,7 @@ function MapSurface({
   loadMapLibre: load = loadMapLibre,
 }: SurfaceProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   /** The map, once MapLibre has arrived and has made it; null before that, and the effects below wait for it. */
   const [map, setMap] = useState<MapLibreMap | null>(null);
@@ -455,7 +465,7 @@ function MapSurface({
   const bounds = useMemo(() => (fitTo === null ? null : boundsOf(fitTo)), [fitTo]);
   const homeBounds = useMemo(() => (home === undefined ? bounds : home === null ? null : boundsOf(home)), [home, bounds]);
 
-  const latest = useLatest({ data, dark, padding, edit, selected, onPlaceTap, onStyleError, onStyleLoad, source, retrySource, bounds, homeBounds, load });
+  const latest = useLatest({ data, dark, fadeRoutes, padding, edit, selected, onPlaceTap, onStyleError, onStyleLoad, source, retrySource, bounds, homeBounds, load });
   const styleUrl = source !== null && "url" in source ? source.url : null;
   const styleFailed = source !== null && "error" in source;
 
@@ -555,7 +565,7 @@ function MapSurface({
         // of an earlier failure): it stays, and draws what comes, instead of being swapped for a blank map.
         readyRef.current = true;
         try {
-          syncData(map, latest.current.data, latest.current.dark, pushedRef.current, latest.current.selected);
+          syncData(map, latest.current.data, latest.current.dark, latest.current.fadeRoutes, pushedRef.current, latest.current.selected);
         } catch {
           readyRef.current = false; // the context was lost meanwhile: MapLibre sets its style again, and that loads (`styleLoaded`)
         }
@@ -583,7 +593,7 @@ function MapSurface({
       showState(rootRef.current, phase === "failed" ? "unavailable" : "ready");
       pushedRef.current = newPushed();
       addHomeImage(map); // each style has its own images: the house comes before the layer that draws it
-      syncData(map, latest.current.data, latest.current.dark, pushedRef.current, latest.current.selected);
+      syncData(map, latest.current.data, latest.current.dark, latest.current.fadeRoutes, pushedRef.current, latest.current.selected);
       if (phase !== "failed") latest.current.onStyleLoad?.();
     };
     // MapLibre reports a style it will not take, and every problem in it, as error events and never loads it. Errors of a
@@ -638,6 +648,7 @@ function MapSurface({
       if (editing !== undefined) {
         const id = editPointAt(map, point, current.editPoints);
         if (id !== undefined) editing.onToggle(id);
+        else editing.onInspectClose(); // a tap on the map that is on no point closes the card
         return;
       }
       const id = placeAt(map, point);
@@ -694,9 +705,9 @@ function MapSurface({
   // the latest data by itself.
   useEffect(() => {
     if (map !== null && readyRef.current) {
-      syncData(map, { routes, stops, places, heat, view, editPoints }, latest.current.dark, pushedRef.current, selected);
+      syncData(map, { routes, stops, places, heat, view, editPoints }, latest.current.dark, fadeRoutes, pushedRef.current, selected);
     }
-  }, [map, routes, stops, places, heat, view, editPoints, selected, latest]);
+  }, [map, routes, stops, places, heat, view, editPoints, selected, fadeRoutes, latest]);
 
   // A map that was not there yet when `fitTo` was given is brought to it, with the padding of now, the moment it is there.
   useEffect(() => {
@@ -712,7 +723,7 @@ function MapSurface({
   return (
     <div ref={rootRef} className={styles.root} role="region" aria-label="Map view" style={paddingVariables(padding)}>
       <div ref={containerRef} className={styles.map} />
-      <div className={styles.controls}>
+      <div ref={controlsRef} className={styles.controls}>
         <button
           type="button"
           className={styles.button}
@@ -744,6 +755,7 @@ function MapSurface({
         )}
         {edit !== undefined && <EditControls edit={edit} map={map} points={editPoints} host={rootRef} within={padding} />}
       </div>
+      {edit !== undefined && edit.inspected !== null && <PointCard map={map} point={edit.inspected} controls={controlsRef} within={padding} onClose={edit.onInspectClose} />}
     </div>
   );
 }

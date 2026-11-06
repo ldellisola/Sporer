@@ -20,13 +20,13 @@ const POINTS: DayPointsResponse = {
   date: "2026-10-22",
   devices: ["phone", "watch"],
   points: [
-    [T0, 10.001, 59.001, 0],
-    [T0 + 30_000_001, 10.002, 59.002, 1],
-    [T0 + 60_000_002, 10.003, 59.003, 0],
-    [T0 + 90_000_003, 10.004, 59.004, 0],
+    [T0, 10.001, 59.001, 0, 0],
+    [T0 + 30_000_001, 10.002, 59.002, 1, 0],
+    [T0 + 60_000_002, 10.003, 59.003, 0, 0],
+    [T0 + 90_000_003, 10.004, 59.004, 0, 0],
   ],
 };
-const OTHER_POINTS: DayPointsResponse = { ...POINTS, date: "2026-10-23", points: [[T0 + 86_400_000_000, 11, 60, 0]] };
+const OTHER_POINTS: DayPointsResponse = { ...POINTS, date: "2026-10-23", points: [[T0 + 86_400_000_000, 11, 60, 0, 0]] };
 const BATCH = "0b4d6f5e-2f0a-4e6c-9a39-6d5f7d3d1a11";
 
 function newClient(): QueryClient {
@@ -240,7 +240,7 @@ describe("useEditPoints selection", () => {
     const { result, client } = await editing(DAY, { "GET /api/day/2026-10-22/points": () => Response.json(served) });
     act(() => result.current.select([1, 2, 3])); // the watch's, and two of the phone's
 
-    served = { ...POINTS, points: [POINTS.points[2]!, POINTS.points[3]!, [T0 + 120_000_004, 10.005, 59.005, 0]] }; // 0 and 1 are gone elsewhere, and one is new
+    served = { ...POINTS, points: [POINTS.points[2]!, POINTS.points[3]!, [T0 + 120_000_004, 10.005, 59.005, 0, 0]] }; // 0 and 1 are gone elsewhere, and one is new
     await act(() => client.invalidateQueries());
 
     await waitFor(() => expect(result.current.points?.points).toHaveLength(3));
@@ -265,11 +265,11 @@ describe("useEditPoints selection", () => {
   });
 
   test("useEditPoints_tells_a_point_from_another_of_the_same_time_by_its_device", async () => {
-    let served: DayPointsResponse = { ...POINTS, points: [[T0, 10, 59, 0], [T0, 10, 59, 1]] };
+    let served: DayPointsResponse = { ...POINTS, points: [[T0, 10, 59, 0, 0], [T0, 10, 59, 1, 0]] };
     const { result, client } = await editing(DAY, { "GET /api/day/2026-10-22/points": () => Response.json(served) });
     act(() => result.current.toggle(1)); // the watch's
 
-    served = { ...served, points: [[T0, 10, 59, 1], [T0, 10, 59, 0]] }; // the other way round
+    served = { ...served, points: [[T0, 10, 59, 1, 0], [T0, 10, 59, 0, 0]] }; // the other way round
     await act(() => client.invalidateQueries());
 
     await waitFor(() => expect(result.current.points?.points[0]![3]).toBe(1));
@@ -295,6 +295,107 @@ describe("useEditPoints selection", () => {
 
     act(() => result.current.setArea(false));
     expect(result.current.area).toBe(false);
+  });
+});
+
+describe("useEditPoints inspected point", () => {
+  const REMOVE = "POST /api/points/remove";
+
+  test("useEditPoints_inspected_is_the_point_that_a_tap_selected_or_took_off_and_where_it_is_and_an_area_opens_none", async () => {
+    const { result } = await editing();
+    expect(result.current.inspected).toBeNull();
+
+    act(() => result.current.toggle(1));
+    expect(result.current.inspected).toEqual({ device: "watch", t: T0 + 30_000_001, lon: 10.002, lat: 59.002, status: 0 });
+
+    act(() => result.current.toggle(2)); // another tap: the card is replaced
+    expect(result.current.inspected).toEqual({ device: "phone", t: T0 + 60_000_002, lon: 10.003, lat: 59.003, status: 0 });
+
+    act(() => result.current.toggle(2)); // taking it off opens the card as well
+    expect(result.current.selected.has(2)).toBe(false);
+    expect(result.current.inspected?.t).toBe(T0 + 60_000_002);
+
+    act(() => result.current.select([0, 3])); // an area does not
+    expect(result.current.inspected?.t).toBe(T0 + 60_000_002);
+  });
+
+  test("useEditPoints_inspected_says_the_status_of_the_row_that_was_tapped_and_a_tap_with_select_area_on_opens_no_card", async () => {
+    const twins: DayPointsResponse = { ...POINTS, points: [[T0, 10.001, 59.001, 0, 0], [T0, 10.001, 59.001, 0, 3], [T0 + 60_000_002, 10.003, 59.003, 0, 1]] };
+    const { result } = await editing(DAY, { "GET /api/day/2026-10-22/points": () => Response.json(twins) });
+
+    act(() => result.current.toggle(1)); // the repeat of the point at T0
+    expect(result.current.inspected).toMatchObject({ t: T0, status: 3 });
+    act(() => result.current.toggle(0)); // the first
+    expect(result.current.inspected).toMatchObject({ t: T0, status: 0 });
+    act(() => result.current.toggle(2));
+    expect(result.current.inspected).toMatchObject({ t: T0 + 60_000_002, status: 1 });
+
+    act(() => result.current.clear());
+    act(() => result.current.setArea(true)); // turning Select area on closes the card
+    expect(result.current.inspected).toBeNull();
+    act(() => result.current.toggle(0)); // and a tap picks the point without opening one
+    expect([...result.current.selected]).toEqual([0]);
+    expect(result.current.inspected).toBeNull();
+
+    act(() => result.current.setArea(false));
+    act(() => result.current.toggle(0)); // with it off again a tap opens the card as ever
+    expect(result.current.inspected).toMatchObject({ t: T0, status: 0 });
+  });
+
+  test("useEditPoints_closeInspected_closes_it_and_leaves_the_selection", async () => {
+    const { result } = await editing();
+    act(() => result.current.toggle(1));
+
+    act(() => result.current.closeInspected());
+
+    expect(result.current.inspected).toBeNull();
+    expect([...result.current.selected]).toEqual([1]);
+  });
+
+  test("useEditPoints_inspected_ends_with_edit_mode_and_is_not_there_in_the_next_one", async () => {
+    const { result } = await editing();
+    act(() => result.current.toggle(1));
+
+    act(() => result.current.done());
+    expect(result.current.inspected).toBeNull();
+
+    act(() => result.current.start());
+    await waitFor(() => expect(result.current.points).toBeDefined());
+    expect(result.current.inspected).toBeNull();
+  });
+
+  test("useEditPoints_inspected_ends_with_the_day", async () => {
+    const { result, rerender } = await editing();
+    act(() => result.current.toggle(1));
+
+    rerender({ route: OTHER_DAY });
+    expect(result.current.inspected).toBeNull();
+    rerender({ route: DAY }); // and a day that is come back to is not in edit mode, nor is the point's card open
+    expect(result.current.inspected).toBeNull();
+  });
+
+  test("useEditPoints_inspected_goes_when_its_point_is_removed_and_does_not_come_back_with_the_undo", async () => {
+    let gone = false;
+    const { result } = await editing(DAY, {
+      "GET /api/day/2026-10-22/points": () => Response.json(gone ? { ...POINTS, points: POINTS.points.filter((_, i) => i !== 1) } : POINTS),
+      [REMOVE]: () => {
+        gone = true;
+        return Response.json({ batch: BATCH, count: 1 });
+      },
+      [`DELETE /api/points/removed/${BATCH}`]: () => {
+        gone = false;
+        return new Response(null, { status: 204 });
+      },
+    });
+    act(() => result.current.toggle(1));
+    expect(result.current.inspected).not.toBeNull();
+
+    act(() => result.current.removal.run());
+    await waitFor(() => expect(result.current.inspected).toBeNull());
+
+    act(() => result.current.undo.run());
+    await waitFor(() => expect(result.current.points?.points).toHaveLength(4));
+    expect(result.current.inspected).toBeNull();
   });
 });
 

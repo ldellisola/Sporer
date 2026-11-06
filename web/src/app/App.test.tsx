@@ -1432,10 +1432,10 @@ describe("App edit points", () => {
     date: "2026-10-22",
     devices: ["phone"],
     points: [
-      [T0, 10.0, 59.0, 0],
-      [T0 + 30_000_001, 10.001, 59.001, 0],
-      [T0 + 60_000_002, 10.002, 59.002, 0],
-      [T0 + 90_000_003, 10.003, 59.003, 0],
+      [T0, 10.0, 59.0, 0, 0],
+      [T0 + 30_000_001, 10.001, 59.001, 0, 0],
+      [T0 + 60_000_002, 10.002, 59.002, 0, 0],
+      [T0 + 90_000_003, 10.003, 59.003, 0, 0],
     ],
   };
   const details = () => screen.getByRole("region", { name: "Details" });
@@ -1487,7 +1487,7 @@ describe("App edit points", () => {
 
     expect(screen.getByRole("group", { name: "Edit points" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit points" })).not.toBeInTheDocument();
-    expect(mapProps().edit).toEqual({ selected: new Set(), area: false, onAreaChange: expect.any(Function), onToggle: expect.any(Function), onSelect: expect.any(Function) });
+    expect(mapProps().edit).toEqual({ selected: new Set(), area: false, onAreaChange: expect.any(Function), onToggle: expect.any(Function), onSelect: expect.any(Function), inspected: null, onInspectClose: expect.any(Function) });
     expect(mapProps().data.editPoints?.features).toHaveLength(4);
     expect(mapProps().data.routes).toEqual(dayGeoJson(flightDay as DayResponse).routes); // over the day's routes
     expect(calls.filter((call) => call.path.endsWith("/points")).map((call) => call.path)).toEqual(["/api/day/2026-10-22/points"]);
@@ -1529,6 +1529,29 @@ describe("App edit points", () => {
     fireEvent.click(within(bar()).getByRole("button", { name: "Clear" }));
     expect(within(bar()).getByText("0 selected")).toBeInTheDocument();
     expect(edit().selected.size).toBe(0);
+  });
+
+  test("App_gives_the_map_the_point_that_was_tapped_for_its_card_and_closes_it_when_the_map_says_so_and_with_done", async () => {
+    stubEditing();
+    stubLayout(100);
+    await intoEditMode();
+    expect(edit().inspected).toBeNull();
+
+    const [lon, lat] = mapProps().data.editPoints!.features[1]!.geometry.coordinates as [number, number];
+    act(() => edit().onToggle(1));
+    expect(edit().inspected).toMatchObject({ lon, lat }); // where the point is, which the card is put at
+
+    act(() => edit().onSelect([0, 3])); // an area opens none
+    expect(edit().inspected).toMatchObject({ lon, lat });
+
+    act(() => edit().onInspectClose());
+    expect(edit().inspected).toBeNull();
+    expect(edit().selected).toEqual(new Set([0, 1, 3]));
+
+    act(() => edit().onToggle(2));
+    expect(edit().inspected).not.toBeNull();
+    fireEvent.click(within(screen.getByRole("group", { name: "Edit points" })).getByRole("button", { name: "Done" }));
+    expect(mapProps().edit).toBeUndefined();
   });
 
   test("App_select_area_is_the_maps_button_and_the_map_has_what_it_says", async () => {

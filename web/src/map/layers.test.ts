@@ -664,9 +664,9 @@ describe("tripGeoJson", () => {
 
 describe("editPointsGeoJson", () => {
   const POINTS: RawPoint[] = [
-    [1_761_120_000_123_456, 10.001, 59.001, 0],
-    [1_761_120_030_000_000, 10.002, 59.002, 1],
-    [1_761_120_060_000_007, 10.003, 59.003, 0],
+    [1_761_120_000_123_456, 10.001, 59.001, 0, 0],
+    [1_761_120_030_000_000, 10.002, 59.002, 1, 0],
+    [1_761_120_060_000_007, 10.003, 59.003, 0, 0],
   ];
 
   test("editPointsGeoJson_is_a_point_for_each_raw_point_longitude_first_with_its_index_as_its_numeric_id", () => {
@@ -685,12 +685,28 @@ describe("editPointsGeoJson", () => {
     for (const feature of editPointsGeoJson(POINTS).features) expect(feature.properties).toEqual({});
   });
 
+  test("editPointsGeoJson_marks_the_points_the_timeline_ignores_with_one_shared_property_object", () => {
+    const points: RawPoint[] = [
+      [1, 10, 59, 0, 0],
+      [2, 10, 59, 0, 1],
+      [3, 10, 59, 0, 2],
+      [4, 10, 59, 0, 3],
+      [5, 10, 59, 0, 0],
+    ];
+
+    const { features } = editPointsGeoJson(points);
+
+    expect(features.map((feature) => feature.properties)).toEqual([{}, { ignored: true }, { ignored: true }, { ignored: true }, {}]);
+    expect(features[2]?.properties).toBe(features[1]?.properties); // one object, as the used ones share theirs
+    expect(features[4]?.properties).toBe(features[0]?.properties);
+  });
+
   test("editPointsGeoJson_of_no_points_is_an_empty_collection", () => {
     expect(editPointsGeoJson([])).toEqual({ type: "FeatureCollection", features: [] });
   });
 
   test("editPointsGeoJson_makes_the_ids_of_a_dense_day_as_they_are_counted", () => {
-    const dense: RawPoint[] = Array.from({ length: 40_000 }, (_, i) => [1_761_120_000_000_000 + i * 1_000_000, 10 + i / 1e6, 59, 0]);
+    const dense: RawPoint[] = Array.from({ length: 40_000 }, (_, i) => [1_761_120_000_000_000 + i * 1_000_000, 10 + i / 1e6, 59, 0, 0]);
 
     const { features } = editPointsGeoJson(dense);
 
@@ -802,21 +818,33 @@ describe("layerSpecs", () => {
     const radius = paint(dots)["circle-radius"];
     const colour = paint(dots)["circle-color"];
     expect(radius).toEqual(["case", ["boolean", ["feature-state", "selected"], false], 7, 4]);
-    expect(colour).toEqual(["case", ["boolean", ["feature-state", "selected"], false], EDIT_SELECTED_COLOR, "#1C1C1E"]);
+    expect(colour).toEqual(["case", ["boolean", ["feature-state", "selected"], false], EDIT_SELECTED_COLOR, ["boolean", ["get", "ignored"], false], "rgba(0,0,0,0)", "#1C1C1E"]);
     expect(layout(dots)["visibility"] ?? "visible").toBe("visible");
   });
 
   test("layerSpecs_draw_the_edit_points_in_the_ink_of_the_scheme_with_a_halo_of_the_other_in_a_layer_under_the_dots", () => {
-    expect(paint(find("day", LAYER_IDS.editPoints, true))["circle-color"]).toEqual(["case", ["boolean", ["feature-state", "selected"], false], EDIT_SELECTED_COLOR, "#F2F2F7"]);
+    expect(paint(find("day", LAYER_IDS.editPoints, true))["circle-color"]).toEqual(["case", ["boolean", ["feature-state", "selected"], false], EDIT_SELECTED_COLOR, ["boolean", ["get", "ignored"], false], "rgba(0,0,0,0)", "#F2F2F7"]);
     expect(paint(find("day", LAYER_IDS.editPointHalos, false))["circle-color"]).toBe("#FFFFFF");
     expect(paint(find("day", LAYER_IDS.editPointHalos, true))["circle-color"]).toBe("#1C1C1E");
   });
 
-  test("layerSpecs_give_no_stroke_to_the_edit_dots_a_stroke_would_paint_over_the_dots_before_it_and_make_a_dense_track_a_white_band", () => {
-    const dots = paint(find("day", LAYER_IDS.editPoints));
+  test("layerSpecs_draw_an_ignored_edit_point_hollow_with_a_ring_in_the_muted_ink_of_the_scheme_and_give_it_no_halo_unless_selected", () => {
+    const ignored = ["boolean", ["get", "ignored"], false];
+    const selected = ["boolean", ["feature-state", "selected"], false];
+    for (const dark of [false, true]) {
+      const dots = paint(find("day", LAYER_IDS.editPoints, dark));
+      const ink = dark ? "#F2F2F7" : "#1C1C1E";
 
-    expect(dots["circle-stroke-width"]).toBeUndefined();
-    expect(dots["circle-stroke-color"]).toBeUndefined();
+      // Selected is red whatever it is; else an ignored one has no fill, and a used one is ink.
+      expect(dots["circle-color"], `dark ${dark}`).toEqual(["case", selected, EDIT_SELECTED_COLOR, ignored, "rgba(0,0,0,0)", ink]);
+      expect(dots["circle-stroke-color"], `dark ${dark}`).toBe(dark ? "#8E8E93" : "#6C6C70"); // --ink-muted of the scheme
+      // The ring is only on an ignored dot that is not selected: a used dot has no stroke, which would paint over the dots before it and make a dense track a white band.
+      expect(dots["circle-stroke-width"], `dark ${dark}`).toEqual(["case", ["all", ignored, ["!", selected]], 1.5, 0]);
+      // The halo is not drawn for an ignored point that is not selected (radius 0), or the ring would be filled with it; a selected one, ignored or not, has the selected halo.
+      const halos = find("day", LAYER_IDS.editPointHalos, dark);
+      expect((halos as { filter?: unknown }).filter, `dark ${dark}`).toBeUndefined();
+      expect(paint(halos)["circle-radius"], `dark ${dark}`).toEqual(["case", selected, 8, ignored, 0, 5]);
+    }
   });
 
   test("layerSpecs_draw_the_halo_of_an_edit_point_in_its_own_layer_of_the_same_source_a_pixel_beyond_the_dot", () => {
@@ -825,8 +853,8 @@ describe("layerSpecs", () => {
     expect(halos.type).toBe("circle");
     expect(LAYER_IDS.editPointHalos).toBe("sporer-edit-point-halos");
     expect((halos as { source: string }).source).toBe(SOURCE_IDS.editPoints);
-    // The dot's radius and the pixel of its edge, as before: 4 + 1 and 7 + 1.
-    expect(paint(halos)["circle-radius"]).toEqual(["case", ["boolean", ["feature-state", "selected"], false], 8, 5]);
+    // The dot's radius and the pixel of its edge, as before: 4 + 1 and 7 + 1 (and none for an ignored point that is not selected: the test above).
+    expect(paint(halos)["circle-radius"]).toEqual(["case", ["boolean", ["feature-state", "selected"], false], 8, ["boolean", ["get", "ignored"], false], 0, 5]);
     expect(layout(halos)["visibility"] ?? "visible").toBe("visible");
     expect(paint(halos)["circle-stroke-width"]).toBeUndefined();
   });
@@ -1105,6 +1133,38 @@ describe("routeOpacity", () => {
         if (!ROUTE_LAYERS.includes(spec.id)) continue;
         const own = (spec.paint as { "line-opacity"?: number } | undefined)?.["line-opacity"] ?? 1; // none given is full
         expect(routeOpacity(spec.id, false), `${view} ${spec.id}`).toBe(own);
+      }
+    }
+  });
+
+  test("routeOpacity_is_full_for_every_route_layer_when_the_routes_are_not_faded", () => {
+    for (const id of ROUTE_LAYERS) expect(routeOpacity(id, false, false), id).toBe(1);
+  });
+
+  test("routeOpacity_is_faint_for_the_period_layers_only_when_they_are_faded_and_a_days_are_solid_either_way", () => {
+    expect(routeOpacity(LAYER_IDS.rangeRoute, false, true)).toBe(0.35);
+    expect(routeOpacity(LAYER_IDS.rangeFlight, false, true)).toBe(0.35);
+    for (const id of [LAYER_IDS.routeCasing, LAYER_IDS.dayRoute, LAYER_IDS.dayFlight]) {
+      expect(routeOpacity(id, false, true), id).toBe(1);
+      expect(routeOpacity(id, false, false), id).toBe(1);
+    }
+  });
+
+  test("routeOpacity_is_a_fifth_under_heat_whether_the_routes_are_faded_or_not", () => {
+    for (const id of ROUTE_LAYERS) {
+      expect(routeOpacity(id, true, true), id).toBe(0.2);
+      expect(routeOpacity(id, true, false), id).toBe(0.2);
+    }
+  });
+
+  test("routeOpacity_is_what_the_layerSpecs_are_drawn_at_for_either_setting", () => {
+    for (const fade of [true, false]) {
+      for (const view of ["day", "range"] as const) {
+        for (const spec of layerSpecs(view, false, fade)) {
+          if (!ROUTE_LAYERS.includes(spec.id)) continue;
+          const own = (spec.paint as { "line-opacity"?: number } | undefined)?.["line-opacity"] ?? 1;
+          expect(routeOpacity(spec.id, false, fade), `${fade} ${view} ${spec.id}`).toBe(own);
+        }
       }
     }
   });

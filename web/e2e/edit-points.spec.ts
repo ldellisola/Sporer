@@ -1,5 +1,5 @@
 import type { Locator, Page, Request } from "@playwright/test";
-import type { DayResponse, RawPoint } from "../src/api/types";
+import type { DayResponse, PointDetailResponse, RawPoint } from "../src/api/types";
 import { expect, test } from "./base";
 import { fitOf, type LonLat } from "./fit";
 import dayFixture from "./fixtures/day-edit.json" with { type: "json" };
@@ -16,7 +16,7 @@ test.use({ timezoneId: "Asia/Tokyo", deviceScaleFactor: 1 });
 const fixToday = (page: Page): Promise<void> => fixTime(page, "2026-12-01T12:00:00Z");
 
 const isWide = (page: Page): boolean => page.viewportSize()!.width >= 900;
-const details = (page: Page): Locator => page.getByRole(isWide(page) ? "complementary" : "region", { name: "Details" });
+const details = (page: Page): Locator => page.getByRole(isWide(page) ? "complementary" : "region", { name: "Details", exact: true }); // exact: the card of a point is "Point details"
 const grip = (page: Page): Locator => page.getByRole("button", { name: "Resize panel" });
 const map = (page: Page): Locator => page.getByRole("region", { name: "Map view" });
 const bar = (page: Page): Locator => page.getByRole("group", { name: "Edit points" });
@@ -53,6 +53,12 @@ interface EditServer {
   refuse: (reply: Reply | undefined) => void;
   /** The first so many requests for the points are answered with a 500. */
   failPoints: (times: number) => void;
+  /** The point at this index is no longer known to the server, which answers a 404 for it. */
+  forgetPoint: (index: number) => void;
+  /** The first so many requests for a point in full are answered with a 500. */
+  failDetail: (times: number) => void;
+  /** The points that the page was answered in full, as the indices of the day's points. */
+  detailReads: () => number[];
   /** Holds the next removal until `answer` is called with what it is to be answered with (a request that is on its way, to be answered later). */
   hold: () => { answer: (reply: Reply) => void };
 }
@@ -69,6 +75,9 @@ function editServer(): EditServer {
   let reads = 0;
   let refusal: Reply | undefined;
   let failing = 0;
+  let failingDetail = 0;
+  const unknown = new Set<number>();
+  const detailsRead: number[] = [];
   let held: Promise<Reply> | undefined;
   const gone = (): number[] => [...removed.values()].flat();
   const day = (): DayResponse => ({
@@ -90,6 +99,38 @@ function editServer(): EditServer {
       }
       const left = new Set(gone());
       return { json: { date: DAY.date, devices: DEVICES, points: POINTS.filter((_, i) => !left.has(i)) } };
+    },
+    // One point in full, as the server would say it: the clock of Oslo (the day's zone, which is on summer time until the 25th), and what the point's status says.
+    "points/detail": (request: Request): Reply => {
+      const { searchParams } = new URL(request.url());
+      const index = POINTS.findIndex((point) => String(point[0]) === searchParams.get("t") && DEVICES[point[3]] === searchParams.get("device"));
+      if (index < 0 || unknown.has(index)) return { status: 404, json: { statusCode: 404 } }; // a point that is not stored; a removed one is, and is answered
+      if (failingDetail > 0) {
+        failingDetail -= 1;
+        return { status: 500, json: { title: "Internal Server Error" } };
+      }
+      detailsRead.push(index);
+      const [t, lon, lat, device, status] = POINTS[index]!;
+      const detail: PointDetailResponse = {
+        device: DEVICES[device]!,
+        t,
+        timeUtc: new Date(t / 1000).toISOString(),
+        localTime: new Date(t / 1000 + 2 * 3600_000).toISOString().slice(0, 19),
+        zone: "Europe/Oslo",
+        lat,
+        lon,
+        accuracyM: status === 1 ? 1414.2 : 5 + index,
+        speedMps: null,
+        altitudeM: 12,
+        motion: ["walking"],
+        // A (device, time) that is stored twice is described as its first row, which the timeline uses: the endpoint never answers `duplicate`.
+        status: gone().includes(index) ? "removed" : (["used", "poorAccuracy", "glitch", "used"] as const)[status],
+        maxAccuracyM: 100,
+        previous: index === 0 ? null : { t: POINTS[index - 1]![0], gapSeconds: 61, distanceM: 1234, speedKmh: 72 },
+        next: { t: POINTS[index + 1]?.[0] ?? t, gapSeconds: 45, distanceM: 80, speedKmh: 6.4 },
+        segment: null,
+      };
+      return { json: detail };
     },
     "POST points/remove": (request: Request): Reply | Promise<Reply> => {
       if (held !== undefined) {
@@ -122,6 +163,9 @@ function editServer(): EditServer {
     forget: (batch) => void removed.delete(batch),
     refuse: (reply) => void (refusal = reply),
     failPoints: (times) => void (failing = times),
+    forgetPoint: (index) => void unknown.add(index),
+    failDetail: (times) => void (failingDetail = times),
+    detailReads: () => detailsRead,
     hold: () => {
       let answer: (reply: Reply) => void = () => undefined;
       held = new Promise<Reply>((resolve) => (answer = resolve));
@@ -134,6 +178,7 @@ function editServer(): EditServer {
 
 const INK: Rgb = [28, 28, 30]; // a point, in the ink of the light scheme
 const RED: Rgb = [255, 59, 48]; // a selected one
+const IGNORED_GREY: Rgb = [108, 108, 112]; // the ring of a point the timeline ignores, in the light scheme (--ink-muted)
 
 /** Where a position is on the page: the camera that the map comes to rest at once it is brought to the walk (`fit.ts`). */
 type Projector = (at: LonLat) => { x: number; y: number };
@@ -174,11 +219,12 @@ async function tap(page: Page, at: { x: number; y: number }): Promise<void> {
 }
 
 /** One-finger drag on a phone (real touch events, through the browser's own protocol: Playwright has only taps) and a drag of the mouse on a desktop. */
-async function drag(page: Page, from: { x: number; y: number }, to: { x: number; y: number }): Promise<void> {
+async function drag(page: Page, from: { x: number; y: number }, to: { x: number; y: number }, holdMs = 0): Promise<void> {
   if (isWide(page)) {
     await page.mouse.move(from.x, from.y);
     await page.mouse.down();
     await page.mouse.move(to.x, to.y, { steps: 8 });
+    await page.waitForTimeout(holdMs);
     await page.mouse.up();
     return;
   }
@@ -187,6 +233,7 @@ async function drag(page: Page, from: { x: number; y: number }, to: { x: number;
     session.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x: at.x, y: at.y }] });
   await touch("touchStart", from);
   for (let step = 1; step <= 8; step++) await touch("touchMove", { x: from.x + ((to.x - from.x) * step) / 8, y: from.y + ((to.y - from.y) * step) / 8 });
+  await page.waitForTimeout(holdMs);
   await touch("touchEnd", to);
   await session.detach();
 }
@@ -262,6 +309,33 @@ test("edit_points_remove_two_points_by_tap_see_the_day_rebuilt_and_undo", async 
   expect(server.gone()).toEqual([]);
 });
 
+test("edit_points_draw_the_points_the_timeline_ignores_hollow_and_one_still_selects_red", async ({ page }) => {
+  const server = editServer();
+  const { project } = await intoEditMode(page, server.overrides);
+  // One of each status: poor accuracy (1), a glitch (2) and a repeat (3).
+  const ignored = POINTS.flatMap((point, index) => (point[4] !== 0 ? [index] : []));
+  expect(ignored.map((index) => POINTS[index]![4]).sort()).toEqual([1, 2, 3]);
+  await expectDot(page, project, WALK(3), INK); // a used point is ink
+
+  for (const index of ignored) {
+    const { x, y } = placeOf(project, index);
+    // The middle of it is not ink (it has no fill); the ring is the grey of the scheme, 4 pixels from the middle.
+    await expectDot(page, project, index, "none");
+    await expect
+      .poll(async () => {
+        for (const [dx, dy] of [[4, 0], [-4, 0], [0, 4], [0, -4]] as const) if (sameColour(await pixelAt(page, x + dx, y + dy), IGNORED_GREY, 30)) return true;
+        return false;
+      }, PIXEL_POLL)
+      .toBe(true);
+  }
+  await expect(bar(page).getByText(/Hollow points are ones the timeline already ignores/)).toBeVisible();
+
+  // One is selected by a tap like any other, and red.
+  await tap(page, placeOf(project, ignored[0]!));
+  await expect(bar(page).getByText("1 selected")).toBeVisible();
+  await expectDot(page, project, ignored[0]!, RED);
+});
+
 test("edit_points_remove_a_cluster_by_area_and_undo", async ({ page }) => {
   const server = editServer();
   const { project, writes } = await intoEditMode(page, server.overrides);
@@ -288,6 +362,7 @@ test("edit_points_remove_a_cluster_by_area_and_undo", async ({ page }) => {
   await expect(bar(page).getByText("7 selected")).toBeVisible();
   await tap(page, placeOf(project, WALK(4))); // and a tap on one of them takes it off
   await expect(bar(page).getByText("6 selected")).toBeVisible();
+  await expect(pointCard(page)).toHaveCount(0); // a tap with Select area on opens no card, which would be in the way of the next rectangle
   await expectDot(page, project, WALK(4), INK);
 
   await bar(page).getByRole("button", { name: "Clear" }).click();
@@ -633,4 +708,181 @@ test("edit_points_keeps_the_focus_on_a_button_of_the_bar_when_a_removal_is_sent_
   await page.keyboard.press("Enter");
   await expect(bar(page)).toHaveCount(0);
   await expect(details(page).getByRole("button", { name: "Edit points" })).toBeFocused();
+});
+
+// --- The card of a point ---
+
+const pointCard = (page: Page): Locator => page.getByRole("region", { name: "Point details" });
+
+/** The local clock of a point of the day, with seconds: Oslo is two hours ahead of UTC on that day. */
+const clockOf = (index: number): string => new Date(POINTS[index]![0] / 1000 + 2 * 3600_000).toISOString().slice(11, 19);
+
+/**
+ * A place on the map where no point is within 40 px and no card is (and that is on the part of the map that is free of the bar and the sheet), for a tap that hits
+ * nothing: found on a grid over the map.
+ */
+async function emptySpot(page: Page, project: Projector): Promise<{ x: number; y: number }> {
+  const area = (await map(page).boundingBox())!;
+  const card = await pointCard(page).boundingBox();
+  const sheet = (await (isWide(page) ? details(page) : grip(page)).boundingBox())!;
+  const places = POINTS.map((_, index) => placeOf(project, index));
+  for (let y = area.y + 150; y < area.y + area.height - 40; y += 30) {
+    for (let x = (isWide(page) ? sheet.x + sheet.width : area.x) + 30; x < area.x + area.width - 80; x += 30) {
+      const nearPoint = places.some((place) => Math.hypot(place.x - x, place.y - y) < 40);
+      const underCard = card !== null && x > card.x - 20 && x < card.x + card.width + 20 && y > card.y - 20 && y < card.y + card.height + 20;
+      const underSheet = !isWide(page) && y > sheet.y - 30;
+      if (!nearPoint && !underCard && !underSheet) return { x, y };
+    }
+  }
+  throw new Error("no empty spot on the map");
+}
+
+test("edit_points_a_tap_opens_the_card_of_the_point_another_replaces_it_and_it_closes_by_the_cross_escape_an_empty_tap_and_done", async ({ page }) => {
+  const server = editServer();
+  const { project } = await intoEditMode(page, server.overrides);
+  await expect(pointCard(page)).toHaveCount(0);
+
+  // A tap on a point opens its card: its time (with seconds and the zone), what the device said and what the timeline made of it. The map keeps the focus.
+  await tap(page, placeOf(project, WALK(3)));
+  await expect(pointCard(page)).toBeVisible();
+  await expect(pointCard(page)).toContainText(`${clockOf(WALK(3))} CEST`);
+  await expect(pointCard(page)).toContainText("22 Oct 2025");
+  await expect(pointCard(page)).toContainText("Used by the timeline");
+  await expect(pointCard(page).getByText("Accuracy").locator("xpath=following-sibling::dd")).toHaveText(`${5 + WALK(3)} m`);
+  await expect(pointCard(page).getByText("Speed").locator("xpath=following-sibling::dd")).toHaveText("not recorded");
+  await expect(pointCard(page)).not.toContainText("Loading");
+  expect(await page.evaluate(() => document.activeElement?.closest("[aria-label='Point details']") ?? null)).toBeNull(); // nothing in the card took the focus
+  await expect(bar(page).getByText("1 selected")).toBeVisible(); // and it is selected, as ever
+  // It is on the map, above the point (or below it), and inside the part of the map that is free: the whole of it is on screen, at 390 px wide too.
+  await expect(pointCard(page)).toBeInViewport({ ratio: 1 });
+  const box = (await pointCard(page).boundingBox())!;
+  const at = placeOf(project, WALK(3));
+  expect(box.x).toBeLessThanOrEqual(at.x);
+  expect(box.x + box.width).toBeGreaterThanOrEqual(at.x);
+  expect(box.y + box.height <= at.y || box.y >= at.y).toBe(true); // not over the point it is of
+  await expect(pointCard(page).getByRole("button", { name: "Close point details" })).toBeVisible();
+
+  // Another tap replaces it.
+  await tap(page, placeOf(project, WALK(8)));
+  await expect(pointCard(page)).toContainText(`${clockOf(WALK(8))} CEST`);
+  await expect(pointCard(page)).toHaveCount(1);
+  await expect(pointCard(page).getByText("Accuracy").locator("xpath=following-sibling::dd")).toHaveText(`${5 + WALK(8)} m`);
+  await expect(bar(page).getByText("2 selected")).toBeVisible();
+
+  // A tap on a point that is selected takes it off, and opens its card all the same.
+  await tap(page, placeOf(project, WALK(8)));
+  await expect(bar(page).getByText("1 selected")).toBeVisible();
+  await expect(pointCard(page)).toContainText(`${clockOf(WALK(8))} CEST`);
+
+  // The map's own tap on no point closes it, and keeps the selection.
+  await tap(page, await emptySpot(page, project));
+  await expect(pointCard(page)).toHaveCount(0);
+  await expect(bar(page).getByText("1 selected")).toBeVisible();
+
+  // The cross closes it.
+  await tap(page, placeOf(project, WALK(5)));
+  await expect(pointCard(page)).toBeVisible();
+  await pointCard(page).getByRole("button", { name: "Close point details" }).click();
+  await expect(pointCard(page)).toHaveCount(0);
+
+  // So does Escape, with the focus on the map.
+  await tap(page, placeOf(project, WALK(6)));
+  await expect(pointCard(page)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(pointCard(page)).toHaveCount(0);
+  await expect(bar(page)).toBeVisible(); // edit mode is not left by it
+
+  // Turning Select area on closes a card that is open; then an area selects and opens nothing, and neither does a tap.
+  await tap(page, placeOf(project, WALK(7)));
+  await expect(pointCard(page)).toBeVisible();
+  await selectArea(page).click();
+  await expect(pointCard(page)).toHaveCount(0);
+  const { from, to } = boxAround([placeOf(project, WALK(4)), placeOf(project, WALK(5))], 3);
+  await drag(page, from, to);
+  await expect(pointCard(page)).toHaveCount(0);
+  await tap(page, placeOf(project, WALK(9)));
+  await expect(pointCard(page)).toHaveCount(0);
+  await selectArea(page).click();
+
+  // Done closes it, and the next edit mode has none.
+  await tap(page, placeOf(project, WALK(3)));
+  await expect(pointCard(page)).toBeVisible();
+  await bar(page).getByRole("button", { name: "Done" }).click();
+  await expect(pointCard(page)).toHaveCount(0);
+  await details(page).getByRole("button", { name: "Edit points" }).click();
+  await expect(bar(page)).toBeVisible();
+  await expect(pointCard(page)).toHaveCount(0);
+});
+
+test("edit_points_the_card_of_a_point_the_timeline_ignores_says_why_and_goes_with_the_point_when_it_is_removed", async ({ page }) => {
+  const server = editServer();
+  const { project } = await intoEditMode(page, server.overrides);
+  const poor = POINTS.findIndex((point) => point[4] === 1);
+
+  await tap(page, placeOf(project, poor));
+  await expect(pointCard(page)).toContainText("Ignored: the GPS accuracy was 1,414 m (more than 100 m)");
+
+  await bar(page).getByRole("button", { name: "Remove 1 point" }).click();
+  await expect(toast(page)).toHaveText(/Removed 1 point/);
+  await expect(pointCard(page)).toHaveCount(0); // the point is gone
+});
+
+test("edit_points_the_card_of_the_rightmost_point_keeps_clear_of_the_map_buttons_and_points_at_the_point", async ({ page }) => {
+  const server = editServer();
+  const { project } = await intoEditMode(page, server.overrides);
+  const area = (await map(page).boundingBox())!;
+  const sheet = (await (isWide(page) ? details(page) : grip(page)).boundingBox())!;
+  // The point that is furthest to the right of those that are in the free part of the map: the card, centred on it, would be over the buttons.
+  const free = POINTS.map((_, index) => ({ index, ...placeOf(project, index) })).filter(
+    (at) => at.x > area.x && at.x < area.x + area.width && at.y > area.y + 120 && (isWide(page) ? at.x > sheet.x + sheet.width : at.y < sheet.y - 20),
+  );
+  const found = free.reduce((best, at) => (at.x > best.x ? at : best));
+  // The map is brought down until the card, which is above the point, is level with the buttons: where the point is high the card is below it, under the buttons.
+  const buttons = (await selectArea(page).boundingBox())!;
+  const lift = buttons.y + buttons.height + 160 - found.y; // the point is to be 160 px under the buttons: a card that is 270 high and above it is level with them
+  const grab = { x: (isWide(page) ? sheet.x + sheet.width : area.x) + 60, y: area.y + 450 }; // anywhere on the map: a drag pans it, over a point or not
+  await drag(page, grab, { x: grab.x, y: grab.y + lift }, 400); // held before it is let go, so that the map does not run on
+  const rightmost = { x: found.x, y: found.y + lift };
+
+  await tap(page, rightmost);
+
+  await expect(pointCard(page)).toBeVisible();
+  await expect(pointCard(page)).toHaveAttribute("data-side", /^(above|below)$/); // it has a pointer: this point is not under a button
+  const box = (await pointCard(page).boundingBox())!;
+  for (const name of ["Recenter map", "Heat map", "Select area"]) {
+    const button = await map(page).getByRole("button", { name }).boundingBox();
+    if (button === null) continue;
+    expect(box.x + box.width <= button.x || button.x + button.width <= box.x || box.y + box.height <= button.y || button.y + button.height <= box.y, `the card is over ${name}`).toBe(true);
+  }
+  expect(box.y < buttons.y + buttons.height && box.y + box.height > buttons.y, "the card is level with the buttons").toBe(true); // so that this is a test of keeping clear of them
+  expect(box.x + box.width).toBeLessThanOrEqual(buttons.x); // and it ends before them
+  expect(box.x).toBeLessThanOrEqual(rightmost.x);
+  await expect(pointCard(page)).toBeInViewport({ ratio: 1 });
+});
+
+test("edit_points_the_card_says_when_it_could_not_be_loaded_with_a_retry_that_works", async ({ page }) => {
+  const server = editServer();
+  server.failDetail(2); // the request, and the one more that the app makes by itself
+  const { project } = await intoEditMode(page, server.overrides);
+
+  await tap(page, placeOf(project, WALK(3)));
+
+  await expect(pointCard(page).getByRole("alert")).toContainText("Couldn't load the point");
+  await expect(pointCard(page)).toBeInViewport({ ratio: 1 });
+  await pointCard(page).getByRole("button", { name: "Retry" }).click();
+  await expect(pointCard(page)).toContainText("Used by the timeline");
+  await expect(pointCard(page).getByRole("alert")).toHaveCount(0);
+  expect(server.detailReads()).toEqual([WALK(3)]); // the ones that failed are not counted: the one that came
+});
+
+test("edit_points_the_card_says_a_point_the_server_does_not_know_is_gone_with_no_retry", async ({ page }) => {
+  const server = editServer();
+  server.forgetPoint(WALK(3));
+  const { project } = await intoEditMode(page, server.overrides);
+
+  await tap(page, placeOf(project, WALK(3)));
+
+  await expect(pointCard(page)).toContainText("This point no longer exists");
+  await expect(pointCard(page).getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(pointCard(page).getByRole("button", { name: "Close point details" })).toBeVisible();
 });

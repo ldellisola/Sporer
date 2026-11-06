@@ -227,6 +227,23 @@ describe("AreaSelect with a shift-drag", () => {
     expect(onBox).not.toHaveBeenCalled();
   });
 
+  test("AreaSelect_leaves_a_shift_press_that_begins_on_something_that_says_it_is_not_the_maps_to_it", () => {
+    const { canvas, rectangle, onBox } = mount();
+    const card = canvas.parentElement!.appendChild(document.createElement("div"));
+    card.setAttribute("data-no-area-select", "");
+    const text = card.appendChild(document.createElement("span"));
+    const seen = vi.fn();
+    card.addEventListener("mousedown", seen);
+
+    fireEvent.mouseDown(text, mouse(40, 50));
+    fireEvent.mouseMove(window, mouse(140, 190));
+    fireEvent.mouseUp(window, mouse(140, 190));
+
+    expect(seen).toHaveBeenCalledTimes(1); // it was not stopped on its way down
+    expect(rectangle()).toBeNull();
+    expect(onBox).not.toHaveBeenCalled();
+  });
+
   test("AreaSelect_leaves_the_shift_press_to_the_surface_while_the_button_is_on", () => {
     const { surface, onBox } = mount({ active: true });
 

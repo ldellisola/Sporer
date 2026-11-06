@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 import { ApiError } from "../api/client";
-import { pointEditing } from "../test/pointEditing";
+import type { RawPoint } from "../api/types";
+import { FAKE_POINTS, pointEditing } from "../test/pointEditing";
 import { EditBar } from "./EditBar";
 
 const group = () => screen.getByRole("group", { name: "Edit points" });
@@ -35,6 +36,19 @@ describe("EditBar", () => {
     expect(screen.getByRole("button", { name: "Remove 0 points" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
     expect(screen.getByText(/Tap a point/)).toBeInTheDocument();
+  });
+
+  test("EditBar_explains_hollow_points_under_the_row_only_when_the_day_has_ignored_ones", () => {
+    const { rerender } = render(<EditBar edit={pointEditing()} onDone={() => undefined} />);
+    expect(screen.queryByText(/Hollow points/)).not.toBeInTheDocument();
+
+    const ignored = { ...FAKE_POINTS, points: [...FAKE_POINTS.points, [1_761_120_120_000_000, 10.005, 59.005, 0, 2] as RawPoint] };
+    rerender(<EditBar edit={pointEditing({ points: ignored })} onDone={() => undefined} />);
+
+    const hint = screen.getByText(/Hollow points are ones the timeline already ignores \(no GPS, a glitch or a repeat\)\./);
+    expect(hint).toBeInTheDocument();
+    expect(hint.textContent).toMatch(/^Tap a point, or use Select area on the map\. /);
+    expect(hint.closest("[class*=row]")).toBeNull(); // under the row, not in it
   });
 
   test("EditBar_announces_the_count_as_it_changes_without_being_a_status_of_its_own", () => {

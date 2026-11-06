@@ -23,7 +23,7 @@ function fakeMap() {
   };
 }
 
-const edit = (over: Partial<MapEdit> = {}): MapEdit => ({ selected: new Set(), area: false, onAreaChange: vi.fn(), onToggle: vi.fn(), onSelect: vi.fn(), ...over });
+const edit = (over: Partial<MapEdit> = {}): MapEdit => ({ selected: new Set(), area: false, onAreaChange: vi.fn(), onToggle: vi.fn(), onSelect: vi.fn(), inspected: null, onInspectClose: vi.fn(), ...over });
 
 function mount(props: { edit: MapEdit; map?: ReturnType<typeof fakeMap> | null }) {
   const host = createRef<HTMLDivElement>();
@@ -97,6 +97,24 @@ describe("EditControls", () => {
     fireEvent.pointerDown(surface, at(141, 101));
     fireEvent.pointerUp(surface, at(141, 101));
     expect(onToggle).toHaveBeenCalledWith(1);
+  });
+
+  test("EditControls_closes_the_card_by_a_tap_on_the_surface_that_is_on_no_point", () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.className.includes("layer") ? ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 } as DOMRect) : ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 } as DOMRect);
+    });
+    const map = fakeMap();
+    map.queryRenderedFeatures = () => [];
+    const onInspectClose = vi.fn();
+    const onToggle = vi.fn();
+    const { host } = mount({ edit: edit({ area: true, onInspectClose, onToggle }), map });
+    const surface = host.current!.querySelector(".surface")!;
+
+    fireEvent.pointerDown(surface, { clientX: 500, clientY: 500, pointerId: 1, isPrimary: true, pointerType: "touch" });
+    fireEvent.pointerUp(surface, { clientX: 500, clientY: 500, pointerId: 1, isPrimary: true, pointerType: "touch" });
+
+    expect(onInspectClose).toHaveBeenCalledTimes(1);
+    expect(onToggle).not.toHaveBeenCalled();
   });
 
   test("EditControls_selects_nothing_before_there_is_a_map", () => {

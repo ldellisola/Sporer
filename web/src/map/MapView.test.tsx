@@ -1961,6 +1961,8 @@ describe("MapView", () => {
       onAreaChange: vi.fn(),
       onToggle: vi.fn(),
       onSelect: vi.fn(),
+      inspected: null,
+      onInspectClose: vi.fn(),
       ...over,
     });
     const withData = (editPoints: EditPointCollection | undefined, over: Partial<MapViewProps> = {}): Partial<MapViewProps> => ({
@@ -2086,6 +2088,21 @@ describe("MapView", () => {
       expect(onToggle).toHaveBeenCalledTimes(1);
       expect(onToggle).toHaveBeenCalledWith(0);
       expect(onPlaceTap).not.toHaveBeenCalled(); // in edit mode a tap is for the points
+    });
+
+    test("MapView_closes_the_card_of_a_point_by_a_tap_on_no_point_and_not_by_a_tap_on_one", async () => {
+      const onToggle = vi.fn<(id: number) => void>();
+      const onInspectClose = vi.fn<() => void>();
+      const { map } = await up(withData(POINTS, { edit: edit({ onToggle, onInspectClose }) }));
+      drawPoints(map, POINTS);
+
+      map.pointer("click", 101, 100); // on a point: it is the card of that one that opens, by the toggle
+      expect(onToggle).toHaveBeenCalledWith(0);
+      expect(onInspectClose).not.toHaveBeenCalled();
+
+      map.pointer("click", 200, 200); // on the map
+      expect(onInspectClose).toHaveBeenCalledTimes(1);
+      expect(onToggle).toHaveBeenCalledTimes(1);
     });
 
     test("MapView_looks_for_points_in_a_box_of_12px_round_the_tap_in_their_layer_only", async () => {
@@ -2467,6 +2484,77 @@ describe("MapView", () => {
 
       expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
       expect(map.layers.get(LAYER_IDS.heat)).toBeDefined();
+    });
+
+    test("MapView_draws_the_routes_of_the_periods_at_full_strength_when_they_are_not_faded_and_changes_it_at_once", async () => {
+      goodStyle();
+      const data = { routes: routes(1) };
+      const { rerender } = render(view({ data, fadeRoutes: false }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([undefined, undefined, undefined, 1, 1]); // the specs of a style are made for the setting
+      const layers = new Map(map.layers);
+      const sources = new Map(map.sources);
+
+      rerender(view({ data, fadeRoutes: true }));
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([1, 1, 1, 0.35, 0.35]);
+      expect(map.paintCalls).toEqual(ROUTE_LAYERS.map((id) => [id, "line-opacity", routeOpacity(id, false, true)]));
+      for (const [id, layer] of layers) expect(map.layers.get(id), id).toBe(layer); // no layer made again, no new data
+      for (const [id, source] of sources) expect(map.sources.get(id)?.data, id).toBe(source.data);
+
+      rerender(view({ data, fadeRoutes: false }));
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([1, 1, 1, 1, 1]);
+    });
+
+    test("MapView_keeps_the_routes_at_a_fifth_under_heat_whichever_way_the_routes_are_set_and_returns_to_it_when_the_heat_goes", async () => {
+      goodStyle();
+      const data = { routes: routes(1), heat: heatCells() };
+      const { rerender } = render(view({ data, fadeRoutes: false }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
+
+      rerender(view({ data, fadeRoutes: true }));
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
+
+      rerender(view({ data: { routes: data.routes }, fadeRoutes: false }));
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([1, 1, 1, 1, 1]);
+    });
+
+    test("MapView_gives_a_style_that_loads_after_the_routes_were_set_to_full_strength_the_specs_of_the_setting_as_it_is_now", async () => {
+      goodStyle();
+      const data = { routes: routes(1) };
+      const { rerender } = render(view({ data, fadeRoutes: true }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      rerender(view({ data, fadeRoutes: false })); // set at run time, with no reload
+
+      map.setStyle({ version: 8, sources: {}, layers: [] }, { diff: false }); // a theme switch: the layers are made again
+      map.emit("style.load");
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([undefined, undefined, undefined, 1, 1]); // the new layers are as the specs say, for the setting as it is now
+      expect(map.paintCalls.filter(([, , value]) => value === 0.35)).toEqual([]); // and no stale faint value was pushed to them
+    });
+
+    test("MapView_returns_the_routes_to_their_setting_when_the_heat_goes_while_they_are_faded", async () => {
+      goodStyle();
+      const data = { routes: routes(1), heat: heatCells() };
+      const { rerender } = render(view({ data, fadeRoutes: true }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
+
+      rerender(view({ data: { routes: data.routes }, fadeRoutes: true }));
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([1, 1, 1, 0.35, 0.35]); // a day's are solid, a period's faint again
     });
   });
 

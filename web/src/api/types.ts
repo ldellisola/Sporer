@@ -125,11 +125,14 @@ export interface RangeDay {
 // --- GET /api/day/{date}/points (Features/Points) and the removal of points ---
 
 /**
- * One raw point of a day: `[t, lon, lat, device]`. `t` is the exact time in epoch microseconds, a whole number that a JavaScript number holds exactly:
+ * One raw point of a day: `[t, lon, lat, device, status]`. `t` is the exact time in epoch microseconds, a whole number that a JavaScript number holds exactly:
  * it is never rounded or turned into milliseconds, and is sent back as it came, for it is what the point is told from the others by. `device` is
- * the index into `devices` of the answer.
+ * the index into `devices` of the answer. `status` is whether the timeline uses the point: 0 used, 1 poor accuracy, 2 glitch, 3 duplicate (the last three are ignored).
  */
-export type RawPoint = [t: number, lon: number, lat: number, device: number];
+export type RawPoint = [t: number, lon: number, lat: number, device: number, status: PointStatus];
+
+/** What the server made of a point of a day: 0 is used by the timeline; 1 (poor accuracy), 2 (a glitch) and 3 (a repeat of an earlier point) are ignored. */
+export type PointStatus = 0 | 1 | 2 | 3;
 
 /** The points of a day in time order, those removed earlier left out. A point may be on the neighbouring day too: a day spans the zones of its segments. */
 export interface DayPointsResponse {
@@ -142,6 +145,59 @@ export interface DayPointsResponse {
 export interface PointRef {
   device: string;
   t: number;
+}
+
+/** Why the card says a point is as it is: the timeline uses it (`used`), ignores it (the next three) or the owner removed it (`removed`). */
+export type PointDetailStatus = "used" | "poorAccuracy" | "glitch" | "duplicate" | "removed";
+
+/** The nearest point before or after a point (of any device, not removed): when, how far away in time and space, and the speed that makes. */
+export interface PointNeighbour {
+  /** Epoch microseconds, as everywhere. */
+  t: number;
+  gapSeconds: number;
+  distanceM: number;
+  speedKmh: number;
+}
+
+/** The stay, move or gap that covers a point. A stay has its place (the name is null while it has none), a move its mode. */
+export interface PointSegment {
+  kind: "stay" | "move" | "gap";
+  startUtc: string;
+  endUtc: string;
+  place?: { id: number; name: string | null };
+  mode?: string;
+}
+
+/**
+ * One point in full, from `GET /api/points/detail?device=…&t=…`. `localTime` is `yyyy-MM-ddTHH:mm:ss` on the clock of `zone` (an IANA name); `timeUtc` is
+ * the same instant. What the device did not send is null (`accuracyM`, `speedMps`, `motion`); `speedMps` is metres a second.
+ */
+export interface PointDetailResponse {
+  device: string;
+  t: number;
+  timeUtc: string;
+  localTime: string;
+  zone: string;
+  lat: number;
+  lon: number;
+  accuracyM: number | null;
+  speedMps: number | null;
+  altitudeM: number;
+  motion: string[] | null;
+  status: PointDetailStatus;
+  /** The accuracy (metres) above which the timeline ignores a point: the server's setting, which a `poorAccuracy` status is judged against. */
+  maxAccuracyM: number;
+  previous: PointNeighbour | null;
+  next: PointNeighbour | null;
+  segment: PointSegment | null;
+}
+
+/** The point of the day that edit mode shows the card of: what names it (`PointRef`), where it is, for the card to be put there, and its status in the day's list. */
+export interface InspectedPoint extends PointRef {
+  lon: number;
+  lat: number;
+  /** What the day's list says of the point that was tapped: 3 for the later of two stored rows of one device and time (the card is of the first). */
+  status: PointStatus;
 }
 
 /** The answer to `POST /api/points/remove`: the batch to restore it by, or null when nothing was removed (the points were removed already), and how many points it holds. */

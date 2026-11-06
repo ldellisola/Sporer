@@ -50,10 +50,16 @@ export type PlaceProperties = { id: number; radius: number; label?: string; side
 export type HeatProperties = { weight: number };
 
 /**
- * A raw point of the day in edit mode: nothing but where it is, and its `id`, which is its index into the day's points (`editPointsGeoJson`) and
- * is what a selection is made of. The map's feature state is keyed by it, and a tap finds it as the `id` of the feature.
+ * What a point says of itself in edit mode: nothing for a point that the timeline uses, and `ignored: true` for one that it does not (its status is not 0).
+ * Those are the only properties: the time and the device stay in the day's points.
  */
-export type EditPointFeature = Feature<Point, Record<string, never>> & { id: number };
+export type EditPointProperties = Record<string, never> | { ignored: true };
+
+/**
+ * A raw point of the day in edit mode: where it is, whether the timeline ignores it, and its `id`, which is its index into the day's points
+ * (`editPointsGeoJson`) and is what a selection is made of. The map's feature state is keyed by it, and a tap finds it as the `id` of the feature.
+ */
+export type EditPointFeature = Feature<Point, EditPointProperties> & { id: number };
 export type EditPointCollection = { type: "FeatureCollection"; features: EditPointFeature[] };
 
 export type RouteCollection = FeatureCollection<LineString, RouteProperties>;
@@ -69,6 +75,8 @@ export const MODE_COLORS: Record<Mode, string> = {
   drive: "#007AFF",
   flight: "#FF9500",
 };
+/** The word for each mode of a move, as the app writes it ("Walk · 1.2 km"); an unknown mode is just a "Move". */
+export const MODE_WORDS = { walk: "Walk", cycle: "Cycle", drive: "Drive", flight: "Flight", unknown: "Move" } as const;
 const UNKNOWN_MODE_COLOR = "#8E8E93";
 export const PIN_COLOR = "#FF375F";
 /** What a selected point of edit mode is drawn in. */
@@ -279,16 +287,24 @@ export function tripGeoJson(trip: TripResponse): { routes: RouteCollection; plac
 
 /** What every point of edit mode says of itself: nothing, so that one object does, and the worker is sent it once. */
 const NO_PROPERTIES: Record<string, never> = {};
+/** What a point that the timeline ignores (a status other than 0) says of itself: one object too. */
+const IGNORED: { ignored: true } = { ignored: true };
 
 /**
  * A point for each raw point of a day, for edit mode: at `[lon, lat]`, with the index of the point in `points` as its numeric `id` (a selection is a
- * set of those, and the map's feature state, which is what draws a point as selected, is keyed by it) and no properties. The time and the device
- * stay in `points`: the map has no use for them, and a dense day has some 40,000 points.
+ * set of those, and the map's feature state, which is what draws a point as selected, is keyed by it) and no properties, but for `ignored` on a point
+ * that the timeline ignores (its status is not 0: drawn hollow). The time and the device stay in `points`: the map has no use for them, and a dense day
+ * has some 40,000 points.
  */
 export function editPointsGeoJson(points: readonly RawPoint[]): EditPointCollection {
   return {
     type: "FeatureCollection",
-    features: points.map(([, lon, lat], id) => ({ type: "Feature", id, properties: NO_PROPERTIES, geometry: { type: "Point", coordinates: [lon, lat] } })),
+    features: points.map(([, lon, lat, , status], id) => ({
+      type: "Feature",
+      id,
+      properties: status === 0 ? NO_PROPERTIES : IGNORED,
+      geometry: { type: "Point", coordinates: [lon, lat] },
+    })),
   };
 }
 
@@ -332,8 +348,8 @@ export const LAYER_IDS = {
 } as const;
 
 /**
- * A day is drawn bold, with pins; a period (week, month, year, range) is drawn faint, with dots; the trips are the dots of their cities,
- * with no routes; a trip is drawn bold as a day is, with the dots of its cities.
+ * A day is drawn bold, with pins; a period (week, month, year, range) is drawn faint by default (the owner may have it at full strength), with dots;
+ * the trips are the dots of their cities, with no routes; a trip is drawn bold as a day is, with the dots of its cities.
  */
 export type RouteView = "day" | "range" | "trips" | "trip";
 
@@ -345,7 +361,9 @@ type LineColor = NonNullable<NonNullable<LineLayer["paint"]>["line-color"]>;
 const DAY_ROUTE_WIDTH = 4;
 const CASING_WIDTH = 7;
 const RANGE_ROUTE_WIDTH = 2.4;
+/** What a period's routes are drawn at when they are faded (the default), and at when they are not. */
 const RANGE_ROUTE_OPACITY = 0.35;
+const FULL_ROUTE_OPACITY = 1;
 /** Dashes and gaps, in multiples of the line's width. */
 const FLIGHT_DASH: [number, number] = [2, 2];
 
@@ -353,8 +371,9 @@ const FLIGHT_DASH: [number, number] = [2, 2];
 const ROUTE_OPACITY_UNDER_HEAT = 0.2;
 
 /**
- * The route layers, with the opacity each has when nothing is under it: a day's are solid (the specs give them no opacity), a
- * period's are faint already. The heat fades all of them by a change of this paint property, so the layers are not made again.
+ * The route layers, with the opacity each has when nothing is under it: a day's are solid (the specs give them no opacity), a period's are faint by
+ * default (and the owner may set them to full strength: `routeOpacity`). The heat fades all of them by a change of this paint property, so the layers
+ * are not made again.
  */
 const ROUTE_OPACITY: Record<string, number> = {
   [LAYER_IDS.routeCasing]: 1,
@@ -367,9 +386,13 @@ const ROUTE_OPACITY: Record<string, number> = {
 /** The ids of the layers that draw the routes, the day's and the period's alike (whichever is hidden is faded too). */
 export const ROUTE_LAYERS: readonly string[] = Object.keys(ROUTE_OPACITY);
 
-/** The opacity the route layer `layerId` is drawn at: its own, or, with a heat layer under it, the fifth that lets the glow through. */
-export function routeOpacity(layerId: string, underHeat: boolean): number {
-  return underHeat ? ROUTE_OPACITY_UNDER_HEAT : (ROUTE_OPACITY[layerId] ?? 1);
+/**
+ * The opacity the route layer `layerId` is drawn at: with a heat layer under it, the fifth that lets the glow through; otherwise its own, which for
+ * a period's routes is the faint one while `fade` is on and full when it is off (a day's are solid either way).
+ */
+export function routeOpacity(layerId: string, underHeat: boolean, fade = true): number {
+  if (underHeat) return ROUTE_OPACITY_UNDER_HEAT;
+  return fade ? (ROUTE_OPACITY[layerId] ?? 1) : FULL_ROUTE_OPACITY;
 }
 
 const IS_FLIGHT: FilterSpecification = ["==", ["get", "mode"], "flight"];
@@ -441,6 +464,11 @@ function placeLabels(id: string, filter: FilterSpecification, anchors: Anchors, 
 
 /** Whether a feature of the edit points is selected: the map's feature state, set by id (a feature that has none is not). */
 const IS_SELECTED: CircleRadius = ["boolean", ["feature-state", "selected"], false];
+/** Whether a point of the edit points is one that the timeline ignores (a property of the feature, which a used point has not). */
+const IS_IGNORED: CircleRadius = ["boolean", ["get", "ignored"], false];
+/** An ignored point is a ring with no fill, 1.5 pixels wide, in the muted ink of the scheme (`--ink-muted`: darker on a light map, so that it reads there). */
+const EDIT_IGNORED_COLOR = { light: "#6C6C70", dark: "#8E8E93" } as const;
+const EDIT_IGNORED_RING_WIDTH = 1.5;
 
 /** The edit points are drawn small, and a selected one larger and red: 4 and 7 pixels of radius. */
 const EDIT_POINT_RADIUS = 4;
@@ -449,18 +477,19 @@ const EDIT_POINT_SELECTED_RADIUS = 7;
 const EDIT_POINT_HALO_WIDTH = 1;
 
 /**
- * Every layer the map draws, from the bottom up: the heat, the routes, the points of edit mode (their halos, then the dots), the place dots with their labels, the stop pins with their
- * names and their numbers (or the house, on the pin of home). The points are over the routes and under the pins: they are
- * drawn in edit mode only (the source of every other view is empty). Layers of the routes of the other views are there but hidden, so that going
- * from a day to a month, or back, only changes their visibility: a day's routes (bold, over a casing) are shown for a day and for a trip, a
- * period's (faint) for a period, and the list of trips shows no routes at all. The dots, their labels and the pins are not hidden by any
+ * Every layer the map draws, from the bottom up: the heat, the routes, the points of edit mode (their halos, then the dots), the place dots with
+ * their labels, the stop pins with their names and their numbers (or the house, on the pin of home). The points are over the routes and under the
+ * pins: they are drawn in edit mode only (the source of every other view is empty). Layers of the routes of the other views are there but hidden, so
+ * that going from a day to a month, or back, only changes their visibility: a day's routes (bold, over a casing) are shown for a day and for a trip,
+ * a period's (faint by default) for a period, and the list of trips shows no routes at all. The dots, their labels and the pins are not hidden by any
  * view; the source of the ones that a view does not draw is empty. `dark` is for the text on the map, which is dark on a light map and
  * light on a dark one.
  */
-export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[] {
+export function layerSpecs(view: RouteView, dark: boolean, fade = true): LayerSpecification[] {
   const shown = (...shownIn: RouteView[]): "visible" | "none" => (shownIn.includes(view) ? "visible" : "none");
   const ink = dark ? "#F2F2F7" : "#1C1C1E";
   const halo = dark ? "#1C1C1E" : WHITE;
+  const rangeOpacity = routeOpacity(LAYER_IDS.rangeRoute, false, fade);
   const labelPaint = { "text-color": ink, "text-halo-color": halo, "text-halo-width": 2 };
 
   return [
@@ -513,7 +542,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       source: SOURCE_IDS.routes,
       filter: IS_NOT_FLIGHT,
       layout: { "line-cap": "round", "line-join": "round", visibility: shown("range") },
-      paint: { "line-color": MODE_COLOR, "line-width": RANGE_ROUTE_WIDTH, "line-opacity": RANGE_ROUTE_OPACITY },
+      paint: { "line-color": MODE_COLOR, "line-width": RANGE_ROUTE_WIDTH, "line-opacity": rangeOpacity },
     },
     {
       id: LAYER_IDS.rangeFlight,
@@ -524,7 +553,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       paint: {
         "line-color": MODE_COLORS.flight,
         "line-width": RANGE_ROUTE_WIDTH,
-        "line-opacity": RANGE_ROUTE_OPACITY,
+        "line-opacity": rangeOpacity,
         "line-dasharray": FLIGHT_DASH,
       },
     },
@@ -536,19 +565,24 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       type: "circle",
       source: SOURCE_IDS.editPoints,
       paint: {
-        "circle-radius": ["case", IS_SELECTED, EDIT_POINT_SELECTED_RADIUS + EDIT_POINT_HALO_WIDTH, EDIT_POINT_RADIUS + EDIT_POINT_HALO_WIDTH],
+        // An ignored point that is not selected has no halo (radius 0): it is a ring with nothing in it, and a halo would fill it. Selected, it is like any other.
+        "circle-radius": ["case", IS_SELECTED, EDIT_POINT_SELECTED_RADIUS + EDIT_POINT_HALO_WIDTH, IS_IGNORED, 0, EDIT_POINT_RADIUS + EDIT_POINT_HALO_WIDTH],
         "circle-color": halo,
       },
     },
     {
-      // The raw points of the day in edit mode: dots in the ink of the scheme with a halo of the other (the layer under this), so that they read on a light map and on a dark
-      // one, and over a route of any colour. A selected one is bigger and red, by the feature state of its id (never by new data: a tap would redraw 40,000).
+      // The raw points of the day in edit mode: dots in the ink of the scheme (an ignored point is a grey ring, with no fill) with a halo of the other (the layer
+      // under this), so that they read on a light map and on a dark one, and over a route of any colour. A selected one is bigger and red, by the feature state of
+      // its id (never by new data: a tap would redraw 40,000).
       id: LAYER_IDS.editPoints,
       type: "circle",
       source: SOURCE_IDS.editPoints,
       paint: {
         "circle-radius": ["case", IS_SELECTED, EDIT_POINT_SELECTED_RADIUS, EDIT_POINT_RADIUS],
-        "circle-color": ["case", IS_SELECTED, EDIT_SELECTED_COLOR, ink],
+        "circle-color": ["case", IS_SELECTED, EDIT_SELECTED_COLOR, IS_IGNORED, "rgba(0,0,0,0)", ink],
+        // The ring of an ignored point (hollow dots do not paint over the others, as a stroke on every dot would): not on a used dot, nor on a selected one.
+        "circle-stroke-color": dark ? EDIT_IGNORED_COLOR.dark : EDIT_IGNORED_COLOR.light,
+        "circle-stroke-width": ["case", ["all", IS_IGNORED, ["!", IS_SELECTED]], EDIT_IGNORED_RING_WIDTH, 0],
       },
     },
     {

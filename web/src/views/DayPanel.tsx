@@ -3,7 +3,7 @@ import { useDay } from "../api/queries";
 import type { DayResponse, GapSegment, MoveSegment, StaySegment } from "../api/types";
 import { navigate } from "../app/router";
 import type { PointEditing } from "../app/useEditPoints";
-import { dayGeoJson, modeColor, placePoint, stopOrders, type FitFeatures, type RouteProperties, type Feature, type LineString } from "../map/layers";
+import { dayGeoJson, MODE_WORDS, modeColor, placePoint, stopOrders, type FitFeatures, type RouteProperties, type Feature, type LineString } from "../map/layers";
 import { dateOf } from "../time/dates";
 import { formatCount, formatDistance, formatDuration, formatTime } from "../time/format";
 import { Chip, Chips } from "./Chips";
@@ -26,8 +26,6 @@ export interface DayPanelProps {
   /** Edit mode for the points of the day, which the shell holds (the map is edited on, and needs it too). Without it the day has no button to edit its points. */
   edit?: PointEditing;
 }
-
-const MODE_WORDS = { walk: "Walk", cycle: "Cycle", drive: "Drive", flight: "Flight", unknown: "Move" } as const;
 
 const secondsOf = (segment: { start: string; end: string }): number => (Date.parse(segment.end) - Date.parse(segment.start)) / 1000;
 

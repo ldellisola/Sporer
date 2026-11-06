@@ -162,4 +162,82 @@ public class PointCleanerTests
 
         Assert.Equal(before, input);
     }
+
+    // ---- Classify: which points the cleaning ignores, and why --------------------------------------------------------------
+
+    [Fact]
+    public void Classify_says_used_for_a_clean_track()
+        => Assert.Equal([PointStatus.Used, PointStatus.Used, PointStatus.Used], PointCleaner.Classify([Pt(0, 5), Pt(10), Pt(20, 100)], new()));
+
+    [Fact]
+    public void Classify_calls_a_repeat_of_device_and_time_a_duplicate_and_the_first_used()
+        => Assert.Equal(
+            [PointStatus.Used, PointStatus.Used, PointStatus.Duplicate, PointStatus.Duplicate],
+            PointCleaner.Classify([Pt(0), Pt(10), Pt(0), Pt(10)], new()));
+
+    [Fact]
+    public void Classify_calls_a_bad_accuracy_poor_and_keeps_unknown()
+        => Assert.Equal(
+            [PointStatus.Used, PointStatus.PoorAccuracy, PointStatus.PoorAccuracy, PointStatus.Used, PointStatus.Used],
+            PointCleaner.Classify([Pt(0, 40), Pt(10, 250), Pt(20, -1), Pt(30, null), Pt(40, 100)], new()));
+
+    [Fact]
+    public void Classify_calls_a_duplicate_that_also_has_poor_accuracy_a_duplicate()
+        => Assert.Equal(
+            [PointStatus.Used, PointStatus.Duplicate],
+            PointCleaner.Classify([Pt(0, 10), Pt(0, 500)], new()));
+
+    [Fact]
+    public void Classify_calls_a_poor_first_of_a_pair_poor_and_the_repeat_a_duplicate()
+        => Assert.Equal(
+            [PointStatus.PoorAccuracy, PointStatus.Duplicate],
+            PointCleaner.Classify([Pt(0, 500), Pt(0, 10)], new()));
+
+    [Fact]
+    public void Classify_calls_an_out_and_back_spike_a_glitch_in_input_order()
+    {
+        var t = new TrackBuilder(T0, Spots.Home).Stay(TimeSpan.FromMinutes(2), Every10s).Spike(5_000)
+                                                .Stay(TimeSpan.FromMinutes(2), Every10s).Build();
+        var status = PointCleaner.Classify(t, new());
+
+        Assert.Equal(t.Count, status.Count);
+        var glitch = Assert.Single(Enumerable.Range(0, t.Count), i => status[i] == PointStatus.Glitch);
+        Assert.True(Geo.DistanceMeters(t[glitch].Position, Spots.Home) > 1_000);
+        Assert.All(Enumerable.Range(0, t.Count).Where(i => i != glitch), i => Assert.Equal(PointStatus.Used, status[i]));
+    }
+
+    [Fact] // a glitch is judged among the points that pass the first two rules: a poor fix between does not hide it
+    public void Classify_judges_a_glitch_among_the_points_that_are_neither_poor_nor_repeats()
+    {
+        var home = new TrackBuilder(T0, Spots.Home).Stay(TimeSpan.FromMinutes(1), Every10s).Build();
+        var far = new TrackPoint(home[^1].TimeUtc.AddSeconds(10), "phone", Spots.Lisbon.Latitude, Spots.Lisbon.Longitude, null, null, null);
+        var poor = Pt(0, 500) with { TimeUtc = far.TimeUtc.AddSeconds(5) };
+        var back = new TrackPoint(far.TimeUtc.AddSeconds(10), "phone", Spots.Home.Latitude, Spots.Home.Longitude, null, null, null);
+        List<TrackPoint> t = [.. home, far, poor, back, back with { TimeUtc = back.TimeUtc.AddSeconds(10) }];
+
+        var status = PointCleaner.Classify(t, new());
+
+        Assert.Equal(PointStatus.Glitch, status[home.Count]);
+        Assert.Equal(PointStatus.PoorAccuracy, status[home.Count + 1]);
+    }
+
+    [Fact] // the order of the answer is the order of the input, whatever the times
+    public void Classify_answers_in_input_order()
+        => Assert.Equal(
+            [PointStatus.Used, PointStatus.PoorAccuracy, PointStatus.Used],
+            PointCleaner.Classify([Pt(20), Pt(0, 250), Pt(10)], new()));
+
+    [Fact]
+    public void Clean_is_the_used_points_sorted_by_time()
+    {
+        var t = new TrackBuilder(T0, Spots.Home).Stay(TimeSpan.FromMinutes(1), Every10s).Spike(5_000)
+                                                .Stay(TimeSpan.FromMinutes(1), Every10s).Build();
+        List<TrackPoint> input = [.. t.AsEnumerable().Reverse(), Pt(0, 500), t[3]];
+
+        var status = PointCleaner.Classify(input, new());
+
+        Assert.Equal(
+            input.Where((_, i) => status[i] == PointStatus.Used).OrderBy(p => p.TimeUtc),
+            PointCleaner.Clean(input, new()));
+    }
 }

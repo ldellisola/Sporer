@@ -9,6 +9,7 @@ import { formatCount, formatTime } from "../time/format";
 import { DeletedTrips } from "./DeletedTrips";
 import forms from "./Forms.module.css";
 import { HomeSettings } from "./HomeSettings";
+import { MapSettings } from "./MapSettings";
 import { RemovedPoints } from "./RemovedPoints";
 import rows from "./Rows.module.css";
 import styles from "./SettingsPanel.module.css";
@@ -148,9 +149,9 @@ function About() {
 }
 
 /**
- * The panel of the settings: one section for each thing the owner can set or see, in the order of the plan: Home, Trips (the distance that makes a trip),
- * Deleted trips, Removed points, Processing and About. The map is left as it was (see `useViewMap`). The sections say what they have done in one status for
- * the whole panel (`SettingsNotes`), so that a screen reader follows one.
+ * The panel of the settings: one section for each thing the owner can set or see, in the order of the plan: Home, Trips (the distance that makes a
+ * trip), Deleted trips, Removed points, Processing, Map (how the routes are drawn) and About. Opening the settings does not change what the map shows
+ * (see `useViewMap`). The sections say what they have done in one status for the whole panel (`SettingsNotes`), so that a screen reader follows one.
  */
 export function SettingsPanel() {
   return (
@@ -160,6 +161,7 @@ export function SettingsPanel() {
       <DeletedTrips />
       <RemovedPoints />
       <Processing />
+      <MapSettings />
       <About />
     </SettingsNotes>
   );

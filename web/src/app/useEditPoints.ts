@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { deleteJson, postJson } from "../api/client";
 import { useWrite } from "../api/mutations";
 import { noteDayEdited, useDayPoints } from "../api/queries";
-import type { DayPointsResponse, PointRef, RawPoint, RemovePointsResponse } from "../api/types";
+import type { DayPointsResponse, InspectedPoint, PointRef, PointStatus, RawPoint, RemovePointsResponse } from "../api/types";
 import type { Route } from "./router";
 
 // Edit mode for the points of a day: the one small place that holds it, so that the panel, the map and the toast share it. It is state of the
@@ -53,10 +53,18 @@ export interface PointEditing {
   selected: ReadonlySet<number>;
   /** Selects the point if it was not, and takes it off if it was. */
   toggle: (index: number) => void;
+  /**
+   * The point whose card is open: the last one that a tap selected or took off while Select area is off (an area does not open one, and neither does a tap
+   * while Select area is on: taps are for picking points then, and a card would be in the way of the next rectangle). It is cleared by `closeInspected`, by Done, by
+   * another day, and by the point being gone from the day's points (a removal). Null when none, and while the points are not there.
+   */
+  inspected: InspectedPoint | null;
+  /** Closes the card: the ×, Escape, and a tap on the map that hits no point. */
+  closeInspected: () => void;
   /** Adds the points to the selection (an area does not toggle). */
   select: (indices: readonly number[]) => void;
   clear: () => void;
-  /** Whether a drag over the map draws a rectangle to select the points in (the map's "Select area"): on until it is turned off. */
+  /** Whether a drag over the map draws a rectangle to select the points in (the map's "Select area"): on until it is turned off. Turning it on closes the card. */
   area: boolean;
   setArea: (on: boolean) => void;
   /**
@@ -111,6 +119,13 @@ interface Failure {
   refs: PointRef[];
   date: string;
   retrying: boolean;
+}
+
+/** The point whose card is open, as it was named, and the edit mode (session) it was opened in: the next session has none. */
+interface Inspect extends PointRef {
+  session: number;
+  /** The status of the row that was tapped: of two rows of one device and time, the card is of the first, but what the tap was on may be the repeat. */
+  status: PointStatus;
 }
 
 const asError = (error: unknown): Error => (error instanceof Error ? error : new Error(String(error)));
@@ -170,6 +185,18 @@ export function useEditPoints(route: Route): PointEditing {
     setSelection(current);
   }
   const selected = current.set;
+
+  // The card of a point. What is kept is its name; where it is comes from the points as they are now, and a point that is no longer among them (removed, or
+  // not of this list) has no card: the stored name is let go of once the points are there to say so, so that the point coming back (an Undo) does not bring it back.
+  const [inspect, setInspect] = useState<Inspect | null>(null);
+  const inspected = useMemo<InspectedPoint | null>(() => {
+    if (inspect === null || editing === null || inspect.session !== editing.session || points === undefined) return null;
+    const device = points.devices.indexOf(inspect.device);
+    const rows = device < 0 ? [] : points.points.filter((point) => point[0] === inspect.t && point[3] === device);
+    const found = rows.find((point) => point[4] === inspect.status) ?? rows[0]; // the row that was tapped, or the first when it is not there now
+    return found === undefined ? null : { device: inspect.device, t: inspect.t, lon: found[1], lat: found[2], status: found[4] };
+  }, [inspect, editing, points]);
+  if (inspect !== null && inspected === null && (!active || points !== undefined)) setInspect(null);
 
   const [toast, setToast] = useState<PointsToast | null>(null);
   const toasts = useRef(0);
@@ -264,16 +291,26 @@ export function useEditPoints(route: Route): PointEditing {
     points,
     load: { pending: active && query.isPending, error: active ? query.error : null, retry: () => void query.refetch() },
     selected,
-    toggle: (index) =>
+    inspected,
+    closeInspected: () => setInspect(null),
+    toggle: (index) => {
+      const tapped = active && editing !== null ? points?.points[index] : undefined;
+      if (tapped !== undefined && editing !== null && !editing.area && points !== undefined) {
+        setInspect({ session: editing.session, device: points.devices[tapped[3]]!, t: tapped[0], status: tapped[4] });
+      }
       change((base) => {
         const next = new Set(base);
         if (!next.delete(index)) next.add(index);
         return next;
-      }),
+      });
+    },
     select: (indices) => change((base) => new Set([...base, ...indices])),
     clear: () => change(() => EMPTY),
     area: active && editing.area,
-    setArea: (on) => setEditing((last) => (last === null ? last : { ...last, area: on })),
+    setArea: (on) => {
+      setEditing((last) => (last === null ? last : { ...last, area: on }));
+      if (on) setInspect(null); // the card would be over what a rectangle is drawn on
+    },
     removal: { run: runRemoval, pending: removing, error: mine?.status === "failed" ? mine.error : null, reset: forgetFailure },
     undo: { run: runUndo, pending: undo.isPending, error: undo.error },
     toast,
