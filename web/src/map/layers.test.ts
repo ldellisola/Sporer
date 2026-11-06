@@ -1137,6 +1137,38 @@ describe("routeOpacity", () => {
     }
   });
 
+  test("routeOpacity_is_full_for_every_route_layer_when_the_routes_are_not_faded", () => {
+    for (const id of ROUTE_LAYERS) expect(routeOpacity(id, false, false), id).toBe(1);
+  });
+
+  test("routeOpacity_is_faint_for_the_period_layers_only_when_they_are_faded_and_a_days_are_solid_either_way", () => {
+    expect(routeOpacity(LAYER_IDS.rangeRoute, false, true)).toBe(0.35);
+    expect(routeOpacity(LAYER_IDS.rangeFlight, false, true)).toBe(0.35);
+    for (const id of [LAYER_IDS.routeCasing, LAYER_IDS.dayRoute, LAYER_IDS.dayFlight]) {
+      expect(routeOpacity(id, false, true), id).toBe(1);
+      expect(routeOpacity(id, false, false), id).toBe(1);
+    }
+  });
+
+  test("routeOpacity_is_a_fifth_under_heat_whether_the_routes_are_faded_or_not", () => {
+    for (const id of ROUTE_LAYERS) {
+      expect(routeOpacity(id, true, true), id).toBe(0.2);
+      expect(routeOpacity(id, true, false), id).toBe(0.2);
+    }
+  });
+
+  test("routeOpacity_is_what_the_layerSpecs_are_drawn_at_for_either_setting", () => {
+    for (const fade of [true, false]) {
+      for (const view of ["day", "range"] as const) {
+        for (const spec of layerSpecs(view, false, fade)) {
+          if (!ROUTE_LAYERS.includes(spec.id)) continue;
+          const own = (spec.paint as { "line-opacity"?: number } | undefined)?.["line-opacity"] ?? 1;
+          expect(routeOpacity(spec.id, false, fade), `${fade} ${view} ${spec.id}`).toBe(own);
+        }
+      }
+    }
+  });
+
   test("routeOpacity_is_for_the_five_route_layers_and_no_other", () => {
     const lines = layerSpecs("day", false).filter((spec) => spec.type === "line" && (spec as { source: string }).source === SOURCE_IDS.routes);
 

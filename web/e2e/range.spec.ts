@@ -2,7 +2,7 @@ import type { Locator, Page, Request } from "@playwright/test";
 import { expect, test } from "./base";
 import october from "./fixtures/range-october.json" with { type: "json" };
 import { mockApi, type Reply } from "./mockApi";
-import { PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
+import { colourIn, PIXEL_POLL, pixelAt, sameColour, type Rgb } from "./pixel";
 import { sheetAtRest } from "./sheet";
 import { fixTime } from "./today";
 
@@ -368,5 +368,56 @@ test.describe("the heat of a month", () => {
     await expect(button).toHaveAttribute("aria-pressed", "false");
     await expect.poll(async () => sameColour(await below(), BACKGROUND), PIXEL_POLL).toBe(true); // the glow goes
     expect(heatRequests()).toHaveLength(2);
+  });
+});
+
+// The switch of the settings: the routes of a month are drawn faint, and at full strength once the owner turns the fading off there, with no reload.
+test.describe("the routes of a month", () => {
+  test.use({ deviceScaleFactor: 1 });
+
+  /** A month with one drive along a parallel, and no place: the map is brought to the drive, so the middle of what is free lies on it. */
+  const DRIVE: Rgb = [0x00, 0x7a, 0xff];
+  const FADED: Rgb = [145, 192, 241]; // the drive's blue at 35 % over the flat background of the test
+  const ROUTE_ONLY = {
+    ...empty("2026-10-01", "2026-10-31"),
+    summary: { places: 0, distanceMeters: 8000, movingSeconds: 600, moves: 1 },
+    moves: [{ id: 301, mode: "drive", start: "2026-10-05T06:30:00Z", end: "2026-10-05T06:40:00Z", geometry: [[10.7, 59.9], [10.75, 59.9], [10.8, 59.9]] }],
+  };
+
+  /** Whether the road is drawn at `drawn` anywhere on the map (it is 2.4 pixels wide, and the sheet over the map may have moved since the camera was brought to it). */
+  const roadIs = async (page: Page, drawn: Rgb, tolerance: number): Promise<boolean> => {
+    const box = (await map(page).boundingBox())!;
+    return (await colourIn(page, box, drawn, tolerance)) > 20;
+  };
+
+  test("month_routes_are_faint_until_the_settings_switch_is_turned_off_and_stay_full_over_a_reload", async ({ page }) => {
+    test.setTimeout(30_000 + 4 * PIXEL_POLL.timeout);
+    await fixToday(page);
+    await mockApi(page, { range: (request: Request): Reply => ({ json: new URL(request.url()).searchParams.get("from") === "2026-10-01" ? ROUTE_ONLY : empty("x", "y") }) });
+    await page.goto("/month/2026-10");
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+
+    // Faded: the road is the drive's blue at 35 % over the flat background, and not the drive's blue.
+    await expect.poll(() => roadIs(page, FADED, 14), PIXEL_POLL).toBe(true);
+    expect(await roadIs(page, DRIVE, 12)).toBe(false);
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    if (!isWide(page)) {
+      for (let i = 0; i < 2 && (await details(page).getAttribute("data-snap")) !== "full"; i++) await grip(page).click(); // the sheet up to full, where the switch can be reached
+      await sheetAtRest(page);
+    }
+    await details(page).getByRole("checkbox", { name: "Fade routes in weeks, months and years" }).uncheck();
+    await page.goBack();
+
+    await expect(page).toHaveURL(/\/month\/2026-10$/);
+    if (!isWide(page)) {
+      for (let i = 0; i < 3 && (await details(page).getAttribute("data-snap")) !== "peek"; i++) await grip(page).click(); // the sheet down: at full it covers the map
+      await sheetAtRest(page);
+    }
+    await expect.poll(() => roadIs(page, DRIVE, 12), PIXEL_POLL).toBe(true); // at full strength, with no reload
+
+    await page.reload();
+    await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+    await expect.poll(() => roadIs(page, DRIVE, 12), PIXEL_POLL).toBe(true); // and kept
   });
 });

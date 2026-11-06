@@ -68,7 +68,7 @@ test("gear_opens_settings_with_processing_and_about_and_leaves_the_map", { tag: 
   await openSheet(page);
 
   // The sections are in the order of the plan: Home, Trips, Deleted trips, Removed points, Processing, About.
-  await expect(details(page).getByRole("heading", { level: 2 })).toHaveText(["Home", "Trips", "Deleted trips", "Removed points", "Processing", "About"]);
+  await expect(details(page).getByRole("heading", { level: 2 })).toHaveText(["Home", "Trips", "Deleted trips", "Removed points", "Processing", "Map", "About"]);
   // Home: none is known here, and one can be set. Trips: the distance, as it is in effect.
   await expect(homeSection(page).getByText("No home yet")).toBeVisible();
   await expect(homeSection(page).getByRole("button", { name: "Set home" })).toBeVisible();
@@ -360,6 +360,28 @@ test("change_the_trip_distance_then_reset_it_and_the_empty_list_of_trips_says_th
   await expect(note(page)).toHaveText("Trip distance back to the default, 50 km");
   await expect(field).toHaveValue("50");
   expect(api.writes.slice(1)).toEqual([{ method: "PUT", path: "/api/settings", contentType: "application/json", body: { tripMinDistanceKm: null } }]);
+});
+
+test("the_map_section_has_the_fade_switch_on_and_the_choice_survives_a_reload", async ({ page }) => {
+  await fixToday(page);
+  await mockApi(page);
+  await page.goto("/settings");
+  await openSheet(page);
+  const fade = details(page).getByRole("region", { name: "Map" }).getByRole("checkbox", { name: "Fade routes in weeks, months and years" });
+  await expect(fade).toBeChecked(); // on by default
+  await expect(details(page).getByText("Off draws them as strongly as a day's.")).toBeVisible();
+
+  await fade.uncheck();
+
+  await expect(fade).not.toBeChecked();
+  await page.reload();
+  await openSheet(page);
+  await expect(fade).not.toBeChecked(); // kept on this device
+
+  await fade.check();
+  await page.reload();
+  await openSheet(page);
+  await expect(fade).toBeChecked();
 });
 
 test("restore_a_removed_batch_and_the_day_it_was_on_is_asked_for_again", { tag: "@smoke" }, async ({ page }) => {

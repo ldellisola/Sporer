@@ -67,6 +67,7 @@ export function App() {
   const viewportHeight = useViewportHeight();
   const lastDay = useLastDay(route);
   const [heatOn, setHeatOn] = useStoredFlag("heat", false);
+  const [fadeRoutes] = useStoredFlag("fadeRoutes", true); // set in the settings (`MapSettings`)
   const edit = useEditPoints(route);
   const map = useViewMap(route, heatOn, edit.points);
   const sheetRef = useRef<BottomSheetHandle>(null);
@@ -147,6 +148,7 @@ export function App() {
           fitTo={map.fitTo}
           home={map.home}
           padding={padding}
+          fadeRoutes={fadeRoutes}
           heatToggle={map.heat.available ? { on: heatOn, onChange: setHeatOn } : undefined}
           edit={
             edit.active

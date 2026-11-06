@@ -2485,6 +2485,47 @@ describe("MapView", () => {
       expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
       expect(map.layers.get(LAYER_IDS.heat)).toBeDefined();
     });
+
+    test("MapView_draws_the_routes_of_the_periods_at_full_strength_when_they_are_not_faded_and_changes_it_at_once", async () => {
+      goodStyle();
+      const data = { routes: routes(1) };
+      const { rerender } = render(view({ data, fadeRoutes: false }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([undefined, undefined, undefined, 1, 1]); // the specs of a style are made for the setting
+      const layers = new Map(map.layers);
+      const sources = new Map(map.sources);
+
+      rerender(view({ data, fadeRoutes: true }));
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([1, 1, 1, 0.35, 0.35]);
+      expect(map.paintCalls).toEqual(ROUTE_LAYERS.map((id) => [id, "line-opacity", routeOpacity(id, false, true)]));
+      for (const [id, layer] of layers) expect(map.layers.get(id), id).toBe(layer); // no layer made again, no new data
+      for (const [id, source] of sources) expect(map.sources.get(id)?.data, id).toBe(source.data);
+
+      rerender(view({ data, fadeRoutes: false }));
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([1, 1, 1, 1, 1]);
+    });
+
+    test("MapView_keeps_the_routes_at_a_fifth_under_heat_whichever_way_the_routes_are_set_and_returns_to_it_when_the_heat_goes", async () => {
+      goodStyle();
+      const data = { routes: routes(1), heat: heatCells() };
+      const { rerender } = render(view({ data, fadeRoutes: false }));
+      await styleApplied();
+      const map = theMap();
+      map.emit("style.load");
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
+
+      rerender(view({ data, fadeRoutes: true }));
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
+
+      rerender(view({ data: { routes: data.routes }, fadeRoutes: false }));
+
+      expect(ROUTE_LAYERS.map((id) => opacityOf(map, id))).toEqual([1, 1, 1, 1, 1]);
+    });
   });
 
   describe("camera", () => {

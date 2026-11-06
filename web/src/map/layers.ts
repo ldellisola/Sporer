@@ -355,7 +355,9 @@ type LineColor = NonNullable<NonNullable<LineLayer["paint"]>["line-color"]>;
 const DAY_ROUTE_WIDTH = 4;
 const CASING_WIDTH = 7;
 const RANGE_ROUTE_WIDTH = 2.4;
+/** What a period's routes are drawn at when they are faded (the default), and at when they are not. */
 const RANGE_ROUTE_OPACITY = 0.35;
+const FULL_ROUTE_OPACITY = 1;
 /** Dashes and gaps, in multiples of the line's width. */
 const FLIGHT_DASH: [number, number] = [2, 2];
 
@@ -377,9 +379,13 @@ const ROUTE_OPACITY: Record<string, number> = {
 /** The ids of the layers that draw the routes, the day's and the period's alike (whichever is hidden is faded too). */
 export const ROUTE_LAYERS: readonly string[] = Object.keys(ROUTE_OPACITY);
 
-/** The opacity the route layer `layerId` is drawn at: its own, or, with a heat layer under it, the fifth that lets the glow through. */
-export function routeOpacity(layerId: string, underHeat: boolean): number {
-  return underHeat ? ROUTE_OPACITY_UNDER_HEAT : (ROUTE_OPACITY[layerId] ?? 1);
+/**
+ * The opacity the route layer `layerId` is drawn at: with a heat layer under it, the fifth that lets the glow through; otherwise its own, which for
+ * a period's routes is the faint one while `fade` is on and full when it is off (a day's are solid either way).
+ */
+export function routeOpacity(layerId: string, underHeat: boolean, fade = true): number {
+  if (underHeat) return ROUTE_OPACITY_UNDER_HEAT;
+  return fade ? (ROUTE_OPACITY[layerId] ?? 1) : FULL_ROUTE_OPACITY;
 }
 
 const IS_FLIGHT: FilterSpecification = ["==", ["get", "mode"], "flight"];
@@ -472,10 +478,11 @@ const EDIT_POINT_HALO_WIDTH = 1;
  * view; the source of the ones that a view does not draw is empty. `dark` is for the text on the map, which is dark on a light map and
  * light on a dark one.
  */
-export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[] {
+export function layerSpecs(view: RouteView, dark: boolean, fade = true): LayerSpecification[] {
   const shown = (...shownIn: RouteView[]): "visible" | "none" => (shownIn.includes(view) ? "visible" : "none");
   const ink = dark ? "#F2F2F7" : "#1C1C1E";
   const halo = dark ? "#1C1C1E" : WHITE;
+  const rangeOpacity = routeOpacity(LAYER_IDS.rangeRoute, false, fade);
   const labelPaint = { "text-color": ink, "text-halo-color": halo, "text-halo-width": 2 };
 
   return [
@@ -528,7 +535,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       source: SOURCE_IDS.routes,
       filter: IS_NOT_FLIGHT,
       layout: { "line-cap": "round", "line-join": "round", visibility: shown("range") },
-      paint: { "line-color": MODE_COLOR, "line-width": RANGE_ROUTE_WIDTH, "line-opacity": RANGE_ROUTE_OPACITY },
+      paint: { "line-color": MODE_COLOR, "line-width": RANGE_ROUTE_WIDTH, "line-opacity": rangeOpacity },
     },
     {
       id: LAYER_IDS.rangeFlight,
@@ -539,7 +546,7 @@ export function layerSpecs(view: RouteView, dark: boolean): LayerSpecification[]
       paint: {
         "line-color": MODE_COLORS.flight,
         "line-width": RANGE_ROUTE_WIDTH,
-        "line-opacity": RANGE_ROUTE_OPACITY,
+        "line-opacity": rangeOpacity,
         "line-dasharray": FLIGHT_DASH,
       },
     },

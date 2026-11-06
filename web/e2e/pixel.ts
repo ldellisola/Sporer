@@ -58,3 +58,28 @@ export const PIXEL_POLL = { timeout: 20_000 };
 export function sameColour(a: Rgb, b: Rgb, tolerance = 4): boolean {
   return a.every((channel, i) => Math.abs(channel - (b[i] ?? 0)) <= tolerance);
 }
+
+/**
+ * How many pixels of the page within `clip` (CSS pixels) are `colour` to within `tolerance` in each channel: for a line whose place on the screen is
+ * not known to the pixel (a map that has been brought to it under a sheet that has since moved). Read in the page, as `pixelAt` does.
+ */
+export async function colourIn(page: Page, clip: { x: number; y: number; width: number; height: number }, colour: Rgb, tolerance = 4): Promise<number> {
+  const png = await page.screenshot({ clip });
+  return page.evaluate(
+    async ([base64, wanted, tol]): Promise<number> => {
+      const bytes = Uint8Array.from(atob(base64 as string), (char) => char.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d");
+      if (context === null) throw new Error("No 2D canvas to read the screenshot with.");
+      context.drawImage(bitmap, 0, 0);
+      const { data } = context.getImageData(0, 0, bitmap.width, bitmap.height);
+      const [r, g, b] = wanted as Rgb;
+      let count = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (Math.abs(data[i]! - r) <= (tol as number) && Math.abs(data[i + 1]! - g) <= (tol as number) && Math.abs(data[i + 2]! - b) <= (tol as number)) count += 1;
+      }
+      return count;
+    },
+    [png.toString("base64"), colour, tolerance] as const,
+  );
+}

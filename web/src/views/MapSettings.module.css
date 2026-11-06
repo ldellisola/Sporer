@@ -1,0 +1,31 @@
+/* The switch: a native checkbox at the size of a target for a finger, with its label, which is the whole row. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  font-size: 15px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.box {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.box:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* The note under it, as the hint under the trip distance's field. */
+.note {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
