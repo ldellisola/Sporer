@@ -373,6 +373,23 @@ describe("RemovedToast focus after an undo that went through", () => {
     expect(screen.getByRole("button", { name: "on the map" })).toHaveFocus();
   });
 
+  test("RemovedToast_does_not_take_the_focus_when_edit_mode_starts_or_ends_while_restored_is_still_showing", () => {
+    const at = anchors();
+    const { rerender } = render(ui(pointEditing({ active: false, toast: REMOVED }), at));
+    screen.getByRole("button", { name: "Undo" }).focus();
+    rerender(ui(pointEditing({ active: false, toast: RESTORED }), at));
+    expect(screen.getByRole("button", { name: "Edit points" })).toHaveFocus(); // the undo that went through: the focus is mended
+    screen.getByRole("button", { name: "Edit points" }).blur(); // and now it is on the page again (the button that had it was pressed, and went)
+
+    rerender(ui(pointEditing({ active: true, toast: RESTORED }), at)); // edit mode starts with "Restored" still up: the bar takes no focus as it appears
+
+    expect(document.body).toHaveFocus();
+
+    rerender(ui(pointEditing({ active: false, toast: RESTORED }), at)); // and ends: the focus is left where it is, too
+
+    expect(document.body).toHaveFocus();
+  });
+
   test("RemovedToast_does_not_take_the_focus_for_a_removal_that_was_not_undone", () => {
     const at = anchors();
     render(ui(pointEditing({ toast: REMOVED }), at));

@@ -48,8 +48,9 @@ export const sheetHalfHeight = (viewport: number): number => Math.max(SHEET_PEEK
  * peek; in a very small viewport the points still come in order.
  */
 function pointsFor(viewport: number, topClearance: number, inset: number, wanted: number): Record<Snap, number> {
-  // The peek that is asked for, but never less than the 96 that is always there nor more than half.
-  const peek = Math.min(Math.max(wanted, SHEET_PEEK), sheetHalfHeight(viewport)) + inset;
+  // The peek that is asked for, but never less than the 96 that is always there nor more than half; the home indicator counts in both, so that a row that is
+  // too tall for it can never lift half with it.
+  const peek = Math.max(SHEET_PEEK + inset, Math.min(wanted + inset, sheetHalfHeight(viewport)));
   const half = Math.max(peek, sheetHalfHeight(viewport));
   return { peek, half, full: Math.max(half, viewport - topClearance) };
 }
@@ -131,7 +132,8 @@ export interface BottomSheetProps {
 
 /**
  * The panel of a phone: a sheet at the bottom of the screen over the map, which never goes away and is not modal (the map
- * behind it stays in use). It rests at three points, a peek of 96 px above the home indicator, half the screen and the screen less 120 px (`topClearance`), and is pulled
+ * behind it stays in use). It rests at three points, a peek (96 px above the home indicator, or the `peek` that is asked for), half the screen and the screen less
+ * 120 px (`topClearance`), and is pulled
  * between them by its handle or, until it is full, by any part of it. Let go slowly it goes to the nearest point; flicked, to the
  * next one that way. The handle also steps through the points when pressed, for those who cannot drag. Its content scrolls only at
  * full: below that the part that shows is a preview, and a drag on it is the sheet's. The app can ask for it to be lowered
@@ -157,7 +159,8 @@ export function BottomSheet({
     return () => window.removeEventListener("resize", measure);
   }, []);
   const points = pointsFor(viewport, topClearance, inset, peek);
-  // What the toast keeps clear of (`--sheet-peek`, 96 px in the style sheet): where the sheet's lowest point is, so that a toast is never over the bar that a taller peek shows.
+  // What the toast keeps clear of (`--sheet-peek`, 96 px in the style sheet): where the sheet's lowest point is, so that a toast is never over the bar that a
+  // taller peek shows.
   const lowest = points.peek - inset;
   useLayoutEffect(() => {
     document.documentElement.style.setProperty("--sheet-peek", `${lowest}px`);

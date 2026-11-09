@@ -44,7 +44,10 @@ export interface PointEditing {
   done: () => void;
   /** The raw points of the day, while edit mode is on and they have come. */
   points: DayPointsResponse | undefined;
-  /** How loading them is going: on its way, failed, and the way to ask again. `failures` is how many loads have failed so far, which goes up with each one: a load that fails again with the same words is another failure. */
+  /**
+   * How loading them is going: on its way, failed, and the way to ask again. `failures` is how many loads have failed so far, which goes up with each one: a
+   * load that fails again with the same words is another failure.
+   */
   load: { pending: boolean; error: Error | null; failures: number; retry: () => void };
   /**
    * The selected points, by index into `points.points`. A new set for each change, which is never changed after. When the points change it is made for the

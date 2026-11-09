@@ -109,7 +109,8 @@ export function EditBar({ edit, onDone, anchors }: EditBarProps) {
         {failure !== null && (
           <div ref={alertBox} className={styles.problem} role="alert">
             <p className={states.headline}>
-              {/* Made again for each load that fails, so that the words are said again (a screen reader says what changes in an alert, and the same words twice are no change); the Retry is not, for it may have the focus. */}
+              {/* Made again for each load that fails, so that the words are said again (a screen reader says what changes in an alert, and the same words twice
+                  are no change); the Retry is not, for it may have the focus. */}
               <span key={load.failures}>{LOAD_FAILED}</span> — <RetryButton onClick={retryLoad} />
             </p>
           </div>

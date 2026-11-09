@@ -44,7 +44,10 @@
   /* Wide windows keep the day's panel in a column of this width. The app's code knows the number too (sheet/Sidebar.tsx). */
   --sidebar-width: 320px;
 
-  /* How much of the bottom sheet shows at its lowest point, above the home indicator. The app's code knows the number too (SHEET_PEEK in sheet/BottomSheet.tsx), and sets it on the page where edit mode needs a taller one. */
+  /*
+   * How much of the bottom sheet shows at its lowest point, above the home indicator. The app's code knows the number too (SHEET_PEEK in
+   * sheet/BottomSheet.tsx), and sets it on the page where edit mode needs a taller one.
+   */
   --sheet-peek: 96px;
 }
 

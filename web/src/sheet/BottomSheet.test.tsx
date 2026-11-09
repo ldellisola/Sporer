@@ -98,6 +98,16 @@ describe("BottomSheet", () => {
     expect(document.documentElement.style.getPropertyValue("--sheet-peek")).toBe(""); // the style sheet's own 96 px again
   });
 
+  test("BottomSheet_never_lifts_half_with_a_peek_that_is_too_tall_even_over_a_home_indicator", () => {
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(34); // the bottom safe area
+    const { sheet } = renderSheet(900);
+
+    expect(visibleHeight(sheet)).toBe(HALF); // the peek is half, with the home indicator in it
+    fireEvent.click(grip());
+    expect(visibleHeight(sheet)).toBe(HALF); // and half is where it was
+    vi.restoreAllMocks();
+  });
+
   test("BottomSheet_never_peeks_below_96_or_above_half", () => {
     const low = renderSheet(40);
     expect(visibleHeight(low.sheet)).toBe(PEEK);

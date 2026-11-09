@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 import type { EditAnchors } from "../app/editAnchors";
 import type { PointEditing } from "../app/useEditPoints";
 import { formatCount } from "../time/format";
@@ -53,15 +53,22 @@ export function RemovedToast({ edit, anchors }: { edit: PointEditing; anchors?: 
   useEffect(() => {
     if (undoFailed) focusIfLost(undoAlert.current);
   }, [undoFailed]);
-  // An undo that went through takes the Undo button away, and the focus with it if it was there (the toast now says "Restored"): it goes to what is still there to
-  // work with, the Done of the bar while edit mode is on, else the button that turns it on. Only a focus that is lost; the owner's own is left.
+  // An undo that went through takes the Undo button away, and the focus with it if it was there (the toast now says "Restored"): it goes to what is still there
+  // to work with, the Done of the bar while edit mode is on, else the button that turns it on. Only a focus that is lost, and only for that undo: edit mode that
+  // starts or ends while "Restored" is still up is not a reason to move it (the bar takes no focus as it appears), so the effect runs for the toast alone.
   const restoredId = edit.toast?.kind === "restored" ? edit.toast.id : null;
-  const editing = edit.active;
-  useEffect(() => {
-    if (restoredId === null || anchors === undefined || !focusLost()) return;
-    (editing ? anchors.done.current : null)?.focus();
+  const refocus = useEffectEvent(() => {
+    if (anchors === undefined || !focusLost()) return;
+    (edit.active ? anchors.done.current : null)?.focus();
     if (focusLost()) anchors.start.current?.focus();
-  }, [restoredId, editing, anchors]);
+  });
+  // Only for a toast that was "Removed" a moment ago: one that is "Restored" as the toast is mounted (or comes from elsewhere) had no Undo of ours.
+  const kind = edit.toast?.kind;
+  const wasRemoved = useRef(false);
+  useEffect(() => {
+    if (restoredId !== null && wasRemoved.current) refocus();
+    wasRemoved.current = kind === "removed";
+  }, [restoredId, kind]);
   const retrying = failedRemoval?.retrying === true;
   const wasRetrying = useRef(false);
   useEffect(() => {

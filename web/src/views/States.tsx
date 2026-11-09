@@ -23,7 +23,10 @@ export function Empty({ message, ref, tabIndex }: { message: string; ref?: Ref<H
   );
 }
 
-/** What failed, for whoever looks; and what the owner is told about it when the error has that to say (`ApiError.detail`, as it is). The edit bar says it the same way. */
+/**
+ * What failed, for whoever looks; and what the owner is told about it when the error has that to say (`ApiError.detail`, as it is). The edit bar says it the
+ * same way.
+ */
 export function describeError(error: unknown): string | null {
   if (error === null || error === undefined) return null;
   if (error instanceof ApiError && error.detail !== null) return `${error.message}. ${error.detail}`;

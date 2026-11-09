@@ -2,10 +2,12 @@
  * The bar of edit mode, at the top of the day's panel: the first thing it has, so that it shows when the sheet is at its lowest, and it stays at
  * the top of the panel where this scrolls. The buttons are those of the forms (Forms.module.css), and wrap under the count when the panel is narrow.
  *
- * What a sheet at its lowest shows of the panel is 64 px (the peek is 96 and the grip has 32), and the row is two lines where the words are too long for the
- * buttons to be beside them (the words of a load that failed, with Clear, Remove and Done, on any phone; the count too, in a font as wide as DejaVu Sans). The
- * 6 px above are the room that a Retry has over its line (it is made taller than the words to be a target for a finger, and a box that is over the top of the
- * panel is cut off; EDIT_BAR_INSET in EditBar.tsx is this number, which the sheet adds to the height of the row for its peek); then the line of words (14 px at a line height of 1.1), the 6 px that the Retry has under it, and the buttons: 6 + 15.4 + 6 + 36 is 63.4.
+ * What a sheet at its lowest shows of the panel is the row and the 6 px over it: the sheet peeks as far as the row ends (the grip has 32 px, EDIT_BAR_INSET in
+ * EditBar.tsx is the 6, and the row is measured, so a larger text that makes it taller makes the peek taller; 96 px at the least). The row is two lines where
+ * the words are too long for the buttons to be beside them (the words of a load that failed, with Clear, Remove and Done, on any phone; the count too, in a font
+ * as wide as DejaVu Sans). The 6 px above are the room that a Retry has over its line (it is made taller than the words to be a target for a finger, and a box
+ * that is over the top of the panel is cut off); then the line of words (14 px at a line height of 1.1), the 6 px that the Retry has under it, and the
+ * buttons: 6 + 15.4 + 6 + 36 is 63.4, of which the row is 57.4.
  */
 .bar {
   position: sticky;
@@ -51,7 +53,7 @@
 /*
  * The words of a load that failed, in the place of the count (the alert of ErrorState, as small as the count is and with none of the box it has under a
  * list: the row must not be made taller than the buttons are, for the sheet at its lowest shows the row and nothing under it). Their lines are close
- * for the same reason: where the buttons are three they are a line of their own (see the bar), and there are 64 px.
+ * for the same reason: where the buttons are three they are a line of their own (see the bar), and the peek is as tall as the two lines.
  */
 .problem {
   min-width: 0;

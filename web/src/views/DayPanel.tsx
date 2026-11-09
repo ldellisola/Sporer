@@ -26,7 +26,7 @@ export interface DayPanelProps {
   onFocus: (features: FitFeatures) => void;
   /** Edit mode for the points of the day, which the shell holds (the map is edited on, and needs it too). Without it the day has no button to edit its points. */
   edit?: PointEditing;
-  /** Where the shell reaches the bar and the button of edit mode (see `EditAnchors`): it puts the focus on one of them, and sizes the sheet's peek by the row of the bar. */
+  /** Where the shell reaches the bar and the button of edit mode (see `EditAnchors`): it puts the focus on one, and sizes the sheet's peek by the bar's row. */
   anchors?: EditAnchors;
 }
 
