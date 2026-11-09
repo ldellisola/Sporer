@@ -6,8 +6,8 @@ import { mockApi } from "./mockApi";
 // the API see every request). Every test has a browser context of its own, so each begins with no worker and installs one.
 //
 // What the page asks is seen by `page.route`, which is what `mockApi` and the guard (base.ts) use. What the worker itself asks of the network
-// (the page of a navigation, and the files of the shell at install) is not the page's request: it is seen by `context.route` only, and only
-// because playwright.config.ts sets PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS (read there why).
+// (the page of a navigation, and the files of the shell at install) is not the page's request: it is seen by `context.route` only (Playwright
+// reports a worker's network events in Chromium since 1.57, with no setting needed).
 test.use({ serviceWorkers: "allow" });
 
 const DAY = "/day/2026-10-22";

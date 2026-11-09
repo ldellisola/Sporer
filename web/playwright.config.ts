@@ -7,17 +7,15 @@ declare const process: { env: Record<string, string | undefined> }; // this file
 const PORT = 4173;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
-// Playwright (1.56) lets a route, and the offline switch, reach the requests that a service worker makes itself (the page of a navigation, the files
-// of the shell at install) only when this is set: its network events for workers are still marked experimental. Without it those requests go to the
-// real network whatever a test says, and service-worker.spec.ts would be testing a worker that is never offline, never slow and never redirected.
-// It is set here, so for the whole run: the other specs are not affected, because they block service workers (`serviceWorkers: "block"` below), so
-// there is no worker target for it to apply to. It is read by the process that launches the browser, which is a test worker: a browser that
-// is not launched by it (a remote one, `PW_TEST_CONNECT_WS_ENDPOINT`) needs it set on its own server. Check it again when Playwright is upgraded.
-process.env["PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS"] = "1";
-
 // The container has no GPU. SwiftShader is Chrome's software WebGL, which MapLibre needs to draw at all. These are Chromium's flags: WebKit
 // refuses to launch with ones it does not know, so they are the Chromium projects' own (below) and not the whole run's.
 const WEBGL_ARGS = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"];
+
+// For a machine whose Chromium is not the one that this version of Playwright installs (a container with an older build, and no way to
+// download one): PW_CHROMIUM_PATH is the path of a Chromium to launch instead. Only local runs set it; CI does not, and then Playwright
+// uses its own. Unset, the launch option is absent altogether.
+const CHROMIUM_PATH = process.env["PW_CHROMIUM_PATH"];
+const CHROMIUM_LAUNCH = { args: WEBGL_ARGS, ...(CHROMIUM_PATH ? { executablePath: CHROMIUM_PATH } : {}) };
 
 const PHONE_VIEWPORT = { width: 390, height: 844 };
 
@@ -65,7 +63,7 @@ export default defineConfig({
       name: "phone",
       use: {
         browserName: "chromium",
-        launchOptions: { args: WEBGL_ARGS },
+        launchOptions: CHROMIUM_LAUNCH,
         viewport: PHONE_VIEWPORT,
         deviceScaleFactor: 3,
         isMobile: true,
@@ -76,7 +74,7 @@ export default defineConfig({
       name: "desktop",
       use: {
         browserName: "chromium",
-        launchOptions: { args: WEBGL_ARGS },
+        launchOptions: CHROMIUM_LAUNCH,
         viewport: { width: 1280, height: 800 },
       },
     },

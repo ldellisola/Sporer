@@ -42,10 +42,7 @@ jobs:
   # web/playwright.config.ts), which needs no GPU, so the runner as it is will do. They run in Chromium, and a smoke set of them
   # (the tests tagged @smoke, a few of each flow) also in WebKit, the engine of the owner's iPhone.
   web:
-    # Ubuntu 24.04, not ubuntu-latest: that is Ubuntu 26.04 since late October 2026, which Playwright 1.56 does not support. Its install-deps
-    # then installs nothing and exits 0, and WebKit cannot start (libwayland-server.so.0 missing). Move to ubuntu-latest with a Playwright
-    # that supports 26.04.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     # The limit is for a run that hangs (a browser that never answers), which would otherwise sit for the six hours that a job is given;
     # it is set above what a green run takes, not near it. Measured on the first run (a cache miss, Chromium's 234 tests and the WebKit smoke set
     # in one run): installing the browsers 34 s, the browser tests 10.8 minutes, the whole job 12.7 minutes. A hit on the cache saves most of the
@@ -107,9 +104,16 @@ jobs:
 
       # What the cache holds is the browsers' files. The libraries that they need (fonts, GStreamer, GTK for WebKit and so on) are packages of the
       # system, which a fresh runner does not have: they are installed whether the browsers came from the cache or not.
+      # When this version of Playwright has no package list for the runner's Ubuntu, install-deps prints "Cannot install dependencies" and exits 0,
+      # and WebKit then fails to start for a library that is missing. The step fails on that message instead, where the cause is.
       - name: Install the system packages of the cached browsers
         if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium webkit
+        run: |
+          npx playwright install-deps chromium webkit 2>&1 | tee install-deps.log
+          if grep -q "Cannot install dependencies" install-deps.log; then
+            echo "::error::Playwright cannot install the system packages for this runner's OS"
+            exit 1
+          fi
 
       # PW_WEBKIT adds the webkit project (see web/playwright.config.ts): the smoke set, in the same run and the same report as Chromium's tests.
       - name: Run browser tests
