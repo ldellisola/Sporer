@@ -416,8 +416,8 @@ timeline (an algorithm change, or any `Detection__*` change, makes one, and your
   Clear and Done) is fully visible without pulling the sheet up, with Safari's text size (the page menu, aA, in the address bar of a page in Safari: the
   app on the Home Screen has no such menu) at 100 %, and again at 115 % and at 125 %. And again with Settings, Display & Brightness, Display Zoom, Larger
   Text: it narrows the page, and it is the one size setting that also applies to the app on the Home Screen. Check the same with a load error of the
-  points (open a day, turn on Airplane mode, then tap Edit points): its alert and its Retry must be in that row. At large text the row can need a third
-  line and push Done below the peek: say so, with the size, if it does.
+  points (open a day, turn on Airplane mode, then tap Edit points): its alert and its Retry must be in that row. The sheet's peek grows with the bar,
+  so Done stays in view at large text too; if it does not, say so, with the size.
 - [ ] **Re-date and rename a trip, delete one and restore it.** Open a trip, tap Edit, give it a name and another start or end date (the day you
   are back is the end date), Save. The trip, its days and the trips list show the new name and dates, and the address follows a new start
   date. **Use detected dates** puts the detected ones back. Delete another trip (Delete trip): it leaves the list, and is listed under Settings,
@@ -556,9 +556,10 @@ access gets a plain background instead of a map; the rest of the page works.
 
 - `test`: the .NET tests (`dotnet test src/Sporer.sln`).
 - `web`: `npm ci`, `npm run typecheck`, `npm test` and `npm run e2e` (with `PW_WEBKIT=1`) in `web/`. The browser tests run in Chromium and a smoke
-  set of them also in WebKit, the engine of iOS Safari. The Playwright browsers are cached on the version in `web/package-lock.json` (saved even
-  when a test fails; a cache is per branch and goes after 7 days unused, so the first run on `main` after a merge installs them again); a run
-  that finds them in the cache still installs the system packages they need.
+  set of them also in WebKit, the engine of iOS Safari. The job runs on `ubuntu-latest` (Ubuntu 26.04). The Playwright browsers are cached on the version
+  in `web/package-lock.json` and the Ubuntu release (saved even when a test fails; a cache is per branch and goes after 7 days unused, so the
+  first run on `main` after a merge installs them again); a run that finds them in the cache still installs the system packages they need, and
+  fails if that install cannot be done.
 - `build`: always builds the image, so that the Dockerfile is checked on every run, and publishes it (cosign, the login, the push and the
   signature) only for these events:
 
