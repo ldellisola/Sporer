@@ -47,7 +47,7 @@ The proof is a CI run on the branch on `ubuntu-latest`, with the WebKit smoke se
   - otherwise the day view's Edit points button;
   - otherwise leave it.
   Only do this when the focus was lost, using the existing `focusLost` helper. Unit-test it.
-- [ ] **Step 4: The sheet's peek follows the edit bar.** With edit mode on, the sheet's lowest point is the fixed 96 px (`SHEET_PEEK`), and at large text sizes the bar's row can need more. Make the peek, in edit mode only, as tall as the edit bar's row really is: measure it with a `ResizeObserver`. Never go below 96 px, and never above the half snap point. Outside edit mode nothing changes. Unit-test it with a measured height of 140 px. Add an e2e check that at 125 % text size, emulated by setting the root font size, the bar's Done is fully in view at the peek on the phone project.
+- [ ] **Step 4: The sheet's peek follows the edit bar.** With edit mode on, the sheet's lowest point is the fixed 96 px (`SHEET_PEEK`), and at large text sizes the bar's row can need more. Make the peek, in edit mode only, as tall as the edit bar's row really is: measure it with a `ResizeObserver`. Never go below 96 px, and never above the half snap point. Outside edit mode nothing changes. Unit-test it with a measured height of 140 px. Add e2e checks on the phone project that the bar's Done is fully in view at the peek, with the bar's text at 17.5 px and with a row made taller after edit mode starts. (Ruling CU-R2: the app sizes in px, so setting the root font size at 125 % would change nothing; the bar's own text is enlarged instead.)
 - [ ] **Step 5:** Commit with the message `Edit mode: the sign-out words, a failure said again, the focus after Undo, a peek that fits the bar`.
 
 ## Task 3: Docs

@@ -132,12 +132,11 @@ export interface BottomSheetProps {
 
 /**
  * The panel of a phone: a sheet at the bottom of the screen over the map, which never goes away and is not modal (the map
- * behind it stays in use). It rests at three points, a peek (96 px above the home indicator, or the `peek` that is asked for), half the screen and the screen less
- * 120 px (`topClearance`), and is pulled
- * between them by its handle or, until it is full, by any part of it. Let go slowly it goes to the nearest point; flicked, to the
- * next one that way. The handle also steps through the points when pressed, for those who cannot drag. Its content scrolls only at
- * full: below that the part that shows is a preview, and a drag on it is the sheet's. The app can ask for it to be lowered
- * (`ref`).
+ * behind it stays in use). It rests at three points, a peek (96 px above the home indicator, or the `peek` that is asked for), half the
+ * screen and the screen less 120 px (`topClearance`), and is pulled between them by its handle or, until it is full, by any part of it.
+ * Let go slowly it goes to the nearest point; flicked, to the next one that way. The handle also steps through the points when pressed,
+ * for those who cannot drag. Its content scrolls only at full: below that the part that shows is a preview, and a drag on it is the
+ * sheet's. The app can ask for it to be lowered (`ref`).
  */
 export function BottomSheet({
   children,

@@ -490,11 +490,18 @@ test("edit_points_peeks_as_far_as_the_row_of_the_bar_is_tall_when_it_grows_in_ed
   await details(page).getByRole("button", { name: "Edit points" }).click();
   await expect(bar(page)).toBeVisible();
   await sheetAtRest(page);
-  expect(await shownOfSheet(page)).toBe(96); // the row is one line of buttons: the peek that it always was
+  // The row is one line of buttons, or two in a font as wide as DejaVu Sans: the peek is the 96 px that it always was, or what the row needs (the grip, the
+  // padding that the App adds over the row, and the row as measured), whichever is more.
+  const rowHeight = (await bar(page).locator('[class*="row"]').first().boundingBox())!.height;
+  const peekBefore = await shownOfSheet(page);
+  expect(peekBefore).toBeGreaterThanOrEqual(96);
+  expect(peekBefore).toBeGreaterThanOrEqual(32 + 6 + rowHeight);
+  expect(peekBefore).toBeLessThanOrEqual(Math.max(96, 32 + 6 + rowHeight + 1)); // no more than that: the row, up to its next whole pixel
 
   // The row grows while edit mode is on, which only the observer of its size can tell the sheet of: the buttons make it 88 px tall.
   await page.addStyleTag({ content: '[aria-label="Edit points"] button { min-height: 88px; }' });
   await expect.poll(() => shownOfSheet(page)).toBeGreaterThanOrEqual(32 + 6 + 88);
+  expect(await shownOfSheet(page)).toBeGreaterThan(peekBefore); // it grew with the row
   await sheetAtRest(page);
   await expect(bar(page).getByRole("button", { name: "Done" })).toBeInViewport({ ratio: 1 });
 

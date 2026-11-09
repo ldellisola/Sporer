@@ -556,7 +556,7 @@ access gets a plain background instead of a map; the rest of the page works.
 
 - `test`: the .NET tests (`dotnet test src/Sporer.sln`).
 - `web`: `npm ci`, `npm run typecheck`, `npm test` and `npm run e2e` (with `PW_WEBKIT=1`) in `web/`. The browser tests run in Chromium and a smoke
-  set of them also in WebKit, the engine of iOS Safari. The job runs on `ubuntu-latest` (Ubuntu 26.04). The Playwright browsers are cached on the version
+  set of them also in WebKit, the engine of iOS Safari. The job runs on `ubuntu-latest` (Ubuntu 26.04 since late October 2026). The Playwright browsers are cached on the version
   in `web/package-lock.json` and the Ubuntu release (saved even when a test fails; a cache is per branch and goes after 7 days unused, so the
   first run on `main` after a merge installs them again); a run that finds them in the cache still installs the system packages they need, and
   fails if that install cannot be done.
