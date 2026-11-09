@@ -177,7 +177,8 @@ test("arrow_buttons_and_keys_step_the_period", { tag: "@smoke" }, async ({ page 
 
 // Rulings P2-R29 and P2-R33: the browser reports every part of a date as it is typed (the 2 of 28 makes the 2nd), and each is a date.
 // One that crosses the other end of the range is held; one that is fine is taken after a pause, with the focus still in the field.
-test("range_fields_take_a_date_typed_part_by_part_as_one_change", async ({ page }) => {
+test("range_fields_take_a_date_typed_part_by_part_as_one_change", async ({ page, isMobile }) => {
+  test.skip(isMobile, "typing a date part by part with a keyboard is a desktop interaction: on an iPhone, Safari sets a date with its picker");
   await mockApi(page);
   await page.goto("/range/2026-10-19..2026-10-25");
   const from = page.getByLabel("From", { exact: true });
@@ -200,7 +201,8 @@ test("range_fields_take_a_date_typed_part_by_part_as_one_change", async ({ page 
   expect(await page.evaluate(() => window.history.length)).toBe(entries + 1);
 });
 
-test("range_fields_take_an_invalid_date_when_they_are_left_and_Enter_takes_a_valid_one_at_once", async ({ page }) => {
+test("range_fields_take_an_invalid_date_when_they_are_left_and_Enter_takes_a_valid_one_at_once", async ({ page, isMobile }) => {
+  test.skip(isMobile, "typing a date part by part with a keyboard is a desktop interaction: on an iPhone, Safari sets a date with its picker");
   await mockApi(page);
   await page.goto("/range/2026-10-19..2026-10-25");
   const from = page.getByLabel("From", { exact: true });

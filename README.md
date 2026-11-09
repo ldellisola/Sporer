@@ -416,8 +416,8 @@ timeline (an algorithm change, or any `Detection__*` change, makes one, and your
   Clear and Done) is fully visible without pulling the sheet up, with Safari's text size (the page menu, aA, in the address bar of a page in Safari: the
   app on the Home Screen has no such menu) at 100 %, and again at 115 % and at 125 %. And again with Settings, Display & Brightness, Display Zoom, Larger
   Text: it narrows the page, and it is the one size setting that also applies to the app on the Home Screen. Check the same with a load error of the
-  points (open a day, turn on Airplane mode, then tap Edit points): its alert and its Retry must be in that row. At large text the row can need a third
-  line and push Done below the peek: say so, with the size, if it does.
+  points (open a day, turn on Airplane mode, then tap Edit points): its alert and its Retry must be in that row. The sheet's peek grows with the bar,
+  so Done stays in view at large text too; if it does not, say so, with the size.
 - [ ] **Re-date and rename a trip, delete one and restore it.** Open a trip, tap Edit, give it a name and another start or end date (the day you
   are back is the end date), Save. The trip, its days and the trips list show the new name and dates, and the address follows a new start
   date. **Use detected dates** puts the detected ones back. Delete another trip (Delete trip): it leaves the list, and is listed under Settings,
@@ -543,7 +543,7 @@ access gets a plain background instead of a map; the rest of the page works.
 | --- | --- |
 | `npm run typecheck` | `tsc --noEmit`, with `strict` on, for four projects: the app, the service worker (`src/sw`), the build's configuration (`build`) and, with Node's few declarations, the performance run (`web/perf/tsconfig.json`). |
 | `npm test` | The unit and component tests (Vitest, jsdom). |
-| `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. With `PW_WEBKIT=1` it adds a WebKit project that runs only the tests tagged `@smoke` (see below). |
+| `npm run e2e` | The browser tests (Playwright, Chromium), against the production build with the API mocked: no API, database or internet is needed. Run `npx playwright install chromium` once first. Where the Chromium that Playwright installs cannot be had (a container with an older build), `PW_CHROMIUM_PATH=/path/to/headless_shell` (for example `/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell`) runs the Chromium projects on that one instead; CI does not set it. The map is drawn with software WebGL, so no GPU is needed either, but it takes a couple of minutes. With `PW_WEBKIT=1` it adds a WebKit project that runs only the tests tagged `@smoke` (see below). |
 | `npm run perf` | The web performance run (spec §8), on a phone-sized page with the processor held back 4 times and, unless `PERF_NETWORK=off`, a network like the VPN (60 ms round trip, 20 Mbit/s down, 5 up): the panel's rows and the map's idle for a day, a month and a year (and the step to the next, with its answer prefetched and not), the list of trips and each trip, edit mode on the day with the most points, the app opened on today as a first visit and as the installed app (the service worker active, its cache filled), and a scripted pan and zoom on the year with its routes. The API's answers are those recorded by `npm run perf:record` from a server over the synthetic history, served over real HTTP by `web/perf/serve.mjs` as the API serves them (Brotli, cache headers). Not part of `npm run e2e` or CI; takes about six minutes (94 tests). How to run it, and its results, are in `docs/superpowers/plans/2026-10-29-sporer-plan-5-perf.md` and, for the earlier plans, `docs/superpowers/plans/2026-10-24-sporer-plan-2-perf.md`, `docs/superpowers/plans/2026-10-26-sporer-plan-3-perf.md` and `docs/superpowers/plans/2026-10-28-sporer-plan-4-perf.md`. |
 | `npm run perf:record` | Records those API answers, the trips' and the points of the day with the most of them among them (`node scripts/perf/record.mjs <api-url> <first-date> <last-date>`; it asks for the points of every day, which takes about half a minute), into `web/perf/recorded/`, which git ignores. |
 | `npm run perf:bundle` | After a build: the size of each JavaScript file of the production bundle, gzipped and Brotli-compressed. `npm run check:sw` prints what the service worker keeps. |
@@ -556,9 +556,10 @@ access gets a plain background instead of a map; the rest of the page works.
 
 - `test`: the .NET tests (`dotnet test src/Sporer.sln`).
 - `web`: `npm ci`, `npm run typecheck`, `npm test` and `npm run e2e` (with `PW_WEBKIT=1`) in `web/`. The browser tests run in Chromium and a smoke
-  set of them also in WebKit, the engine of iOS Safari. The Playwright browsers are cached on the version in `web/package-lock.json` (saved even
-  when a test fails; a cache is per branch and goes after 7 days unused, so the first run on `main` after a merge installs them again); a run
-  that finds them in the cache still installs the system packages they need.
+  set of them also in WebKit, the engine of iOS Safari. The job runs on `ubuntu-latest` (Ubuntu 26.04 since late October 2026). The Playwright
+  browsers are cached on the version in `web/package-lock.json` and the Ubuntu release (saved even when a test fails; a cache is per branch and
+  goes after 7 days unused, so the first run on `main` after a merge installs them again); a run that finds them in the cache still installs
+  the system packages they need, and fails if that install cannot be done.
 - `build`: always builds the image, so that the Dockerfile is checked on every run, and publishes it (cosign, the login, the push and the
   signature) only for these events:
 

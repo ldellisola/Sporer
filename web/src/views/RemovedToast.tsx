@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
+import type { EditAnchors } from "../app/editAnchors";
 import type { PointEditing } from "../app/useEditPoints";
 import { formatCount } from "../time/format";
 import { focusLost } from "./editForms";
@@ -44,7 +45,7 @@ function focusIfLost(card: HTMLElement | null): void {
  * there: it goes to the alert's first button (Retry, or Dismiss for a refusal); and so it does for a failed removal that is sent again and fails again.
  * "Removing 3 points…", while one is sent again, is said in the toast's live region, which is there before it is, so that a screen reader announces it.
  */
-export function RemovedToast({ edit }: { edit: PointEditing }) {
+export function RemovedToast({ edit, anchors }: { edit: PointEditing; anchors?: Pick<EditAnchors, "done" | "start"> }) {
   const { undo, failedRemoval } = edit;
   const undoAlert = useRef<HTMLDivElement>(null);
   const removalAlert = useRef<HTMLDivElement>(null);
@@ -52,6 +53,22 @@ export function RemovedToast({ edit }: { edit: PointEditing }) {
   useEffect(() => {
     if (undoFailed) focusIfLost(undoAlert.current);
   }, [undoFailed]);
+  // An undo that went through takes the Undo button away, and the focus with it if it was there (the toast now says "Restored"): it goes to what is still there
+  // to work with, the Done of the bar while edit mode is on, else the button that turns it on. Only a focus that is lost, and only for that undo: edit mode that
+  // starts or ends while "Restored" is still up is not a reason to move it (the bar takes no focus as it appears), so the effect runs for the toast alone.
+  const restoredId = edit.toast?.kind === "restored" ? edit.toast.id : null;
+  const refocus = useEffectEvent(() => {
+    if (anchors === undefined || !focusLost()) return;
+    (edit.active ? anchors.done.current : null)?.focus();
+    if (focusLost()) anchors.start.current?.focus();
+  });
+  // Only for a toast that was "Removed" a moment ago: one that is "Restored" as the toast is mounted (or comes from elsewhere) had no Undo of ours.
+  const kind = edit.toast?.kind;
+  const wasRemoved = useRef(false);
+  useEffect(() => {
+    if (restoredId !== null && wasRemoved.current) refocus();
+    wasRemoved.current = kind === "removed";
+  }, [restoredId, kind]);
   const retrying = failedRemoval?.retrying === true;
   const wasRetrying = useRef(false);
   useEffect(() => {

@@ -448,6 +448,68 @@ test("edit_points_done_ends_edit_mode_and_the_focus_goes_back_to_the_button", as
   await expectDot(page, project, WALK(3), "none"); // the points are not drawn out of edit mode
 });
 
+/** Opens the day, up to the button that turns edit mode on, with `overrides` for the API. */
+async function toEditButton(page: Page, overrides: Overrides = editServer().overrides): Promise<void> {
+  await fixToday(page);
+  await mockApi(page, overrides);
+  await page.goto("/day/2026-10-22");
+  await expect(map(page)).toHaveAttribute("data-map-state", "ready");
+  await expect(details(page).getByText("2 places")).toBeVisible();
+  await sheetAtRest(page);
+}
+
+/** How much of the sheet is on the screen: the viewport down to its top edge. */
+const shownOfSheet = async (page: Page): Promise<number> => page.viewportSize()!.height - (await details(page).boundingBox())!.y;
+
+test("edit_points_has_done_fully_in_view_at_the_peek_with_the_bar_text_at_17_5_px", async ({ page }) => {
+  test.skip(isWide(page), "the sheet is a phone's");
+  // 125 % of the bar's 14 px. The app's sizes are in px, so a root font size would change nothing: the text of the bar itself is made larger. A later load that
+  // failed makes the row two lines (the words, and then Clear, Remove and Done), which at this size is taller than the 96 px peek has room for: Done is cut off
+  // under the screen unless the peek follows the row.
+  const server = editServer();
+  const { project } = await intoEditMode(page, server.overrides);
+  await page.addStyleTag({ content: '[aria-label="Edit points"], [aria-label="Edit points"] * { font-size: 17.5px !important; }' });
+  await tap(page, placeOf(project, WALK(3)));
+  await bar(page).getByRole("button", { name: "Remove 1 point" }).click();
+  await expect(toast(page)).toHaveText(/Removed 1 point/);
+  await tap(page, placeOf(project, WALK(5)));
+  server.failPoints(2); // the points asked for again after the Undo: the request, and the one more that the app makes by itself
+  await toast(page).getByRole("button", { name: "Undo" }).click();
+  await expect(toast(page)).toHaveText(/Restored 1 point/);
+  await expect(bar(page).getByRole("alert")).toContainText("Couldn't load the points");
+  await sheetAtRest(page);
+
+  for (const name of ["Clear", "Remove 1 point", "Done"]) await expect(bar(page).getByRole("button", { name })).toBeInViewport({ ratio: 1 });
+  await expect(bar(page).getByRole("button", { name: "Retry" })).toBeInViewport({ ratio: 1 });
+});
+
+test("edit_points_peeks_as_far_as_the_row_of_the_bar_is_tall_when_it_grows_in_edit_mode_and_shows_done_in_full", async ({ page }) => {
+  test.skip(isWide(page), "the sheet is a phone's");
+  await toEditButton(page);
+  expect(await shownOfSheet(page)).toBe(96); // out of edit mode: the peek it always was
+  await details(page).getByRole("button", { name: "Edit points" }).click();
+  await expect(bar(page)).toBeVisible();
+  await sheetAtRest(page);
+  // The row is one line of buttons, or two in a font as wide as DejaVu Sans: the peek is the 96 px that it always was, or what the row needs (the grip, the
+  // padding that the App adds over the row, and the row as measured), whichever is more.
+  const rowHeight = (await bar(page).locator('[class*="row"]').first().boundingBox())!.height;
+  const peekBefore = await shownOfSheet(page);
+  expect(peekBefore).toBeGreaterThanOrEqual(96);
+  expect(peekBefore).toBeGreaterThanOrEqual(32 + 6 + rowHeight);
+  expect(peekBefore).toBeLessThanOrEqual(Math.max(96, 32 + 6 + rowHeight + 1)); // no more than that: the row, up to its next whole pixel
+
+  // The row grows while edit mode is on, which only the observer of its size can tell the sheet of: the buttons make it 88 px tall.
+  await page.addStyleTag({ content: '[aria-label="Edit points"] button { min-height: 88px; }' });
+  await expect.poll(() => shownOfSheet(page)).toBeGreaterThanOrEqual(32 + 6 + 88);
+  expect(await shownOfSheet(page)).toBeGreaterThan(peekBefore); // it grew with the row
+  await sheetAtRest(page);
+  await expect(bar(page).getByRole("button", { name: "Done" })).toBeInViewport({ ratio: 1 });
+
+  await bar(page).getByRole("button", { name: "Done" }).click();
+  await sheetAtRest(page);
+  expect(await shownOfSheet(page)).toBe(96); // and the peek is 96 px again when it is over
+});
+
 test("edit_points_toast_is_in_view_above_the_sheet_at_every_height_of_it_and_can_be_pressed", async ({ page }) => {
   const server = editServer();
   const { project } = await intoEditMode(page, server.overrides);
@@ -847,6 +909,7 @@ test("edit_points_the_card_of_the_rightmost_point_keeps_clear_of_the_map_buttons
   await tap(page, rightmost);
 
   await expect(pointCard(page)).toBeVisible();
+  await expect(pointCard(page).getByText("Coordinates")).toBeVisible(); // its height, and so where it goes, is that of what it shows: wait for that, not for the wait to go
   await expect(pointCard(page)).toHaveAttribute("data-side", /^(above|below)$/); // it has a pointer: this point is not under a button
   const box = (await pointCard(page).boundingBox())!;
   for (const name of ["Recenter map", "Heat map", "Select area"]) {

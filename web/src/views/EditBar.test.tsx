@@ -100,7 +100,7 @@ describe("EditBar", () => {
   });
 
   test("EditBar_says_the_points_are_on_their_way_in_its_row", () => {
-    render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } })} onDone={() => undefined} />);
+    render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, failures: 0, retry: vi.fn() } })} onDone={() => undefined} />);
 
     const row = screen.getByText("Loading points…");
     expect(row).toBeInTheDocument();
@@ -114,7 +114,7 @@ describe("EditBar", () => {
     const retry = vi.fn();
     render(
       <EditBar
-        edit={pointEditing({ points: undefined, load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry } })}
+        edit={pointEditing({ points: undefined, load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures: 1, retry } })}
         onDone={() => undefined}
       />,
     );
@@ -128,10 +128,51 @@ describe("EditBar", () => {
     expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
   });
 
+  test("EditBar_says_a_load_held_back_by_a_sign_out_in_the_words_of_every_other_error_state", () => {
+    // The same error as the other views' tests (States.test.tsx): the login of a proxy answered, and the owner is told how to sign in again (client.ts).
+    const detail = "Signed out at the login: close and reopen the app to sign in.";
+    const signedOut = new ApiError(0, "/api/day/2026-10-22/points", "GET", detail);
+    render(<EditBar edit={pointEditing({ points: undefined, load: { pending: false, error: signedOut, failures: 1, retry: vi.fn() } })} onDone={() => undefined} />);
+
+    expect(screen.getByText(`GET /api/day/2026-10-22/points failed with status 0. ${detail}`)).toBeInTheDocument();
+    expect(screen.getByText(/close and reopen the app to sign in/)).toBeInTheDocument();
+  });
+
+  test("EditBar_says_a_load_that_failed_again_with_the_same_words_again_and_leaves_the_focus_where_it_is", () => {
+    const failed = (failures: number) =>
+      pointEditing({ load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures, retry: vi.fn() } });
+    const { rerender } = render(<EditBar edit={failed(1)} onDone={() => undefined} />);
+    const alert = screen.getByRole("alert");
+    const retry = screen.getByRole("button", { name: "Retry" });
+    retry.focus();
+    const watcher = new MutationObserver(() => undefined);
+    watcher.observe(alert, { childList: true, subtree: true, characterData: true });
+
+    rerender(<EditBar edit={failed(2)} onDone={() => undefined} />); // the Retry was pressed and the load failed again: the same words
+
+    expect(watcher.takeRecords().length).toBeGreaterThan(0); // a change in the alert is what a screen reader says again
+    watcher.disconnect();
+    expect(screen.getByRole("alert")).toBe(alert); // the alert is not made again, and
+    expect(screen.getByRole("button", { name: "Retry" })).toBe(retry); // neither is its Retry, which has the focus
+    expect(retry).toHaveFocus();
+  });
+
+  test("EditBar_does_not_say_a_load_that_failed_once_more_than_once", () => {
+    const failed = pointEditing({ load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures: 1, retry: vi.fn() } });
+    const { rerender } = render(<EditBar edit={failed} onDone={() => undefined} />);
+    const watcher = new MutationObserver(() => undefined);
+    watcher.observe(screen.getByRole("alert"), { childList: true, subtree: true, characterData: true });
+
+    rerender(<EditBar edit={{ ...failed, selected: new Set([1]) }} onDone={() => undefined} />); // something else changed
+
+    expect(watcher.takeRecords()).toHaveLength(0);
+    watcher.disconnect();
+  });
+
   test("EditBar_says_what_failed_under_its_row_and_not_in_it", () => {
     render(
       <EditBar
-        edit={pointEditing({ points: undefined, load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } })}
+        edit={pointEditing({ points: undefined, load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures: 1, retry: vi.fn() } })}
         onDone={() => undefined}
       />,
     );
@@ -153,8 +194,8 @@ describe("EditBar", () => {
 
   test("EditBar_has_only_done_while_there_are_no_points_to_select_which_is_while_they_load_when_they_could_not_be_had_and_when_the_day_has_none", () => {
     const states = {
-      loading: pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } }),
-      failed: pointEditing({ points: undefined, load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } }),
+      loading: pointEditing({ points: undefined, load: { pending: true, error: null, failures: 0, retry: vi.fn() } }),
+      failed: pointEditing({ points: undefined, load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures: 1, retry: vi.fn() } }),
       none: pointEditing({ points: { date: "2026-10-22", devices: [], points: [] } }),
     };
     for (const [state, edit] of Object.entries(states)) {
@@ -167,7 +208,7 @@ describe("EditBar", () => {
   });
 
   test("EditBar_has_clear_remove_and_done_once_the_points_are_there", () => {
-    const { rerender } = render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } })} onDone={() => undefined} />);
+    const { rerender } = render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, failures: 0, retry: vi.fn() } })} onDone={() => undefined} />);
     expect(screen.queryByRole("button", { name: "Clear" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Remove/ })).not.toBeInTheDocument();
 
@@ -184,7 +225,7 @@ describe("EditBar", () => {
     const retry = vi.fn();
     render(
       <EditBar
-        edit={pointEditing({ selected: new Set([0, 1]), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry } })}
+        edit={pointEditing({ selected: new Set([0, 1]), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures: 1, retry } })}
         onDone={() => undefined}
       />,
     );
@@ -202,7 +243,7 @@ describe("EditBar", () => {
   test("EditBar_says_what_a_later_load_failed_with_under_its_row_as_for_the_first_and_has_no_second_alert", () => {
     render(
       <EditBar
-        edit={pointEditing({ selected: new Set([0]), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } })}
+        edit={pointEditing({ selected: new Set([0]), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures: 1, retry: vi.fn() } })}
         onDone={() => undefined}
       />,
     );
@@ -215,7 +256,7 @@ describe("EditBar", () => {
 
   test("EditBar_keeps_the_count_in_the_page_for_a_screen_reader_while_a_later_load_failure_takes_its_place_on_screen", () => {
     const failed = (selected: number[]) =>
-      pointEditing({ selected: new Set(selected), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } });
+      pointEditing({ selected: new Set(selected), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures: 1, retry: vi.fn() } });
     const { rerender } = render(<EditBar edit={pointEditing({ selected: new Set([0, 1]) })} onDone={() => undefined} />);
     const count = screen.getByText("2 selected");
     expect(count).not.toHaveClass("heardOnly");
@@ -238,7 +279,7 @@ describe("EditBar", () => {
   });
 
   test("EditBar_has_the_one_live_region_for_what_its_row_says_of_the_points_and_of_the_count", () => {
-    const { rerender } = render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } })} onDone={() => undefined} />);
+    const { rerender } = render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, failures: 0, retry: vi.fn() } })} onDone={() => undefined} />);
     const region = screen.getByText("Loading points…");
     expect(region).toHaveAttribute("aria-live", "polite");
 
@@ -439,7 +480,7 @@ describe("EditBar", () => {
     test("EditBar_puts_the_focus_on_done_when_the_points_to_select_are_gone_with_the_buttons_that_had_the_focus", () => {
       const gone = {
         "the day has none now": pointEditing({ points: { date: "2026-10-22", devices: [], points: [] } }),
-        "they are on their way again": pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } }),
+        "they are on their way again": pointEditing({ points: undefined, load: { pending: true, error: null, failures: 0, retry: vi.fn() } }),
       };
       for (const [state, edit] of Object.entries(gone)) {
         for (const name of ["Clear", "Remove 1 point"]) {
@@ -497,7 +538,7 @@ describe("EditBar", () => {
 
     test("EditBar_puts_the_focus_on_clear_when_a_later_load_that_was_retried_from_the_alert_goes_through_and_the_focus_was_lost_with_it", () => {
       const retry = vi.fn();
-      const failed = (selected: number[]) => pointEditing({ selected: new Set(selected), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry } });
+      const failed = (selected: number[]) => pointEditing({ selected: new Set(selected), load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures: 1, retry } });
       const { rerender } = render(<EditBar edit={failed([0, 1])} onDone={() => undefined} />);
       screen.getByRole("button", { name: "Retry" }).focus();
 
@@ -510,7 +551,7 @@ describe("EditBar", () => {
     });
 
     test("EditBar_puts_the_focus_on_done_when_a_later_load_that_was_retried_goes_through_with_nothing_selected", () => {
-      const failed = pointEditing({ load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } });
+      const failed = pointEditing({ load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures: 1, retry: vi.fn() } });
       const { rerender } = render(<EditBar edit={failed} onDone={() => undefined} />);
       screen.getByRole("button", { name: "Retry" }).focus();
       fireEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -522,12 +563,12 @@ describe("EditBar", () => {
     });
 
     test("EditBar_puts_the_focus_on_done_when_a_first_load_that_was_retried_from_the_alert_takes_the_alert_away", () => {
-      const failed = pointEditing({ points: undefined, load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() } });
+      const failed = pointEditing({ points: undefined, load: { pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures: 1, retry: vi.fn() } });
       const { rerender } = render(<EditBar edit={failed} onDone={() => undefined} />);
       screen.getByRole("button", { name: "Retry" }).focus();
       fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
-      rerender(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } })} onDone={() => undefined} />); // asked again: the alert is gone
+      rerender(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, failures: 0, retry: vi.fn() } })} onDone={() => undefined} />); // asked again: the alert is gone
 
       expect(screen.getByRole("button", { name: "Done" })).toHaveFocus();
 
@@ -537,7 +578,7 @@ describe("EditBar", () => {
     });
 
     test("EditBar_leaves_the_focus_alone_when_a_failed_load_clears_that_was_not_retried_from_the_alert_or_whose_focus_is_elsewhere", () => {
-      const failedLoad = () => ({ pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), retry: vi.fn() });
+      const failedLoad = () => ({ pending: false, error: new ApiError(503, "/api/day/2026-10-22/points"), failures: 1, retry: vi.fn() });
       const quiet = () => pointEditing({ selected: new Set([0]) });
       // The alert goes by itself (the points were asked for again by the shell, or by the window coming back): nothing was pressed, and the focus is not the bar's to take.
       const first = render(<EditBar edit={pointEditing({ selected: new Set([0]), load: failedLoad() })} onDone={() => undefined} />);
@@ -583,7 +624,7 @@ describe("EditBar", () => {
     });
 
     test("EditBar_takes_no_focus_when_it_appears_or_when_the_points_come_or_while_nothing_has_changed", () => {
-      const { rerender } = render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } })} onDone={() => undefined} />);
+      const { rerender } = render(<EditBar edit={pointEditing({ points: undefined, load: { pending: true, error: null, failures: 0, retry: vi.fn() } })} onDone={() => undefined} />);
       expect(document.body).toHaveFocus();
 
       rerender(<EditBar edit={pointEditing()} onDone={() => undefined} />); // the points came: there is something to select, which is the map's to do

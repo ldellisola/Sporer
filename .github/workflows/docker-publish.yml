@@ -42,10 +42,7 @@ jobs:
   # web/playwright.config.ts), which needs no GPU, so the runner as it is will do. They run in Chromium, and a smoke set of them
   # (the tests tagged @smoke, a few of each flow) also in WebKit, the engine of the owner's iPhone.
   web:
-    # Ubuntu 24.04, not ubuntu-latest: that is Ubuntu 26.04 since late October 2026, which Playwright 1.56 does not support. Its install-deps
-    # then installs nothing and exits 0, and WebKit cannot start (libwayland-server.so.0 missing). Move to ubuntu-latest with a Playwright
-    # that supports 26.04.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     # The limit is for a run that hangs (a browser that never answers), which would otherwise sit for the six hours that a job is given;
     # it is set above what a green run takes, not near it. Measured on the first run (a cache miss, Chromium's 234 tests and the WebKit smoke set
     # in one run): installing the browsers 34 s, the browser tests 10.8 minutes, the whole job 12.7 minutes. A hit on the cache saves most of the
@@ -78,16 +75,20 @@ jobs:
         run: npm test
 
       # The version that package-lock.json has locked, which is the one whose browsers are needed: a new version of Playwright is new browsers.
-      # If the lock file has none the step fails here, and not later with a key of `Linux-playwright-` that every run of every version would share.
+      # If the lock file has none the step fails here, and not later with a key of `Linux-ubuntu26.04-playwright-` that every run of every version
+      # would share. The step reads the runner's Ubuntu release too, which the key names as well, and fails on an empty one for the same reason.
       - name: Read the Playwright version
         id: playwright
         run: |
           version=$(node -p "require('./package-lock.json').packages?.['node_modules/@playwright/test']?.version ?? ''")
           [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::No Playwright version in web/package-lock.json"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          os=$(. /etc/os-release && echo "$VERSION_ID")
+          [[ -n $os ]] || { echo "::error::No VERSION_ID in /etc/os-release"; exit 1; }
+          echo "os=$os" >> "$GITHUB_OUTPUT"
 
-      # The browsers are downloaded (a few hundred megabytes) once for each version of Playwright, and kept. The key names the version and not
-      # the browsers: if a browser is added to the installs below, the key has to change with it, or a hit would not have it.
+      # The browsers are downloaded (a few hundred megabytes) once for each version of Playwright and release of Ubuntu, and kept. The key names them and
+      # not the browsers: if a browser is added to the installs below, the key has to change with it, or a hit would not have it.
       # Restored here and saved after the tests (Save the Playwright browsers), and not by one `actions/cache` step, which saves only when the whole job
       # passed: a run that fails in a test would then download the browsers again the next time, which is when it is run most.
       # A cache belongs to the branch whose run saved it. A run reads its own branch's and the default branch's (a pull request, its base's), never
@@ -98,7 +99,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ steps.playwright.outputs.version }}
+          key: ${{ runner.os }}-ubuntu${{ steps.playwright.outputs.os }}-playwright-${{ steps.playwright.outputs.version }}
 
       - name: Install the browsers
         id: install-browsers
@@ -107,9 +108,17 @@ jobs:
 
       # What the cache holds is the browsers' files. The libraries that they need (fonts, GStreamer, GTK for WebKit and so on) are packages of the
       # system, which a fresh runner does not have: they are installed whether the browsers came from the cache or not.
+      # When this version of Playwright has no package list for the runner's Ubuntu, install-deps prints "Cannot install dependencies" and exits 0,
+      # and WebKit then fails to start for a library that is missing. The step fails on that message instead, where the cause is.
       - name: Install the system packages of the cached browsers
         if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium webkit
+        run: |
+          set -o pipefail
+          npx playwright install-deps chromium webkit 2>&1 | tee install-deps.log
+          if grep -q "Cannot install dependencies" install-deps.log; then
+            echo "::error::Playwright cannot install the system packages for this runner's OS"
+            exit 1
+          fi
 
       # PW_WEBKIT adds the webkit project (see web/playwright.config.ts): the smoke set, in the same run and the same report as Chromium's tests.
       - name: Run browser tests
