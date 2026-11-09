@@ -140,8 +140,8 @@ function stubApi(answer: Answer = answerEmpty): string[] {
   return paths;
 }
 
-/** The bottom of the bar, as the browser would measure it, and the resize observer that would tell of it changing. */
-function stubLayout(barBottom: number) {
+/** The bottom of the bar, as the browser would measure it (and the height that every element has, which is the row of the edit bar's), and the resize observer that would tell of it changing. */
+function stubLayout(barBottom: number, height = 0) {
   const observers: (() => void)[] = [];
   vi.stubGlobal(
     "ResizeObserver",
@@ -154,10 +154,15 @@ function stubLayout(barBottom: number) {
     },
   );
   let bottom = barBottom;
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(() => ({ bottom }) as DOMRect);
+  let tall = height;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(() => ({ bottom, height: tall }) as DOMRect);
   return {
     move(next: number) {
       bottom = next;
+      act(() => observers.forEach((callback) => callback()));
+    },
+    grow(next: number) {
+      tall = next;
       act(() => observers.forEach((callback) => callback()));
     },
   };
@@ -1506,6 +1511,28 @@ describe("App edit points", () => {
 
     await waitFor(() => expect(details()).toHaveAttribute("data-snap", "peek"));
     expect(screen.getByRole("group", { name: "Edit points" })).toBeInTheDocument(); // and the bar is what a peek shows
+  });
+
+  test("App_has_the_sheet_peek_as_high_as_the_row_of_the_edit_bar_is_while_edit_mode_is_on_and_96_otherwise", async () => {
+    stubEditing();
+    const layout = stubLayout(100, 140); // a row of 140 px: large text
+    renderApp();
+    const button = await screen.findByRole("button", { name: "Edit points" });
+    expect(padding().bottom).toBe(96 + 16); // not in edit mode: the peek of 96
+
+    fireEvent.click(button);
+
+    // The grip (32) and the room over the row (6) and the row: that is what shows at the peek.
+    await waitFor(() => expect(padding().bottom).toBe(32 + 6 + 140 + 16));
+    layout.grow(40); // the text is smaller again: never below 96
+    await waitFor(() => expect(padding().bottom).toBe(96 + 16));
+    layout.grow(900); // and never above half of 800
+    await waitFor(() => expect(padding().bottom).toBe(400 + 16));
+    layout.grow(140);
+
+    fireEvent.click(within(screen.getByRole("group", { name: "Edit points" })).getByRole("button", { name: "Done" }));
+
+    await waitFor(() => expect(padding().bottom).toBe(96 + 16)); // edit mode is over: the peek is as it always was
   });
 
   test("App_selects_what_the_map_says_is_tapped_or_drawn_and_the_bar_counts_it", async () => {

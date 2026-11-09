@@ -44,8 +44,8 @@ export interface PointEditing {
   done: () => void;
   /** The raw points of the day, while edit mode is on and they have come. */
   points: DayPointsResponse | undefined;
-  /** How loading them is going: on its way, failed, and the way to ask again. */
-  load: { pending: boolean; error: Error | null; retry: () => void };
+  /** How loading them is going: on its way, failed, and the way to ask again. `failures` is how many loads have failed so far, which goes up with each one: a load that fails again with the same words is another failure. */
+  load: { pending: boolean; error: Error | null; failures: number; retry: () => void };
   /**
    * The selected points, by index into `points.points`. A new set for each change, which is never changed after. When the points change it is made for the
    * new list: the points that are still there, by device and time, and not those that are gone. It does not change while a removal is on its way.
@@ -289,7 +289,7 @@ export function useEditPoints(route: Route): PointEditing {
       setSelection(NONE);
     },
     points,
-    load: { pending: active && query.isPending, error: active ? query.error : null, retry: () => void query.refetch() },
+    load: { pending: active && query.isPending, error: active ? query.error : null, failures: query.errorUpdateCount, retry: () => void query.refetch() },
     selected,
     inspected,
     closeInspected: () => setInspect(null),

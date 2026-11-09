@@ -1,6 +1,8 @@
+import { createRef } from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ApiError } from "../api/client";
+import type { EditAnchors } from "../app/editAnchors";
 import type { FailedRemoval } from "../app/useEditPoints";
 import { pointEditing } from "../test/pointEditing";
 import { RemovedToast } from "./RemovedToast";
@@ -306,5 +308,75 @@ describe("RemovedToast focus after a failed undo", () => {
     );
 
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "on the map" }));
+  });
+});
+
+// The Undo button is gone once the undo went through and the toast says "Restored", and the focus was on it.
+describe("RemovedToast focus after an undo that went through", () => {
+  const RESTORED = { id: 2, kind: "restored", count: 3 } as const;
+  const anchors = (): EditAnchors => ({ done: createRef<HTMLButtonElement>(), start: createRef<HTMLButtonElement>(), row: () => undefined });
+  const ui = (edit: ReturnType<typeof pointEditing>, at: EditAnchors, buttons: { done?: boolean; start?: boolean } = { done: true, start: true }) => (
+    <div>
+      <button type="button">on the map</button>
+      {buttons.done && (
+        <button ref={at.done} type="button">
+          Done
+        </button>
+      )}
+      {buttons.start && (
+        <button ref={at.start} type="button">
+          Edit points
+        </button>
+      )}
+      <RemovedToast edit={edit} anchors={at} />
+    </div>
+  );
+
+  test("RemovedToast_puts_the_focus_on_done_when_the_undo_that_was_pressed_is_gone_and_edit_mode_is_still_on", () => {
+    const at = anchors();
+    const { rerender } = render(ui(pointEditing({ toast: REMOVED }), at));
+    screen.getByRole("button", { name: "Undo" }).focus();
+
+    rerender(ui(pointEditing({ toast: RESTORED }), at)); // restored: the Undo went, and the focus with it
+
+    expect(screen.getByRole("status")).toHaveTextContent("Restored 3 points");
+    expect(screen.getByRole("button", { name: "Done" })).toHaveFocus();
+  });
+
+  test("RemovedToast_puts_the_focus_on_edit_points_when_edit_mode_is_off", () => {
+    const at = anchors();
+    const { rerender } = render(ui(pointEditing({ active: false, toast: REMOVED }), at, { start: true }));
+    screen.getByRole("button", { name: "Undo" }).focus();
+
+    rerender(ui(pointEditing({ active: false, toast: RESTORED }), at, { start: true }));
+
+    expect(screen.getByRole("button", { name: "Edit points" })).toHaveFocus();
+  });
+
+  test("RemovedToast_leaves_the_focus_where_it_is_when_there_is_nowhere_to_put_it", () => {
+    const at = anchors();
+    const { rerender } = render(ui(pointEditing({ active: false, toast: REMOVED }), at, {}));
+    screen.getByRole("button", { name: "Undo" }).focus();
+
+    rerender(ui(pointEditing({ active: false, toast: RESTORED }), at, {}));
+
+    expect(document.body).toHaveFocus();
+  });
+
+  test("RemovedToast_does_not_move_the_focus_that_the_owner_has_put_elsewhere_when_the_undo_goes_through", () => {
+    const at = anchors();
+    const { rerender } = render(ui(pointEditing({ toast: REMOVED }), at));
+    screen.getByRole("button", { name: "on the map" }).focus();
+
+    rerender(ui(pointEditing({ toast: RESTORED }), at));
+
+    expect(screen.getByRole("button", { name: "on the map" })).toHaveFocus();
+  });
+
+  test("RemovedToast_does_not_take_the_focus_for_a_removal_that_was_not_undone", () => {
+    const at = anchors();
+    render(ui(pointEditing({ toast: REMOVED }), at));
+
+    expect(document.body).toHaveFocus();
   });
 });

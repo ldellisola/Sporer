@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import type { EditAnchors } from "../app/editAnchors";
 import type { PointEditing } from "../app/useEditPoints";
 import { formatCount } from "../time/format";
 import { focusLost } from "./editForms";
@@ -44,7 +45,7 @@ function focusIfLost(card: HTMLElement | null): void {
  * there: it goes to the alert's first button (Retry, or Dismiss for a refusal); and so it does for a failed removal that is sent again and fails again.
  * "Removing 3 points…", while one is sent again, is said in the toast's live region, which is there before it is, so that a screen reader announces it.
  */
-export function RemovedToast({ edit }: { edit: PointEditing }) {
+export function RemovedToast({ edit, anchors }: { edit: PointEditing; anchors?: Pick<EditAnchors, "done" | "start"> }) {
   const { undo, failedRemoval } = edit;
   const undoAlert = useRef<HTMLDivElement>(null);
   const removalAlert = useRef<HTMLDivElement>(null);
@@ -52,6 +53,15 @@ export function RemovedToast({ edit }: { edit: PointEditing }) {
   useEffect(() => {
     if (undoFailed) focusIfLost(undoAlert.current);
   }, [undoFailed]);
+  // An undo that went through takes the Undo button away, and the focus with it if it was there (the toast now says "Restored"): it goes to what is still there to
+  // work with, the Done of the bar while edit mode is on, else the button that turns it on. Only a focus that is lost; the owner's own is left.
+  const restoredId = edit.toast?.kind === "restored" ? edit.toast.id : null;
+  const editing = edit.active;
+  useEffect(() => {
+    if (restoredId === null || anchors === undefined || !focusLost()) return;
+    (editing ? anchors.done.current : null)?.focus();
+    if (focusLost()) anchors.start.current?.focus();
+  }, [restoredId, editing, anchors]);
   const retrying = failedRemoval?.retrying === true;
   const wasRetrying = useRef(false);
   useEffect(() => {

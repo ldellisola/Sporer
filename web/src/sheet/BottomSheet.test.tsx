@@ -19,10 +19,10 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function renderSheet() {
+function renderSheet(peek?: number) {
   const onHeightChange = vi.fn<(height: number) => void>();
   const view = render(
-    <BottomSheet onHeightChange={onHeightChange}>
+    <BottomSheet onHeightChange={onHeightChange} peek={peek}>
       <p>Panel</p>
     </BottomSheet>,
   );
@@ -65,6 +65,60 @@ function drag(target: Element, fromY: number, toY: number, ms: number) {
 const lastHeight = (onHeightChange: ReturnType<typeof renderSheet>["onHeightChange"]) => onHeightChange.mock.calls.at(-1)?.[0];
 
 describe("BottomSheet", () => {
+  test("BottomSheet_rests_at_the_peek_it_is_given_when_that_is_more_than_96", () => {
+    const { sheet, onHeightChange, rerender } = renderSheet(140);
+
+    expect(sheet).toHaveAttribute("data-snap", "peek");
+    expect(visibleHeight(sheet)).toBe(140);
+    expect(lastHeight(onHeightChange)).toBe(140);
+
+    rerender(
+      <BottomSheet onHeightChange={onHeightChange} peek={180}>
+        <p>Panel</p>
+      </BottomSheet>,
+    );
+
+    expect(visibleHeight(sheet)).toBe(180); // the bar grew while the sheet was at its peek: the peek follows
+    expect(lastHeight(onHeightChange)).toBe(180);
+    expect(sheet.style.height).toBe(`${FULL}px`);
+  });
+
+  test("BottomSheet_tells_the_style_sheet_where_its_lowest_point_is_for_the_toast_to_keep_clear_of", () => {
+    const { rerender, unmount } = renderSheet(140);
+    expect(document.documentElement.style.getPropertyValue("--sheet-peek")).toBe("140px");
+
+    rerender(
+      <BottomSheet peek={96}>
+        <p>Panel</p>
+      </BottomSheet>,
+    );
+    expect(document.documentElement.style.getPropertyValue("--sheet-peek")).toBe("96px");
+
+    unmount();
+    expect(document.documentElement.style.getPropertyValue("--sheet-peek")).toBe(""); // the style sheet's own 96 px again
+  });
+
+  test("BottomSheet_never_peeks_below_96_or_above_half", () => {
+    const low = renderSheet(40);
+    expect(visibleHeight(low.sheet)).toBe(PEEK);
+    low.unmount();
+
+    const high = renderSheet(900);
+    expect(visibleHeight(high.sheet)).toBe(HALF);
+    expect(high.sheet).toHaveAttribute("data-snap", "peek");
+  });
+
+  test("BottomSheet_leaves_half_and_full_where_they_were_for_a_taller_peek", () => {
+    const { sheet } = renderSheet(140);
+
+    fireEvent.click(grip());
+    expect(visibleHeight(sheet)).toBe(HALF);
+    fireEvent.click(grip());
+    expect(visibleHeight(sheet)).toBe(FULL);
+    fireEvent.click(grip());
+    expect(visibleHeight(sheet)).toBe(140); // and back to the peek that it was given
+  });
+
   test("BottomSheet_is_a_non_modal_panel_that_starts_at_its_peek", () => {
     const { sheet, onHeightChange } = renderSheet();
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useDay } from "../api/queries";
 import type { DayResponse, GapSegment, MoveSegment, StaySegment } from "../api/types";
+import type { EditAnchors } from "../app/editAnchors";
 import { navigate } from "../app/router";
 import type { PointEditing } from "../app/useEditPoints";
 import { dayGeoJson, MODE_WORDS, modeColor, placePoint, stopOrders, type FitFeatures, type RouteProperties, type Feature, type LineString } from "../map/layers";
@@ -25,6 +26,8 @@ export interface DayPanelProps {
   onFocus: (features: FitFeatures) => void;
   /** Edit mode for the points of the day, which the shell holds (the map is edited on, and needs it too). Without it the day has no button to edit its points. */
   edit?: PointEditing;
+  /** Where the shell reaches the bar and the button of edit mode (see `EditAnchors`): it puts the focus on one of them, and sizes the sheet's peek by the row of the bar. */
+  anchors?: EditAnchors;
 }
 
 const secondsOf = (segment: { start: string; end: string }): number => (Date.parse(segment.end) - Date.parse(segment.start)) / 1000;
@@ -132,7 +135,7 @@ function GapRow({ gap }: { gap: GapSegment }) {
  * pressed to begin, or, for a day that has no data now (every point was removed, and the rebuilt day is empty) and so has no button, on what the panel says
  * of it; edit mode that ends for another reason (the owner went to another day) leaves the focus where it is.
  */
-function Day({ day, asked, loading, onFocus, edit }: { day: DayResponse; asked: boolean; loading: boolean; onFocus: DayPanelProps["onFocus"]; edit?: PointEditing }) {
+function Day({ day, asked, loading, onFocus, edit, anchors }: { day: DayResponse; asked: boolean; loading: boolean; onFocus: DayPanelProps["onFocus"]; edit?: PointEditing; anchors?: EditAnchors }) {
   // The numbers are the map's: the pins are labelled from the same `stopOrders`, and the routes tapped are the lines it draws.
   const orders = useMemo(() => stopOrders(day), [day]);
   const routes = useMemo(() => new Map(dayGeoJson(day).routes.features.map((route) => [route.properties.id, route])), [day]);
@@ -140,7 +143,8 @@ function Day({ day, asked, loading, onFocus, edit }: { day: DayResponse; asked: 
   const isToday = dateOf(new Date().toISOString(), day.timeZone) === day.date;
   const last = day.segments.length - 1;
   const editing = edit?.active === true;
-  const editButton = useRef<HTMLButtonElement>(null);
+  const ownEditButton = useRef<HTMLButtonElement>(null);
+  const editButton = anchors?.start ?? ownEditButton;
   const emptyNote = useRef<HTMLParagraphElement>(null);
   const refocus = useRef(false);
   useEffect(() => {
@@ -156,6 +160,7 @@ function Day({ day, asked, loading, onFocus, edit }: { day: DayResponse; asked: 
       {edit !== undefined && editing && (
         <EditBar
           edit={edit}
+          anchors={anchors}
           onDone={() => {
             refocus.current = true;
             edit.done();
@@ -216,7 +221,7 @@ function Day({ day, asked, loading, onFocus, edit }: { day: DayResponse; asked: 
  * The day that was on screen stays under the one that is loading, and under an error with its Retry (see `useKeptData`). A day with data has the button
  * that turns on edit mode for its points, which the shell holds (`edit`): see `Day`.
  */
-export function DayPanel({ date, onFocus, edit }: DayPanelProps) {
+export function DayPanel({ date, onFocus, edit, anchors }: DayPanelProps) {
   const day = useDay(date);
   const shown = useKeptData(day.data);
   return (
@@ -225,7 +230,7 @@ export function DayPanel({ date, onFocus, edit }: DayPanelProps) {
       {shown === undefined ? (
         !day.isError && <Loading />
       ) : (
-        <Day day={shown} asked={shown.date === date} loading={!day.isError} onFocus={onFocus} edit={edit} />
+        <Day day={shown} asked={shown.date === date} loading={!day.isError} onFocus={onFocus} edit={edit} anchors={anchors} />
       )}
     </>
   );

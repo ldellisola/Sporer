@@ -3,10 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { prefetchNeighbours } from "../api/queries";
 import type { FitFeatures } from "../map/layers";
 import { MapView, type MapPadding, type MapViewHandle } from "../map/MapView";
-import { BottomSheet, SHEET_PEEK, SHEET_TOP_CLEARANCE, sheetHalfHeight, type BottomSheetHandle } from "../sheet/BottomSheet";
+import { BottomSheet, SHEET_GRIP, SHEET_PEEK, SHEET_TOP_CLEARANCE, sheetHalfHeight, type BottomSheetHandle } from "../sheet/BottomSheet";
 import { Sidebar, SIDEBAR_WIDTH } from "../sheet/Sidebar";
 import { periodRange } from "../time/dates";
 import { DayPanel } from "../views/DayPanel";
+import { EDIT_BAR_INSET } from "../views/EditBar";
 import { Notice } from "../views/Notice";
 import { PlacePanel } from "../views/PlacePanel";
 import { RangePanel } from "../views/RangePanel";
@@ -17,11 +18,13 @@ import { TopBar } from "../views/TopBar";
 import { TripPanel } from "../views/TripPanel";
 import { TripsPanel } from "../views/TripsPanel";
 import styles from "./App.module.css";
+import type { EditAnchors } from "./editAnchors";
 import { navigate, useRoute, type Route } from "./router";
 import { useBottomEdge } from "./useBottomEdge";
 import { useDayRollover } from "./useDayRollover";
 import { useEditPoints, type PointEditing } from "./useEditPoints";
 import { useLastDay } from "./useLastDay";
+import { useMeasuredHeight } from "./useMeasuredHeight";
 import { useMediaQuery } from "./useMediaQuery";
 import { useSideInsets } from "./useSideInsets";
 import { useFadeRoutes, useStoredFlag } from "./useStoredFlag";
@@ -40,8 +43,8 @@ const AIR = 16;
  * nothing of one place is ever under the name of another; so is a trip. `onFocus` is how a panel asks for the map to be brought to
  * something (a row tapped): the map is the shell's, and the one. `edit` is edit mode for the points of a day, which the map shares with the panel of the day.
  */
-function Panel({ route, onFocus, edit }: { route: Route; onFocus: (features: FitFeatures) => void; edit: PointEditing }) {
-  if (route.view === "day") return <DayPanel date={route.date} onFocus={onFocus} edit={edit} />;
+function Panel({ route, onFocus, edit, anchors }: { route: Route; onFocus: (features: FitFeatures) => void; edit: PointEditing; anchors: EditAnchors }) {
+  if (route.view === "day") return <DayPanel date={route.date} onFocus={onFocus} edit={edit} anchors={anchors} />;
   if (route.view === "place") return <PlacePanel key={route.id} id={route.id} />;
   if (route.view === "trips") return <TripsPanel />;
   if (route.view === "trip") return <TripPanel key={route.id} id={route.id} />;
@@ -81,6 +84,15 @@ export function App() {
   const [sheetHeight, setSheetHeight] = useState(SHEET_PEEK);
   const barRef = useRef<HTMLDivElement>(null);
   const barBottom = useBottomEdge(barRef);
+  // The edit bar's Done and the button that begins edit mode, which the toast puts the focus on, and the bar's row, which the sheet's peek is as tall as.
+  const doneButton = useRef<HTMLButtonElement>(null);
+  const startButton = useRef<HTMLButtonElement>(null);
+  const [barRow, setBarRow] = useState<HTMLElement | null>(null);
+  const anchors = useMemo<EditAnchors>(() => ({ done: doneButton, start: startButton, row: setBarRow }), []);
+  const rowHeight = useMeasuredHeight(edit.active ? barRow : null);
+  // In edit mode the sheet at its lowest shows the row of the bar, whatever its height (a larger text wraps it): the grip, the room over the row, and the row.
+  // The sheet keeps it between 96 px and half the screen. Out of edit mode it is the 96 px that it always was.
+  const peek = rowHeight > 0 ? SHEET_GRIP + EDIT_BAR_INSET + rowHeight : SHEET_PEEK;
   const leftProbe = useRef<HTMLSpanElement>(null);
   const rightProbe = useRef<HTMLSpanElement>(null);
   const sides = useSideInsets(leftProbe, rightProbe);
@@ -135,7 +147,7 @@ export function App() {
       sheetRef.current?.lowerTo("peek");
     },
   };
-  const panel = <Panel route={route} onFocus={onFocus} edit={panelEdit} />;
+  const panel = <Panel route={route} onFocus={onFocus} edit={panelEdit} anchors={anchors} />;
   return (
     <main className={styles.shell} data-layout={desktop ? "desktop" : "phone"}>
       {/* Take no room and show nothing: their widths are the left and right safe areas, which only the style sheet can say. */}
@@ -189,12 +201,12 @@ export function App() {
         <Sidebar>{panel}</Sidebar>
       ) : (
         // The sheet at its highest stops short of the bar, which is taller with the range fields and lower under a notch.
-        <BottomSheet ref={sheetRef} topClearance={Math.max(SHEET_TOP_CLEARANCE, barBottom + 8)} onHeightChange={setSheetHeight}>
+        <BottomSheet ref={sheetRef} peek={peek} topClearance={Math.max(SHEET_TOP_CLEARANCE, barBottom + 8)} onHeightChange={setSheetHeight}>
           {panel}
         </BottomSheet>
       )}
       {/* There on every day, empty, so that what it says is announced whenever it comes (a removal can finish after Done); and for as long as it has something to say (a removal can fail after the owner has left the day). */}
-      {(route.view === "day" || edit.toast !== null || edit.failedRemoval !== null) && <RemovedToast edit={edit} />}
+      {(route.view === "day" || edit.toast !== null || edit.failedRemoval !== null) && <RemovedToast edit={edit} anchors={anchors} />}
     </main>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { isRefusal } from "../api/client";
 import type { PointEditing } from "../app/useEditPoints";
 import { formatCount, formatInteger } from "../time/format";
@@ -7,14 +7,23 @@ import { focusLost } from "./editForms";
 import forms from "./Forms.module.css";
 import { RetryButton } from "./RetryButton";
 import states from "./States.module.css";
+import { describeError } from "./States";
 import { WriteError } from "./WriteError";
 
 const LOAD_FAILED = "Couldn't load the points";
+
+/**
+ * What the bar has over its row, in pixels (the padding at the top of `.bar`): a sheet that peeks as far as the row ends shows this much more, and the grip
+ * of the sheet over it.
+ */
+export const EDIT_BAR_INSET = 6;
 
 export interface EditBarProps {
   edit: PointEditing;
   /** Called when Done is pressed: the panel that has the bar ends edit mode, and says where the focus goes (back to the button that began it). */
   onDone: () => void;
+  /** Where the shell finds the bar: its row, which a sheet at its lowest is as tall as, and its Done, where the focus goes when it is lost (see `EditAnchors`). */
+  anchors?: { done: RefObject<HTMLButtonElement | null>; row: (element: HTMLElement | null) => void };
 }
 
 /**
@@ -41,14 +50,15 @@ export interface EditBarProps {
  * empty and Clear is off. A focus that the owner has put elsewhere (the map, a toast) is left, and so is one that is on the page and was never in the bar: a tap on
  * the map leaves it there on iOS, so a count that falls to nothing is not one of the changes.
  */
-export function EditBar({ edit, onDone }: EditBarProps) {
+export function EditBar({ edit, onDone, anchors }: EditBarProps) {
   const { points, load, removal, selected } = edit;
   const count = selected.size;
   // The server refused it (every 4xx but a 408 and a 429): the same selection is refused again, so Remove is off until the selection changes, which clears the error.
   const refused = isRefusal(removal.error);
   const removeButton = useRef<HTMLButtonElement>(null);
   const clearButton = useRef<HTMLButtonElement>(null);
-  const doneButton = useRef<HTMLButtonElement>(null);
+  const ownDone = useRef<HTMLButtonElement>(null);
+  const doneButton = anchors?.done ?? ownDone;
   const alertBox = useRef<HTMLDivElement>(null);
   // Whether the Retry of the alert had the focus when it was pressed: the alert goes when the load does, and the focus is lost with it (a tap does not focus a button in Safari).
   const retryHadFocus = useRef(false);
@@ -95,11 +105,12 @@ export function EditBar({ edit, onDone }: EditBarProps) {
   const said = points === undefined ? (load.pending ? "Loading points…" : selectedCount) : points.points.length === 0 ? "No points on this day" : selectedCount;
   return (
     <div className={styles.bar} role="group" aria-label="Edit points">
-      <div className={styles.row}>
+      <div ref={anchors?.row} className={styles.row}>
         {failure !== null && (
           <div ref={alertBox} className={styles.problem} role="alert">
             <p className={states.headline}>
-              {LOAD_FAILED} — <RetryButton onClick={retryLoad} />
+              {/* Made again for each load that fails, so that the words are said again (a screen reader says what changes in an alert, and the same words twice are no change); the Retry is not, for it may have the focus. */}
+              <span key={load.failures}>{LOAD_FAILED}</span> — <RetryButton onClick={retryLoad} />
             </p>
           </div>
         )}
@@ -124,7 +135,7 @@ export function EditBar({ edit, onDone }: EditBarProps) {
           </button>
         </div>
       </div>
-      {failure !== null && <p className={styles.note}>{failure.message}</p>}
+      {failure !== null && <p className={styles.note}>{describeError(failure)}</p>}
       {selectable && count === 0 && (
         <p className={styles.note}>
           Tap a point, or use Select area on the map.

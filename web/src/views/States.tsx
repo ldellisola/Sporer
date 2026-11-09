@@ -23,8 +23,8 @@ export function Empty({ message, ref, tabIndex }: { message: string; ref?: Ref<H
   );
 }
 
-// What failed, for whoever looks; and what the owner is told about it when the error has that to say (`ApiError.detail`, as it is).
-function describe(error: unknown): string | null {
+/** What failed, for whoever looks; and what the owner is told about it when the error has that to say (`ApiError.detail`, as it is). The edit bar says it the same way. */
+export function describeError(error: unknown): string | null {
   if (error === null || error === undefined) return null;
   if (error instanceof ApiError && error.detail !== null) return `${error.message}. ${error.detail}`;
   return error instanceof Error ? error.message : String(error);
@@ -36,7 +36,7 @@ function describe(error: unknown): string | null {
  * `message` ("Couldn't retry"), where a view says nothing and it is "Couldn't load".
  */
 export function ErrorState({ error, onRetry, message = "Couldn't load" }: { error: unknown; onRetry: () => void; message?: string }) {
-  const detail = describe(error);
+  const detail = describeError(error);
   return (
     <div className={styles.error} role="alert">
       <p className={styles.headline}>

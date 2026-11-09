@@ -19,6 +19,9 @@ import styles from "./BottomSheet.module.css";
  */
 export const SHEET_PEEK = 96;
 
+/** How tall the grip at the top of the sheet is, in pixels: what a peek that is made for a bar at the top of the content has over it. */
+export const SHEET_GRIP = 32;
+
 /** What the highest point leaves free at the top of the screen, for the bar over the map, unless the bar needs more (`topClearance`). */
 export const SHEET_TOP_CLEARANCE = 120;
 
@@ -44,8 +47,9 @@ export const sheetHalfHeight = (viewport: number): number => Math.max(SHEET_PEEK
  * How much of the sheet shows at each point in a viewport `viewport` pixels high, with `inset` pixels of home indicator under the
  * peek; in a very small viewport the points still come in order.
  */
-function pointsFor(viewport: number, topClearance: number, inset: number): Record<Snap, number> {
-  const peek = SHEET_PEEK + inset;
+function pointsFor(viewport: number, topClearance: number, inset: number, wanted: number): Record<Snap, number> {
+  // The peek that is asked for, but never less than the 96 that is always there nor more than half.
+  const peek = Math.min(Math.max(wanted, SHEET_PEEK), sheetHalfHeight(viewport)) + inset;
   const half = Math.max(peek, sheetHalfHeight(viewport));
   return { peek, half, full: Math.max(half, viewport - topClearance) };
 }
@@ -114,6 +118,11 @@ export interface BottomSheetProps {
    */
   topClearance?: number;
   /**
+   * How much of the sheet shows at its lowest point, in pixels above the home indicator: 96, unless the panel has something at the top that needs more (the
+   * bar of edit mode, at large text sizes). It is kept between 96 and half the screen; a sheet that rests at its lowest point follows it when it changes.
+   */
+  peek?: number;
+  /**
    * Told how much of the sheet shows (in pixels from the bottom of the screen) when it first appears and each time it has come
    * to rest at another height or the screen has changed size; not while a finger is moving it. The map is padded by it.
    */
@@ -133,6 +142,7 @@ export function BottomSheet({
   ref,
   label = "Details",
   topClearance = SHEET_TOP_CLEARANCE,
+  peek = SHEET_PEEK,
   onHeightChange,
 }: BottomSheetProps) {
   const viewport = useViewportHeight();
@@ -146,7 +156,13 @@ export function BottomSheet({
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
   }, []);
-  const points = pointsFor(viewport, topClearance, inset);
+  const points = pointsFor(viewport, topClearance, inset, peek);
+  // What the toast keeps clear of (`--sheet-peek`, 96 px in the style sheet): where the sheet's lowest point is, so that a toast is never over the bar that a taller peek shows.
+  const lowest = points.peek - inset;
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty("--sheet-peek", `${lowest}px`);
+    return () => void document.documentElement.style.removeProperty("--sheet-peek");
+  }, [lowest]);
   const [snap, setSnap] = useState<Snap>("peek");
   const [dragHeight, setDragHeight] = useState<number | null>(null);
   const drag = useRef<Drag | null>(null);

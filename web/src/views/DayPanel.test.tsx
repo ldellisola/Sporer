@@ -735,7 +735,7 @@ describe("DayPanel edit points", () => {
 
   test("DayPanel_edit_bar_says_the_points_are_loading", async () => {
     stubApi({ "2026-10-22": FLIGHT_DAY });
-    mountEditing("2026-10-22", pointEditing({ points: undefined, load: { pending: true, error: null, retry: vi.fn() } }));
+    mountEditing("2026-10-22", pointEditing({ points: undefined, load: { pending: true, error: null, failures: 0, retry: vi.fn() } }));
     await screen.findByText("5 places");
 
     expect(within(bar()).getByText("Loading points…")).toBeInTheDocument();
