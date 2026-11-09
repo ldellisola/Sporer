@@ -82,8 +82,9 @@ jobs:
           version=$(node -p "require('./package-lock.json').packages?.['node_modules/@playwright/test']?.version ?? ''")
           [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::No Playwright version in web/package-lock.json"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "os=$(. /etc/os-release && echo "$VERSION_ID")" >> "$GITHUB_OUTPUT"
 
-      # The browsers are downloaded (a few hundred megabytes) once for each version of Playwright, and kept. The key names the version and not
+      # The browsers are downloaded (a few hundred megabytes) once for each version of Playwright and release of Ubuntu, and kept. The key names them and not
       # the browsers: if a browser is added to the installs below, the key has to change with it, or a hit would not have it.
       # Restored here and saved after the tests (Save the Playwright browsers), and not by one `actions/cache` step, which saves only when the whole job
       # passed: a run that fails in a test would then download the browsers again the next time, which is when it is run most.
@@ -95,7 +96,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ steps.playwright.outputs.version }}
+          key: ${{ runner.os }}-ubuntu${{ steps.playwright.outputs.os }}-playwright-${{ steps.playwright.outputs.version }}
 
       - name: Install the browsers
         id: install-browsers
@@ -109,6 +110,7 @@ jobs:
       - name: Install the system packages of the cached browsers
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: |
+          set -o pipefail
           npx playwright install-deps chromium webkit 2>&1 | tee install-deps.log
           if grep -q "Cannot install dependencies" install-deps.log; then
             echo "::error::Playwright cannot install the system packages for this runner's OS"

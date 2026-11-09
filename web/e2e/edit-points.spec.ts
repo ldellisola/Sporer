@@ -847,7 +847,7 @@ test("edit_points_the_card_of_the_rightmost_point_keeps_clear_of_the_map_buttons
   await tap(page, rightmost);
 
   await expect(pointCard(page)).toBeVisible();
-  await expect(pointCard(page).getByText("Loading…")).toHaveCount(0); // its height, and so where it goes, is that of what it shows: not of the wait
+  await expect(pointCard(page).getByText("Coordinates")).toBeVisible(); // its height, and so where it goes, is that of what it shows: wait for that, not for the wait to go
   await expect(pointCard(page)).toHaveAttribute("data-side", /^(above|below)$/); // it has a pointer: this point is not under a button
   const box = (await pointCard(page).boundingBox())!;
   for (const name of ["Recenter map", "Heat map", "Select area"]) {
