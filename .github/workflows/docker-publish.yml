@@ -57,7 +57,7 @@ jobs:
         run: |
           set -o pipefail
           tested=false
-          if ! runs=$(timeout 60 gh run list --workflow docker-publish.yml --commit "$GITHUB_SHA" --status success --limit 100 \
+          if ! runs=$(timeout -k 5 60 gh run list --workflow docker-publish.yml --commit "$GITHUB_SHA" --status success --limit 100 \
                         --json databaseId,event,headSha,headBranch,conclusion \
                       | jq -r --arg sha "$GITHUB_SHA" --argjson id "$RUN_ID" \
                           '[.[] | select(.conclusion == "success" and (.event == "push" or .event == "workflow_dispatch")

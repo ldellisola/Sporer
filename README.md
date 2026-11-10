@@ -580,8 +580,8 @@ together:
 - `e2e-report`: only when an `e2e` job failed or timed out. It merges the jobs' blob reports into one HTML report, uploaded as the
   `playwright-report` artifact (14 days; the traces of the tests that failed are in it). It does not gate anything.
 - `build`: waits for `gate`, `test`, `web-checks` and every `e2e` job, and runs when they all succeeded or when `gate` skipped the tests; a
-  red or cancelled test job blocks it. It always builds the image, so that the Dockerfile is checked on every run, and
-  publishes it (cosign, the login, the push and the signature) only for these events:
+  red or cancelled test job blocks it. It always builds the image, so that the Dockerfile is checked on every run, and publishes it (cosign,
+  the login, the push and the signature) only for these events:
 
   | Event | The image |
   | --- | --- |
