@@ -479,9 +479,11 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The workflow runs the .NET tests and the web app's checks (type check, unit tests and the browser tests), then builds the
-image (the web app is built inside it) and publishes it as `ghcr.io/ldellisola/sporer` with the tags `1.2.3`, `1.2`, `1` and
-`latest` (among others). Only a `v*.*.*` tag publishes `latest`. The server pulls `:latest` daily. Pushes to `main` that touch
+A tag on a commit whose CI already passed (the usual case: a commit of `main` whose push run was green) builds and publishes the
+image in about two minutes, without running the tests again. A tag on a commit with no successful run (a docs-only commit on
+`main` never has one, for the paths filter leaves it out) runs the .NET tests and the web app's checks (type check, unit tests and
+the browser tests) first, and publishes only if they pass. Either way the image (the web app is built inside it) is published as
+`ghcr.io/ldellisola/sporer` with the tags `1.2.3`, `1.2`, `1` and `latest` (among others). Only a `v*.*.*` tag publishes `latest`. The server pulls `:latest` daily. Pushes to `main` that touch
 `src/`, `tests/`, `web/`, `docker/dockerfile`, `.dockerignore` or the workflow file build and publish a branch-tagged image;
 pull requests run the tests and a build without publishing. So does a run started by hand on any branch or tag but `main` and the
 `v*` tags (it publishes on those): see [Continuous integration](#continuous-integration).
@@ -552,8 +554,13 @@ access gets a plain background instead of a map; the rest of the page works.
 
 ### Continuous integration
 
-`.github/workflows/docker-publish.yml` (Create Docker Image) has these jobs; all but `build` and `e2e-report` start together:
+`.github/workflows/docker-publish.yml` (Create Docker Image) has these jobs; `gate` runs first, then all but `build` and `e2e-report` start
+together:
 
+- `gate`: decides whether a version tag has to run the tests. It asks GitHub (`gh run list`, no checkout) for a successful run of this
+  workflow on the commit, other than this run, and its output `tested` is `true` only for a `v*.*.*` tag on a commit that has one. It logs what
+  it found and what it decided, on every event, but only a tag acts on the answer. If the query fails, `tested` is `false`: an error never
+  skips the tests. `test`, `web-checks` and `e2e` run only when `tested` is not `true`, so a tag on a tested commit goes straight to `build`.
 - `test`: the .NET tests (`dotnet test src/Sporer.sln`).
 - `web-checks`: `npm ci`, `npm run typecheck` and `npm test` in `web/`.
 - `e2e`: the browser tests, in four jobs at once (the checks list shows `e2e (chromium 1/3)`, `e2e (chromium 2/3)`, `e2e (chromium 3/3)` and `e2e
@@ -568,7 +575,8 @@ access gets a plain background instead of a map; the rest of the page works.
   the others.
 - `e2e-report`: only when an `e2e` job failed or timed out. It merges the jobs' blob reports into one HTML report, uploaded as the
   `playwright-report` artifact (14 days; the traces of the tests that failed are in it). It does not gate anything.
-- `build`: waits for `test`, `web-checks` and every `e2e` job. It always builds the image, so that the Dockerfile is checked on every run, and
+- `build`: waits for `gate`, `test`, `web-checks` and every `e2e` job, and runs when they all succeeded or when `gate` skipped the tests; a
+  red or cancelled test job blocks it. It always builds the image, so that the Dockerfile is checked on every run, and
   publishes it (cosign, the login, the push and the signature) only for these events:
 
   | Event | The image |

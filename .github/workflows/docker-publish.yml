@@ -20,7 +20,53 @@ env:
   IMAGE_NAME: ldellisola/sporer
 
 jobs:
+  # Decides whether a version tag has to run the tests again. A v*.*.* tag publishes `latest`, which the server pulls daily, so the tests may be
+  # skipped only for a commit that has already passed them: the owner tags a commit of main whose push run was green, and running it all again
+  # for the same commit is two minutes of waiting for nothing. So `tested` is true only when this run is for a tag and this workflow has a
+  # successful run (of any event) on the tagged commit, other than this run. A commit with none (a docs-only commit on main never had a run,
+  # for the paths filter leaves it out) is not a failure: `tested` is false, and test, web-checks and e2e run as they do for any other event.
+  # The query is made on every event, so that it is exercised on ordinary runs too, but only a tag acts on its answer. If the query itself
+  # fails (an API error), the answer is false and the tests run: a failure must never skip them. No checkout is needed: gh is told the
+  # repository with GH_REPO.
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      tested: ${{ steps.check.outputs.tested }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      IS_TAG: ${{ github.ref_type == 'tag' }}
+      REF_NAME: ${{ github.ref_name }}
+      RUN_ID: ${{ github.run_id }}
+
+    steps:
+      - name: Look for a successful run of this commit
+        id: check
+        run: |
+          tested=false
+          if ! runs=$(gh run list --workflow docker-publish.yml --commit "$GITHUB_SHA" --status success --limit 100 \
+                        --json databaseId --jq "[.[] | select(.databaseId != $RUN_ID) | .databaseId] | map(tostring) | join(\", \")"); then
+            echo "The query for the runs of $GITHUB_SHA failed: the tests run."
+          elif [[ -z $runs ]]; then
+            if [[ $IS_TAG == true ]]; then
+              echo "$REF_NAME is on $GITHUB_SHA, which has no successful run: the tests run."
+            else
+              echo "$GITHUB_SHA has no successful run of this workflow. This is not a tag: the tests run."
+            fi
+          elif [[ $IS_TAG == true ]]; then
+            echo "$REF_NAME is on $GITHUB_SHA, which passed in run ${runs%%,*}: the tests are skipped."
+            tested=true
+          else
+            echo "$GITHUB_SHA passed in run ${runs%%,*}. This is not a tag: the tests run."
+          fi
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+
   test:
+    needs: gate
+    if: needs.gate.outputs.tested != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -43,6 +89,8 @@ jobs:
   # software WebGL (see web/playwright.config.ts), which needs no GPU, so the runner as it is will do. They run in Chromium, and a smoke set of
   # them (the tests tagged @smoke, a few of each flow) also in WebKit, the engine of the owner's iPhone.
   web-checks:
+    needs: gate
+    if: needs.gate.outputs.tested != 'true'
     runs-on: ubuntu-latest
     # The limit is for a run that hangs, which would otherwise sit for the six hours that a job is given; it is set far above what a green run
     # takes. Measured: the whole job took 51 s (`npm ci`, the type check and the unit tests).
@@ -79,6 +127,8 @@ jobs:
   # share processors. fail-fast is off: one red shard must not cancel the others, whose verdicts are as useful.
   e2e:
     name: e2e (${{ matrix.name }})
+    needs: gate
+    if: needs.gate.outputs.tested != 'true'
     runs-on: ubuntu-latest
     # The limits are for a run that hangs (a browser that never answers, a mirror that does not), set well above what a green run takes. The
     # steps that can take long have limits of their own (Install the browser, Install the system packages, Run browser tests), so that a step that
@@ -204,7 +254,8 @@ jobs:
   # One report of the four jobs, and only when one of them failed or timed out (a job that is cut off by its limit ends as cancelled, not as
   # failure, and the others' failures should still have their report): the traces of the tests that failed are what a red run is diagnosed from.
   # `!cancelled()` is the run: a run that somebody cancels gets no report. It is not in the needs of build: whether the image is built is for
-  # the tests to say, and not for a report that could not be made.
+  # the tests to say, and not for a report that could not be made. When the gate skipped the tests, e2e is skipped, which is neither of the two
+  # results, so there is no report.
   e2e-report:
     needs: e2e
     if: ${{ !cancelled() && (needs.e2e.result == 'failure' || needs.e2e.result == 'cancelled') }}
@@ -259,8 +310,16 @@ jobs:
           path: web/playwright-report/
           retention-days: 14
 
+  # A skipped need skips its dependants unless the condition says otherwise, so the condition is written out. The image is built when the run
+  # was not cancelled, the gate answered, and either the commit has already passed (a tag, see gate: the tests were skipped) or all three of
+  # the test jobs succeeded. A red or cancelled test job blocks the image. A job that was skipped is not a success, so a skipped test job
+  # blocks it too, except where the gate is what skipped them.
   build:
-    needs: [test, web-checks, e2e]
+    needs: [gate, test, web-checks, e2e]
+    if: >-
+      ${{ !cancelled() && needs.gate.result == 'success' && (
+        needs.gate.outputs.tested == 'true' ||
+        (needs.test.result == 'success' && needs.web-checks.result == 'success' && needs.e2e.result == 'success')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
