@@ -552,16 +552,22 @@ access gets a plain background instead of a map; the rest of the page works.
 
 ### Continuous integration
 
-`.github/workflows/docker-publish.yml` (Create Docker Image) has three jobs:
+`.github/workflows/docker-publish.yml` (Create Docker Image) has these jobs; all but `build` and `e2e-report` start together:
 
 - `test`: the .NET tests (`dotnet test src/Sporer.sln`).
-- `web`: `npm ci`, `npm run typecheck`, `npm test` and `npm run e2e` (with `PW_WEBKIT=1`) in `web/`. The browser tests run in Chromium and a smoke
-  set of them also in WebKit, the engine of iOS Safari. The job runs on `ubuntu-latest` (Ubuntu 26.04 since late October 2026). The Playwright
-  browsers are cached on the version in `web/package-lock.json` and the Ubuntu release (saved even when a test fails; a cache is per branch and
-  goes after 7 days unused, so the first run on `main` after a merge installs them again); a run that finds them in the cache still installs
-  the system packages they need, and fails if that install cannot be done.
-- `build`: always builds the image, so that the Dockerfile is checked on every run, and publishes it (cosign, the login, the push and the
-  signature) only for these events:
+- `web-checks`: `npm ci`, `npm run typecheck` and `npm test` in `web/`.
+- `e2e`: the browser tests, in four jobs at once (the checks list shows `e2e (chromium 1/3)`, `e2e (chromium 2/3)`, `e2e (chromium 3/3)` and
+  `e2e (webkit)`). The Chromium jobs run `npx playwright test --shard=i/3`, a third each of the phone and desktop projects (every test is in exactly
+  one shard); the WebKit job runs the smoke set with `PW_WEBKIT=1` and `--project=webkit`, the engine of iOS Safari. Each job has one worker and
+  installs only its own browser. The browsers are cached per browser, on the version in `web/package-lock.json` and the Ubuntu release (the
+  runner is Ubuntu 26.04 since late October 2026); the cache is saved even when a test fails, by one job for each browser (Chromium's first shard
+  and the WebKit job), and a cache is per branch and goes after 7 days unused, so the first run on `main` after a merge installs the browsers
+  again. A run that finds a browser in the cache still installs the system packages it needs, and fails if that install cannot be done. One
+  red job does not cancel the others.
+- `e2e-report`: only when an `e2e` job failed. It merges the jobs' blob reports into one HTML report, uploaded as the `playwright-report` artifact
+  (14 days; the traces of the tests that failed are in it). It does not gate anything.
+- `build`: waits for `test`, `web-checks` and every `e2e` job. It always builds the image, so that the Dockerfile is checked on every run, and
+  publishes it (cosign, the login, the push and the signature) only for these events:
 
   | Event | The image |
   | --- | --- |
@@ -589,7 +595,8 @@ PW_WEBKIT=1 npx playwright test --project=webkit
 ```
 
 To check a branch before it is merged, without publishing anything: Actions, Create Docker Image, Run workflow, and pick the branch. The
-`test`, `web` and `build` jobs all run, and `build` pushes nothing, as it does for a pull request: only `main` and a `v*` tag are published when
+`test`, `web-checks`, `e2e` and `build` jobs all run, and `build` pushes nothing, as it does for a pull request: only `main` and a `v*` tag are
+published when
 the run is started by hand.
 
 ### Synthetic data and performance checks
