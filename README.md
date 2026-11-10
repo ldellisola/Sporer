@@ -598,8 +598,7 @@ PW_WEBKIT=1 npx playwright test --project=webkit
 
 To check a branch before it is merged, without publishing anything: Actions, Create Docker Image, Run workflow, and pick the branch. The
 `test`, `web-checks`, `e2e` and `build` jobs all run, and `build` pushes nothing, as it does for a pull request: only `main` and a `v*` tag are
-published when
-the run is started by hand.
+published when the run is started by hand.
 
 ### Synthetic data and performance checks
 
