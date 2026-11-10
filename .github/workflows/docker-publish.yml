@@ -39,15 +39,13 @@ jobs:
         run: dotnet test src/Sporer.sln
 
   # The web app's checks, in three kinds of job that run at the same time: web-checks (types and unit tests), e2e (the browser tests, split in
-  # four jobs) and, only when an e2e job failed, e2e-report (the one report of them all). The browser tests draw the map with software WebGL (see
+  # four jobs) and, only when an e2e job failed or timed out, e2e-report (the one report of them all). The browser tests draw the map with software WebGL (see
   # web/playwright.config.ts), which needs no GPU, so the runner as it is will do. They run in Chromium, and a smoke set of them (the tests
   # tagged @smoke, a few of each flow) also in WebKit, the engine of the owner's iPhone.
   web-checks:
     runs-on: ubuntu-latest
-    # The limit is for a run that hangs, which would otherwise sit for the six hours that a job is given; it is set above what a green run takes,
-    # not near it. Estimated, not yet measured: `npm ci`, the type check and the unit tests are about a minute and a half of the 12.7 minutes
-    # that the single web job took (all but the browser tests, which were 10.8 and the browsers' 34 s), and 10 minutes is far above that.
-    # The first run of this workflow has the numbers.
+    # The limit is for a run that hangs, which would otherwise sit for the six hours that a job is given; it is set far above what a green run
+    # takes. Measured: the whole job took 51 s (`npm ci`, the type check and the unit tests).
     timeout-minutes: 10
     permissions:
       contents: read
@@ -82,14 +80,18 @@ jobs:
   e2e:
     name: e2e (${{ matrix.name }})
     runs-on: ubuntu-latest
-    # The limit is for a run that hangs (a browser that never answers), set above what a green run takes, not near it. Estimated, not yet
-    # measured, from the run of the single web job (a cache miss, Chromium's 234 tests and the WebKit smoke set in one run): the browser tests
-    # were 10.8 minutes in all, so about 9.5 for Chromium's tests and 1.3 for WebKit's, and a shard (a third of the tests, balanced by file) is
-    # about 3.2 minutes of tests. Add what a job does before them: the checkout, `npm ci` and the browsers (34 s for both of them in a miss, more
-    # for the system packages of a hit) and the production build that the web server runs first, about 1.5 minutes. A Chromium shard comes to
-    # about 5 minutes and the WebKit job to about 4. 8 minutes is about one and a half times a shard; the WebKit job has the same limit, for
-    # its install is the larger. The first run has the real numbers: set the limits from them.
-    timeout-minutes: 8
+    # The limits are for a run that hangs (a browser that never answers, a mirror that does not), set well above what a green run takes. The
+    # steps that can take long have limits of their own (Install the browser, Install the system packages, Run browser tests), so that a step that
+    # is cut off is cut off alone: the steps after it still run (the upload of the blob, which the report is made from), and the job is red, where a
+    # job that ran out of time is cancelled with nothing uploaded. The job's limit is then the sum of those and the rest, and decides nothing.
+    # Measured on the first run (all four jobs missed the cache):
+    #   Chromium 1/3 (88 phone tests): install 77 s, tests 4.5 min, job 6.1 min
+    #   Chromium 2/3 (43 phone and 44 desktop tests): install 91 s, tests 4.7 min, job 6.4 min
+    #   Chromium 3/3 (87 desktop tests): install 14 s, tests 2.1 min, job 2.5 min
+    #   WebKit: its tests take under a minute, but the 139 MB of system packages (185) came from the Ubuntu mirror at 300 kB/s and the install was
+    #   still running at 8 minutes. The mirror varies a lot (that fetch is 8 to 16 s on a good day; on an earlier run an install took 19 minutes).
+    # So: 12 minutes for an install, which is a slow mirror and not a hang, and 10 minutes for the tests, about twice the slowest shard.
+    timeout-minutes: 25
     permissions:
       contents: read
     defaults:
@@ -150,6 +152,7 @@ jobs:
       - name: Install the browser
         id: install-browsers
         if: steps.playwright-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 12
         run: npx playwright install --with-deps ${{ matrix.browser }}
 
       # What the cache holds is the browser's files. The libraries that it needs (fonts, and for WebKit GStreamer, GTK and so on) are packages of the
@@ -158,6 +161,7 @@ jobs:
       # and the browser then fails to start for a library that is missing. The step fails on that message instead, where the cause is.
       - name: Install the system packages of the cached browser
         if: steps.playwright-cache.outputs.cache-hit == 'true'
+        timeout-minutes: 12
         run: |
           set -o pipefail
           npx playwright install-deps ${{ matrix.browser }} 2>&1 | tee install-deps.log
@@ -170,6 +174,7 @@ jobs:
       # the phone and desktop projects. The reporters are given here, over the config's: `list` for this job's log, and `blob` for the report that
       # e2e-report merges (the config's html reporter would write a report of this job's shard alone).
       - name: Run browser tests
+        timeout-minutes: 10
         env:
           PW_WEBKIT: ${{ matrix.browser == 'webkit' && '1' || '' }}
         run: npx playwright test ${{ matrix.args }} --reporter=list,blob
@@ -194,12 +199,13 @@ jobs:
           path: web/blob-report/
           retention-days: 1
 
-  # One report of the four jobs, and only when one of them failed (as the single job's report was): the traces of the tests that failed are
-  # what a red run is diagnosed from. It is not in the needs of build: whether the image is built is for the tests to say, and not for a report
-  # that could not be made.
+  # One report of the four jobs, and only when one of them failed or timed out (a job that is cut off by its limit ends as cancelled, not as
+  # failure, and the others' failures should still have their report): the traces of the tests that failed are what a red run is diagnosed from.
+  # `!cancelled()` is the run: a run that somebody cancels gets no report. It is not in the needs of build: whether the image is built is for
+  # the tests to say, and not for a report that could not be made.
   e2e-report:
     needs: e2e
-    if: ${{ !cancelled() && needs.e2e.result == 'failure' }}
+    if: ${{ !cancelled() && (needs.e2e.result == 'failure' || needs.e2e.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -230,10 +236,21 @@ jobs:
           path: web/all-blob-reports
           merge-multiple: true
 
+      # Merges the blobs that there are: a job that failed before it ran a test, or that was cut off, uploaded none, and the others' are merged
+      # without it. When there is none at all (the download of a pattern that matches nothing succeeds, and makes no directory) there is nothing to
+      # merge, and the step says so and goes on, and not fail on the error of merge-reports that the directory is missing.
       - name: Merge the reports
-        run: npx playwright merge-reports --reporter html ./all-blob-reports
+        id: merge
+        run: |
+          if compgen -G "all-blob-reports/*.zip" > /dev/null; then
+            npx playwright merge-reports --reporter html ./all-blob-reports
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No blob report was uploaded (the e2e jobs failed before running a test), so there is no report to merge."
+          fi
 
       - name: Upload the Playwright report
+        if: steps.merge.outputs.merged == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
