@@ -38,16 +38,15 @@ jobs:
       - name: Run tests
         run: dotnet test src/Sporer.sln
 
-  # The web app's checks: types, unit tests and the browser tests. The browser tests draw the map with software WebGL (see
-  # web/playwright.config.ts), which needs no GPU, so the runner as it is will do. They run in Chromium, and a smoke set of them
-  # (the tests tagged @smoke, a few of each flow) also in WebKit, the engine of the owner's iPhone.
-  web:
+  # The web app's checks, in three kinds of job that run at the same time: web-checks (types and unit tests), e2e (the browser tests, split in
+  # four jobs) and, only when an e2e job failed or timed out, e2e-report (the one report of them all). The browser tests draw the map with
+  # software WebGL (see web/playwright.config.ts), which needs no GPU, so the runner as it is will do. They run in Chromium, and a smoke set of
+  # them (the tests tagged @smoke, a few of each flow) also in WebKit, the engine of the owner's iPhone.
+  web-checks:
     runs-on: ubuntu-latest
-    # The limit is for a run that hangs (a browser that never answers), which would otherwise sit for the six hours that a job is given;
-    # it is set above what a green run takes, not near it. Measured on the first run (a cache miss, Chromium's 234 tests and the WebKit smoke set
-    # in one run): installing the browsers 34 s, the browser tests 10.8 minutes, the whole job 12.7 minutes. A hit on the cache saves most of the
-    # 34 s. 20 minutes is about one and a half times the job; a runner that is slower than that one should say so in the numbers before the limit moves.
-    timeout-minutes: 20
+    # The limit is for a run that hangs, which would otherwise sit for the six hours that a job is given; it is set far above what a green run
+    # takes. Measured: the whole job took 51 s (`npm ci`, the type check and the unit tests).
+    timeout-minutes: 10
     permissions:
       contents: read
     defaults:
@@ -74,6 +73,57 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+  # The browser tests, in four jobs at once: Chromium's two projects (phone and desktop) in three shards, which Playwright cuts from the whole
+  # list of tests (`--shard=i/3`; every test is in exactly one), and the WebKit smoke set in a job of its own. Each job has one worker (the config's
+  # `workers` is 1 when CI is set): the verdict must not depend on how busy the runner is, and a job is a runner of its own, so the jobs do not
+  # share processors. fail-fast is off: one red shard must not cancel the others, whose verdicts are as useful.
+  e2e:
+    name: e2e (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    # The limits are for a run that hangs (a browser that never answers, a mirror that does not), set well above what a green run takes. The
+    # steps that can take long have limits of their own (Install the browser, Install the system packages, Run browser tests), so that a step that
+    # is cut off is cut off alone: the steps after it still run, and the job is red, where a job that ran out of time is cancelled with nothing
+    # uploaded. The step's limit stops only the shell, so Playwright would write no blob; its own --global-timeout (9 minutes, under the step's
+    # 10) ends the run first and writes the blob of what ran, which the upload then takes to the report. The job's limit is then the sum of
+    # those and the rest, and decides nothing.
+    # Measured on the first run (all four jobs missed the cache):
+    #   Chromium 1/3 (88 phone tests): install 77 s, tests 4.5 min, job 6.1 min
+    #   Chromium 2/3 (43 phone and 44 desktop tests): install 91 s, tests 4.7 min, job 6.4 min
+    #   Chromium 3/3 (87 desktop tests): install 14 s, tests 2.1 min, job 2.5 min
+    #   WebKit: its tests take under a minute, but the 139 MB of system packages (185) came from the Ubuntu mirror at 300 kB/s and the install was
+    #   still running at 8 minutes. The mirror varies a lot (that fetch is 8 to 16 s on a good day; on an earlier run an install took 19 minutes).
+    # So: 12 minutes for an install, which is a slow mirror and not a hang, and 10 minutes for the tests, about twice the slowest shard.
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # name is what the checks list shows, id is for the artifact (its name cannot hold a slash), browser is what the job installs and
+          # the cache's key names, args is what is added to `playwright test`, and save is the one job of its browser that saves the cache.
+          - { name: "chromium 1/3", id: chromium-1, browser: chromium, args: "--shard=1/3", save: true }
+          - { name: "chromium 2/3", id: chromium-2, browser: chromium, args: "--shard=2/3", save: false }
+          - { name: "chromium 3/3", id: chromium-3, browser: chromium, args: "--shard=3/3", save: false }
+          - { name: "webkit", id: webkit, browser: webkit, args: "--project=webkit", save: true }
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
       # The version that package-lock.json has locked, which is the one whose browsers are needed: a new version of Playwright is new browsers.
       # If the lock file has none the step fails here, and not later with a key of `Linux-ubuntu26.04-playwright-` that every run of every version
       # would share. The step reads the runner's Ubuntu release too, which the key names as well, and fails on an empty one for the same reason.
@@ -87,8 +137,8 @@ jobs:
           [[ -n $os ]] || { echo "::error::No VERSION_ID in /etc/os-release"; exit 1; }
           echo "os=$os" >> "$GITHUB_OUTPUT"
 
-      # The browsers are downloaded (a few hundred megabytes) once for each version of Playwright and release of Ubuntu, and kept. The key names them and
-      # not the browsers: if a browser is added to the installs below, the key has to change with it, or a hit would not have it.
+      # The browsers are downloaded (a few hundred megabytes) once for each version of Playwright, release of Ubuntu and browser, and kept. The key
+      # names all three: Chromium's jobs and WebKit's install different things, and a key that both used would have whichever of them saved first.
       # Restored here and saved after the tests (Save the Playwright browsers), and not by one `actions/cache` step, which saves only when the whole job
       # passed: a run that fails in a test would then download the browsers again the next time, which is when it is run most.
       # A cache belongs to the branch whose run saved it. A run reads its own branch's and the default branch's (a pull request, its base's), never
@@ -99,45 +149,110 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-ubuntu${{ steps.playwright.outputs.os }}-playwright-${{ steps.playwright.outputs.version }}
+          key: ${{ runner.os }}-ubuntu${{ steps.playwright.outputs.os }}-playwright-${{ steps.playwright.outputs.version }}-${{ matrix.browser }}
 
-      - name: Install the browsers
+      - name: Install the browser
         id: install-browsers
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium webkit
+        timeout-minutes: 12
+        run: npx playwright install --with-deps ${{ matrix.browser }}
 
-      # What the cache holds is the browsers' files. The libraries that they need (fonts, GStreamer, GTK for WebKit and so on) are packages of the
-      # system, which a fresh runner does not have: they are installed whether the browsers came from the cache or not.
+      # What the cache holds is the browser's files. The libraries that it needs (fonts, and for WebKit GStreamer, GTK and so on) are packages of the
+      # system, which a fresh runner does not have: they are installed whether the browser came from the cache or not.
       # When this version of Playwright has no package list for the runner's Ubuntu, install-deps prints "Cannot install dependencies" and exits 0,
-      # and WebKit then fails to start for a library that is missing. The step fails on that message instead, where the cause is.
-      - name: Install the system packages of the cached browsers
+      # and the browser then fails to start for a library that is missing. The step fails on that message instead, where the cause is.
+      - name: Install the system packages of the cached browser
         if: steps.playwright-cache.outputs.cache-hit == 'true'
+        timeout-minutes: 12
         run: |
           set -o pipefail
-          npx playwright install-deps chromium webkit 2>&1 | tee install-deps.log
+          npx playwright install-deps ${{ matrix.browser }} 2>&1 | tee install-deps.log
           if grep -q "Cannot install dependencies" install-deps.log; then
             echo "::error::Playwright cannot install the system packages for this runner's OS"
             exit 1
           fi
 
-      # PW_WEBKIT adds the webkit project (see web/playwright.config.ts): the smoke set, in the same run and the same report as Chromium's tests.
+      # PW_WEBKIT adds the webkit project (see web/playwright.config.ts), which the WebKit job runs alone; the Chromium shards run without it, which is
+      # the phone and desktop projects. The reporters are given here, over the config's: `list` for this job's log, and `blob` for the report that
+      # e2e-report merges (the config's html reporter would write a report of this job's shard alone).
       - name: Run browser tests
+        timeout-minutes: 10
         env:
-          PW_WEBKIT: "1"
-        run: npm run e2e
+          PW_WEBKIT: ${{ matrix.browser == 'webkit' && '1' || '' }}
+        run: npx playwright test ${{ matrix.args }} --reporter=list,blob --global-timeout=540000
 
-      # Whether the tests passed or not, but only when the browsers were installed by this run and the install went through: a directory that a failed
+      # Whether the tests passed or not, but only when the browser was installed by this run and the install went through: a directory that a failed
       # download left half full must not be what the next run restores. (A hit has nothing new to save; a key that exists cannot be saved over.)
+      # One job for each key (matrix.save): Chromium's three shards would all try to reserve the same one, and the others fail on it.
       - name: Save the Playwright browsers
-        if: always() && steps.playwright-cache.outputs.cache-hit != 'true' && steps.install-browsers.outcome == 'success'
+        if: always() && matrix.save && steps.playwright-cache.outputs.cache-hit != 'true' && steps.install-browsers.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/ms-playwright
           key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
 
-      # The report holds the traces of the tests that failed, which is what a red run is diagnosed from.
+      # The blob report of this job, which e2e-report merges: it holds the results and the traces of the tests that failed. Kept for a day only,
+      # for the merged report is the one that is kept.
+      - name: Upload the blob report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.id }}
+          path: web/blob-report/
+          retention-days: 1
+
+  # One report of the four jobs, and only when one of them failed or timed out (a job that is cut off by its limit ends as cancelled, not as
+  # failure, and the others' failures should still have their report): the traces of the tests that failed are what a red run is diagnosed from.
+  # `!cancelled()` is the run: a run that somebody cancels gets no report. It is not in the needs of build: whether the image is built is for
+  # the tests to say, and not for a report that could not be made.
+  e2e-report:
+    needs: e2e
+    if: ${{ !cancelled() && (needs.e2e.result == 'failure' || needs.e2e.result == 'cancelled') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # `merge-reports` is part of @playwright/test, at the version that the lock file has, which the blobs were written by.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the blob reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: blob-report-*
+          path: web/all-blob-reports
+          merge-multiple: true
+
+      # Merges the blobs that there are: a job that failed before it ran a test, or that was cut off, uploaded none, and the others' are merged
+      # without it. When there is none at all (the download of a pattern that matches nothing succeeds, and makes no directory) there is nothing to
+      # merge, and the step says so and goes on, and not fail on the error of merge-reports that the directory is missing.
+      - name: Merge the reports
+        id: merge
+        run: |
+          if compgen -G "all-blob-reports/*.zip" > /dev/null; then
+            npx playwright merge-reports --reporter html ./all-blob-reports
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No blob report was uploaded (the e2e jobs failed before running a test), so there is no report to merge."
+          fi
+
       - name: Upload the Playwright report
-        if: failure()
+        if: steps.merge.outputs.merged == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
@@ -145,7 +260,7 @@ jobs:
           retention-days: 14
 
   build:
-    needs: [test, web]
+    needs: [test, web-checks, e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: read
