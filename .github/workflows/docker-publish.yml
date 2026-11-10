@@ -39,9 +39,9 @@ jobs:
         run: dotnet test src/Sporer.sln
 
   # The web app's checks, in three kinds of job that run at the same time: web-checks (types and unit tests), e2e (the browser tests, split in
-  # four jobs) and, only when an e2e job failed or timed out, e2e-report (the one report of them all). The browser tests draw the map with software WebGL (see
-  # web/playwright.config.ts), which needs no GPU, so the runner as it is will do. They run in Chromium, and a smoke set of them (the tests
-  # tagged @smoke, a few of each flow) also in WebKit, the engine of the owner's iPhone.
+  # four jobs) and, only when an e2e job failed or timed out, e2e-report (the one report of them all). The browser tests draw the map with
+  # software WebGL (see web/playwright.config.ts), which needs no GPU, so the runner as it is will do. They run in Chromium, and a smoke set of
+  # them (the tests tagged @smoke, a few of each flow) also in WebKit, the engine of the owner's iPhone.
   web-checks:
     runs-on: ubuntu-latest
     # The limit is for a run that hangs, which would otherwise sit for the six hours that a job is given; it is set far above what a green run
@@ -82,8 +82,10 @@ jobs:
     runs-on: ubuntu-latest
     # The limits are for a run that hangs (a browser that never answers, a mirror that does not), set well above what a green run takes. The
     # steps that can take long have limits of their own (Install the browser, Install the system packages, Run browser tests), so that a step that
-    # is cut off is cut off alone: the steps after it still run (the upload of the blob, which the report is made from), and the job is red, where a
-    # job that ran out of time is cancelled with nothing uploaded. The job's limit is then the sum of those and the rest, and decides nothing.
+    # is cut off is cut off alone: the steps after it still run, and the job is red, where a job that ran out of time is cancelled with nothing
+    # uploaded. The step's limit stops only the shell, so Playwright would write no blob; its own --global-timeout (9 minutes, under the step's
+    # 10) ends the run first and writes the blob of what ran, which the upload then takes to the report. The job's limit is then the sum of
+    # those and the rest, and decides nothing.
     # Measured on the first run (all four jobs missed the cache):
     #   Chromium 1/3 (88 phone tests): install 77 s, tests 4.5 min, job 6.1 min
     #   Chromium 2/3 (43 phone and 44 desktop tests): install 91 s, tests 4.7 min, job 6.4 min
@@ -177,7 +179,7 @@ jobs:
         timeout-minutes: 10
         env:
           PW_WEBKIT: ${{ matrix.browser == 'webkit' && '1' || '' }}
-        run: npx playwright test ${{ matrix.args }} --reporter=list,blob
+        run: npx playwright test ${{ matrix.args }} --reporter=list,blob --global-timeout=540000
 
       # Whether the tests passed or not, but only when the browser was installed by this run and the install went through: a directory that a failed
       # download left half full must not be what the next run restores. (A hit has nothing new to save; a key that exists cannot be saved over.)
