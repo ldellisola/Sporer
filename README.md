@@ -479,12 +479,16 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The workflow runs the .NET tests and the web app's checks (type check, unit tests and the browser tests), then builds the
-image (the web app is built inside it) and publishes it as `ghcr.io/ldellisola/sporer` with the tags `1.2.3`, `1.2`, `1` and
-`latest` (among others). Only a `v*.*.*` tag publishes `latest`. The server pulls `:latest` daily. Pushes to `main` that touch
-`src/`, `tests/`, `web/`, `docker/dockerfile`, `.dockerignore` or the workflow file build and publish a branch-tagged image;
-pull requests run the tests and a build without publishing. So does a run started by hand on any branch or tag but `main` and the
-`v*` tags (it publishes on those): see [Continuous integration](#continuous-integration).
+Wait for the run of `main` to go green before tagging. A `v*.*.*` tag on a commit whose CI already passed (the usual case: a commit of
+`main` whose push run was green; a pull request run does not count, nor does an earlier tag's) builds and publishes the image in about
+two minutes, without running the tests again. A `v*.*.*` tag on a commit with no such run (a docs-only commit on `main` never has one, for
+the paths filter leaves it out; nor has one whose run has not finished yet) runs the .NET tests and the web app's checks (type check, unit
+tests and the browser tests) first, which takes about 8 to 9 minutes, and publishes only if they pass. That is safe, only slower. Either way
+the image (the web app is built inside it) is published as `ghcr.io/ldellisola/sporer` with the tags `1.2.3`, `1.2`, `1` and `latest`
+(among others). Only a `v*.*.*` tag publishes `latest`. The server pulls `:latest` daily. Pushes to `main` that touch `src/`, `tests/`,
+`web/`, `docker/dockerfile`, `.dockerignore` or the workflow file build and publish a branch-tagged image; pull requests run the tests and
+a build without publishing. So does a run started by hand on any branch or tag but `main` and the `v*` tags (it publishes on those): see
+[Continuous integration](#continuous-integration).
 
 ## Local development
 
@@ -552,24 +556,34 @@ access gets a plain background instead of a map; the rest of the page works.
 
 ### Continuous integration
 
-`.github/workflows/docker-publish.yml` (Create Docker Image) has these jobs; all but `build` and `e2e-report` start together:
+`.github/workflows/docker-publish.yml` (Create Docker Image) has these jobs; `gate` runs first, then all but `build` and `e2e-report` start
+together:
 
+- `gate`: decides whether a version tag has to run the tests. It asks GitHub (`gh run list`, no checkout, a limit of a minute) for a run of
+  this workflow that tested the commit: successful, started by a push or by hand (not a pull request, which tests a merge with `main`), on a
+  branch (not a tag's own run, which may have skipped the tests), and not this run. Its output `tested` is `true` only for a `v*.*.*` tag on a
+  commit that has one. It logs what it found and what it decided, on every event, but only a tag acts on the answer. If the query fails or
+  hangs, `tested` is `false`: an error never skips the tests. `test`, `web-checks` and `e2e` run only when `tested` is not `true`, so a tag on
+  a tested commit goes straight to `build`.
 - `test`: the .NET tests (`dotnet test src/Sporer.sln`).
-- `web-checks`: `npm ci`, `npm run typecheck` and `npm test` in `web/`.
+- `web-checks`: `npm ci`, `npm run typecheck` and `npm test` in `web/`, and first a check that the Playwright image of the `e2e` jobs (below)
+  is the version that `web/package-lock.json` has locked. If the two differ it fails at once, saying "update the image in docker-publish.yml to
+  v<version>-noble".
 - `e2e`: the browser tests, in four jobs at once (the checks list shows `e2e (chromium 1/3)`, `e2e (chromium 2/3)`, `e2e (chromium 3/3)` and `e2e
   (webkit)`). The Chromium jobs run `npx playwright test --shard=i/3`: a third each of the whole list of Chromium's tests, the phone and desktop
   projects together and in list order by test count (so the first shard is phone tests and the last desktop ones; every test is in exactly one
   shard). The WebKit job runs the smoke set with `PW_WEBKIT=1` and `--project=webkit`, the engine of iOS Safari. Each job has one worker and
-  installs only its own browser. The install (12 minutes) and the tests (10) have limits of their own, so that a slow Ubuntu mirror ends the step
-  and not the job. The browsers are cached per browser, on the version in `web/package-lock.json` and the Ubuntu release (the runner is Ubuntu
-  26.04 since late October 2026); the cache is saved even when a test fails, by one job for each browser (Chromium's first shard and the WebKit
-  job), and a cache is per branch and goes after 7 days unused, so the first run on `main` after a merge installs the browsers again. A run that
-  finds a browser in the cache still installs the system packages it needs, and fails if that install cannot be done. One red job does not cancel
-  the others.
+  runs in Playwright's own Docker image (`mcr.microsoft.com/playwright:v<version>-noble`, as the user the runner has, 1001), which has the
+  three browsers and the system libraries and fonts they need. So no job installs a browser or a system package, nothing is taken from Ubuntu's
+  package mirror (whose speed varies a lot), and there is no browser cache; a job pulls the image, sets up Node 22, runs `npm ci` and the
+  tests. The tests have a limit of 10 minutes and the job one of 20. The image's tag is written in `.github/workflows/docker-publish.yml`,
+  since an expression there cannot read the lock file. **To upgrade Playwright, change `@playwright/test` in `web/package.json` (and the lock
+  file) and the image's tag in the workflow together**: `web-checks` fails when they differ. One red job does not cancel the others.
 - `e2e-report`: only when an `e2e` job failed or timed out. It merges the jobs' blob reports into one HTML report, uploaded as the
   `playwright-report` artifact (14 days; the traces of the tests that failed are in it). It does not gate anything.
-- `build`: waits for `test`, `web-checks` and every `e2e` job. It always builds the image, so that the Dockerfile is checked on every run, and
-  publishes it (cosign, the login, the push and the signature) only for these events:
+- `build`: waits for `gate`, `test`, `web-checks` and every `e2e` job, and runs when they all succeeded or when `gate` skipped the tests; a
+  red or cancelled test job blocks it. It always builds the image, so that the Dockerfile is checked on every run, and publishes it (cosign,
+  the login, the push and the signature) only for these events:
 
   | Event | The image |
   | --- | --- |
