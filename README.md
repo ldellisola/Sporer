@@ -573,12 +573,12 @@ together:
   (webkit)`). The Chromium jobs run `npx playwright test --shard=i/3`: a third each of the whole list of Chromium's tests, the phone and desktop
   projects together and in list order by test count (so the first shard is phone tests and the last desktop ones; every test is in exactly one
   shard). The WebKit job runs the smoke set with `PW_WEBKIT=1` and `--project=webkit`, the engine of iOS Safari. Each job has one worker and
-  runs in Playwright's own Docker image (`mcr.microsoft.com/playwright:v1.64.1-noble`, as the user the runner has, 1001), which has Node, the
+  runs in Playwright's own Docker image (`mcr.microsoft.com/playwright:v<version>-noble`, as the user the runner has, 1001), which has the
   three browsers and the system libraries and fonts they need. So no job installs a browser or a system package, nothing is taken from Ubuntu's
-  package mirror (whose speed varies a lot), and there is no browser cache; a job pulls the image, runs `npm ci` and the tests. The tests have a
-  limit of 10 minutes and the job one of 15. The image's tag is written in `.github/workflows/docker-publish.yml`, since an expression there
-  cannot read the lock file. **To upgrade Playwright, change `@playwright/test` in `web/package.json` (and the lock file) and the image's tag
-  in the workflow together**: `web-checks` fails when they differ. One red job does not cancel the others.
+  package mirror (whose speed varies a lot), and there is no browser cache; a job pulls the image, sets up Node 22, runs `npm ci` and the
+  tests. The tests have a limit of 10 minutes and the job one of 20. The image's tag is written in `.github/workflows/docker-publish.yml`,
+  since an expression there cannot read the lock file. **To upgrade Playwright, change `@playwright/test` in `web/package.json` (and the lock
+  file) and the image's tag in the workflow together**: `web-checks` fails when they differ. One red job does not cancel the others.
 - `e2e-report`: only when an `e2e` job failed or timed out. It merges the jobs' blob reports into one HTML report, uploaded as the
   `playwright-report` artifact (14 days; the traces of the tests that failed are in it). It does not gate anything.
 - `build`: waits for `gate`, `test`, `web-checks` and every `e2e` job, and runs when they all succeeded or when `gate` skipped the tests; a

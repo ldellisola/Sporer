@@ -120,12 +120,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
       # The e2e jobs run in Playwright's image, whose tag is written in this file (an expression in `container.image` cannot read a step's output),
       # and its browsers are the ones of that version of Playwright. A package.json moved to a new version with the tag left behind would run the
       # tests in browsers that Playwright does not expect, and fail with an error about a missing executable. This fails first, with the fix.
       - name: Check the Playwright image against the lock file
         run: |
-          tag=$(sed -nE 's|^[[:space:]]*image:[[:space:]]*mcr\.microsoft\.com/playwright:v([0-9]+\.[0-9]+\.[0-9]+)-noble[[:space:]]*(#.*)?$|\1|p' ../.github/workflows/docker-publish.yml)
+          tag=$(grep -E '^[[:space:]]*image:' ../.github/workflows/docker-publish.yml \
+                  | grep -oE 'mcr\.microsoft\.com/playwright:v[0-9]+\.[0-9]+\.[0-9]+-noble' | sed -E 's/.*:v([0-9.]+)-noble$/\1/')
           lock=$(node -p "require('./package-lock.json').packages?.['node_modules/@playwright/test']?.version ?? ''")
           [[ $lock =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::No Playwright version in web/package-lock.json"; exit 1; }
           [[ -n $tag && $tag != *$'\n'* ]] || { echo "::error::Not exactly one Playwright image (mcr.microsoft.com/playwright:v<version>-noble) in docker-publish.yml"; exit 1; }
@@ -134,13 +142,6 @@ jobs:
             exit 1
           fi
           echo "Playwright $lock, image v$lock-noble"
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -165,8 +166,8 @@ jobs:
     # times). The image is pulled from Microsoft's registry, which the runner reaches fast. The tag is the version of @playwright/test in
     # web/package-lock.json, written here because an expression in `image` cannot read a step's output: the web-checks job fails when the two
     # differ. A new version of Playwright is a new tag, changed together with package.json.
-    # --user 1001 is Playwright's documented setup: the runner's own user, whose workspace the checkout then writes to. --ipc=host is
-    # for Chromium, which crashes on the 64 MB of shared memory that a container has by default.
+    # --user 1001 is Playwright's documented setup: the runner's own user, whose workspace the checkout then writes to. --ipc=host is what
+    # Playwright recommends for Chromium in a container, whose default 64 MB of shared memory it can run short of.
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble # must move with @playwright/test in web/package.json and package-lock.json
       options: --user 1001 --ipc=host
@@ -175,10 +176,10 @@ jobs:
     # is cancelled with nothing uploaded. The step's limit stops only the shell, so Playwright would write no blob; its own --global-timeout
     # (9 minutes, under the step's 10) ends the run first and writes the blob of what ran, which the upload then takes to the report. The job's
     # limit is the pull of the image, `npm ci` and the tests, with headroom, and decides nothing.
-    # Estimated, until the first run in the image has numbers (the browser installs of the runs before it are gone, and were 14 to 91 s for
-    # Chromium): the image pull about a minute, `npm ci` under a minute, and the tests as measured before: Chromium 1/3 (88 phone tests) 4.5
-    # minutes, 2/3 (43 phone and 44 desktop tests) 4.7, 3/3 (87 desktop tests) 2.1, WebKit under a minute. So a job is 3 to 7 minutes.
-    timeout-minutes: 15
+    # Measured on the first run in the image: starting the container (the pull) 20 to 28 s, `npm ci` 3 s, the tests: Chromium 1/3 (88 phone
+    # tests) 3.9 minutes, 2/3 (43 phone and 44 desktop tests) 3.2, 3/3 (87 desktop tests) 2.7, WebKit 0.5. A job is 1 to 5 minutes. The limit
+    # of 20 leaves the tests their full 10 and the rest ten more.
+    timeout-minutes: 20
     permissions:
       contents: read
     defaults:
@@ -198,6 +199,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # The Node of this repository (package.json's engines), not whichever the image has: npm only warns when they differ.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
       - name: Install dependencies
         run: npm ci
