@@ -22,14 +22,23 @@ env:
 jobs:
   # Decides whether a version tag has to run the tests again. A v*.*.* tag publishes `latest`, which the server pulls daily, so the tests may be
   # skipped only for a commit that has already passed them: the owner tags a commit of main whose push run was green, and running it all again
-  # for the same commit is two minutes of waiting for nothing. So `tested` is true only when this run is for a tag and this workflow has a
-  # successful run (of any event) on the tagged commit, other than this run. A commit with none (a docs-only commit on main never had a run,
-  # for the paths filter leaves it out) is not a failure: `tested` is false, and test, web-checks and e2e run as they do for any other event.
+  # for the same commit is about eight minutes of waiting for nothing. So `tested` is true only when this run is for a tag and this workflow
+  # has a run on the tagged commit that tested it. A run counts only when all of these hold:
+  #   - its conclusion is success (the --status filter);
+  #   - its event is push or workflow_dispatch: a pull request run is listed under the PR's head commit, but it checked out and tested the merge
+  #     of that commit with main, which is not the tagged tree;
+  #   - its head SHA is the tagged commit (--commit is a filter of the server, and this is checked again here);
+  #   - its ref is not a tag (headBranch holds the tag name for a run of a tag): a tag run may itself have skipped the tests because of an
+  #     earlier run, and what proves the commit is the run that ran them, so the gate never rests on a skip;
+  #   - it is not this run.
+  # A commit with no such run (a docs-only commit on main never had a run, for the paths filter leaves it out; or the push run of main has not
+  # finished yet) is not a failure: `tested` is false, and test, web-checks and e2e run as they do for any other event, and those take longer.
   # The query is made on every event, so that it is exercised on ordinary runs too, but only a tag acts on its answer. If the query itself
-  # fails (an API error), the answer is false and the tests run: a failure must never skip them. No checkout is needed: gh is told the
-  # repository with GH_REPO.
+  # fails or hangs (an API error, or no answer in a minute), the answer is false and the tests run: a failure must never skip them, and a hang
+  # must not fail the run. No checkout is needed: gh is told the repository with GH_REPO.
   gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     permissions:
       actions: read
       contents: read
@@ -46,15 +55,21 @@ jobs:
       - name: Look for a successful run of this commit
         id: check
         run: |
+          set -o pipefail
           tested=false
-          if ! runs=$(gh run list --workflow docker-publish.yml --commit "$GITHUB_SHA" --status success --limit 100 \
-                        --json databaseId --jq "[.[] | select(.databaseId != $RUN_ID) | .databaseId] | map(tostring) | join(\", \")"); then
-            echo "The query for the runs of $GITHUB_SHA failed: the tests run."
+          if ! runs=$(timeout 60 gh run list --workflow docker-publish.yml --commit "$GITHUB_SHA" --status success --limit 100 \
+                        --json databaseId,event,headSha,headBranch,conclusion \
+                      | jq -r --arg sha "$GITHUB_SHA" --argjson id "$RUN_ID" \
+                          '[.[] | select(.conclusion == "success" and (.event == "push" or .event == "workflow_dispatch")
+                                         and .headSha == $sha and .databaseId != $id
+                                         and (.headBranch | test("^v[0-9]+\\.[0-9]+\\.[0-9]+") | not))
+                            | .databaseId | tostring] | join(",")'); then
+            echo "The query for the runs of $GITHUB_SHA failed or took too long: the tests run."
           elif [[ -z $runs ]]; then
             if [[ $IS_TAG == true ]]; then
-              echo "$REF_NAME is on $GITHUB_SHA, which has no successful run: the tests run."
+              echo "$REF_NAME is on $GITHUB_SHA, which has no successful push or manual run on a branch: the tests run."
             else
-              echo "$GITHUB_SHA has no successful run of this workflow. This is not a tag: the tests run."
+              echo "$GITHUB_SHA has no successful push or manual run on a branch. This is not a tag: the tests run."
             fi
           elif [[ $IS_TAG == true ]]; then
             echo "$REF_NAME is on $GITHUB_SHA, which passed in run ${runs%%,*}: the tests are skipped."
