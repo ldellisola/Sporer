@@ -566,17 +566,19 @@ together:
   hangs, `tested` is `false`: an error never skips the tests. `test`, `web-checks` and `e2e` run only when `tested` is not `true`, so a tag on
   a tested commit goes straight to `build`.
 - `test`: the .NET tests (`dotnet test src/Sporer.sln`).
-- `web-checks`: `npm ci`, `npm run typecheck` and `npm test` in `web/`.
+- `web-checks`: `npm ci`, `npm run typecheck` and `npm test` in `web/`, and first a check that the Playwright image of the `e2e` jobs (below)
+  is the version that `web/package-lock.json` has locked. If the two differ it fails at once, saying "update the image in docker-publish.yml to
+  v<version>-noble".
 - `e2e`: the browser tests, in four jobs at once (the checks list shows `e2e (chromium 1/3)`, `e2e (chromium 2/3)`, `e2e (chromium 3/3)` and `e2e
   (webkit)`). The Chromium jobs run `npx playwright test --shard=i/3`: a third each of the whole list of Chromium's tests, the phone and desktop
   projects together and in list order by test count (so the first shard is phone tests and the last desktop ones; every test is in exactly one
   shard). The WebKit job runs the smoke set with `PW_WEBKIT=1` and `--project=webkit`, the engine of iOS Safari. Each job has one worker and
-  installs only its own browser. The install (12 minutes) and the tests (10) have limits of their own, so that a slow Ubuntu mirror ends the step
-  and not the job. The browsers are cached per browser, on the version in `web/package-lock.json` and the Ubuntu release (the runner is Ubuntu
-  26.04 since late October 2026); the cache is saved even when a test fails, by one job for each browser (Chromium's first shard and the WebKit
-  job), and a cache is per branch and goes after 7 days unused, so the first run on `main` after a merge installs the browsers again. A run that
-  finds a browser in the cache still installs the system packages it needs, and fails if that install cannot be done. One red job does not cancel
-  the others.
+  runs in Playwright's own Docker image (`mcr.microsoft.com/playwright:v1.64.1-noble`, as the user the runner has, 1001), which has Node, the
+  three browsers and the system libraries and fonts they need. So no job installs a browser or a system package, nothing is taken from Ubuntu's
+  package mirror (whose speed varies a lot), and there is no browser cache; a job pulls the image, runs `npm ci` and the tests. The tests have a
+  limit of 10 minutes and the job one of 15. The image's tag is written in `.github/workflows/docker-publish.yml`, since an expression there
+  cannot read the lock file. **To upgrade Playwright, change `@playwright/test` in `web/package.json` (and the lock file) and the image's tag
+  in the workflow together**: `web-checks` fails when they differ. One red job does not cancel the others.
 - `e2e-report`: only when an `e2e` job failed or timed out. It merges the jobs' blob reports into one HTML report, uploaded as the
   `playwright-report` artifact (14 days; the traces of the tests that failed are in it). It does not gate anything.
 - `build`: waits for `gate`, `test`, `web-checks` and every `e2e` job, and runs when they all succeeded or when `gate` skipped the tests; a

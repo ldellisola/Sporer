@@ -120,6 +120,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # The e2e jobs run in Playwright's image, whose tag is written in this file (an expression in `container.image` cannot read a step's output),
+      # and its browsers are the ones of that version of Playwright. A package.json moved to a new version with the tag left behind would run the
+      # tests in browsers that Playwright does not expect, and fail with an error about a missing executable. This fails first, with the fix.
+      - name: Check the Playwright image against the lock file
+        run: |
+          tag=$(sed -nE 's|^[[:space:]]*image:[[:space:]]*mcr\.microsoft\.com/playwright:v([0-9]+\.[0-9]+\.[0-9]+)-noble[[:space:]]*(#.*)?$|\1|p' ../.github/workflows/docker-publish.yml)
+          lock=$(node -p "require('./package-lock.json').packages?.['node_modules/@playwright/test']?.version ?? ''")
+          [[ $lock =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::No Playwright version in web/package-lock.json"; exit 1; }
+          [[ -n $tag && $tag != *$'\n'* ]] || { echo "::error::Not exactly one Playwright image (mcr.microsoft.com/playwright:v<version>-noble) in docker-publish.yml"; exit 1; }
+          if [[ $tag != "$lock" ]]; then
+            echo "::error::The Playwright image is v$tag but package-lock.json has $lock: update the image in docker-publish.yml to v$lock-noble"
+            exit 1
+          fi
+          echo "Playwright $lock, image v$lock-noble"
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -145,20 +160,25 @@ jobs:
     needs: gate
     if: needs.gate.outputs.tested != 'true'
     runs-on: ubuntu-latest
-    # The limits are for a run that hangs (a browser that never answers, a mirror that does not), set well above what a green run takes. The
-    # steps that can take long have limits of their own (Install the browser, Install the system packages, Run browser tests), so that a step that
-    # is cut off is cut off alone: the steps after it still run, and the job is red, where a job that ran out of time is cancelled with nothing
-    # uploaded. The step's limit stops only the shell, so Playwright would write no blob; its own --global-timeout (9 minutes, under the step's
-    # 10) ends the run first and writes the blob of what ran, which the upload then takes to the report. The job's limit is then the sum of
-    # those and the rest, and decides nothing.
-    # Measured on the first run (all four jobs missed the cache):
-    #   Chromium 1/3 (88 phone tests): install 77 s, tests 4.5 min, job 6.1 min
-    #   Chromium 2/3 (43 phone and 44 desktop tests): install 91 s, tests 4.7 min, job 6.4 min
-    #   Chromium 3/3 (87 desktop tests): install 14 s, tests 2.1 min, job 2.5 min
-    #   WebKit: its tests take under a minute, but the 139 MB of system packages (185) came from the Ubuntu mirror at 300 kB/s and the install was
-    #   still running at 8 minutes. The mirror varies a lot (that fetch is 8 to 16 s on a good day; on an earlier run an install took 19 minutes).
-    # So: 12 minutes for an install, which is a slow mirror and not a hang, and 10 minutes for the tests, about twice the slowest shard.
-    timeout-minutes: 25
+    # Playwright's own image: the browsers and the libraries they need (fonts, and for WebKit GStreamer, GTK and so on) are in it, so no step
+    # installs them, and nothing comes from Ubuntu's package mirror, whose speed varies a lot (it has run a WebKit install out of its limit three
+    # times). The image is pulled from Microsoft's registry, which the runner reaches fast. The tag is the version of @playwright/test in
+    # web/package-lock.json, written here because an expression in `image` cannot read a step's output: the web-checks job fails when the two
+    # differ. A new version of Playwright is a new tag, changed together with package.json.
+    # --user 1001 is Playwright's documented setup: the runner's own user, whose workspace the checkout then writes to. --ipc=host is
+    # for Chromium, which crashes on the 64 MB of shared memory that a container has by default.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble # must move with @playwright/test in web/package.json and package-lock.json
+      options: --user 1001 --ipc=host
+    # The limits are for a run that hangs (a browser that never answers), set well above what a green run takes. The test step has a limit of
+    # its own, so that a step that is cut off is cut off alone: the steps after it still run, and the job is red, where a job that ran out of time
+    # is cancelled with nothing uploaded. The step's limit stops only the shell, so Playwright would write no blob; its own --global-timeout
+    # (9 minutes, under the step's 10) ends the run first and writes the blob of what ran, which the upload then takes to the report. The job's
+    # limit is the pull of the image, `npm ci` and the tests, with headroom, and decides nothing.
+    # Estimated, until the first run in the image has numbers (the browser installs of the runs before it are gone, and were 14 to 91 s for
+    # Chromium): the image pull about a minute, `npm ci` under a minute, and the tests as measured before: Chromium 1/3 (88 phone tests) 4.5
+    # minutes, 2/3 (43 phone and 44 desktop tests) 4.7, 3/3 (87 desktop tests) 2.1, WebKit under a minute. So a job is 3 to 7 minutes.
+    timeout-minutes: 15
     permissions:
       contents: read
     defaults:
@@ -168,74 +188,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # name is what the checks list shows, id is for the artifact (its name cannot hold a slash), browser is what the job installs and
-          # the cache's key names, args is what is added to `playwright test`, and save is the one job of its browser that saves the cache.
-          - { name: "chromium 1/3", id: chromium-1, browser: chromium, args: "--shard=1/3", save: true }
-          - { name: "chromium 2/3", id: chromium-2, browser: chromium, args: "--shard=2/3", save: false }
-          - { name: "chromium 3/3", id: chromium-3, browser: chromium, args: "--shard=3/3", save: false }
-          - { name: "webkit", id: webkit, browser: webkit, args: "--project=webkit", save: true }
+          # name is what the checks list shows, id is for the artifact (its name cannot hold a slash), browser is for the WebKit project, which
+          # only the WebKit job turns on, and args is what is added to `playwright test`.
+          - { name: "chromium 1/3", id: chromium-1, browser: chromium, args: "--shard=1/3" }
+          - { name: "chromium 2/3", id: chromium-2, browser: chromium, args: "--shard=2/3" }
+          - { name: "chromium 3/3", id: chromium-3, browser: chromium, args: "--shard=3/3" }
+          - { name: "webkit", id: webkit, browser: webkit, args: "--project=webkit" }
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
       - name: Install dependencies
         run: npm ci
-
-      # The version that package-lock.json has locked, which is the one whose browsers are needed: a new version of Playwright is new browsers.
-      # If the lock file has none the step fails here, and not later with a key of `Linux-ubuntu26.04-playwright-` that every run of every version
-      # would share. The step reads the runner's Ubuntu release too, which the key names as well, and fails on an empty one for the same reason.
-      - name: Read the Playwright version
-        id: playwright
-        run: |
-          version=$(node -p "require('./package-lock.json').packages?.['node_modules/@playwright/test']?.version ?? ''")
-          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::No Playwright version in web/package-lock.json"; exit 1; }
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          os=$(. /etc/os-release && echo "$VERSION_ID")
-          [[ -n $os ]] || { echo "::error::No VERSION_ID in /etc/os-release"; exit 1; }
-          echo "os=$os" >> "$GITHUB_OUTPUT"
-
-      # The browsers are downloaded (a few hundred megabytes) once for each version of Playwright, release of Ubuntu and browser, and kept. The key
-      # names all three: Chromium's jobs and WebKit's install different things, and a key that both used would have whichever of them saved first.
-      # Restored here and saved after the tests (Save the Playwright browsers), and not by one `actions/cache` step, which saves only when the whole job
-      # passed: a run that fails in a test would then download the browsers again the next time, which is when it is run most.
-      # A cache belongs to the branch whose run saved it. A run reads its own branch's and the default branch's (a pull request, its base's), never
-      # another branch's, and GitHub removes one that has not been read for 7 days. So the first run on main after a merge, and the first after a
-      # week without runs, is a miss: it installs the browsers and saves them again.
-      - name: Restore the Playwright browsers
-        id: playwright-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-ubuntu${{ steps.playwright.outputs.os }}-playwright-${{ steps.playwright.outputs.version }}-${{ matrix.browser }}
-
-      - name: Install the browser
-        id: install-browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        timeout-minutes: 12
-        run: npx playwright install --with-deps ${{ matrix.browser }}
-
-      # What the cache holds is the browser's files. The libraries that it needs (fonts, and for WebKit GStreamer, GTK and so on) are packages of the
-      # system, which a fresh runner does not have: they are installed whether the browser came from the cache or not.
-      # When this version of Playwright has no package list for the runner's Ubuntu, install-deps prints "Cannot install dependencies" and exits 0,
-      # and the browser then fails to start for a library that is missing. The step fails on that message instead, where the cause is.
-      - name: Install the system packages of the cached browser
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        timeout-minutes: 12
-        run: |
-          set -o pipefail
-          npx playwright install-deps ${{ matrix.browser }} 2>&1 | tee install-deps.log
-          if grep -q "Cannot install dependencies" install-deps.log; then
-            echo "::error::Playwright cannot install the system packages for this runner's OS"
-            exit 1
-          fi
 
       # PW_WEBKIT adds the webkit project (see web/playwright.config.ts), which the WebKit job runs alone; the Chromium shards run without it, which is
       # the phone and desktop projects. The reporters are given here, over the config's: `list` for this job's log, and `blob` for the report that
@@ -245,16 +210,6 @@ jobs:
         env:
           PW_WEBKIT: ${{ matrix.browser == 'webkit' && '1' || '' }}
         run: npx playwright test ${{ matrix.args }} --reporter=list,blob --global-timeout=540000
-
-      # Whether the tests passed or not, but only when the browser was installed by this run and the install went through: a directory that a failed
-      # download left half full must not be what the next run restores. (A hit has nothing new to save; a key that exists cannot be saved over.)
-      # One job for each key (matrix.save): Chromium's three shards would all try to reserve the same one, and the others fail on it.
-      - name: Save the Playwright browsers
-        if: always() && matrix.save && steps.playwright-cache.outputs.cache-hit != 'true' && steps.install-browsers.outcome == 'success'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
 
       # The blob report of this job, which e2e-report merges: it holds the results and the traces of the tests that failed. Kept for a day only,
       # for the merged report is the one that is kept.
