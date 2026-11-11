@@ -1476,6 +1476,26 @@ describe("MapView", () => {
       expect(inkOfLabels(map)).toEqual(LIGHT_MAP_INK);
     });
 
+    test("MapView_draws_the_labels_in_the_colours_of_the_new_scheme_once_its_style_has_loaded", async () => {
+      stubFetch((url) => Response.json({ ...STYLE, name: url }));
+      const setScheme = stubColourScheme("light");
+      render(withConfig(clientWithConfig()));
+      await styleApplied(1);
+      const map = theMap();
+      map.emit("style.load");
+      expect(inkOfLabels(map)).toEqual(labelInk(layerSpecs("range", false)));
+
+      setScheme("dark");
+      await styleApplied(2);
+      map.emit("style.load"); // the dark style has loaded: its layers come back, drawn for it
+      expect(inkOfLabels(map)).toEqual(labelInk(layerSpecs("range", true)));
+
+      setScheme("light");
+      await styleApplied(3);
+      map.emit("style.load");
+      expect(inkOfLabels(map)).toEqual(labelInk(layerSpecs("range", false)));
+    });
+
     test("MapView_keeps_the_label_colours_of_the_light_map_when_the_dark_style_cannot_be_fetched", async () => {
       stubFetch((url) => (url === "/styles/dark" ? Promise.reject(new TypeError("Failed to fetch")) : Response.json({ ...STYLE, name: url })));
       const setScheme = stubColourScheme("light");
