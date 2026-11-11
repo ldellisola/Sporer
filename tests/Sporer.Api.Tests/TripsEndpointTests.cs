@@ -292,6 +292,31 @@ public class TripsEndpointTests(DatabaseFixture db)
         Assert.Equal([LonLat(oldHomeAt), LonLat(Spots.Lisbon), LonLat(newHomeAt)], Line(trip.GetProperty("thumbnail")));
     }
 
+    [Theory]
+    [InlineData(13)] // the new home is in effect from the middle of the trip
+    [InlineData(14)] // from the last away night
+    public async Task Thumbnail_of_a_trip_ending_at_a_new_home_ends_at_the_home_of_the_night_after_the_last(int newHomeFromDay)
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var newHomeAt = Geo.Offset(Spots.Home, 7000, 0);
+        var oldHome = await PlaceAsync(cs, Spots.Home);
+        var newHome = await PlaceAsync(cs, newHomeAt);
+        var lisbon = await PlaceAsync(cs, Spots.Lisbon, "Lisbon", "Portugal");
+        await StoreAsync(api,
+            [Stay(D(9, 12), lisbon, Spots.Lisbon), Stay(D(9, 13), lisbon, Spots.Lisbon), Stay(D(9, 14), lisbon, Spots.Lisbon)],
+            [new HomePeriod(oldHome, D(1, 1), D(9, newHomeFromDay - 1)), new HomePeriod(newHome, D(9, newHomeFromDay), null)],
+            Trip(D(9, 12), D(9, 14), Utc(9, 12, 7), Utc(9, 15, 12)));
+
+        using var body = await GetTripsAsync(client);
+
+        // The line ends where the owner came back to, the home of the night after the last away night, whichever home the last away night had.
+        var trip = Assert.Single(TripsOf(body));
+        Assert.Equal(LonLat(newHomeAt), Line(trip.GetProperty("thumbnail"))[^1]);
+        Assert.Equal(LonLat(Spots.Home), Line(trip.GetProperty("thumbnail"))[0]);
+    }
+
     [Fact]
     public async Task Trips_thumbnail_leaves_out_an_end_that_no_home_period_covers()
     {
