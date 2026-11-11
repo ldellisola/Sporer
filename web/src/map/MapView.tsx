@@ -456,6 +456,8 @@ function MapSurface({
   const creditFoldRef = useRef<CreditFold | null>(null);
   /** The style the map can be drawn on: the last one that loaded, or else the plain one that it fell back to; null before it has any. */
   const shownRef = useRef<StyleSpecification | null>(null);
+  /** The colour scheme of the style that loaded last: what the labels and ink of the layers are drawn for, whatever scheme the system is in now. Null before one has. */
+  const shownDarkRef = useRef<boolean | null>(null);
   // One count for each thing there is to try again. A change of either is what runs the effect again.
   const [mapAttempts, setMapAttempts] = useState(0);
   const [styleAttempts, setStyleAttempts] = useState(0);
@@ -508,6 +510,7 @@ function MapSurface({
           readyRef.current = false;
           pushedRef.current = newPushed();
           shownRef.current = null;
+          shownDarkRef.current = null;
           showState(rootRef.current, "loading");
           setMap(made); // the effects below take it from here: the style, the data, and the camera, each with the latest of what was given
         } catch (error) {
@@ -565,7 +568,7 @@ function MapSurface({
         // of an earlier failure): it stays, and draws what comes, instead of being swapped for a blank map.
         readyRef.current = true;
         try {
-          syncData(map, latest.current.data, latest.current.dark, latest.current.fadeRoutes, pushedRef.current, latest.current.selected);
+          syncData(map, latest.current.data, shownDarkRef.current ?? latest.current.dark, latest.current.fadeRoutes, pushedRef.current, latest.current.selected);
         } catch {
           readyRef.current = false; // the context was lost meanwhile: MapLibre sets its style again, and that loads (`styleLoaded`)
         }
@@ -585,6 +588,7 @@ function MapSurface({
       if (phase === "applying") {
         phase = "ready";
         shownRef.current = applying;
+        shownDarkRef.current = dark; // the layers of this style are drawn for its scheme; a refused switch later leaves them as they are
       }
       // The credit's five seconds begin when the map first shows a style of its own, and not at the plain one that stands in for a style that
       // could not be had (the credit is there on a blank map too, and a tap on it must not fold it for the map that Retry brings).
@@ -593,7 +597,7 @@ function MapSurface({
       showState(rootRef.current, phase === "failed" ? "unavailable" : "ready");
       pushedRef.current = newPushed();
       addHomeImage(map); // each style has its own images: the house comes before the layer that draws it
-      syncData(map, latest.current.data, latest.current.dark, latest.current.fadeRoutes, pushedRef.current, latest.current.selected);
+      syncData(map, latest.current.data, shownDarkRef.current ?? latest.current.dark, latest.current.fadeRoutes, pushedRef.current, latest.current.selected);
       if (phase !== "failed") latest.current.onStyleLoad?.();
     };
     // MapLibre reports a style it will not take, and every problem in it, as error events and never loads it. Errors of a
@@ -705,7 +709,7 @@ function MapSurface({
   // the latest data by itself.
   useEffect(() => {
     if (map !== null && readyRef.current) {
-      syncData(map, { routes, stops, places, heat, view, editPoints }, latest.current.dark, fadeRoutes, pushedRef.current, selected);
+      syncData(map, { routes, stops, places, heat, view, editPoints }, shownDarkRef.current ?? latest.current.dark, fadeRoutes, pushedRef.current, selected);
     }
   }, [map, routes, stops, places, heat, view, editPoints, selected, fadeRoutes, latest]);
 
