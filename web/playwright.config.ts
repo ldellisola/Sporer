@@ -21,12 +21,12 @@ const PHONE_VIEWPORT = { width: 390, height: 844 };
 
 // A WebKit project, for the owner's browser (iOS Safari), is there only when asked for: CI asks (see .github/workflows/docker-publish.yml), and a run
 // on one's own machine is the Chromium projects as always, with no WebKit installed. It runs only the tests tagged `@smoke`, one or two of each flow
-// (the app opens on today, the day, the month, a trip, the name of a place, Settings, the service worker's install): enough to know that the app
+// (the app opens on today, day navigation, the month, opening a trip, renaming a place, Settings, and the service worker installing from a page that is not the app): enough to know that the app
 // works in the engine of the phone, without a second run of the whole suite on a runner that is slow already. Tests that are not tagged are
 // Chromium's. Left out on purpose: the test of removing points (edit-points.spec.ts), which reads the pixels of the points right after edit mode sets
 // them: headless WebKit puts the last frame of a WebGL canvas into a screenshot late (the points are in the canvas, and in the screenshot only after
 // another frame is drawn), and after the points the map is idle; the trips test, whose map keeps moving, runs on WebKit too. And the two service-worker
-// cases that need `page.route` to see the requests of a page that a worker controls, which Playwright on WebKit does not route. Edit mode on Safari is
+// cases that need `page.route` to see the requests of a page that a worker controls, which Playwright on WebKit does not route. And the test of a session that has ended at the login, which answers the API with a redirect that Playwright cannot fake on WebKit (`route.fulfill` refuses a 302 there). Edit mode and the login on Safari are
 // in the owner's iPhone checklist (README).
 const webkit: PlaywrightTestConfig["projects"] =
   process.env["PW_WEBKIT"] === "1"

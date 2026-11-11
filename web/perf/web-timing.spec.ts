@@ -612,6 +612,37 @@ test.describe("web timing", () => {
   test.describe("with the service worker", () => {
     test.use({ serviceWorkers: "allow" });
 
+    test("probe: the requests that the installed page's worker passes on go through the emulated network", async ({ page }) => {
+      // The worker answers the page and the files of the shell and passes everything else on (the API's requests among them: here a file of the server's that is not of the shell). The network of the run is the
+      // page's: if a request that the worker has seen and not answered were not slowed by it, the installed app's API requests would be timed as if the phone
+      // were next to the server. So the same request, one the worker does not answer, is made with the emulation off and on, and must take about a round trip longer.
+      test.skip(NETWORK === null, "no emulated network to reach");
+      const { latency } = NETWORK as NonNullable<typeof NETWORK>;
+      await prepare(page, { timed: false });
+      // The worker is registered from a page that is not the app (as the e2e test of the install does): no request of the app is made, nothing to record.
+      await page.goto("/icons/icon.svg");
+      await page.evaluate(async () => {
+        await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+        await navigator.serviceWorker.ready;
+      });
+      await page.reload(); // a page is controlled by the worker from its next load, or at once for a worker that claims; either way it is controlled now
+      await page.waitForFunction(() => navigator.serviceWorker.controller !== null); // the request below is one that the worker was asked about
+      const passedOn = (): Promise<number> =>
+        page.evaluate(async () => {
+          const begun = performance.now();
+          await fetch(`/__perf/unrecorded?${Math.random()}`, { cache: "no-store" }); // the server's own, answered at once; no file of the shell, so the worker passes it on
+          return performance.now() - begun;
+        });
+      await passedOn(); // the first request of a page opens its connection
+      const open = Math.min(await passedOn(), await passedOn(), await passedOn());
+      const client = await page.context().newCDPSession(page);
+      const { download, upload } = NETWORK as NonNullable<typeof NETWORK>;
+      await client.send("Network.emulateNetworkConditions", { offline: false, latency, downloadThroughput: download, uploadThroughput: upload });
+      const held = Math.min(await passedOn(), await passedOn(), await passedOn());
+        probes["passedOnThroughNetwork"] = { latencyMs: latency, openMs: open, emulatedMs: held, addedMs: held - open };
+      expect(held - open, "ms that the emulated network adds to a request the worker passes on").toBeGreaterThan(latency * 0.8);
+    });
+
     test("warm-up, installed (discarded)", async ({ page, request }) => {
       await run(page, request, extra.find((candidate) => candidate.kind === "installed") as Scenario, false);
     });

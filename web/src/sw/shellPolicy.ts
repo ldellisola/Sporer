@@ -9,7 +9,8 @@ const CACHE_PREFIX = "sporer-shell-";
 export type RoutedRequest = { url: string; mode: string; method: string };
 
 /**
- * - `navigation`: a page of the app: network first, the cached `index.html` when the network fails or is slow;
+ * - `navigation`: a page of the app: network first, the cached `index.html` when the network fails, takes more than 3 seconds or answers 502, 503 or 504
+ *   (a proxy that cannot reach the app: `isProxyError`);
  * - `shell`: a file of the build: the cache, else the network;
  * - `pass`: not the worker's to answer, the browser deals with it as if there were no worker.
  *
