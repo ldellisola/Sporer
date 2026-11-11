@@ -367,7 +367,7 @@ public class TripsEndpointTests(DatabaseFixture db)
 
         var trips = TripsOf(body);
         Assert.Equal([LonLat(Spots.Lisbon), LonLat(Spots.Home)], Line(trips[0].GetProperty("thumbnail"))); // October: no home on the 12th
-        Assert.Equal([LonLat(Spots.Home), LonLat(Spots.Lisbon)], Line(trips[1].GetProperty("thumbnail"))); // September: none on the 14th, the night after the last
+        Assert.Equal([LonLat(Spots.Home), LonLat(Spots.Lisbon)], Line(trips[1].GetProperty("thumbnail"))); // September: none on the 14th, the first known night after the last
     }
 
     [Fact]

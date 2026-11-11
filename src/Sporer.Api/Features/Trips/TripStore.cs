@@ -11,13 +11,14 @@ namespace Sporer.Api.Features.Trips;
 /// <summary>
 /// A stored trip with what a list of trips is drawn from. <paramref name="Nights"/> are its nights with a known position, in
 /// date order, each with the city and country of its surviving place (see <see cref="TripStore.ListAsync"/>);
-/// <paramref name="HomeAtStart"/> and <paramref name="HomeAtEnd"/> are the home in effect on its first night and on the night it came back on (the first night with a
-/// known position after its last, or the night after its last when there is none), null where no home period covers the night: the home it left from and the one it came back to, which is another when the person moved
-/// house while away (a new home is in effect from the night after the trip, and the return is the night <see cref="TripDetector"/> measures it from). The
-/// trip's own fields are those the detector found, with the dates of the owner's edit where it has given it any, and its id is its
-/// first night. <paramref name="Name"/> is the owner's name for it, null for the automatic one, <paramref name="Edited"/> says that
-/// the trip has an edit, and <paramref name="StartEdited"/> and <paramref name="EndEdited"/> that the edit has a start date, and an end date (see
-/// <see cref="TripStore.ListAsync"/>).
+/// <paramref name="HomeAtStart"/> and <paramref name="HomeAtEnd"/> are the home in effect on its first night and on the night it
+/// came back on (the first night with a known position after its last, or the night after its last when there is none), null where
+/// no home period covers the night: the home it left from and the one it came back to, which is another when the person moved
+/// house while away (a new home is in effect from the night after the trip, and the return is the night <see cref="TripDetector"/>
+/// measures it from). The trip's own fields are those the detector found, with the dates of the owner's edit where it has given it
+/// any, and its id is its first night. <paramref name="Name"/> is the owner's name for it, null for the automatic one,
+/// <paramref name="Edited"/> says that the trip has an edit, and <paramref name="StartEdited"/> and <paramref name="EndEdited"/>
+/// that the edit has a start date, and an end date (see <see cref="TripStore.ListAsync"/>).
 /// </summary>
 public sealed record StoredTrip(
     DetectedTrip Trip, IReadOnlyList<TripNight> Nights, GeoPoint? HomeAtStart, GeoPoint? HomeAtEnd, string? Name = null, bool Edited = false,
