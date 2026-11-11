@@ -4,7 +4,7 @@ import { createRef, StrictMode, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConfigResponse } from "../api/types";
 import { boundsOf } from "./bounds";
-import { LAYER_IDS, ROUTE_LAYERS, routeOpacity, SOURCE_IDS } from "./layers";
+import { LAYER_IDS, layerSpecs, ROUTE_LAYERS, routeOpacity, SOURCE_IDS } from "./layers";
 import type { EditPointCollection, Feature, FeatureCollection, HeatCollection, LineString, Point, StopCollection } from "./layers";
 import type { MapLibreLoader, MapLibreModule } from "./maplibre";
 import { MapView, type MapData, type MapEdit, type MapViewHandle, type MapViewProps } from "./MapView";
@@ -1448,6 +1448,70 @@ describe("MapView", () => {
       map.emit("style.load");
       expect(region()).toHaveAttribute("data-map-state", "unavailable"); // still not the style that was asked for
       expect(map.sources.size).toBe(Object.values(SOURCE_IDS).length); // but it is drawn on
+    });
+
+    // The label ink is chosen for the basemap that is on screen, not for the scheme the system asked for: a light map keeps dark labels.
+    const labelInk = (layers: Iterable<Record<string, any>>): Record<string, unknown> =>
+      Object.fromEntries([...layers].filter((layer) => layer["paint"]?.["text-color"] !== undefined).map((layer) => [layer["id"], layer["paint"]["text-color"]]));
+    const inkOfLabels = (map: ReturnType<typeof theMap>): Record<string, unknown> => labelInk(map.layers.values());
+    const LIGHT_MAP_INK = labelInk(layerSpecs("range", false));
+
+    test("MapView_keeps_the_label_colours_of_the_light_map_when_MapLibre_refuses_the_dark_style", async () => {
+      stubFetch((url) => Response.json({ ...STYLE, name: url }));
+      const setScheme = stubColourScheme("light");
+      render(withConfig(clientWithConfig()));
+      await styleApplied(1);
+      const map = theMap();
+      map.emit("style.load");
+      expect(Object.keys(LIGHT_MAP_INK).length).toBeGreaterThan(0);
+      expect(inkOfLabels(map)).toEqual(LIGHT_MAP_INK);
+      expect(labelInk(layerSpecs("range", true))).not.toEqual(LIGHT_MAP_INK);
+
+      setScheme("dark");
+      await styleApplied(2);
+      map.emit("error", { error: new Error("layers[3].paint: unknown property") });
+      await waitFor(() => expect(map.styleCalls).toHaveLength(3)); // the light style is set again
+      map.emit("style.load");
+
+      expect(inkOfLabels(map)).toEqual(LIGHT_MAP_INK);
+    });
+
+    test("MapView_draws_the_labels_in_the_colours_of_the_new_scheme_once_its_style_has_loaded", async () => {
+      stubFetch((url) => Response.json({ ...STYLE, name: url }));
+      const setScheme = stubColourScheme("light");
+      render(withConfig(clientWithConfig()));
+      await styleApplied(1);
+      const map = theMap();
+      map.emit("style.load");
+      expect(inkOfLabels(map)).toEqual(labelInk(layerSpecs("range", false)));
+
+      setScheme("dark");
+      await styleApplied(2);
+      map.emit("style.load"); // the dark style has loaded: its layers come back, drawn for it
+      expect(inkOfLabels(map)).toEqual(labelInk(layerSpecs("range", true)));
+
+      setScheme("light");
+      await styleApplied(3);
+      map.emit("style.load");
+      expect(inkOfLabels(map)).toEqual(labelInk(layerSpecs("range", false)));
+    });
+
+    test("MapView_keeps_the_label_colours_of_the_light_map_when_the_dark_style_cannot_be_fetched", async () => {
+      stubFetch((url) => (url === "/styles/dark" ? Promise.reject(new TypeError("Failed to fetch")) : Response.json({ ...STYLE, name: url })));
+      const setScheme = stubColourScheme("light");
+      const onStyleError = vi.fn<(error: Error) => void>();
+      const handle = createRef<MapViewHandle>();
+      const { rerender } = render(withConfig(clientWithConfig(), { ref: handle, onStyleError }));
+      await styleApplied(1);
+      const map = theMap();
+      map.emit("style.load");
+
+      setScheme("dark");
+      await waitFor(() => expect(onStyleError).toHaveBeenCalledTimes(1));
+      await quietly();
+      rerender(withConfig(clientWithConfig(), { ref: handle, onStyleError, data: { routes: routes(2) } })); // and data that arrives later
+
+      expect(inkOfLabels(map)).toEqual(LIGHT_MAP_INK);
     });
 
     // The app says "Couldn't switch the map style" when a basemap is still drawn and only the switch failed, and "Map unavailable" when

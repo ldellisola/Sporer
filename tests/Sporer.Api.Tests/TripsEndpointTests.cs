@@ -292,6 +292,60 @@ public class TripsEndpointTests(DatabaseFixture db)
         Assert.Equal([LonLat(oldHomeAt), LonLat(Spots.Lisbon), LonLat(newHomeAt)], Line(trip.GetProperty("thumbnail")));
     }
 
+    [Theory]
+    [InlineData(13)] // the new home is in effect from the middle of the trip
+    [InlineData(14)] // from the last away night
+    [InlineData(15)] // from the night after the last away night: the only case where it differs from the home of the last away night
+    public async Task Thumbnail_of_a_trip_ending_at_a_new_home_ends_at_the_home_of_the_night_after_the_last(int newHomeFromDay)
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var newHomeAt = Geo.Offset(Spots.Home, 7000, 0);
+        var oldHome = await PlaceAsync(cs, Spots.Home);
+        var newHome = await PlaceAsync(cs, newHomeAt);
+        var lisbon = await PlaceAsync(cs, Spots.Lisbon, "Lisbon", "Portugal");
+        await StoreAsync(api,
+            [Stay(D(9, 12), lisbon, Spots.Lisbon), Stay(D(9, 13), lisbon, Spots.Lisbon), Stay(D(9, 14), lisbon, Spots.Lisbon)],
+            [new HomePeriod(oldHome, D(1, 1), D(9, newHomeFromDay - 1)), new HomePeriod(newHome, D(9, newHomeFromDay), null)],
+            Trip(D(9, 12), D(9, 14), Utc(9, 12, 7), Utc(9, 15, 12)));
+
+        using var body = await GetTripsAsync(client);
+
+        // The line ends where the owner came back to, the home of the night after the last away night. From the 13th and the 14th the last away night has the
+        // new home too; from the 15th only the night after does, and a line that took the home of the last away night would end at the old one.
+        var trip = Assert.Single(TripsOf(body));
+        Assert.Equal(LonLat(newHomeAt), Line(trip.GetProperty("thumbnail"))[^1]);
+        Assert.Equal(LonLat(Spots.Home), Line(trip.GetProperty("thumbnail"))[0]);
+    }
+
+    [Fact]
+    public async Task Thumbnail_of_a_trip_whose_return_night_is_unknown_ends_at_the_home_of_the_first_known_night_after_it()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var newHomeAt = Geo.Offset(Spots.Home, 7000, 0);
+        var oldHome = await PlaceAsync(cs, Spots.Home);
+        var newHome = await PlaceAsync(cs, newHomeAt);
+        var lisbon = await PlaceAsync(cs, Spots.Lisbon, "Lisbon", "Portugal");
+        // Away the 12th to the 14th, the 15th unknown (the phone was off on the day of the move), and the 16th at the new home. Home detection
+        // backdates a new home only to the first night it saw there, so the old home runs to the 15th and the new one begins on the 16th: the
+        // return is measured from the 16th (as TripDetector does), and so is the line.
+        await StoreAsync(api,
+            [
+                Stay(D(9, 12), lisbon, Spots.Lisbon), Stay(D(9, 13), lisbon, Spots.Lisbon), Stay(D(9, 14), lisbon, Spots.Lisbon),
+                Unknown(D(9, 15)), Stay(D(9, 16), newHome, newHomeAt),
+            ],
+            [new HomePeriod(oldHome, D(1, 1), D(9, 15)), new HomePeriod(newHome, D(9, 16), null)],
+            Trip(D(9, 12), D(9, 14), Utc(9, 12, 7), Utc(9, 16, 12)));
+
+        using var body = await GetTripsAsync(client);
+
+        var trip = Assert.Single(TripsOf(body));
+        Assert.Equal([LonLat(Spots.Home), LonLat(Spots.Lisbon), LonLat(newHomeAt)], Line(trip.GetProperty("thumbnail")));
+    }
+
     [Fact]
     public async Task Trips_thumbnail_leaves_out_an_end_that_no_home_period_covers()
     {
@@ -313,7 +367,7 @@ public class TripsEndpointTests(DatabaseFixture db)
 
         var trips = TripsOf(body);
         Assert.Equal([LonLat(Spots.Lisbon), LonLat(Spots.Home)], Line(trips[0].GetProperty("thumbnail"))); // October: no home on the 12th
-        Assert.Equal([LonLat(Spots.Home), LonLat(Spots.Lisbon)], Line(trips[1].GetProperty("thumbnail"))); // September: none on the 14th, the night after the last
+        Assert.Equal([LonLat(Spots.Home), LonLat(Spots.Lisbon)], Line(trips[1].GetProperty("thumbnail"))); // September: none on the 14th, the first known night after the last
     }
 
     [Fact]

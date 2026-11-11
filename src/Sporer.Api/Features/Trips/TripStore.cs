@@ -11,13 +11,14 @@ namespace Sporer.Api.Features.Trips;
 /// <summary>
 /// A stored trip with what a list of trips is drawn from. <paramref name="Nights"/> are its nights with a known position, in
 /// date order, each with the city and country of its surviving place (see <see cref="TripStore.ListAsync"/>);
-/// <paramref name="HomeAtStart"/> and <paramref name="HomeAtEnd"/> are the home in effect on its first night and on the night after its last,
-/// null where no home period covers the night: the home it left from and the one it came back to, which is another when the person moved
-/// house while away (a new home is in effect from the night after the trip, as <see cref="TripDetector"/> measures the return). The
-/// trip's own fields are those the detector found, with the dates of the owner's edit where it has given it any, and its id is its
-/// first night. <paramref name="Name"/> is the owner's name for it, null for the automatic one, <paramref name="Edited"/> says that
-/// the trip has an edit, and <paramref name="StartEdited"/> and <paramref name="EndEdited"/> that the edit has a start date, and an end date (see
-/// <see cref="TripStore.ListAsync"/>).
+/// <paramref name="HomeAtStart"/> and <paramref name="HomeAtEnd"/> are the home in effect on its first night and on the night it
+/// came back on (the first night with a known position after its last, or the night after its last when there is none), null where
+/// no home period covers the night: the home it left from and the one it came back to, which is another when the person moved
+/// house while away (a new home is in effect from the night after the trip, and the return is the night <see cref="TripDetector"/>
+/// measures it from). The trip's own fields are those the detector found, with the dates of the owner's edit where it has given it
+/// any, and its id is its first night. <paramref name="Name"/> is the owner's name for it, null for the automatic one,
+/// <paramref name="Edited"/> says that the trip has an edit, and <paramref name="StartEdited"/> and <paramref name="EndEdited"/>
+/// that the edit has a start date, and an end date (see <see cref="TripStore.ListAsync"/>).
 /// </summary>
 public sealed record StoredTrip(
     DetectedTrip Trip, IReadOnlyList<TripNight> Nights, GeoPoint? HomeAtStart, GeoPoint? HomeAtEnd, string? Name = null, bool Edited = false,
@@ -274,11 +275,26 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
             """,
             transaction: transaction, cancellationToken: ct));
 
+        // The night each trip came back to, as TripDetector measures the return: the first night after its last away night that has a position
+        // (an unknown night is skipped, so that a phone that was off on the day of a move does not draw the line back to the old home).
+        var returns = await connection.QueryAsync<ReturnNightRow>(new CommandDefinition(
+            """
+            select to_char(t.id, 'YYYY-MM-DD') as TripId, to_char(r.date, 'YYYY-MM-DD') as ReturnNight
+            from trip t
+            cross join lateral (
+                select n.date from night n
+                where n.date > t.last_night and n.latitude is not null and n.longitude is not null
+                order by n.date limit 1
+            ) r
+            """,
+            transaction: transaction, cancellationToken: ct));
+
         var homeList = await LoadHomesAsync(connection, transaction, ct);
 
         await transaction.CommitAsync(ct);
 
         var nightsOf = nights.ToLookup(n => n.TripId);
+        var returnNightOf = returns.ToDictionary(r => r.TripId, r => ParseDate(r.ReturnNight));
 
         return
         [
@@ -289,7 +305,7 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
                     .Select(n => new TripNight(ParseDate(n.Date), n.City, n.Country, new GeoPoint(n.Latitude, n.Longitude)));
 
                 return new StoredTrip(
-                    trip, [.. known], HomeOn(trip.FirstNight, homeList)?.Position, HomeOn(trip.LastNight.AddDays(1), homeList)?.Position, t.Name, t.Edited,
+                    trip, [.. known], HomeOn(trip.FirstNight, homeList)?.Position, HomeOn(returnNightOf.GetValueOrDefault(t.FirstNight, trip.LastNight.AddDays(1)), homeList)?.Position, t.Name, t.Edited,
                     t.StartEdited, t.EndEdited);
             }),
         ];
@@ -535,6 +551,12 @@ public sealed class TripStore(NpgsqlDataSource dataSource, NightStore nightStore
     {
         public DateTime? FromUtc { get; set; }
         public DateTime? ToUtc { get; set; }
+    }
+
+    private sealed class ReturnNightRow
+    {
+        public string TripId { get; set; } = string.Empty;
+        public string ReturnNight { get; set; } = string.Empty;
     }
 
     private sealed class TripRow

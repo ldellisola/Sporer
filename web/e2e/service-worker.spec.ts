@@ -205,6 +205,13 @@ test("a_navigation_answered_with_a_redirect_ends_where_it_leads_and_not_on_the_c
   expect(seen).toEqual(["redirect", "login"]);
 });
 
+/**
+ * The most that a navigation answered by the proxy's error may take to show the cached shell. The real worker took 0.1 to 0.7 s on its own and up to 1.4 s
+ * with the processors busy; one that waits cannot answer before its 3 second timer, so it takes 3 s or more. 2.5 s keeps the headroom for a slow runner
+ * and still fails a worker that waits.
+ */
+const PROXY_ERROR_SHELL_MAX_MS = 2_500;
+
 test("a_navigation_that_the_network_does_not_answer_within_3_seconds_shows_the_cached_shell", async ({ context, page }) => {
   await mockApi(page);
   await openWithWorker(page);
@@ -238,12 +245,16 @@ test("a_navigation_that_the_proxy_answers_with_a_503_shows_the_cached_shell_with
     return route.fulfill({ status: 503, contentType: "text/html", body: "<!doctype html><title>Bad gateway</title><h1>Service Unavailable</h1>" });
   });
 
+  const started = Date.now();
   await page.goto(DAY);
+  const took = Date.now() - started;
 
   await expect(topBar(page)).toBeVisible(); // the app, from the worker's cache: not the proxy's page
   await expect(page).toHaveTitle("Sporer");
   await expect(page.getByRole("heading", { name: "Service Unavailable" })).toHaveCount(0);
   await expect(page.getByRole("alert")).toContainText("Couldn't load"); // and the view says what went wrong, with its way to try again
   await expect(retry(page)).toBeVisible();
-  expect(asked).toBe(1); // the network did answer, and it was not waited for 3 seconds
+  expect(asked).toBe(1); // the network did answer...
+  // ...and it was not waited for 3 seconds: a worker that held the page for the full wait takes 3 s or more (see PROXY_ERROR_SHELL_MAX_MS).
+  expect(took).toBeLessThan(PROXY_ERROR_SHELL_MAX_MS);
 });
