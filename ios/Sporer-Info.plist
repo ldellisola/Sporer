@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The keys Xcode cannot generate from build settings; it merges the generated ones into this. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- A server on this Mac or the local network may be plain http (a local server for development). Every other address must be https. -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

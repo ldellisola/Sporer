@@ -1,0 +1,1 @@
+{"algorithmVersion":"2:4ed0fd643e82","backfill":{"from":"2024-06-01T05:00:00Z","to":"2026-11-25T19:43:23.072049Z","cursor":"2026-11-25T19:43:23.072049Z","percent":100,"paused":false},"pendingRanges":0,"failedRanges":[],"lastRunAt":"2026-11-25T19:51:11.800867Z","lastError":null,"places":{"total":86,"unnamed":0,"failed":0},"warnings":["Overland ingest is open; set OVERLAND_TOKEN"]}

@@ -91,6 +91,46 @@ screen in a window of its own, without Safari's bars, on today.
   the server. Removing the site from Safari's Website Data is the other way, and may not reach the app on the Home Screen: on iOS 18 and later it is
   Settings, Apps, Safari, Advanced, Website Data; on iOS 17 and earlier, Settings, Safari, Advanced, Website Data.
 
+## The native app (iPhone, iPad and Mac)
+
+`ios/` holds a native app for iOS 27 that also runs on the Mac (Mac Catalyst). It shows and edits the same timeline through the same API as the web
+app: the map fills the screen, and the Day, Explore, Trips and Places panels sit in a sheet over it on the iPhone, or beside it on the iPad and the
+Mac. Its design is in `docs/superpowers/specs/2026-11-25-sporer-ios-app-design.md`. It does not record your location: Overland still does.
+
+**Building and installing it** is done on this Mac with the scripts in `ios/scripts/`; `ios/README.md` has the details (signing, the first
+install on a phone, the app's options, the tests). With Xcode 27 and your Apple account signed in to Xcode (a free one is enough):
+
+```sh
+ios/scripts/install-iphone.sh    # build for the iPhone, install it over Wi-Fi or the cable, and open it
+ios/scripts/run-simulator.sh -mock
+ios/scripts/run-mac.sh
+ios/scripts/build.sh             # build for the simulator, the iPhone and the Mac
+```
+
+**With a free account the app stops opening on the iPhone 7 days after it was installed**: run `ios/scripts/install-iphone.sh` again before
+then (it says when). Over Wi-Fi the phone must be unlocked, on the same network as the Mac, and **with its own VPN off** while it installs: a
+VPN that takes all traffic hides the phone from the Mac. The Mac app has no 7-day limit.
+
+- **The server.** The app talks to `https://sporer.lud.ar` (over the VPN); Settings, Server changes the address, which may be plain `http://` on this
+  Mac or the local network only. A redirect from the server is taken to be a login in front of it, which the app cannot do yet, and is shown as such.
+- **What the app keeps.** The last answer of every view you open is kept on the device (in its caches, at most about 100 MB, oldest dropped first),
+  so a day you looked at opens at once and is refreshed from the server; with no network it is shown with "Offline. Saved 10 minutes ago." and a
+  Retry. A day's raw points (edit mode) are never kept. Every read sends the `ETag` of the answer it has, so an unchanged view costs a `304`.
+- **Staying fresh.** As the web app: a day or period that is pending is asked for again every 30 seconds (every 3 seconds for two minutes after you
+  edit its points), today every minute, everything on screen when the app comes back after more than 30 seconds away, and after any edit; at
+  midnight the Day tab moves on to the new today.
+
+**Checks** run on this Mac, never on GitHub Actions: the unit tests on a simulator, and, against a local server with the synthetic history
+("Local development", "Synthetic data and performance checks"), the tests that send every write of the app to a real server and put back
+what they changed. Never point them at a server with your real data; the script refuses an address that is not on this Mac:
+
+```sh
+ios/scripts/test.sh
+ios/scripts/test.sh --live http://127.0.0.1:5097
+```
+
+To run the app in a simulator against such a server: `ios/scripts/run-simulator.sh -serverURL http://127.0.0.1:5097`.
+
 ## Trips and home
 
 Sporer works out where you live and when you were away from it, from the places you slept at. All of it is derived from the timeline and is

@@ -494,3 +494,9 @@ src/Sporer.Api/wwwroot
 web/perf/recorded
 web/perf/results
 web/perf/recorded.partial
+
+# Native app (ios/): Xcode per-user state, local builds and app packages
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+ios/build/
+*.ipa
