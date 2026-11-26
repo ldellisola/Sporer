@@ -1,5 +1,6 @@
-// Draws the PNG icons of the web app from public/icons/icon.svg: the apple touch icon (180) and the two icons of the manifest (192
-// and 512). Run it when the SVG changes, and commit the result:
+// Draws the PNG icons from public/icons/icon.svg: the apple touch icon (180) and the two icons of the manifest (192 and 512) of the
+// web app, and the app icon of the native app (1024 for iOS and Mac at 2x, 512 for Mac at 1x). Run it when the SVG changes, and
+// commit the result:
 //
 //   cd web && npm run icons
 //
@@ -10,12 +11,15 @@ import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const folder = fileURLToPath(new URL("../public/icons/", import.meta.url));
+const native = fileURLToPath(new URL("../../ios/Sporer/Assets.xcassets/AppIcon.appiconset/", import.meta.url));
 const svg = await readFile(`${folder}icon.svg`, "utf8");
 
 const ICONS = [
-  ["apple-touch-icon.png", 180],
-  ["icon-192.png", 192],
-  ["icon-512.png", 512],
+  [`${folder}apple-touch-icon.png`, 180],
+  [`${folder}icon-192.png`, 192],
+  [`${folder}icon-512.png`, 512],
+  [`${native}AppIcon-1024.png`, 1024],
+  [`${native}AppIcon-512.png`, 512],
 ];
 
 const browser = await chromium.launch();
@@ -38,8 +42,8 @@ try {
     );
     if (alphas.some((alpha) => alpha !== 255)) throw new Error(`${file} is not opaque (alpha ${alphas.join(", ")})`);
 
-    await writeFile(`${folder}${file}`, png);
-    console.log(`${file}: ${size} x ${size}, ${png.length} bytes`);
+    await writeFile(file, png);
+    console.log(`${file.split("/").slice(-2).join("/")}: ${size} x ${size}, ${png.length} bytes`);
     await page.close();
   }
 } finally {
