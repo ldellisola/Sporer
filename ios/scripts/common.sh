@@ -18,12 +18,24 @@ SIGNING=()
 [[ -n "${SPORER_TEAM:-}" ]] && SIGNING+=("DEVELOPMENT_TEAM=$SPORER_TEAM")
 [[ -n "${SPORER_BUNDLE_ID:-}" ]] && SIGNING+=("PRODUCT_BUNDLE_IDENTIFIER=$SPORER_BUNDLE_ID")
 
+# The app's version, which Settings, About shows: the release it was built from, that is the newest version tag (v1.4.0 gives
+# 1.4.0) behind the commit, and as its build number the count of commits, which grows with every commit, as iOS wants of a build
+# installed over another. A build from commits after a release keeps that release's version with a higher build number. Where git
+# or a tag is not there, the project's own (1.0 and 1) stand, as they do for a build started in Xcode.
+VERSIONING=()
+if release="$(git -C "$IOS_DIR" describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)"; then
+    VERSIONING+=("MARKETING_VERSION=${release#v}")
+fi
+if commits="$(git -C "$IOS_DIR" rev-list --count HEAD 2>/dev/null)"; then
+    VERSIONING+=("CURRENT_PROJECT_VERSION=$commits")
+fi
+
 say() { printf '\033[1m%s\033[0m\n' "$*" >&2; }
 fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
-# xcodebuild with the project and scheme, printing only warnings and errors.
+# xcodebuild with the project and scheme and the app's version (VERSIONING), printing only warnings and errors.
 xcb() {
-    xcodebuild -project "$PROJECT" -scheme "$SCHEME" -quiet "$@"
+    xcodebuild -project "$PROJECT" -scheme "$SCHEME" -quiet ${VERSIONING[@]+"${VERSIONING[@]}"} "$@"
 }
 
 # The simulator to build for and test on: SPORER_SIMULATOR (a name or a UDID), else a booted iPhone, else the first iPhone of the

@@ -37,6 +37,10 @@ They read these settings from the environment:
 Someone else building the app sets their own team and id, as in `SPORER_TEAM=ABCDE12345 SPORER_BUNDLE_ID=com.example.Sporer
 ios/scripts/install-iphone.sh`, or changes them under the Sporer target's Signing & Capabilities in Xcode.
 
+The scripts stamp the app with the release it was built from, which Settings, About shows as **Version**. It is the newest version tag behind the
+commit (`v1.4.0` gives `1.4.0`), and the build number in brackets is the count of commits, so every later build has a higher one. A build of
+commits after a release keeps that release's number with a higher build number. A build started in Xcode shows the project's own `1.0 (1)`.
+
 ## The iPhone
 
 ```sh
