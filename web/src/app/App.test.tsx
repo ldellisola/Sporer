@@ -8,6 +8,7 @@ import type {
   HeatResponse,
   HomesResponse,
   PlaceResponse,
+  PlacesResponse,
   RangeResponse,
   SettingsResponse,
   StatusResponse,
@@ -15,7 +16,7 @@ import type {
   TripResponse,
   TripsResponse,
 } from "../api/types";
-import { dayGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripGeoJson, tripsGeoJson } from "../map/layers";
+import { allPlacesGeoJson, dayGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripGeoJson, tripsGeoJson } from "../map/layers";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
 import cafe from "../../e2e/fixtures/place-cafe.json";
 import october from "../../e2e/fixtures/range-october.json";
@@ -119,6 +120,7 @@ type Answer = (path: string) => Response | Promise<Response>;
 const answerEmpty: Answer = (path) => {
   if (path.startsWith("/api/range")) return Response.json(emptyRange(path));
   if (path.startsWith("/api/places/")) return Response.json(emptyPlace(path));
+  if (path === "/api/places") return Response.json({ places: [] } satisfies PlacesResponse);
   if (path === "/api/trips") return Response.json({ trips: [] } satisfies TripsResponse);
   if (path === "/api/homes") return Response.json({ periods: [] } satisfies HomesResponse);
   if (path === "/api/settings") return Response.json({ tripMinDistanceKm: 50, tripMinDistanceKmDefault: 50 } satisfies SettingsResponse);
@@ -1010,6 +1012,9 @@ describe("App period panels", () => {
   });
 });
 
+/** What the map of a place draws when there is no other place: its pin, and no dot round it. */
+const drawnPlace = (place: PlaceResponse) => ({ ...placeGeoJson(place), places: allPlacesGeoJson([], place.id) });
+
 describe("App place", () => {
   const CAFE = cafe as PlaceResponse; // place 2, the Café of the 22nd
   const OSLO_DAY = flightDay as DayResponse;
@@ -1028,7 +1033,7 @@ describe("App place", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "Café" })).toBeInTheDocument();
     await waitFor(() => expect(mapProps().fitTo).not.toBeNull());
-    expect(mapProps().data).toEqual(placeGeoJson(CAFE));
+    await waitFor(() => expect(mapProps().data).toEqual(drawnPlace(CAFE))); // the pin, and the other places round it (none here)
     expect(mapProps().fitTo).toEqual(placeGeoJson(CAFE).stops.features);
     expect(mapProps().home).toEqual(placeGeoJson(CAFE).stops.features);
     expect(mapProps().heatToggle).toBeUndefined(); // there is no period to show the heat of
@@ -1044,8 +1049,8 @@ describe("App place", () => {
     await screen.findByRole("heading", { level: 1, name: "Café" });
 
     // The panel and the map ask for the same place, and the cache gives them the one request (StrictMode may make it twice, as it does
-    // for every query: it mounts what it shows twice).
-    expect(new Set(paths.filter((path) => path !== "/api/status"))).toEqual(new Set(["/api/places/2"]));
+    // for every query: it mounts what it shows twice). The map asks for the places round it as well.
+    await waitFor(() => expect(new Set(paths.filter((path) => path !== "/api/status"))).toEqual(new Set(["/api/places/2", "/api/places"])));
   });
 
   test("App_says_a_place_no_longer_exists_and_draws_nothing_of_it", async () => {
@@ -1114,7 +1119,7 @@ describe("App place", () => {
     fireEvent.click(screen.getByRole("button", { name: "Café" })); // the name of a stop opens the place
     expect(await screen.findByRole("heading", { level: 1, name: "Café" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/place/2");
-    await waitFor(() => expect(mapProps().data).toEqual(placeGeoJson(CAFE)));
+    await waitFor(() => expect(mapProps().data).toEqual(drawnPlace(CAFE)));
 
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
 
@@ -1134,6 +1139,116 @@ describe("App place", () => {
     expect(window.location.pathname).toBe(`/day/${today()}`);
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(periodLabel({ view: "day", date: today() })); // the day view of today, with its bar
     expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
+  });
+});
+
+describe("App places", () => {
+  const CAFE = cafe as PlaceResponse; // place 2, at 59.914, 10.764
+  const PLACES: PlacesResponse = {
+    places: [
+      { id: 2, name: "Café", lat: 59.914, lon: 10.764, seconds: 8640, visits: 3 },
+      { id: 7, name: "Bistro", lat: 59.914378, lon: 10.764, seconds: 4000, visits: 3 },
+      { id: 8, name: "Bakery", lat: 59.92478, lon: 10.764, seconds: 3000, visits: 2 },
+    ],
+  };
+  /** The places of the map, the Café as place 2, the most visited as the search has them, the Bistro as the nearest to the Café; the rest as empty as `answerEmpty`. */
+  const answerWithPlaces: Answer = (path) => {
+    if (path === "/api/places") return Response.json(PLACES);
+    if (path === "/api/places/2") return Response.json(CAFE);
+    if (path.startsWith("/api/places/search")) return Response.json([{ id: 7, name: "Bistro", address: null, visits: 3 }]);
+    if (path.startsWith("/api/places/2/candidates")) return Response.json([{ id: 7, name: "Bistro", address: null, distanceM: 42, visits: 3 }]);
+    return answerEmpty(path);
+  };
+
+  test("App_places_has_a_button_in_the_bar_that_shows_every_place_on_the_map_and_the_list_of_them", async () => {
+    stubApi(answerWithPlaces);
+    renderApp();
+    const button = await screen.findByRole("button", { name: "Places" });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(button);
+
+    expect(window.location.pathname).toBe("/places");
+    expect(screen.getByRole("button", { name: "Places" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { level: 1, name: "Places" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /^Bistro/ })).toBeInTheDocument(); // the list, the most visited first
+    expect(screen.getByRole("searchbox", { name: "Search places" })).not.toHaveFocus(); // no keyboard over the map on a phone
+    await waitFor(() => expect(mapProps().data.places).toEqual(allPlacesGeoJson(PLACES.places)));
+    expect(mapProps().data.view).toBe("places");
+    expect(mapProps().data.routes.features).toEqual([]);
+    await waitFor(() => expect(mapProps().fitTo).toEqual(allPlacesGeoJson(PLACES.places).features)); // all of them
+    expect(mapProps().heatToggle).toBeUndefined();
+  });
+
+  test("App_places_a_dot_or_a_row_opens_its_place_whose_map_has_the_other_places_round_it", async () => {
+    window.history.replaceState(null, "", "/places");
+    stubApi(answerWithPlaces);
+    renderApp();
+    await waitFor(() => expect(mapProps().data.places?.features).toHaveLength(3));
+
+    act(() => mapProps().onPlaceTap?.(2));
+
+    expect(window.location.pathname).toBe("/place/2");
+    expect(await screen.findByRole("heading", { level: 1, name: "Café" })).toBeInTheDocument();
+    await waitFor(() => expect(mapProps().data).toEqual({ ...placeGeoJson(CAFE), places: allPlacesGeoJson(PLACES.places, 2) })); // not the Café's own dot: its pin
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/places"));
+    fireEvent.click(await screen.findByRole("button", { name: /^Bistro/ }));
+    expect(window.location.pathname).toBe("/place/7");
+  });
+
+  test("App_merge_mode_picks_the_places_tapped_on_the_map_instead_of_opening_them_and_marks_them_on_it", async () => {
+    window.history.replaceState(null, "", "/place/2");
+    stubApi(answerWithPlaces);
+    stubLayout(120);
+    renderApp();
+    await screen.findByRole("heading", { level: 1, name: "Café" });
+    const sheet = screen.getByRole("region", { name: "Details" });
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resize panel" }));
+    expect(sheet).toHaveAttribute("data-snap", "full");
+
+    await waitFor(() => expect(mapProps().data.places?.features).toHaveLength(2));
+    fireEvent.click(screen.getByRole("button", { name: "Merge with…" }));
+    expect(sheet).toHaveAttribute("data-snap", "half"); // the map, where the places are picked, comes into view
+    // ...brought to the place and the places within 250 m of it (the Bistro, 42 m off; not the Bakery, 1.2 km off), in the part the sheet leaves free.
+    const dots = allPlacesGeoJson(PLACES.places, 2).features;
+    expect(mapProps().fitTo).toEqual([placeGeoJson(CAFE).stops.features[0], dots[0]]);
+
+    act(() => mapProps().onPlaceTap?.(7));
+    act(() => mapProps().onPlaceTap?.(8));
+    act(() => mapProps().onPlaceTap?.(2)); // the Café's own pin: it is the place they go into
+
+    expect(window.location.pathname).toBe("/place/2"); // nothing was opened
+    const listed = within(screen.getByRole("list", { name: "Places to merge" }));
+    expect(listed.getAllByRole("listitem").map((row) => row.firstChild?.textContent)).toEqual(["Bistro · 42 m", "Bakery · 1.2 km"]);
+    await waitFor(() => expect(mapProps().data.places).toEqual(allPlacesGeoJson(PLACES.places, 2, new Set([7, 8]))));
+
+    act(() => mapProps().onPlaceTap?.(7)); // a second tap takes it off
+    expect(listed.getAllByRole("listitem")).toHaveLength(1);
+    await waitFor(() => expect(mapProps().data.places).toEqual(allPlacesGeoJson(PLACES.places, 2, new Set([8]))));
+  });
+
+  test("App_merge_mode_ends_with_cancel_and_with_another_view_and_a_tap_opens_a_place_again", async () => {
+    window.history.replaceState(null, "", "/place/2");
+    stubApi(answerWithPlaces);
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Merge with…" }));
+    act(() => mapProps().onPlaceTap?.(7));
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(mapProps().data.places).toEqual(allPlacesGeoJson(PLACES.places, 2))); // nothing marked
+    act(() => mapProps().onPlaceTap?.(7));
+    expect(window.location.pathname).toBe("/place/7");
+
+    act(() => navigate({ view: "place", id: 2 }));
+    fireEvent.click(await screen.findByRole("button", { name: "Merge with…" }));
+    act(() => mapProps().onPlaceTap?.(8));
+    act(() => navigate({ view: "places" })); // another view
+    act(() => navigate({ view: "place", id: 2 }));
+    expect(await screen.findByRole("button", { name: "Merge with…" })).toBeInTheDocument(); // off, and nothing kept of what was picked
+    await waitFor(() => expect(mapProps().data.places).toEqual(allPlacesGeoJson(PLACES.places, 2)));
   });
 });
 

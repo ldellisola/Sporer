@@ -1,0 +1,11 @@
+/* The heading of the list, as the trips' list has it. */
+.landing {
+  margin-top: 4px;
+}
+
+/* What the map and the list are for, under the heading. */
+.hint {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+}

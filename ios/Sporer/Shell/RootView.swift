@@ -55,7 +55,7 @@ struct SectionStack: View {
     }
 }
 
-/// The map, wired to open places and pick points.
+/// The map, wired to open places (or, in merge mode, pick them) and pick points.
 struct AppMap: View {
     @Environment(\.appModel) private var app
 
@@ -63,6 +63,10 @@ struct AppMap: View {
         SporerMapView(
             model: app.map,
             onOpenPlace: { id in
+                if let merging = app.map.merging {
+                    merging.toggle(id)
+                    return
+                }
                 app.open(.place(id))
                 if app.detent == SheetDetents.peek { app.detent = SheetDetents.medium }
             },

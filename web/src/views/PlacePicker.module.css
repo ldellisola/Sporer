@@ -54,3 +54,8 @@
 .cancel {
   margin: 4px 0 0;
 }
+
+/* The tick of a place that is picked, in the colour the map draws it in. */
+.tick {
+  color: var(--accent-ink);
+}

@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
-import { shownOf, useDay, useHeat, usePlace, useRange, useTrip, useTrips } from "../api/queries";
-import type { DayPointsResponse, DayResponse, PlaceResponse, RangeResponse, TripResponse, TripsResponse } from "../api/types";
+import { shownOf, useDay, useHeat, usePlace, usePlaces, useRange, useTrip, useTrips } from "../api/queries";
+import type { DayPointsResponse, DayResponse, PlaceResponse, PlacesResponse, RangeResponse, TripResponse, TripsResponse } from "../api/types";
 import {
+  allPlacesGeoJson,
   dayGeoJson,
   editPointsGeoJson,
   heatGeoJson,
@@ -21,6 +22,7 @@ import { formatRoute, isPeriodRoute, type Route } from "./router";
 /** What a view that draws nothing (yet) hands the map. */
 const NO_DATA: MapData = { routes: { type: "FeatureCollection", features: [] } };
 const NO_FEATURES: FitFeatures = [];
+const NO_PICKS: ReadonlySet<number> = new Set();
 
 /** The heat of the period on show, for the map's heat button and for the note that says it could not be had. */
 export interface HeatState {
@@ -104,21 +106,43 @@ function usePeriodMap(route: Route): Drawn {
   return useDrawn(range.data, period !== null, drawPeriod, (response) => response.from === period?.from && response.to === period.to);
 }
 
-/** A place: its one pin, which the map is brought to. */
-function drawPlace(place: PlaceResponse): Drawing {
+/**
+ * A place: its pin, which the map is brought to, and round it the dots of the other places (`around`, once they are there: the places near it are what it
+ * may be merged with), the ones `picked` to be merged into it marked. The dots are no part of what the map is brought to: the place is.
+ */
+function drawPlace(place: PlaceResponse, around: PlacesResponse | undefined, picked: ReadonlySet<number>): Drawing {
   const data = placeGeoJson(place);
-  return { data, features: data.stops.features };
+  return { data: around === undefined ? data : { ...data, places: allPlacesGeoJson(around.places, place.id, picked) }, features: data.stops.features };
 }
 
 /**
  * The map of a place. Nothing is asked for on a route that is not a place. The query keeps no other place for the one that loads, so
  * what it has is the place that is asked for, and it is drawn as soon as it has it (there is no `useDrawn` here: nothing is carried over
  * from a place to another, or from another kind of view, and under an error the query keeps what it had, as the panel shows what it had).
- * A place that is gone (a 404) is drawn as nothing, as the panel says it no longer exists in place of what it showed.
+ * A place that is gone (a 404) is drawn as nothing, as the panel says it no longer exists in place of what it showed. The other places come
+ * with the list of all of them, which is the same request as the places view's.
  */
-function usePlaceMap(route: Route): Drawn {
-  const { shown: found } = shownOf(usePlace(route.view === "place" ? route.id : null));
-  return useMemo(() => (found === undefined ? NOTHING : { ...drawPlace(found), ready: true }), [found]);
+function usePlaceMap(route: Route, picked: ReadonlySet<number>): Drawn {
+  const isPlace = route.view === "place";
+  const { shown: found } = shownOf(usePlace(isPlace ? route.id : null));
+  const around = usePlaces(isPlace).data;
+  return useMemo(() => (found === undefined ? NOTHING : { ...drawPlace(found, around, picked), ready: true }), [found, around, picked]);
+}
+
+/** Every place: a dot for each (no routes), all of which the map is brought to. */
+function drawPlaces(response: PlacesResponse): Drawing {
+  const places = allPlacesGeoJson(response.places);
+  return { data: { routes: NO_DATA.routes, places, view: "places" }, features: places.features };
+}
+
+/**
+ * The map of the places: every place in use, from the list that the map of a place asks for as well (one request). Nothing is asked for on a route that
+ * is not the places (or a place); what was drawn stays under an error and goes with the view, as the trips' does (see `useDrawn`).
+ */
+function usePlacesMap(route: Route): Drawn {
+  const active = route.view === "places";
+  const places = usePlaces(active);
+  return useDrawn(places.data, active, drawPlaces, () => true); // there is one list: what is kept is the list asked for
 }
 
 /** The trips: a dot for each city that was slept in, drawn with the trips' own layers (no routes), all of which the map is brought to. */
@@ -201,7 +225,7 @@ interface ViewParts {
  * The one place that says, for each kind of view, which of the maps it is, and what it has of a heat. The hooks of all the views are called
  * for every route (each asks for nothing on a route that is not its own); this is what takes the route's.
  */
-function viewOf(route: Route, views: { day: Drawn; period: Drawn; place: Drawn; trips: Drawn; trip: TripMap }): ViewParts {
+function viewOf(route: Route, views: { day: Drawn; period: Drawn; place: Drawn; places: Drawn; trips: Drawn; trip: TripMap }): ViewParts {
   switch (route.view) {
     case "day":
       return { drawn: views.day, period: periodRange(route), offered: true }; // a day is a period of its one date
@@ -212,6 +236,8 @@ function viewOf(route: Route, views: { day: Drawn; period: Drawn; place: Drawn; 
       return { drawn: views.period, period: periodRange(route), offered: true };
     case "place":
       return { drawn: views.place, period: null, offered: false };
+    case "places":
+      return { drawn: views.places, period: null, offered: false };
     case "trips":
       return { drawn: views.trips, period: null, offered: false };
     case "trip":
@@ -286,12 +312,19 @@ interface Fit {
  * drawn. The settings have no map of their own and leave the one before them as it is (see `useMapRoute`).
  *
  * `points` are the raw points of the day while the owner is editing them (see `useEditPoints`): they are drawn over the routes of that day, as dots, and
- * are no part of what the map is brought to.
+ * are no part of what the map is brought to. `picked` are the places picked to be merged into the place on show (see `usePlaceMerge`), which its map marks.
  */
-export function useViewMap(route: Route, heatOn: boolean, points?: DayPointsResponse): ViewMap {
+export function useViewMap(route: Route, heatOn: boolean, points?: DayPointsResponse, picked: ReadonlySet<number> = NO_PICKS): ViewMap {
   const mapRoute = useMapRoute(route);
   // Every kind of view is asked for on every route, and each one asks for nothing on a route that is not its own.
-  const views = { day: useDayMap(mapRoute), period: usePeriodMap(mapRoute), place: usePlaceMap(mapRoute), trips: useTripsMap(mapRoute), trip: useTripMap(mapRoute) };
+  const views = {
+    day: useDayMap(mapRoute),
+    period: usePeriodMap(mapRoute),
+    place: usePlaceMap(mapRoute, picked),
+    places: usePlacesMap(mapRoute),
+    trips: useTripsMap(mapRoute),
+    trip: useTripMap(mapRoute),
+  };
   const { drawn, period, offered } = viewOf(mapRoute, views);
   const { data: routes, features, ready } = drawn;
   const { heat, state } = useHeatMap(period, offered, heatOn, ready);

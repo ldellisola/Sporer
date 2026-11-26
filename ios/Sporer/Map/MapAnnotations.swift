@@ -124,6 +124,51 @@ final class StopAnnotationView: MKAnnotationView {
     }
 }
 
+/// A place picked in merge mode: a blue disc with a tick over the place's dot. A view and not a pixel of the dots overlay, so that a tap
+/// shows at once: MapKit takes its time to draw an overlay again, the longer over terrain.
+final class PickedPlaceAnnotation: NSObject, MKAnnotation {
+    let coordinate: CLLocationCoordinate2D
+    let placeID: Int
+
+    init(coordinate: CLLocationCoordinate2D, placeID: Int) {
+        self.coordinate = coordinate
+        self.placeID = placeID
+    }
+}
+
+final class PickedPlaceAnnotationView: MKAnnotationView {
+    static let reuseID = "picked"
+    private static let size: CGFloat = 24
+
+    override init(annotation: (any MKAnnotation)?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        frame = CGRect(x: 0, y: 0, width: Self.size, height: Self.size)
+        backgroundColor = .systemBlue
+        layer.cornerRadius = Self.size / 2
+        layer.borderColor = UIColor.white.cgColor
+        layer.borderWidth = 2.5
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.25
+        layer.shadowRadius = 3
+        layer.shadowOffset = CGSize(width: 0, height: 1)
+        let tick = UIImageView(image: UIImage(systemName: "checkmark"))
+        tick.tintColor = .white
+        tick.preferredSymbolConfiguration = .init(pointSize: 11, weight: .heavy)
+        tick.contentMode = .center
+        tick.frame = bounds
+        addSubview(tick)
+        displayPriority = .required
+        zPriority = .max
+        // It hides no name: the place's own name, beside it, stays.
+        collisionMode = .none
+        // Not selectable: a tap on it goes to the map, which takes the place off (the nearest dot is under it).
+        isEnabled = false
+        isAccessibilityElement = false
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+}
+
 /// A label beside a dot or under a stop: the places of a period ("Barcode"), the cities of trips ("Lisbon · 4 nights"), the name of a
 /// stop. Where labels would overlap each other or a stop, the map shows the one of higher `priority` and hides the other.
 final class DotLabelAnnotation: NSObject, MKAnnotation {

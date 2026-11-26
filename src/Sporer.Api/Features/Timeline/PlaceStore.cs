@@ -47,6 +47,12 @@ public sealed record PlaceCandidate(long Id, string? Name, string? Address, doub
 /// <summary>A place in use that <see cref="PlaceStore.SearchAsync"/> found: its id (the surviving place's), its name (the owner's, else OpenStreetMap's, else null), its address and its visits.</summary>
 public sealed record FoundPlace(long Id, string? Name, string? Address, int Visits);
 
+/// <summary>
+/// A place in use as <see cref="PlaceStore.ListAsync"/> lists it, for the map of all of them: its id (the surviving place's), its name (the owner's,
+/// else OpenStreetMap's, else null), its centre, and the time spent at it and its stays, over the places merged into it as well.
+/// </summary>
+public sealed record MapPlace(long Id, string? Name, double Latitude, double Longitude, double Seconds, int Visits);
+
 /// <summary>How a merge ended (see <see cref="PlaceStore.MergeAsync"/>).</summary>
 public enum MergeOutcome
 {
@@ -472,7 +478,25 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     /// its deepest member cannot move while this looks. The merge puts every one of them one link further from its survivor.
     /// </para>
     /// </remarks>
-    public async Task<MergeResult> MergeAsync(long id, long other, string? name, CancellationToken ct = default)
+    public Task<MergeResult> MergeAsync(long id, long other, string? name, CancellationToken ct = default) =>
+        MergeAsync(id, [other], name, ct);
+
+    /// <summary>The most places one merge takes (<see cref="MergeAsync(long, IReadOnlyCollection{long}, string?, CancellationToken)"/>).</summary>
+    public const int MaxMergedAtOnce = 100;
+
+    /// <summary>
+    /// Merges every place of <paramref name="others"/> stands for into the place <paramref name="id"/> stands for, all of them or none: what
+    /// <see cref="MergeAsync(long, long, string?, CancellationToken)"/> does for one, in one transaction. Two of <paramref name="others"/> that
+    /// stand for the same place are that place once. The result is <see cref="MergeOutcome.NotFound"/>, with nothing changed, when any of them is
+    /// no place of the timeline, <see cref="MergeOutcome.Conflict"/> when any stands for the place they are to be merged into, and
+    /// <see cref="MergeOutcome.ChainTooLong"/> when any would put a place more than <see cref="MaxMergeLinks"/> links from its survivor.
+    /// </summary>
+    /// <remarks>
+    /// Every row is locked as for one merge: all of them, survivor and absorbed, in the order of their ids, and only those that have not been
+    /// merged on since they were found; an attempt that does not get them all resolves them again. The places absorbed are survivors of their
+    /// own, so the places merged into each are apart from those of the others, and each is checked for its own depth.
+    /// </remarks>
+    public async Task<MergeResult> MergeAsync(long id, IReadOnlyCollection<long> others, string? name, CancellationToken ct = default)
     {
         for (var attempt = 0; attempt < MergeAttempts; attempt++)
         {
@@ -480,24 +504,32 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
             await using var transaction = await connection.BeginTransactionAsync(ct);
 
             var survivor = await FindOnTimelineAsync(connection, transaction, id, ct);
-            var absorbed = await FindOnTimelineAsync(connection, transaction, other, ct);
-            if (survivor is null || absorbed is null)
+            if (survivor is null)
                 return new MergeResult(MergeOutcome.NotFound);
-            if (survivor.Id == absorbed.Id)
-                return new MergeResult(MergeOutcome.Conflict);
+            var absorbed = new SortedSet<long>();
+            foreach (var other in others)
+            {
+                var found = await FindOnTimelineAsync(connection, transaction, other, ct);
+                if (found is null)
+                    return new MergeResult(MergeOutcome.NotFound);
+                if (found.Id == survivor.Id)
+                    return new MergeResult(MergeOutcome.Conflict);
+                absorbed.Add(found.Id);
+            }
 
-            // Both rows, the lower id first, and only if neither has been merged on since they were found.
+            // Every row, the lower id first, and only if none has been merged on since they were found.
+            long[] ids = [survivor.Id, .. absorbed];
             var locked = await connection.QueryAsync<long>(new CommandDefinition(
                 "select id from place where id = any(@Ids) and merged_into_id is null order by id for update",
-                new { Ids = new[] { survivor.Id, absorbed.Id } }, transaction, cancellationToken: ct));
-            if (locked.Count() != 2)
-                continue; // the transaction is rolled back, and its lock with it
+                new { Ids = ids }, transaction, cancellationToken: ct));
+            if (locked.Count() != ids.Length)
+                continue; // the transaction is rolled back, and its locks with it
 
-            // The deepest of the places merged into the absorbed one (itself, at 0) is that many links from it, and one more from the survivor.
+            // The deepest of the places merged into an absorbed one (itself, at 0) is that many links from it, and one more from the survivor.
             var deepest = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
                 """
                 with recursive members as (
-                    select id, 0 as depth from place where id = @Absorbed
+                    select id, 0 as depth from place where id = any(@Absorbed)
                     union all
                     select merged.id, members.depth + 1
                     from members join place merged on merged.merged_into_id = members.id
@@ -505,13 +537,13 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
                 )
                 select max(depth) from members
                 """,
-                new { Absorbed = absorbed.Id, Max = MaxMergeLinks }, transaction, cancellationToken: ct));
+                new { Absorbed = absorbed.ToArray(), Max = MaxMergeLinks }, transaction, cancellationToken: ct));
             if (deepest + 1 > MaxMergeLinks)
                 return new MergeResult(MergeOutcome.ChainTooLong);
 
             await connection.ExecuteAsync(new CommandDefinition(
-                "update place set merged_into_id = @Survivor where id = @Absorbed",
-                new { Survivor = survivor.Id, Absorbed = absorbed.Id }, transaction, cancellationToken: ct));
+                "update place set merged_into_id = @Survivor where id = any(@Absorbed)",
+                new { Survivor = survivor.Id, Absorbed = absorbed.ToArray() }, transaction, cancellationToken: ct));
             if (name is not null)
             {
                 await connection.ExecuteAsync(new CommandDefinition(
@@ -662,6 +694,40 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
         return [.. rows.Select(r => new FoundPlace(r.Id, r.Name, r.Address, (int)r.Visits))];
     }
 
+    /// <summary>
+    /// Every place in use (see <see cref="InUse"/>), as <see cref="SearchAsync"/> finds them with no query but all of them, for the map that shows
+    /// them all: where each is, and the time spent at it and its stays, over the places merged into it as well. The most time first, then the lower id.
+    /// </summary>
+    /// <remarks>A few thousand rows, which the map draws as dots: nothing of a place but what the dot and its label need.</remarks>
+    public async Task<IReadOnlyList<MapPlace>> ListAsync(CancellationToken ct = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var rows = await connection.QueryAsync<MapPlaceRow>(new CommandDefinition(
+            $"""
+            with recursive
+            stays as (
+                select place_id, count(*) as visits, sum(extract(epoch from end_utc - start_utc))::double precision as seconds
+                from segment
+                where kind = 'stay' and place_id is not null
+                group by place_id
+            ),
+            named as (
+                select place_id from stays
+            ),
+            {Survivors}
+            select p.id as Id, coalesce(p.user_name, p.osm_name) as Name, p.latitude as Latitude, p.longitude as Longitude,
+                   sum(stays.seconds)::double precision as Seconds, sum(stays.visits)::bigint as Visits
+            from stays
+            join survivor on survivor.origin = stays.place_id
+            join place p on p.id = survivor.id
+            where {InUse}
+            group by p.id
+            order by Seconds desc, p.id
+            """,
+            cancellationToken: ct));
+        return [.. rows.Select(r => new MapPlace(r.Id, r.Name, r.Latitude, r.Longitude, r.Seconds, (int)r.Visits))];
+    }
+
     private static DateTime AsUtc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
     private sealed record PlaceRow(long Id, double Latitude, double Longitude);
@@ -671,6 +737,8 @@ public sealed class PlaceStore(NpgsqlDataSource dataSource)
     private sealed record MergedRow(long Id, string? Name);
 
     private sealed record FoundRow(long Id, string? Name, string? Address, long Visits);
+
+    private sealed record MapPlaceRow(long Id, string? Name, double Latitude, double Longitude, double Seconds, long Visits);
 
     private sealed record CandidateRow(long Id, string? Name, string? Address, double Latitude, double Longitude, long Visits);
 

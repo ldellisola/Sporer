@@ -6,16 +6,20 @@ using Sporer.Api.Http;
 namespace Sporer.Api.Features.Places;
 
 /// <summary>
-/// The body of <c>POST /api/places/{id}/merge</c>: <paramref name="Place"/> is the place to merge into the one in the route, and
-/// <paramref name="Name"/> the name the survivor is to have (null, or none, to leave it as it is). Both are read from the JSON body
-/// alone: a query that has a <c>place</c> or a <c>name</c> is no part of the request. A body with no <c>place</c> in it has none, which
-/// is a 400 whatever it says of the rest. (The properties carry <c>[DontBind]</c>, with which FastEndpoints 8.3.0 ignores <c>required</c>
-/// and <c>JsonRequired</c>, as with <see cref="RenamePlaceRequest"/>; so the place is a nullable number that is checked.)
+/// The body of <c>POST /api/places/{id}/merge</c>: <c>Place</c> is the place to merge into the one in the route, or <c>Places</c> the places
+/// (one or more, at most <see cref="PlaceStore.MaxMergedAtOnce"/>), and <c>Name</c> the name the survivor is to have (null, or none, to leave
+/// it as it is). All are read from the JSON body alone: a query that has a <c>place</c> or a <c>name</c> is no part of the request. A body with
+/// neither a <c>place</c> nor <c>places</c> in it, or with both, is a 400 whatever it says of the rest. (The properties carry <c>[DontBind]</c>,
+/// with which FastEndpoints 8.3.0 ignores <c>required</c> and <c>JsonRequired</c>, as with <see cref="RenamePlaceRequest"/>; so the place is a
+/// nullable number that is checked.)
 /// </summary>
 internal sealed record MergePlaceRequest
 {
     [DontBind(Source.QueryParam | Source.RouteParam | Source.FormField)]
     public long? Place { get; init; }
+
+    [DontBind(Source.QueryParam | Source.RouteParam | Source.FormField)]
+    public long[]? Places { get; init; }
 
     [DontBind(Source.QueryParam | Source.RouteParam | Source.FormField)]
     public string? Name { get; init; }
@@ -24,7 +28,9 @@ internal sealed record MergePlaceRequest
 /// <summary>
 /// <c>POST /api/places/{id}/merge</c>: merges the place <c>place</c> stands for into the place <c>id</c> stands for (each as
 /// <c>GET /api/places/{id}</c> serves it, so an id of a place that was merged is the one it was merged into): the place the owner is
-/// on survives, and everything spent at the other is spent at it from now on, in the day, the range, the place and the trips. A
+/// on survives, and everything spent at the other is spent at it from now on, in the day, the range, the place and the trips. With
+/// <c>places</c> in place of <c>place</c>, every one of them is merged into it, all of them or none, with one working out of the homes and
+/// trips (the owner picks them on the map); every refusal below is then of the merge of all of them. A
 /// <c>name</c> that is not null becomes the survivor's name, which the owner chose to keep (it is trimmed, and one that is empty
 /// afterwards is none: OpenStreetMap's shows again; at most <see cref="RenamePlaceEndpoint.MaxNameLength"/> characters, else 400); null,
 /// or none, leaves it as it is. Answers 200 with the survivor, as <c>GET /api/places/{id}</c> gives it, merged places and all. An id
@@ -55,7 +61,23 @@ internal sealed class MergePlaceEndpoint(PlaceStore places, EditRecompute recomp
             return;
         }
 
-        if (req.Place is not { } other || other <= 0)
+        long[] others;
+        if (req.Places is { } many)
+        {
+            if (req.Place is not null || many.Length == 0 || many.Length > PlaceStore.MaxMergedAtOnce || many.Any(p => p <= 0))
+            {
+                ValidationFailures.Add(new("places", $"The places must be from 1 to {PlaceStore.MaxMergedAtOnce} positive whole numbers, and with no place beside them."));
+                await Send.ErrorsAsync(400, ct);
+                return;
+            }
+
+            others = many;
+        }
+        else if (req.Place is { } other && other > 0)
+        {
+            others = [other];
+        }
+        else
         {
             ValidationFailures.Add(new("place", "The place must be given, as a positive whole number."));
             await Send.ErrorsAsync(400, ct);
@@ -70,7 +92,7 @@ internal sealed class MergePlaceEndpoint(PlaceStore places, EditRecompute recomp
             return;
         }
 
-        var merge = await places.MergeAsync(id, other, name, ct);
+        var merge = await places.MergeAsync(id, others, name, ct);
         switch (merge.Outcome)
         {
             case MergeOutcome.NotFound:

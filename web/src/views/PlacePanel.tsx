@@ -1,13 +1,13 @@
 import { useEffect, useId, useRef, useState, type Ref } from "react";
 import { placeQueryOptions, shownOf, usePlace } from "../api/queries";
-import type { PlaceCandidate, PlaceResponse, PlaceVisit } from "../api/types";
+import type { PlaceResponse, PlaceVisit } from "../api/types";
 import { goBack, navigate } from "../app/router";
+import type { PlaceMerge } from "../app/usePlaceMerge";
 import { dateLabel, dateOf } from "../time/dates";
 import { formatDuration, formatInteger, formatTime } from "../time/format";
 import { EditActions, focusLost } from "./editForms";
-import { MergeConfirm, MergedPlaces, RenameForm, type EditProps } from "./PlaceEdits";
+import { MergedPlaces, MergeForm, RenameForm, type EditProps } from "./PlaceEdits";
 import styles from "./PlacePanel.module.css";
-import { PlacePicker } from "./PlacePicker";
 import { UNNAMED } from "./placeNames";
 import rows from "./Rows.module.css";
 import { Empty, ErrorState, Loading } from "./States";
@@ -15,6 +15,10 @@ import { Empty, ErrorState, Loading } from "./States";
 export interface PlacePanelProps {
   /** The place the address asks for. A panel is made for one place: another place is another panel (the app keys it by this). */
   id: number;
+  /** Merge mode, which is the shell's: the map picks the places while the panel has the form (see `usePlaceMerge`). */
+  merge: PlaceMerge;
+  /** Merge mode was turned on: the shell brings the map into view (a sheet over it comes down). */
+  onMergeStart?: () => void;
 }
 
 /** What the line under the name says of where the place is: the address (which names the city) or else the city, and the country. */
@@ -67,19 +71,24 @@ function VisitRow({ visit }: { visit: PlaceVisit }) {
   );
 }
 
-/** What an edit is doing to the place: nothing, or the one form that is open (the forms are in the panel, and only one is open at a time). */
-type Editing = { form: "none" } | { form: "rename" } | { form: "pick" } | { form: "merge"; other: PlaceCandidate };
-
-/** What is on screen of a place that is there: its name and where it is, what can be done to it, its figures, and its latest visits. */
-function Place({ place, id }: { place: PlaceResponse; id: number }) {
+/**
+ * What is on screen of a place that is there: its name and where it is, what can be done to it, its figures, and its latest visits. One form is open at a
+ * time: the name (Rename), or merge mode (Merge with…), which is the shell's since the map picks the places for it, and is on for this place only.
+ */
+function Place({ place, id, merge, onMergeStart }: { place: PlaceResponse; id: number; merge: PlaceMerge; onMergeStart?: () => void }) {
   const visitsHeading = useId();
-  const [editing, setEditing] = useState<Editing>({ form: "none" });
-  // The focus was in the form that is closed, which is gone: it goes back to the button that opened it (a merge is opened by "Merge with…" through its picker and its confirm).
+  const [renaming, setRenaming] = useState(false);
+  const merging = merge.into !== null;
+  // The focus was in the form that is closed, which is gone: it goes back to the button that opened it.
   const [openedBy, setOpenedBy] = useState<"rename" | "merge">();
   const name = useRef<HTMLHeadingElement>(null);
-  const close = () => {
-    setOpenedBy(editing.form === "rename" ? "rename" : "merge");
-    setEditing({ form: "none" });
+  const closeRename = () => {
+    setOpenedBy("rename");
+    setRenaming(false);
+  };
+  const closeMerge = () => {
+    setOpenedBy("merge");
+    merge.stop();
   };
   // The answer of a write is the place as the address asks for it, so it goes in the query of the address (the panel's `id`), not of the place's own id.
   const edit: EditProps = { place, placeKey: placeQueryOptions(id).queryKey };
@@ -94,18 +103,24 @@ function Place({ place, id }: { place: PlaceResponse; id: number }) {
         {place.name ?? UNNAMED}
       </h1>
       {where !== null && <p className={styles.where}>{where}</p>}
-      {editing.form === "none" && (
+      {!renaming && !merging && (
         <EditActions
           focus={openedBy}
           actions={[
-            { key: "rename", label: "Rename", onClick: () => setEditing({ form: "rename" }) },
-            { key: "merge", label: "Merge with…", onClick: () => setEditing({ form: "pick" }) },
+            { key: "rename", label: "Rename", onClick: () => setRenaming(true) },
+            {
+              key: "merge",
+              label: "Merge with…",
+              onClick: () => {
+                merge.start(place.id);
+                onMergeStart?.();
+              },
+            },
           ]}
         />
       )}
-      {editing.form === "rename" && <RenameForm {...edit} onClose={close} />}
-      {editing.form === "pick" && <PlacePicker placeId={place.id} onPick={(other) => setEditing({ form: "merge", other })} onCancel={close} />}
-      {editing.form === "merge" && <MergeConfirm {...edit} other={editing.other} onClose={close} onChooseAnother={() => setEditing({ form: "pick" })} />}
+      {renaming && !merging && <RenameForm {...edit} onClose={closeRename} />}
+      {merging && <MergeForm {...edit} picked={merge.selected} onToggle={merge.toggle} onClose={closeMerge} />}
       <dl className={styles.stats}>
         <Stat label="Total time" value={formatDuration(place.totalSeconds)} />
         <Stat label="Visits" value={formatInteger(place.visits)} />
@@ -137,7 +152,7 @@ function Place({ place, id }: { place: PlaceResponse; id: number }) {
  * failure of another kind is an error with its Retry, and the place stays under it if it was on screen. Nothing of another place is
  * ever shown for this one (the query keeps none). The place is the one the map draws, from the same query.
  */
-export function PlacePanel({ id }: PlacePanelProps) {
+export function PlacePanel({ id, merge, onMergeStart }: PlacePanelProps) {
   const place = usePlace(id);
   const { gone, shown } = shownOf(place);
   // A place that turns gone under a form that has the focus (a 404 to a write, which has the place asked for again): the focus was in the form, which is
@@ -153,7 +168,7 @@ export function PlacePanel({ id }: PlacePanelProps) {
       <BackButton ref={back} />
       {gone && <Empty message="This place no longer exists" />}
       {!gone && place.isError && <ErrorState error={place.error} onRetry={() => void place.refetch()} />}
-      {shown !== undefined ? <Place place={shown} id={id} /> : !gone && !place.isError && <Loading />}
+      {shown !== undefined ? <Place place={shown} id={id} merge={merge} onMergeStart={onMergeStart} /> : !gone && !place.isError && <Loading />}
     </>
   );
 }

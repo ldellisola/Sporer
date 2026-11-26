@@ -1245,6 +1245,159 @@ public class RenameMergeTests(DatabaseFixture db)
         Assert.Equal(places.Count - roots.Count, await Sql.ScalarAsync<long>(cs, "select count(*) from place where merged_into_id is not null", ct: Ct));
     }
 
+    // ---- several places at once ----------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Merge_of_several_places_moves_all_of_them_into_the_survivor()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var (hotel, market) = await HotelAndMarketAsync(cs);
+        var annex = await OnTheTimelineAsync(cs, userName: "Annex", day: 15);
+        var kiosk = await OnTheTimelineAsync(cs, osmName: "Kiosk", day: 16);
+        var oldKiosk = await OnTheTimelineAsync(cs, osmName: "Old kiosk", mergedInto: kiosk, day: 17);
+
+        // The market, the annex and the kiosk, the kiosk twice (once by the id of a place merged into it): three places, one merge.
+        using var merged = await JsonOf(await MergeAsync(client, hotel, new { places = new[] { market, annex, kiosk, oldKiosk }, name = "Kiosk" }));
+
+        Assert.Equal(hotel, merged.RootElement.GetProperty("id").GetInt64());
+        Assert.Equal("Kiosk", merged.RootElement.GetProperty("name").GetString());
+        Assert.Equal(3 + 1 + 1 + 1, merged.RootElement.GetProperty("visits").GetInt32());
+        Assert.Equal(
+            ["Annex", "Kiosk", "Mercado da Ribeira"],
+            merged.RootElement.GetProperty("merged").EnumerateArray().Select(m => m.GetProperty("name").GetString()));
+        Assert.Equal(hotel, await MergedIntoAsync(cs, market));
+        Assert.Equal(hotel, await MergedIntoAsync(cs, annex));
+        Assert.Equal(hotel, await MergedIntoAsync(cs, kiosk));
+        Assert.Equal(kiosk, await MergedIntoAsync(cs, oldKiosk)); // merged into the kiosk, which is merged on: never touched
+        Assert.Equal("Kiosk", await UserNameAsync(cs, hotel));
+        using (var read = await GetAsync(client, $"/api/places/{hotel}"))
+            Assert.Equal(read.RootElement.GetRawText(), merged.RootElement.GetRawText());
+
+        // One place in the list is a merge of one, as "place" is.
+        var shed = await OnTheTimelineAsync(cs, osmName: "Shed", day: 18);
+        using var one = await JsonOf(await MergeAsync(client, hotel, new { places = new[] { shed } }));
+        Assert.Equal("Kiosk", one.RootElement.GetProperty("name").GetString());
+        Assert.Equal(hotel, await MergedIntoAsync(cs, shed));
+    }
+
+    [Fact]
+    public async Task Merge_of_several_places_is_all_or_none()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var survivor = await OnTheTimelineAsync(cs, userName: "Mine", day: 20);
+        var first = await OnTheTimelineAsync(cs, day: 21);
+        var second = await OnTheTimelineAsync(cs, day: 22);
+        var mergedIn = await OnTheTimelineAsync(cs, mergedInto: survivor, day: 23);
+        var leftBehind = await TimelineSeeder.InsertPlaceAsync(cs, osmName: "No stay");
+
+        // A place that is no place of the timeline among them: 404, and none of them is merged, nor is the name taken.
+        using (var notFound = await MergeAsync(client, survivor, new { places = new[] { first, leftBehind, second }, name = "Renamed" }))
+            Assert.Equal(HttpStatusCode.NotFound, notFound.StatusCode);
+        // One that is the survivor, or is merged into it already: 409, and none of them is merged.
+        foreach (var same in new[] { survivor, mergedIn })
+        {
+            using var conflict = await MergeAsync(client, survivor, new { places = new[] { first, same, second }, name = "Renamed" });
+            Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+        }
+
+        Assert.Null(await MergedIntoAsync(cs, first));
+        Assert.Null(await MergedIntoAsync(cs, second));
+        Assert.Equal("Mine", await UserNameAsync(cs, survivor));
+    }
+
+    [Fact]
+    public async Task Merge_of_several_places_rejects_a_list_that_is_not_valid()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var survivor = await OnTheTimelineAsync(cs, day: 20);
+        var other = await OnTheTimelineAsync(cs, day: 21);
+
+        var tooMany = string.Join(",", Enumerable.Repeat(other, PlaceStore.MaxMergedAtOnce + 1));
+        var bodies = new[]
+        {
+            """{"places":[]}""", """{"places":null}""", """{"places":[0]}""", $$"""{"places":[{{other}},-1]}""", """{"places":"1"}""",
+            """{"places":[1.5]}""", """{"places":[null]}""", $$"""{"places":[{{other}}],"place":{{other}}}""", $$"""{"places":[{{tooMany}}]}""",
+        };
+        foreach (var body in bodies)
+        {
+            var status = await PostRawAsync(client, $"/api/places/{survivor}/merge", body);
+            Assert.True(status == HttpStatusCode.BadRequest, $"{body} gave {(int)status}");
+        }
+        Assert.Null(await MergedIntoAsync(cs, other));
+
+        // As many as can be, the same place a hundred times, is one place merged.
+        var most = string.Join(",", Enumerable.Repeat(other, PlaceStore.MaxMergedAtOnce));
+        Assert.Equal(HttpStatusCode.OK, await PostRawAsync(client, $"/api/places/{survivor}/merge", $$"""{"places":[{{most}}]}"""));
+        Assert.Equal(survivor, await MergedIntoAsync(cs, other));
+    }
+
+    [Fact]
+    public async Task Merge_of_several_places_is_refused_when_one_would_chain_too_deep()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        var survivor = await OnTheTimelineAsync(cs, osmName: "Survivor", day: 20);
+        var shallow = await OnTheTimelineAsync(cs, osmName: "Shallow", day: 21);
+        var deep = await ChainAsync(cs, 33, day: 22); // 32 links: one more is too many
+
+        using var refused = await MergeAsync(client, survivor, new { places = new[] { shallow, deep[0] } });
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        Assert.Null(await MergedIntoAsync(cs, shallow));
+        Assert.Null(await MergedIntoAsync(cs, deep[0]));
+    }
+
+    // ---- all the places, for the map ---------------------------------------------------------------------------------
+
+    private sealed record MapPlace(long Id, string? Name, double Lat, double Lon, double Seconds, int Visits);
+
+    private static async Task<IReadOnlyList<MapPlace>> AllPlacesAsync(HttpClient client)
+    {
+        using var body = await GetAsync(client, "/api/places");
+        Assert.Equal(["places"], body.RootElement.EnumerateObject().Select(p => p.Name));
+        return [.. body.RootElement.GetProperty("places").EnumerateArray().Select(p =>
+        {
+            Assert.Equal(["id", "name", "lat", "lon", "seconds", "visits"], p.EnumerateObject().Select(q => q.Name));
+            return new MapPlace(
+                p.GetProperty("id").GetInt64(), p.GetProperty("name").GetString(), p.GetProperty("lat").GetDouble(),
+                p.GetProperty("lon").GetDouble(), p.GetProperty("seconds").GetDouble(), p.GetProperty("visits").GetInt32());
+        })];
+    }
+
+    [Fact]
+    public async Task All_places_are_the_places_in_use_with_where_they_are_the_most_time_first()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs);
+        var client = api.CreateClient();
+        Assert.Empty(await AllPlacesAsync(client));
+
+        var here = Spots.Lisbon;
+        var hotel = await VisitedAsync(cs, here, osmName: "Hotel Avenida", stays: 3); // 3 hours
+        var cafe = await VisitedAsync(cs, Geo.Offset(here, 100, 0), userName: "Café", osmName: "Cafe Central"); // 1 hour, and 2 merged into it
+        var oldCafe = await VisitedAsync(cs, Geo.Offset(here, 50, 0), osmName: "Old Cafe", stays: 2, mergedInto: cafe);
+        var unnamed = await VisitedAsync(cs, Geo.Offset(here, 0, 300), stays: 2); // 2 hours: as the hotel, by the time, after the café's 3
+        // Not listed: a place no stay shows.
+        await TimelineSeeder.InsertPlaceAsync(cs, osmName: "Left behind", lat: here.Latitude, lon: here.Longitude);
+
+        var all = await AllPlacesAsync(client);
+
+        Assert.Equal([hotel, cafe, unnamed], all.Select(p => p.Id)); // the hotel and the café have 3 hours each: the lower id first
+        Assert.DoesNotContain(oldCafe, all.Select(p => p.Id));
+        Assert.Equal(["Hotel Avenida", "Café", null], all.Select(p => p.Name));
+        Assert.Equal([3 * 3600.0, 3 * 3600.0, 2 * 3600.0], all.Select(p => p.Seconds));
+        Assert.Equal([3, 3, 2], all.Select(p => p.Visits));
+        var cafeAt = Geo.Offset(here, 100, 0);
+        Assert.Equal(cafeAt.Latitude, all[1].Lat, 9); // the survivor's centre, not the merged place's
+        Assert.Equal(cafeAt.Longitude, all[1].Lon, 9);
+    }
+
     // ---- candidates --------------------------------------------------------------------------------------------------
 
     private sealed record Candidate(long Id, string? Name, string? Address, double DistanceM, int Visits);

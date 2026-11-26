@@ -27,9 +27,10 @@ function useDebounced<T>(value: T, ms: number): T {
 /**
  * A place of the list, which is one button: its name, where it is, how far (when the list is of the places near one: `distance` is what it says),
  * and how many stays there were. The button is named by what the row says, in the order it says it, so that its name holds the text that is on it
- * (voice control says what it sees).
+ * (voice control says what it sees). In a list that picks several (`picked` is not undefined) the button is a toggle, pressed for a place that is picked,
+ * which has a tick before its name.
  */
-function PlaceRow<T extends PlaceSearchResult>({ place, distance, onPick }: { place: T; distance: string | null; onPick: (place: T) => void }) {
+function PlaceRow<T extends PlaceSearchResult>({ place, distance, onPick, picked }: { place: T; distance: string | null; onPick: (place: T) => void; picked?: boolean }) {
   const name = place.name ?? UNNAMED;
   const address = place.address ?? "";
   const visits = formatCount(place.visits, "visit");
@@ -39,9 +40,17 @@ function PlaceRow<T extends PlaceSearchResult>({ place, distance, onPick }: { pl
         type="button"
         className={`${rows.tap} ${rows.row} ${distance === null ? styles.found : styles.candidate}`}
         aria-label={[name, address, distance ?? "", visits].filter((part) => part !== "").join(", ")}
+        aria-pressed={picked}
         onClick={() => onPick(place)}
       >
-        <span className={styles.name}>{name}</span>
+        <span className={styles.name}>
+          {picked === true && (
+            <span className={styles.tick} aria-hidden="true">
+              ✓{" "}
+            </span>
+          )}
+          {name}
+        </span>
         {address !== "" && <span className={styles.address}>{address}</span>}
         {distance !== null && <span className={`${rows.duration} ${styles.distance}`}>{distance}</span>}
         <span className={styles.visits}>{visits}</span>
@@ -63,10 +72,12 @@ interface PickerViewProps<T extends PlaceSearchResult> {
   onCancel?: () => void;
   /** What a row says of how far the place is, for a list of the places near one; the rows of a list that is not of that say none. */
   distanceOf?: (place: T) => string;
+  picked?: ReadonlySet<number>;
+  autoFocus: boolean;
 }
 
 /** The field, the places under it, and the way out: all that is of the picker whichever places it lists. */
-function PickerView<T extends PlaceSearchResult>({ search, query, onPick, onCancel, distanceOf }: PickerViewProps<T>) {
+function PickerView<T extends PlaceSearchResult>({ search, query, onPick, onCancel, distanceOf, picked, autoFocus }: PickerViewProps<T>) {
   const places = useKeptData(query.data);
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Escape" && onCancel !== undefined) onCancel();
@@ -79,7 +90,7 @@ function PickerView<T extends PlaceSearchResult>({ search, query, onPick, onCanc
         aria-label="Search places"
         placeholder="Search places"
         autoComplete="off"
-        autoFocus
+        autoFocus={autoFocus}
         value={search.text}
         onChange={(event) => search.setText(event.target.value)}
       />
@@ -91,7 +102,7 @@ function PickerView<T extends PlaceSearchResult>({ search, query, onPick, onCanc
           ) : (
             <ul className={rows.list} aria-label="Places">
               {places.map((place) => (
-                <PlaceRow key={place.id} place={place} distance={distanceOf?.(place) ?? null} onPick={onPick} />
+                <PlaceRow key={place.id} place={place} distance={distanceOf?.(place) ?? null} onPick={onPick} picked={picked?.has(place.id)} />
               ))}
             </ul>
           )}
@@ -111,6 +122,10 @@ function PickerView<T extends PlaceSearchResult>({ search, query, onPick, onCanc
 export type PlacePickerProps = {
   /** The owner gave up: the Cancel button, and Escape in the field. With none the picker has neither (a form that has its own Cancel). */
   onCancel?: () => void;
+  /** The places picked so far, for a picker that picks several (each row is then a toggle); none for one that picks one. */
+  picked?: ReadonlySet<number>;
+  /** Whether the field takes the focus when the picker opens (the default): not where the list is the page itself, and a keyboard would hide it on a phone. */
+  autoFocus?: boolean;
 } & (
   | {
       /** The place the list is of (`GET /api/places/{id}/candidates`): the nearest to it first, and never it or a place merged into it. */
@@ -137,9 +152,18 @@ export function PlacePicker(props: PlacePickerProps) {
   // Both are asked for in every render, as hooks are; the one that is not wanted has nothing to ask for.
   const near = useCandidates(props.placeId ?? null, search.q);
   const found = usePlaceSearch(props.placeId === undefined ? search.q : null);
+  const autoFocus = props.autoFocus ?? true;
   return props.placeId === undefined ? (
-    <PickerView search={search} query={found} onPick={props.onPick} onCancel={props.onCancel} />
+    <PickerView search={search} query={found} onPick={props.onPick} onCancel={props.onCancel} picked={props.picked} autoFocus={autoFocus} />
   ) : (
-    <PickerView search={search} query={near} onPick={props.onPick} onCancel={props.onCancel} distanceOf={(candidate) => formatDistance(candidate.distanceM)} />
+    <PickerView
+      search={search}
+      query={near}
+      onPick={props.onPick}
+      onCancel={props.onCancel}
+      distanceOf={(candidate) => formatDistance(candidate.distanceM)}
+      picked={props.picked}
+      autoFocus={autoFocus}
+    />
   );
 }

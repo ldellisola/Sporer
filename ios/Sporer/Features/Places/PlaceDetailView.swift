@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// What loading a place ends in: the place, or the word that it is gone.
+/// What loading a place ends in: the place (and every place, for the map round it), or the word that it is gone.
 private nonisolated enum PlaceLoad: Sendable {
-    case place(PlaceResponse, isHome: Bool)
+    case place(PlaceResponse, isHome: Bool, around: [MapPlace])
     case gone
 }
 
@@ -23,18 +23,20 @@ struct PlaceDetailView: View {
     var body: some View {
         Loaded(id: Key(placeID: placeID, version: version, data: app.dataVersion), load: { [service = app.service, placeID] () async throws -> PlaceLoad in
             do {
+                // The places round it are no part of the place: the place is shown without them when they cannot be had.
+                async let around = (try? await service.allPlaces()) ?? []
                 let place = try await service.place(placeID)
                 let homes = (try? await service.homes()) ?? []
                 let isHome = homes.contains { h in h.to == nil && (h.placeId == place.id || place.merged.contains { $0.id == h.placeId }) }
-                return .place(place, isHome: isHome)
+                return .place(place, isHome: isHome, around: await around)
             } catch ServiceError.notFound {
                 return .gone
             }
         }) { loaded, isStale in
             switch loaded {
-            case .place(let place, let isHome):
-                PlaceContent(place: place, isHome: isHome, isStale: isStale, writer: writer) { version += 1 }
-                    .mapScene(isStale ? nil : .place(place))
+            case .place(let place, let isHome, let around):
+                PlaceContent(place: place, isHome: isHome, around: around, isStale: isStale, writer: writer) { version += 1 }
+                    .mapScene(isStale ? nil : .place(place, around: around))
             case .gone:
                 ContentUnavailableView {
                     Label("This Place No Longer Exists", systemImage: "mappin.slash")
@@ -66,13 +68,14 @@ private struct PlaceContent: View {
     @Environment(\.dynamicTypeSize) private var typeSize
     let place: PlaceResponse
     let isHome: Bool
+    let around: [MapPlace]
     let isStale: Bool
     @Bindable var writer: PlaceWriter
     var reload: () -> Void
 
     @State private var isRenaming = false
     @State private var draftName = ""
-    @State private var isMerging = false
+    @State private var debugFlagsApplied = false
     @State private var isSettingHome = false
     @State private var separating: MergedPlace?
 
@@ -84,7 +87,34 @@ private struct PlaceContent: View {
 
     private var busy: Bool { writer.isWorking || isStale }
 
+    /// Merge mode is on for this place: the panel is the merge's, and the map picks the places.
+    private var merging: PlaceMergeModel? { app.map.merging.flatMap { $0.into == place.id ? $0 : nil } }
+
     var body: some View {
+        // A ZStack, not a Group: a modifier on a Group goes to each branch, and the details going as merge mode begins would end it.
+        ZStack {
+            if let merging {
+                PlaceMergePanel(place: place, around: around, merging: merging, onMerged: reload, onGone: reload)
+            } else {
+                details
+            }
+        }
+        // Leaving the place (Back, another tab) ends its merge mode, and forgets what was picked.
+        .onDisappear { if app.map.merging?.into == place.id { app.map.endMerging() } }
+    }
+
+    /// How far round a place merge mode shows the places: as far as GPS drift splits one place into several (the server's home radius).
+    private static let mergeAround = 250.0
+
+    /// Picks places on the map to merge into this one: the sheet comes down, and the map comes close to the place and the places round it.
+    private func startMerging() {
+        app.map.merging = PlaceMergeModel(into: place.id)
+        app.revealMap()
+        let near = around.filter { $0.id != place.id && Geo.distance($0.coordinate, place.coordinate) <= Self.mergeAround }
+        app.map.focus = .area([LonLat(lon: place.lon, lat: place.lat)] + near.map { LonLat(lon: $0.lon, lat: $0.lat) })
+    }
+
+    private var details: some View {
         List {
             Section {
                 actions
@@ -189,12 +219,6 @@ private struct PlaceContent: View {
         } message: { _ in
             Text("Its visits stop counting here, and anything merged into it goes with it. The name you chose stays with this place.")
         }
-        .sheet(isPresented: $isMerging) {
-            MergePlaceSheet(place: place, onGone: reload, onMerged: {
-                isMerging = false
-                reload()
-            }, onCancel: { isMerging = false })
-        }
         .sheet(isPresented: $isSettingHome) {
             SetHomeSheet(place: place) { reload() }
         }
@@ -216,13 +240,13 @@ private struct PlaceContent: View {
             HStack(spacing: 10) {
                 if !typeSize.isAccessibilitySize {
                     tile("Rename", symbol: "pencil", action: rename)
-                    tile("Merge", symbol: "arrow.triangle.merge") { isMerging = true }
+                    tile("Merge", symbol: "arrow.triangle.merge", action: startMerging)
                     tile("Set as Home", symbol: "house.fill") { isSettingHome = true }
                 }
             }
             VStack(spacing: 8) {
                 row("Rename", symbol: "pencil", action: rename)
-                row("Merge", symbol: "arrow.triangle.merge") { isMerging = true }
+                row("Merge", symbol: "arrow.triangle.merge", action: startMerging)
                 row("Set as Home", symbol: "house.fill") { isSettingHome = true }
             }
         }
@@ -289,13 +313,21 @@ private struct PlaceContent: View {
         }
     }
 
-    /// Opens a dialog on launch, for screenshots: -placesRename, -placesMerge, -placesKeep, -placesHome, -placesSeparate.
+    /// Opens a dialog on launch, for screenshots: -placesRename, -placesMerge (merge mode, with -placesPick 43,44 picking places), -placesHome,
+    /// -placesSeparate.
     private func applyDebugFlags() async {
         #if DEBUG
+        guard !debugFlagsApplied else { return }
+        debugFlagsApplied = true
         let args = ProcessInfo.processInfo.arguments
         if args.contains("-placesRename") { draftName = ownName; isRenaming = true }
         if args.contains("-placesHome") { isSettingHome = true }
-        if args.contains("-placesMerge") || args.contains("-placesKeep") { isMerging = true }
+        if args.contains("-placesMerge"), app.map.merging == nil {
+            startMerging()
+            if let i = args.firstIndex(of: "-placesPick"), args.indices.contains(i + 1) {
+                for id in args[i + 1].split(separator: ",").compactMap({ Int($0) }) { app.map.merging?.toggle(id) }
+            }
+        }
         if args.contains("-placesSeparate"), let first = place.merged.first { separating = first }
         #endif
     }

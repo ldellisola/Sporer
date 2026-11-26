@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { prefetchNeighbours } from "../api/queries";
+import { metresBetween } from "../map/geo";
 import type { FitFeatures } from "../map/layers";
 import { MapView, type MapPadding, type MapViewHandle } from "../map/MapView";
 import { BottomSheet, SHEET_GRIP, SHEET_PEEK, SHEET_TOP_CLEARANCE, sheetHalfHeight, type BottomSheetHandle } from "../sheet/BottomSheet";
@@ -10,6 +11,7 @@ import { DayPanel } from "../views/DayPanel";
 import { EDIT_BAR_INSET } from "../views/EditBar";
 import { Notice } from "../views/Notice";
 import { PlacePanel } from "../views/PlacePanel";
+import { PlacesPanel } from "../views/PlacesPanel";
 import { RangePanel } from "../views/RangePanel";
 import { RemovedToast } from "../views/RemovedToast";
 import { SettingsPanel } from "../views/SettingsPanel";
@@ -26,6 +28,7 @@ import { useEditPoints, type PointEditing } from "./useEditPoints";
 import { useLastDay } from "./useLastDay";
 import { useMeasuredHeight } from "./useMeasuredHeight";
 import { useMediaQuery } from "./useMediaQuery";
+import { usePlaceMerge, type PlaceMerge } from "./usePlaceMerge";
 import { useSideInsets } from "./useSideInsets";
 import { useFadeRoutes, useStoredFlag } from "./useStoredFlag";
 import { useViewMap } from "./useViewMap";
@@ -37,15 +40,50 @@ const DESKTOP_QUERY = "(min-width: 900px)";
 /** What is left between what covers the map and what the map is made to show: a pin is never right at the edge of a sheet. */
 const AIR = 16;
 
+/** How far round a place merge mode shows the places: as far as GPS drift splits one place into several (the home radius of the server). */
+const MERGE_AROUND_METRES = 250;
+
+/**
+ * What merge mode brings the map to: the place (`home`, its pin) and the places within `MERGE_AROUND_METRES` of it, which are what is most likely one place
+ * with it. Null when the place is not drawn yet.
+ */
+function mergeView(home: FitFeatures | null, places: FitFeatures | undefined): FitFeatures | null {
+  const pin = home?.[0];
+  if (pin === undefined || pin.geometry.type !== "Point") return null;
+  const [lon, lat] = pin.geometry.coordinates;
+  const near = (places ?? []).filter((dot) => {
+    if (dot.geometry.type !== "Point") return false;
+    const [dotLon, dotLat] = dot.geometry.coordinates;
+    return metresBetween({ lat: lat!, lon: lon! }, { lat: dotLat!, lon: dotLon! }) <= MERGE_AROUND_METRES;
+  });
+  return [pin, ...near];
+}
+
 /**
  * The panel of the view of the route. The day, the place, the trips, a trip and the settings have their own, and the week, the month, the year and the
  * range share one (the period they cover is what differs). A place is a panel of its own, made again for another place (`key`), so that
  * nothing of one place is ever under the name of another; so is a trip. `onFocus` is how a panel asks for the map to be brought to
- * something (a row tapped): the map is the shell's, and the one. `edit` is edit mode for the points of a day, which the map shares with the panel of the day.
+ * something (a row tapped): the map is the shell's, and the one. `edit` is edit mode for the points of a day, which the map shares with the panel of the day;
+ * `merge` is merge mode for a place, which the map shares with the panel of the place (`onMergeStart` brings the map into view).
  */
-function Panel({ route, onFocus, edit, anchors }: { route: Route; onFocus: (features: FitFeatures) => void; edit: PointEditing; anchors: EditAnchors }) {
+function Panel({
+  route,
+  onFocus,
+  edit,
+  anchors,
+  merge,
+  onMergeStart,
+}: {
+  route: Route;
+  onFocus: (features: FitFeatures) => void;
+  edit: PointEditing;
+  anchors: EditAnchors;
+  merge: PlaceMerge;
+  onMergeStart: () => void;
+}) {
   if (route.view === "day") return <DayPanel date={route.date} onFocus={onFocus} edit={edit} anchors={anchors} />;
-  if (route.view === "place") return <PlacePanel key={route.id} id={route.id} />;
+  if (route.view === "place") return <PlacePanel key={route.id} id={route.id} merge={merge} onMergeStart={onMergeStart} />;
+  if (route.view === "places") return <PlacesPanel />;
   if (route.view === "trips") return <TripsPanel />;
   if (route.view === "trip") return <TripPanel key={route.id} id={route.id} />;
   if (route.view === "settings") return <SettingsPanel />;
@@ -72,7 +110,8 @@ export function App() {
   const [heatOn, setHeatOn] = useStoredFlag("heat", false);
   const [fadeRoutes] = useFadeRoutes(); // set in the settings (`MapSettings`)
   const edit = useEditPoints(route);
-  const map = useViewMap(route, heatOn, edit.points);
+  const merge = usePlaceMerge(route);
+  const map = useViewMap(route, heatOn, edit.points, merge.selectedSet);
   const sheetRef = useRef<BottomSheetHandle>(null);
   const mapRef = useRef<MapViewHandle>(null);
   /**
@@ -147,7 +186,15 @@ export function App() {
       sheetRef.current?.lowerTo("peek");
     },
   };
-  const panel = <Panel route={route} onFocus={onFocus} edit={panelEdit} anchors={anchors} />;
+  // Merge mode picks the places on the map: a sheet that is up comes down to half, where the form is still there, and the map is brought to the place
+  // and the places round it, in the part of it that the sheet leaves free.
+  const { home: mapHome, data: mapData } = map;
+  const onMergeStart = useCallback(() => {
+    const view = mergeView(mapHome, mapData.places?.features);
+    if (view === null) sheetRef.current?.lowerTo("half");
+    else onFocus(view);
+  }, [mapHome, mapData, onFocus]);
+  const panel = <Panel route={route} onFocus={onFocus} edit={panelEdit} anchors={anchors} merge={merge} onMergeStart={onMergeStart} />;
   return (
     <main className={styles.shell} data-layout={desktop ? "desktop" : "phone"}>
       {/* Take no room and show nothing: their widths are the left and right safe areas, which only the style sheet can say. */}
@@ -175,7 +222,8 @@ export function App() {
                 }
               : undefined
           }
-          onPlaceTap={(id) => navigate({ view: "place", id })}
+          // In merge mode a tap on a place picks it (or takes it off) instead of opening it: the places are picked on the map.
+          onPlaceTap={(id) => (merge.into !== null ? merge.toggle(id) : navigate({ view: "place", id }))}
           onStyleError={(_error, basemapKept) => setMapNote(basemapKept ? "switch" : "unavailable")}
           onStyleLoad={() => setMapNote(null)}
         />

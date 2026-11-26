@@ -100,21 +100,30 @@ struct WriteTests {
         _ = try await rig.service.mergePlace(7, into: 1, name: .none)
         let request = try #require(rig.server.requests.first)
         #expect(request.method == "POST" && request.path == "/api/places/1/merge")
-        #expect(request.bodyJSON == ["place": 7] as NSDictionary)
+        #expect(request.bodyJSON == ["places": [7]] as NSDictionary)
     }
 
     @Test func mergeWithANilNameSendsANull() async throws {
         let rig = Rig()
         try place(rig)
         _ = try await rig.service.mergePlace(7, into: 1, name: .some(nil))
-        #expect(rig.server.requests.first?.bodyJSON == ["place": 7, "name": NSNull()] as NSDictionary)
+        #expect(rig.server.requests.first?.bodyJSON == ["places": [7], "name": NSNull()] as NSDictionary)
     }
 
     @Test func mergeWithANameSendsIt() async throws {
         let rig = Rig()
         try place(rig)
         _ = try await rig.service.mergePlace(7, into: 1, name: "Office")
-        #expect(rig.server.requests.first?.bodyJSON == ["place": 7, "name": "Office"] as NSDictionary)
+        #expect(rig.server.requests.first?.bodyJSON == ["places": [7], "name": "Office"] as NSDictionary)
+    }
+
+    @Test func mergeOfSeveralPlacesSendsThemAllInTheOrderTheyWerePicked() async throws {
+        let rig = Rig()
+        try place(rig)
+        _ = try await rig.service.mergePlaces([9, 7, 12], into: 1, name: "Office")
+        let request = try #require(rig.server.requests.first)
+        #expect(request.method == "POST" && request.path == "/api/places/1/merge")
+        #expect(request.bodyJSON == ["places": [9, 7, 12], "name": "Office"] as NSDictionary)
     }
 
     @Test func tripDistanceNilSendsANull() async throws {

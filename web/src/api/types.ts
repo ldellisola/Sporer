@@ -279,6 +279,26 @@ export interface PlaceSearchResult {
   visits: number;
 }
 
+// --- GET /api/places (Features/Places/PlaceResponse.cs, PlacesResponse) ---
+
+/** Every place in use, the most time first: what the map of all of them draws (the Places view, and the map of a place). */
+export interface PlacesResponse {
+  places: MapPlace[];
+}
+
+/**
+ * A place of `GET /api/places`: where it is, the time spent at it and its stays, over the places merged into it as well. `name` is null for a place with
+ * none (shown as "Unnamed place").
+ */
+export interface MapPlace {
+  id: number;
+  name: string | null;
+  lat: number;
+  lon: number;
+  seconds: number;
+  visits: number;
+}
+
 export interface PlaceVisit {
   start: string;
   end: string;

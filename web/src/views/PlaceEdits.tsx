@@ -1,16 +1,20 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { deleteJson, isNotFound, isRefusal, postJson, putJson } from "../api/client";
+import { deleteJson, isNotFound, postJson, putJson } from "../api/client";
 import { useWrite } from "../api/mutations";
+import { usePlaces } from "../api/queries";
 import type { PlaceCandidate, PlaceResponse } from "../api/types";
+import { metresBetween } from "../map/geo";
+import { formatCount, formatDistance } from "../time/format";
 import { MAX_NAME_LENGTH, onEscape } from "./editForms";
 import forms from "./Forms.module.css";
 import styles from "./PlaceEdits.module.css";
+import { PlacePicker } from "./PlacePicker";
 import { UNNAMED } from "./placeNames";
 import rows from "./Rows.module.css";
 import { WriteError } from "./WriteError";
 
-// What the owner can do to a place: rename it, merge another into it, and separate what was merged in. The panel of the place composes these.
+// What the owner can do to a place: rename it, merge others into it, and separate what was merged in. The panel of the place composes these.
 
 export interface EditProps {
   /** The place that is shown: its id is the one that every write is to (a place that was merged is served as the one it was merged into). */
@@ -73,96 +77,130 @@ export function RenameForm({ place, placeKey, onClose }: EditProps & { onClose: 
   );
 }
 
+/** A place that is picked, as the form lists it: its name (null for none) and, when the map knows where it is, how far it is from the place it goes into. */
+interface Picked {
+  id: number;
+  name: string | null;
+  distanceM: number | null;
+}
+
+export interface MergeFormProps extends EditProps {
+  /** The places picked so far, in the order they were picked: on the map (the shell's merge mode) or in the list under the form. */
+  picked: readonly number[];
+  /** Picks a place that was not, and takes off one that was. */
+  onToggle: (id: number) => void;
+  /** Closes the form: Cancel, Escape, and a merge that was made. */
+  onClose: () => void;
+}
+
 /**
- * What the merge is going to do, to be confirmed: "Merge B into A?", A being the place that is open (it is the one that stays), and which of
- * the two names the place is to have. A's is chosen to begin with. Keeping A's sends the name that is shown (the place has it as its own from
- * then on), or null when A has none (null leaves the name as it is, and "Unnamed place" is no name to give it); keeping B's sends B's, and
- * a B with no name has none to keep. Two places that have the same name have nothing to choose between: no choice is offered, and the
- * question says it is the other one that is merged in.
+ * Merge mode's form: the places picked to be merged into the place that is open (it is the one that stays), which the owner picks by tapping their dots on
+ * the map or their rows in the list of the nearest places under the form, each with its Remove; which of the names the place is to have, when there is more
+ * than one to choose from; and Merge, which merges all of them at once (`places`), or none. The place's own name is chosen to begin with, as a merge of one
+ * did: keeping it sends the name that is shown (the place has it as its own from then on), or null when it has none (null leaves the name as it is, and
+ * "Unnamed place" is no name to give it). A picked place with no name has none to keep, and names that are the same are offered once.
  *
- * It takes the focus when it opens (on the question, which a screen reader reads, and not on a button: Enter held down on the row that was
- * picked would merge), so that Escape is Cancel at once. A merge the server refuses (409, 404) would be refused again: no Retry, and Merge is
- * off, but the owner can choose another place (`onChooseAnother`) or cancel; the focus is put on that button, since the one it was on is off.
+ * It takes the focus when it opens, on what it says (which a screen reader reads), so that Escape is Cancel at once. A merge the server refuses (409, 404)
+ * would be refused again: no Retry, and the owner takes off the place that is in the way, or cancels.
  */
-export function MergeConfirm({
-  place,
-  placeKey,
-  other,
-  onClose,
-  onChooseAnother,
-}: EditProps & { other: PlaceCandidate; onClose: () => void; onChooseAnother: () => void }) {
+export function MergeForm({ place, placeKey, picked, onToggle, onClose }: MergeFormProps) {
   const client = useQueryClient();
   const group = useId();
   const question = useRef<HTMLParagraphElement>(null);
-  const chooseAnother = useRef<HTMLButtonElement>(null);
-  const [keep, setKeep] = useState<"here" | "there">("here");
-  const merge = useWrite((name: string | null) => postJson<PlaceResponse>(`/api/places/${place.id}/merge`, { place: other.id, name }));
-  const here = place.name ?? UNNAMED;
-  const there = other.name ?? UNNAMED;
-  const same = here === there;
-  // A 400 can be put right (the other name may be shorter); a 404 or a 409 is about the two places, and not about what the form says.
-  const conflict = merge.isError && isRefusal(merge.error) && merge.error.status !== 400;
+  const all = usePlaces().data?.places;
+  // The names of the places picked in the list: a place picked there may not be on the map yet (its list has not come).
+  const [seen, setSeen] = useState<ReadonlyMap<number, string | null>>(new Map());
+  const [keep, setKeep] = useState<string | null>(place.name);
+  const merge = useWrite((name: string | null) => postJson<PlaceResponse>(`/api/places/${place.id}/merge`, { places: picked, name }));
   useEffect(() => question.current?.focus(), []);
-  // Merge is off after a refusal, and the focus was on it (it is off while the request is on its way): it goes to the way on, which is there now.
-  useEffect(() => {
-    if (conflict) chooseAnother.current?.focus();
-  }, [conflict]);
+
+  const byId = new Map((all ?? []).map((one) => [one.id, one]));
+  const listed: Picked[] = picked.map((id) => {
+    const known = byId.get(id);
+    return {
+      id,
+      name: known?.name ?? seen.get(id) ?? null,
+      distanceM: known === undefined ? null : metresBetween(place, known),
+    };
+  });
+  const here = place.name ?? UNNAMED;
+  // The names to choose from: this place's, then each picked place's that is another, once.
+  const names = [...new Set([place.name, ...listed.map((row) => row.name)].filter((name): name is string => name !== null))];
+  const choices: (string | null)[] = place.name === null ? [null, ...names] : names;
+  const kept = choices.includes(keep) ? keep : place.name; // a name of a place that was taken off is no longer one to keep
   const submit = () =>
-    merge.mutate(keep === "here" ? place.name : other.name, {
+    merge.mutate(kept, {
       onSuccess: (survivor) => {
         client.setQueryData(placeKey, survivor);
         onClose();
       },
     });
+  const count = picked.length;
   return (
-    <form
-      className={forms.form}
-      onKeyDown={onEscape(onClose)}
-      onSubmit={(event: FormEvent) => {
-        event.preventDefault();
-        submit();
-      }}
-    >
-      <p ref={question} tabIndex={-1} className={forms.question}>
-        {same ? `Merge the other “${there}” into this one?` : `Merge ${there} into ${here}?`}
-      </p>
-      {!same && (
-        <fieldset className={styles.choices}>
-          <legend className={forms.label}>Name to keep</legend>
-          <label className={styles.choice}>
-            <input type="radio" name={group} checked={keep === "here"} onChange={() => setKeep("here")} />
-            {here}
-          </label>
-          <label className={styles.choice}>
-            <input type="radio" name={group} checked={keep === "there"} disabled={other.name === null} onChange={() => setKeep("there")} />
-            {there}
-          </label>
-        </fieldset>
-      )}
-      <div className={forms.buttons}>
-        <button type="submit" className={forms.primary} disabled={merge.isPending || conflict}>
-          {merge.isPending ? "Merging…" : "Merge"}
-        </button>
-        <button type="button" className={forms.secondary} onClick={onClose}>
-          Cancel
-        </button>
-      </div>
-      {merge.isError && (
-        <WriteError
-          what="merge"
-          error={merge.error}
-          onRetry={submit}
-          gone="One of the places no longer exists."
-          refusedActions={
-            conflict ? (
-              <button ref={chooseAnother} type="button" className={forms.secondary} onClick={onChooseAnother}>
-                Choose another place
-              </button>
-            ) : undefined
-          }
-        />
-      )}
-    </form>
+    // Escape is Cancel in the list as in the form: the list is part of merge mode.
+    <div className={styles.merge} onKeyDown={onEscape(onClose)}>
+      <form
+        className={forms.form}
+        onSubmit={(event: FormEvent) => {
+          event.preventDefault();
+          if (count > 0) submit();
+        }}
+      >
+        <p ref={question} tabIndex={-1} className={forms.question}>
+          {count === 0 ? `Tap the places on the map to merge into ${here}, or pick them in the list.` : `Merge ${formatCount(count, "place")} into ${here}?`}
+        </p>
+        {count > 0 && (
+          <ul className={rows.list} aria-label="Places to merge">
+            {listed.map((row) => {
+              const name = row.name ?? UNNAMED;
+              return (
+                <li key={row.id} className={styles.merged}>
+                  <span className={styles.mergedName}>
+                    {name}
+                    {row.distanceM !== null && <span className={styles.away}> · {formatDistance(row.distanceM)}</span>}
+                  </span>
+                  <button type="button" className={forms.secondary} aria-label={`Remove ${name}`} disabled={merge.isPending} onClick={() => onToggle(row.id)}>
+                    Remove
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {count > 0 && choices.length > 1 && (
+          <fieldset className={styles.choices}>
+            <legend className={forms.label}>Name to keep</legend>
+            {choices.map((name) => (
+              <label key={name ?? ""} className={styles.choice}>
+                <input type="radio" name={group} checked={kept === name} disabled={merge.isPending} onChange={() => setKeep(name)} />
+                {name ?? UNNAMED}
+              </label>
+            ))}
+          </fieldset>
+        )}
+        <div className={forms.buttons}>
+          <button type="submit" className={forms.primary} disabled={merge.isPending || count === 0}>
+            {merge.isPending ? "Merging…" : "Merge"}
+          </button>
+          <button type="button" className={forms.secondary} onClick={onClose}>
+            Cancel
+          </button>
+        </div>
+        {merge.isError && <WriteError what="merge" error={merge.error} onRetry={submit} gone="One of the places no longer exists." />}
+      </form>
+      <h2 className={rows.heading}>
+        Nearest places
+      </h2>
+      <PlacePicker
+        placeId={place.id}
+        autoFocus={false}
+        picked={new Set(picked)}
+        onPick={(candidate: PlaceCandidate) => {
+          setSeen((last) => new Map(last).set(candidate.id, candidate.name));
+          onToggle(candidate.id);
+        }}
+      />
+    </div>
   );
 }
 

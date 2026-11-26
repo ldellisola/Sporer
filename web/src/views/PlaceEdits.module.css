@@ -43,3 +43,14 @@
 .merged button {
   flex: none;
 }
+
+/* Merge mode: the form, and the nearest places under it to pick from. */
+.merge {
+  margin: 12px 0 18px;
+}
+
+/* How far a picked place is from the place it goes into, after its name. */
+.away {
+  font-weight: 400;
+  color: var(--ink-muted);
+}

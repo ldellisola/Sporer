@@ -587,6 +587,26 @@ describe("TopBar", () => {
     expect(screen.getByRole("button", { name: "Week", pressed: true })).toBeInTheDocument();
   });
 
+  describe("the Places button", () => {
+    test("TopBar_places_button_opens_every_place_and_is_pressed_there_and_not_on_a_place", () => {
+      const day = open("/day/2026-10-22");
+      expect(screen.getByRole("button", { name: "Places", pressed: false }).querySelector("svg")).not.toBeNull(); // the pin, drawn in place
+
+      press("Places");
+
+      expect(pathname()).toBe("/places");
+      expect(screen.getByRole("button", { name: "Places", pressed: true })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Trips", pressed: false })).toBeInTheDocument();
+      expect(label()).toBe("Places"); // a title row in the place of the date row
+      expect(screen.queryByRole("button", { name: /^(Previous|Next)/ })).not.toBeInTheDocument();
+      for (const name of ["Day", "Week", "Month", "Year", "Range"]) expect(screen.getByRole("button", { name, pressed: false })).toBeInTheDocument();
+
+      day.unmount();
+      open("/place/5"); // a place may have been opened from a day: it is not one of the places as a trip is one of the trips
+      expect(screen.getByRole("button", { name: "Places", pressed: false })).toBeInTheDocument();
+    });
+  });
+
   describe("the Trips button", () => {
     test("TopBar_trips_button_opens_the_trips_list_and_is_pressed_there", () => {
       open("/day/2026-10-22");

@@ -2,6 +2,7 @@ import type {
   DayResponse,
   HeatResponse,
   LonLat,
+  MapPlace,
   Mode,
   PlaceRef,
   RangeResponse,
@@ -45,8 +46,9 @@ export type LabelSide = "west" | "east";
 /**
  * `id` is the place, which a tap on its dot opens (0 for a dot that is no place, the city of a trip: a tap on it opens nothing); `radius` is
  * in pixels; `label` is only there for the places that are named on the map, and so is `side`, which says where the label goes (see `withSides`).
+ * `selected` is on the places picked to be merged into the place on show (see `allPlacesGeoJson`), which are drawn larger and in another colour.
  */
-export type PlaceProperties = { id: number; radius: number; label?: string; side?: LabelSide };
+export type PlaceProperties = { id: number; radius: number; label?: string; side?: LabelSide; selected?: true };
 export type HeatProperties = { weight: number };
 
 /**
@@ -91,6 +93,8 @@ const UNKNOWN_MODE_COLOR = "#8E8E93";
 export const PIN_COLOR = "#FF375F";
 /** What a selected point of edit mode is drawn in. */
 export const EDIT_SELECTED_COLOR = "#FF3B30";
+/** The colour of a place picked to be merged: the blue of a selection, which no route or pin is. */
+export const MERGE_SELECTED_COLOR = "#0A84FF";
 const WHITE = "#FFFFFF";
 
 /**
@@ -232,6 +236,28 @@ export function rangeGeoJson(range: RangeResponse): { routes: RouteCollection; p
   return { routes, places: withSides(routes, places) };
 }
 
+/** The smallest dot of the map of all the places: they are small next to home, and a dot is to be tapped. */
+const MIN_ALL_PLACES_RADIUS = 6;
+
+/**
+ * Every place in use as a dot (`GET /api/places`), for the Places view and round a place: sized by the time spent there as a period's dots are, but never
+ * under 6 pixels (the time of home makes most of them small, and each is to be tapped), and each named by its own name when it has one. All the names are
+ * offered and MapLibre shows those that fit: the dots come the most time first, as the API has them, so a name that collides with another gives way to the
+ * place with more time. `except` is left out (the place on show, which has its pin), and the places of `selected` say so (picked to be merged into it).
+ */
+export function allPlacesGeoJson(places: readonly MapPlace[], except: number | null = null, selected: ReadonlySet<number> = new Set()): PlaceCollection {
+  const max = places.reduce((most, place) => Math.max(most, place.seconds), 0);
+  const features: Feature<Point, PlaceProperties>[] = [];
+  for (const place of places) {
+    if (place.id === except) continue;
+    const properties: PlaceProperties = { id: place.id, radius: Math.max(MIN_ALL_PLACES_RADIUS, dotRadius(place.seconds, max)) };
+    if (place.name !== null) properties.label = place.name;
+    if (selected.has(place.id)) properties.selected = true;
+    features.push(point(place.lon, place.lat, properties));
+  }
+  return { type: "FeatureCollection", features };
+}
+
 /** What a city's dot says on the map of the trips and of a trip, in the trips' wording ("Lisbon · 4 nights", "Lisbon · 1 night"). */
 const cityLabel = (name: string, nights: number): string => `${name} · ${formatCount(nights, "night")}`;
 
@@ -366,9 +392,10 @@ export const LAYER_IDS = {
 
 /**
  * A day is drawn bold, with pins; a period (week, month, year, range) is drawn faint by default (the owner may have it at full strength), with dots;
- * the trips are the dots of their cities, with no routes; a trip is drawn bold as a day is, with the dots of its cities.
+ * the trips are the dots of their cities, with no routes; a trip is drawn bold as a day is, with the dots of its cities; the places (and a place among
+ * them) are dots with no routes.
  */
-export type RouteView = "day" | "range" | "trips" | "trip";
+export type RouteView = "day" | "range" | "trips" | "trip" | "places";
 
 export type LayerSpecification = StyleSpecification["layers"][number];
 type LineLayer = Extract<LayerSpecification, { type: "line" }>;
@@ -480,6 +507,11 @@ function placeLabels(id: string, filter: FilterSpecification, anchors: Anchors, 
     paint,
   };
 }
+
+/** Whether a place's dot is one picked to be merged (a property of the feature: the places are few enough to be made again when one is picked). */
+const IS_MERGE_SELECTED: CircleRadius = ["has", "selected"];
+/** A picked place's dot is at least this large, whatever its time. */
+const MERGE_SELECTED_RADIUS = 10;
 
 /** Whether a feature of the edit points is selected: the map's feature state, set by id (a feature that has none is not). */
 const IS_SELECTED: CircleRadius = ["boolean", ["feature-state", "selected"], false];
@@ -608,13 +640,14 @@ export function layerSpecs(view: RouteView, dark: boolean, fade = true): LayerSp
       id: LAYER_IDS.places,
       type: "circle",
       source: SOURCE_IDS.places,
-      layout: { "circle-sort-key": ["-", ["get", "radius"]] }, // the small dots on top of the big ones
+      // The small dots on top of the big ones, and the picked ones on top of all.
+      layout: { "circle-sort-key": ["case", IS_MERGE_SELECTED, 0, ["-", ["get", "radius"]]] },
       paint: {
-        "circle-radius": ["get", "radius"],
-        "circle-color": PIN_COLOR,
+        "circle-radius": ["case", IS_MERGE_SELECTED, ["max", ["get", "radius"], MERGE_SELECTED_RADIUS], ["get", "radius"]],
+        "circle-color": ["case", IS_MERGE_SELECTED, MERGE_SELECTED_COLOR, PIN_COLOR],
         "circle-opacity": 0.92,
         "circle-stroke-color": WHITE,
-        "circle-stroke-width": 2,
+        "circle-stroke-width": ["case", IS_MERGE_SELECTED, 3, 2],
       },
     },
     placeLabels(LAYER_IDS.placeLabelsWest, LABELLED_WEST, ["left", "top-left", "bottom-left"], labelPaint),

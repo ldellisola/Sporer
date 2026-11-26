@@ -9,7 +9,10 @@ nonisolated enum MapScene: Sendable, Equatable {
     case range(RangeResponse)
     case trips([TripListItem])
     case trip(TripResponse)
-    case place(PlaceResponse)
+    /// A place, its pin, and the places round it as dots (`around`, every place in use: the place itself is left out of them).
+    case place(PlaceResponse, around: [MapPlace])
+    /// Every place in use, as dots.
+    case places([MapPlace])
 
     /// Which drawing this is: the map refits only when this changes. A refresh of the same drawing (new routes after an edit, a
     /// place renamed) keeps it, and is redrawn without moving the map (`MapModel.contentVersion`).
@@ -20,7 +23,9 @@ nonisolated enum MapScene: Sendable, Equatable {
         case .range(let r): "range-\(r.from)-\(r.to)-\(r.moves.count)"
         case .trips(let t): "trips-\(t.map(\.id).joined(separator: ","))"
         case .trip(let t): "trip-\(t.id)-\(t.moves.count)"
-        case .place(let p): "place-\(p.id)-\(p.name ?? "")"
+        case .place(let p, _): "place-\(p.id)-\(p.name ?? "")"
+        // The same drawing whatever is in it: a merge takes places off without moving the map.
+        case .places: "places"
         }
     }
 
@@ -39,6 +44,8 @@ nonisolated enum MapScene: Sendable, Equatable {
 nonisolated enum MapFocus: Equatable, Sendable {
     case segment(String)
     case coordinate(Double, Double)
+    /// All of these places, close: a place and the places round it that merge mode picks from.
+    case area([LonLat])
 }
 
 nonisolated enum MapStyleChoice: String, CaseIterable, Identifiable, Sendable {
@@ -76,6 +83,25 @@ final class EditPointsModel {
     }
 }
 
+/// Merge mode of a place: the places picked on the map (or in the list) to merge into it. A tap on a place picks it instead of opening it.
+@Observable
+final class PlaceMergeModel {
+    /// The place they go into: the place on show, which survives.
+    let into: Int
+    /// In the order they were picked.
+    private(set) var picked: [Int] = []
+
+    init(into: Int) {
+        self.into = into
+    }
+
+    /// Picks a place, or takes it off; the place they go into is never picked (a tap on its own pin does nothing).
+    func toggle(_ id: Int) {
+        guard id != into else { return }
+        if let i = picked.firstIndex(of: id) { picked.remove(at: i) } else { picked.append(id) }
+    }
+}
+
 @Observable
 final class MapModel {
     private(set) var scene: MapScene = .empty
@@ -93,6 +119,13 @@ final class MapModel {
         didSet { UserDefaults.standard.set(style.rawValue, forKey: "mapStyle") }
     }
     var editing: EditPointsModel?
+    var merging: PlaceMergeModel?
+
+    /// Ends merge mode, and lets go of where it brought the map, so that the next one brings it there again.
+    func endMerging() {
+        merging = nil
+        if case .area = focus { focus = nil }
+    }
 
     /// The insets of the map that the sheet, sidebar or bars cover.
     var obscured = EdgeInsets()

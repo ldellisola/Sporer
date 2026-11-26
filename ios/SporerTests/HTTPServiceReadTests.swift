@@ -89,6 +89,16 @@ struct FixtureDecodingTests {
         #expect(rig.server.requests.first?.absolute.hasSuffix("/api/places/search") == true)
     }
 
+    @Test func allPlaces() async throws {
+        let rig = Rig()
+        try rig.server.respond(fixture: "places")
+        let response = try await rig.service.allPlaces()
+        #expect(response.count > 1)
+        #expect(response.first.map { $0.seconds >= response[1].seconds } == true) // the most time first
+        #expect(response.contains { $0.name == nil }) // an unnamed place is listed too
+        #expect(rig.server.requests.first?.absolute.hasSuffix("/api/places") == true)
+    }
+
     @Test func mergeCandidates() async throws {
         let rig = Rig()
         try rig.server.respond(fixture: "place-candidates")

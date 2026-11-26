@@ -2,8 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { DayPointsResponse, DayResponse, HeatResponse, PlaceResponse, RangeResponse, StaySegment, TripResponse, TripsResponse } from "../api/types";
-import { dayGeoJson, editPointsGeoJson, heatGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripGeoJson, tripsGeoJson } from "../map/layers";
+import type { DayPointsResponse, DayResponse, HeatResponse, PlaceResponse, PlacesResponse, RangeResponse, StaySegment, TripResponse, TripsResponse } from "../api/types";
+import { allPlacesGeoJson, dayGeoJson, editPointsGeoJson, heatGeoJson, placeGeoJson, placePoint, rangeGeoJson, tripGeoJson, tripsGeoJson } from "../map/layers";
 import type { MapData } from "../map/MapView";
 import newYorkDay from "../../e2e/fixtures/day-new-york.json";
 import flightDay from "../../e2e/fixtures/day-oslo-new-york.json";
@@ -52,7 +52,7 @@ const emptyDay = (date: string, state: DayResponse["state"] = "done"): DayRespon
   segments: [],
 });
 
-type Answer = DayResponse | RangeResponse | HeatResponse | PlaceResponse | TripsResponse | TripResponse | Response | (() => Response | Promise<Response>);
+type Answer = DayResponse | RangeResponse | HeatResponse | PlaceResponse | PlacesResponse | TripsResponse | TripResponse | Response | (() => Response | Promise<Response>);
 
 /** What a request is answered by: the date of a day (`2026-10-22`), the dates of a range (`2026-10-19..2026-10-25`), `heatKey` of a heat, `placeKey` of a place, `tripKey` of a trip, `trips` of the list of trips. */
 function keyOf(path: string): string {
@@ -198,19 +198,26 @@ describe("useViewMap data", () => {
     expect(result.current.data.stops).toBe(before.stops);
   });
 
-  test("useViewMap_draws_a_place_as_one_pin_and_asks_for_that_place_only", async () => {
-    const { paths } = stubApi({ "2026-10-22": OSLO_DAY, "2026-10-01..2026-10-31": OCTOBER, [placeKey(2)]: CAFE });
+  test("useViewMap_draws_a_place_as_one_pin_with_the_other_places_round_it_and_asks_for_that_place_and_the_places_only", async () => {
+    const { paths, answers } = stubApi({ "2026-10-22": OSLO_DAY, "2026-10-01..2026-10-31": OCTOBER, [placeKey(2)]: CAFE });
+    let places: (value: Response) => void = () => undefined;
+    answers.places = () => new Promise<Response>((resolve) => (places = resolve));
 
     const { result } = setup(PLACE_2);
 
     expect(result.current.data.stops).toBeUndefined(); // nothing yet, and no pin to draw: the map is waiting for the place
     expect(result.current.data.routes.features).toEqual([]);
     await waitFor(() => expect(result.current.data.stops).toBeDefined());
-    expect(result.current.data).toEqual(placeGeoJson(CAFE));
+    expect(result.current.data).toEqual(placeGeoJson(CAFE)); // the pin as soon as the place is there, without waiting for the others
     expect(result.current.data.stops?.features).toHaveLength(1);
     expect(result.current.data.stops?.features[0]?.properties).toMatchObject({ label: "", name: "Café" }); // a pin of a stop, with no number
     expect(result.current.data.places).toBeUndefined();
-    expect(paths).toEqual(["/api/places/2"]); // neither a day nor a period was asked for to draw the place
+
+    act(() => places(Response.json(ALL_PLACES)));
+
+    await waitFor(() => expect(result.current.data.places).toEqual(allPlacesGeoJson(ALL_PLACES.places, 2))); // the others, and not the place itself
+    expect(result.current.data.stops).toEqual(placeGeoJson(CAFE).stops);
+    expect(new Set(paths)).toEqual(new Set(["/api/places/2", "/api/places"])); // neither a day nor a period was asked for to draw the place
   });
 
   test("useViewMap_stops_drawing_the_day_when_the_view_is_not_a_day_and_draws_it_again_after", async () => {
@@ -890,6 +897,52 @@ describe("useViewMap period fit", () => {
 // --- Places ---
 
 const featuresOfPlace = (place: PlaceResponse) => placeGeoJson(place).stops.features;
+
+/** The places of the map: the Café (place 2), the Bistro next to it, and a place with no name. */
+const ALL_PLACES: PlacesResponse = {
+  places: [
+    { id: 2, name: "Café", lat: 59.914, lon: 10.764, seconds: 8640, visits: 3 },
+    { id: 7, name: "Bistro", lat: 59.9144, lon: 10.764, seconds: 4000, visits: 3 },
+    { id: 9, name: null, lat: 59.92, lon: 10.77, seconds: 100, visits: 1 },
+  ],
+};
+
+describe("useViewMap all the places", () => {
+  test("useViewMap_draws_every_place_as_a_dot_with_no_routes_and_brings_the_map_to_all_of_them_with_no_heat", async () => {
+    const { paths } = stubApi({ places: ALL_PLACES });
+
+    const { result } = setup({ view: "places" }, true);
+
+    expect(result.current.fitTo).toBeNull();
+    await waitFor(() => expect(result.current.data.places).toBeDefined());
+    const dots = allPlacesGeoJson(ALL_PLACES.places);
+    expect(result.current.data).toEqual({ routes: { type: "FeatureCollection", features: [] }, places: dots, view: "places" });
+    expect(result.current.fitTo).toEqual(dots.features);
+    expect(result.current.home).toEqual(dots.features);
+    expect(result.current.heat.available).toBe(false);
+    expect(paths).toEqual(["/api/places"]);
+  });
+
+  test("useViewMap_marks_the_places_picked_to_be_merged_on_the_map_of_a_place_without_moving_it", async () => {
+    stubApi({ [placeKey(2)]: CAFE, places: ALL_PLACES });
+    const { result, rerender } = renderPicked(new Set());
+    await waitFor(() => expect(result.current.data.places).toBeDefined());
+    const fit = result.current.fitTo;
+
+    rerender({ picked: new Set([7]) });
+
+    expect(result.current.data.places).toEqual(allPlacesGeoJson(ALL_PLACES.places, 2, new Set([7])));
+    expect(result.current.data.places?.features.find((dot) => dot.properties.id === 7)?.properties.selected).toBe(true);
+    expect(result.current.fitTo).toBe(fit); // picking a place does not move the map
+  });
+});
+
+/** The map of place 2 with the places in `picked` picked to be merged into it. */
+function renderPicked(picked: ReadonlySet<number>) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  return renderHook(({ picked }: { picked: ReadonlySet<number> }) => useViewMap(PLACE_2, false, undefined, picked), { initialProps: { picked }, wrapper });
+}
 
 describe("useViewMap places", () => {
   test("useViewMap_brings_the_map_to_the_pin_of_a_place_once_and_has_the_pin_as_home", async () => {
@@ -1630,7 +1683,7 @@ describe("useViewMap heat", () => {
 
     expect(result.current.heat).toMatchObject({ available: false, failed: false }); // no button: there is no period to show the heat of
     expect(result.current.data.heat).toBeUndefined();
-    expect(paths).toEqual(["/api/places/2"]); // the place, and no heat
+    expect(paths.filter((path) => path !== "/api/places")).toEqual(["/api/places/2"]); // the place (and the places round it), and no heat
   });
 
   test("useViewMap_has_heat_for_the_day_again_when_the_view_comes_back_from_a_place", async () => {

@@ -11,6 +11,7 @@ import type {
   HomesResponse,
   PlaceCandidate,
   PlaceResponse,
+  PlacesResponse,
   PlaceSearchResult,
   PointDetailResponse,
   RangeResponse,
@@ -196,6 +197,15 @@ export function placeSearchQueryOptions(q: string | null) {
   });
 }
 
+/** Every place in use, with where it is (`GET /api/places`): the dots of the Places view, and the places round a place and that it can be merged with. */
+export function placesQueryOptions() {
+  return queryOptions({
+    queryKey: ["places"] as const,
+    queryFn: ({ signal }) => getJson<PlacesResponse>("/api/places", signal),
+    staleTime: STALE_MS,
+  });
+}
+
 /** The home periods, detected and the owner's, in date order: what the Home section of Settings lists. */
 export function homesQueryOptions() {
   return queryOptions({
@@ -304,6 +314,9 @@ export const useCandidates = (placeId: number | null, q: string) => useQuery(can
 
 /** The places in use by name or address, with no place to start from; nothing is asked for while `q` is null. */
 export const usePlaceSearch = (q: string | null) => useQuery(placeSearchQueryOptions(q));
+
+/** Every place in use. `enabled` is false for a caller that has no use for them on the view on show (the map, which draws them on a place and the Places view). */
+export const usePlaces = (enabled = true) => useQuery({ ...placesQueryOptions(), enabled });
 
 export const useHomes = () => useQuery(homesQueryOptions());
 

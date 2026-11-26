@@ -1,10 +1,13 @@
 import SwiftUI
 
-/// The Places tab: every place, most visited first, with search.
+/// The Places tab: every place on the map, and the most visited in a list, with search. A dot or a row opens the place, where Merge picks
+/// the places near it on the map.
 struct PlacesPanel: View {
     @Environment(\.appModel) private var app
     @State private var query = ""
     @State private var results: [PlaceSearchResult]?
+    /// Every place in use, for the map; nothing is drawn until they are there (the map is brought to them once).
+    @State private var all: [MapPlace]?
     @State private var error: (any Error)?
     @State private var isLoading = false
     @State private var attempt = 0
@@ -61,6 +64,11 @@ struct PlacesPanel: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Search Places")
         .refreshable { attempt += 1 }
+        .mapScene(all.map { .places($0) })
+        .task(id: "\(app.dataVersion)|\(attempt)") {
+            // The map's dots are no part of the list: a failure to get them leaves the dots there were, and the list says nothing of it.
+            if let found = try? await app.service.allPlaces(), !Task.isCancelled { all = found }
+        }
         .task(id: TaskKey(query: query, attempt: attempt)) {
             if !query.isEmpty { try? await Task.sleep(for: .milliseconds(300)) }
             guard !Task.isCancelled else { return }

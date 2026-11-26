@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { addDays, isDate, isMonth, MAX_RANGE_DAYS, periodDays, today as todayInBrowser, weekStart } from "../time/dates";
 
-// The URL is the only view state, and there are only nine kinds of it, so this is all the router there is:
+// The URL is the only view state, and there are only ten kinds of it, so this is all the router there is:
 //   /day/2026-10-22   /week/2026-10-19   /month/2026-10   /year/2026   /range/2026-10-19..2026-10-25   /place/42
-//   /trips   /trip/2026-09-12   /settings
+//   /places   /trips   /trip/2026-09-12   /settings
 // The server answers each of them with index.html (see Program.cs).
 
 export type Route =
@@ -13,13 +13,15 @@ export type Route =
   | { view: "year"; year: number }
   | { view: "range"; from: string; to: string }
   | { view: "place"; id: number }
+  /** Every place on the map, and the list of them: the way to a place, and to the places near each other that are one place. */
+  | { view: "places" }
   | { view: "trips" }
   /** A trip, by its id: the date of its first away night, which is what the API names it by. */
   | { view: "trip"; id: string }
   /** The one page of the owner's settings, with no argument. */
   | { view: "settings" };
 
-/** A route that covers a stretch of time: the day, the week, the month, the year and the range. A place, the trips, a trip and the settings do not. */
+/** A route that covers a stretch of time: the day, the week, the month, the year and the range. A place, the places, the trips, a trip and the settings do not. */
 export type PeriodRoute = Extract<Route, { view: "day" | "week" | "month" | "year" | "range" }>;
 
 const PERIOD_VIEWS: ReadonlySet<string> = new Set<PeriodRoute["view"]>(["day", "week", "month", "year", "range"]);
@@ -50,7 +52,8 @@ export function parseRoute(pathname: string, today: string): Route | null {
   const trimmed = pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
   const segments = trimmed.split("/"); // "", view, argument
   if (segments.length === 2) {
-    // The list of trips and the settings are the views that have no argument.
+    // The places, the list of trips and the settings are the views that have no argument.
+    if (segments[1] === "places") return { view: "places" };
     if (segments[1] === "trips") return { view: "trips" };
     return segments[1] === "settings" ? { view: "settings" } : null;
   }
@@ -108,6 +111,8 @@ export function formatRoute(route: Route): string {
       return `/range/${route.from}..${route.to}`;
     case "place":
       return `/place/${route.id}`;
+    case "places":
+      return "/places";
     case "trips":
       return "/trips";
     case "trip":

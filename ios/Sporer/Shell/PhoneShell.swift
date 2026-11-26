@@ -47,7 +47,7 @@ struct SheetContent: View {
             ForEach(AppSection.allCases) { section in
                 Tab(section.title, systemImage: section.symbol, value: section) {
                     SectionStack(section: section)
-                        .toolbar(app.map.editing == nil ? .automatic : .hidden, for: .tabBar)
+                        .toolbar(app.map.editing == nil && app.map.merging == nil ? .automatic : .hidden, for: .tabBar)
                 }
             }
         }

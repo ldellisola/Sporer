@@ -100,6 +100,8 @@ const defaults: Record<string, Override> = {
   homes: { periods: [] },
   settings: { tripMinDistanceKm: 50, tripMinDistanceKmDefault: 50 },
   "points/removed": [],
+  // The places of the map of a place and of the places view: none, unless a test has some.
+  places: { places: [] },
   // The page of a trip: the fixture's own for the one that has days and moves, the summary of the list (with nothing in it) for the other
   // trips of the list, and the 404 that the server gives for an id that is not a stored trip.
   "trips/*": (request): Reply => {

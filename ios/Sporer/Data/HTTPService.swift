@@ -83,6 +83,11 @@ nonisolated final class HTTPService: SporerService {
         try await get(query.isEmpty ? "/api/places/search" : "/api/places/search?q=\(Self.query(query))", keep: query.isEmpty)
     }
 
+    func allPlaces() async throws -> [MapPlace] {
+        let response: PlacesResponse = try await get("/api/places")
+        return response.places
+    }
+
     func mergeCandidates(for id: Int, query: String) async throws -> [PlaceCandidate] {
         try await get(query.isEmpty ? "/api/places/\(id)/candidates" : "/api/places/\(id)/candidates?q=\(Self.query(query))", keep: false)
     }
@@ -91,8 +96,8 @@ nonisolated final class HTTPService: SporerService {
         try await send("PUT", "/api/places/\(id)/name", body: NameRequest(name: name))
     }
 
-    func mergePlace(_ other: Int, into id: Int, name: String??) async throws -> PlaceResponse {
-        try await send("POST", "/api/places/\(id)/merge", body: MergeRequest(place: other, name: name))
+    func mergePlaces(_ others: [Int], into id: Int, name: String??) async throws -> PlaceResponse {
+        try await send("POST", "/api/places/\(id)/merge", body: MergeRequest(places: others, name: name))
     }
 
     func separatePlace(_ other: Int, from id: Int) async throws {
@@ -306,14 +311,14 @@ private nonisolated struct NameRequest: Encodable {
 
 /// `name` left out leaves the survivor's name; `null` or "" clears it.
 private nonisolated struct MergeRequest: Encodable {
-    var place: Int
+    var places: [Int]
     var name: String??
     func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(place, forKey: .place)
+        try c.encode(places, forKey: .places)
         if let name { try c.encode(name, forKey: .name) }
     }
-    private enum CodingKeys: String, CodingKey { case place, name }
+    private enum CodingKeys: String, CodingKey { case places, name }
 }
 
 /// `null` takes the owner's distance back; the key must be there either way.

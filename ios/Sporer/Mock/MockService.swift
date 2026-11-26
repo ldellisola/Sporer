@@ -273,6 +273,17 @@ actor MockService: SporerService {
             .map { PlaceSearchResult(id: $0.id, name: name(of: $0), address: $0.address, visits: $0.visits) }
     }
 
+    func allPlaces() async throws -> [MapPlace] {
+        await pause(200)
+        return world.places.values
+            .filter { mergedInto[$0.id] == nil }
+            .map { place in
+                let visits = place.visits + mergedInto.filter { $0.value == place.id }.keys.compactMap { other in world.places.values.first { $0.id == other }?.visits }.reduce(0, +)
+                return MapPlace(id: place.id, name: name(of: place), lat: place.lat, lon: place.lon, seconds: Double(visits) * 3_600, visits: visits)
+            }
+            .sorted { ($0.seconds, -$0.id) > ($1.seconds, -$1.id) }
+    }
+
     func mergeCandidates(for id: Int, query: String) async throws -> [PlaceCandidate] {
         await pause(200)
         guard let here = world.places.values.first(where: { $0.id == resolve(id) }) else { throw ServiceError.notFound("This place no longer exists") }
@@ -296,12 +307,12 @@ actor MockService: SporerService {
         return try await place(survivor)
     }
 
-    func mergePlace(_ other: Int, into id: Int, name: String??) async throws -> PlaceResponse {
+    func mergePlaces(_ others: [Int], into id: Int, name: String??) async throws -> PlaceResponse {
         defer { Self.didChange() }
         await pause(500)
-        let survivor = resolve(id), absorbed = resolve(other)
-        guard survivor != absorbed else { throw ServiceError.conflict("These are the same place.") }
-        mergedInto[absorbed] = survivor
+        let survivor = resolve(id), absorbed = Set(others.map(resolve))
+        guard !absorbed.contains(survivor) else { throw ServiceError.conflict("These are the same place.") }
+        for place in absorbed { mergedInto[place] = survivor }
         if case .some(let new) = name {
             let trimmed = new?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             ownNames[survivor] = trimmed.isEmpty ? nil : trimmed
@@ -776,6 +787,10 @@ nonisolated struct MockWorld: Sendable {
         }
         places["old-home"] = Place(id: 41, name: nil, address: "Thereses gate 12", city: "Oslo", country: "Norway", lat: 59.9275, lon: 10.7349, visits: 402)
         places["home-north"] = Place(id: 42, name: nil, address: "Olaf Ryes plass 6", city: "Oslo", country: "Norway", lat: 59.92301, lon: 10.75822, visits: 37)
+        // GPS drift: the café split into two more places a street apart, for merging on the map.
+        let cafe = places["cafe"]!
+        places["cafe-terrace"] = Place(id: 43, name: nil, address: "Grüners gate 2", city: "Oslo", country: "Norway", lat: cafe.lat + 0.00022, lon: cafe.lon + 0.00035, visits: 12)
+        places["cafe-corner"] = Place(id: 44, name: "Tim Wendelboe", address: "Grüners gate 1", city: "Oslo", country: "Norway", lat: cafe.lat - 0.00018, lon: cafe.lon - 0.0004, visits: 6)
 
         let oslo = places["home"]!
         func line(_ coords: [(Double, Double)]) -> [LonLat] { coords.map { LonLat(lon: $0.1, lat: $0.0) } }

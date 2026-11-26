@@ -91,6 +91,7 @@ For screenshots and checks, the app can open on a given screen:
 | `-push place:<id>\|trip:<id>\|day:<date>` | A screen pushed on the tab. |
 | `-detent peek\|medium\|large` | How high the iPhone's sheet stands. |
 | `-settings`, `-edit`, `-heat` | Open Settings, edit mode for the day, or the heat layer. |
+| `-placesMerge`, `-placesPick <id,id>` | On a pushed place: merge mode, with those places already picked. |
 
 ## The tests
 

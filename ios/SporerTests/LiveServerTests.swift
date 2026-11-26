@@ -40,6 +40,20 @@ struct LiveServerTests {
         #expect(after.visits == place.visits)
     }
 
+    @Test func mergeSeveralPlacesAtOnceAndSeparateThem() async throws {
+        let place = try await busiestPlace()
+        let others = Array(try await service.mergeCandidates(for: place.id, query: "").prefix(2))
+        #expect(others.count == 2)
+        let all = try await service.allPlaces()
+        #expect(all.contains { $0.id == place.id })
+        let merged = try await service.mergePlaces(others.map(\.id), into: place.id, name: .none)
+        #expect(Set(merged.merged.map(\.id)).isSuperset(of: others.map(\.id)))
+        let after = try await service.allPlaces()
+        #expect(!after.contains { place in others.contains { $0.id == place.id } }) // merged places are no dots of their own
+        for other in others { try await service.separatePlace(other.id, from: place.id) }
+        #expect(try await service.place(place.id).visits == place.visits)
+    }
+
     @Test func mergingAPlaceIntoItselfIsAConflict() async throws {
         let place = try await busiestPlace()
         await #expect(throws: ServiceError.self) { try await service.mergePlace(place.id, into: place.id, name: .none) }

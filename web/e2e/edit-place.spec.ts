@@ -87,8 +87,8 @@ function placeServer(mergedIn: number[] = []): {
     },
     "PUT places/2/name": rename,
     "POST places/2/merge": (request): Reply => {
-      const { place, name } = request.postDataJSON() as { place: number; name: string | null };
-      mergedIn = [...mergedIn, place];
+      const { places, name } = request.postDataJSON() as { places: number[]; name: string | null };
+      mergedIn = [...mergedIn, ...places];
       if (name !== null) cafeName = name;
       return { json: detail() };
     },
@@ -140,24 +140,26 @@ test("rename_a_place_then_merge_another_into_it_and_both_show_in_the_place_and_t
   await expect(staysAt(page, "Café")).toHaveCount(0);
   await expect(staysAt(page, "Office")).toHaveCount(1);
 
-  // Merge: search for the Office, pick it, and keep the name of this place.
+  // Merge: search for the Office in the list under merge mode (the map is the other way to pick it: places.spec.ts), pick it, and keep the name of this place.
   await staysAt(page, "Corner Café").click();
   await expect(page).toHaveURL(/\/place\/2$/);
   await sheetAtRest(page);
   await details(page).getByRole("button", { name: "Merge with…" }).click();
+  await expect(details(page).getByText("Tap the places on the map to merge into Corner Café, or pick them in the list.")).toBeFocused();
+  await openSheet(page); // merge mode brings a sheet down to half, for the map: up again, to read the list (the grip takes the focus)
   const search = details(page).getByRole("searchbox", { name: "Search places" });
-  await expect(search).toBeFocused();
-  await expect(details(page).getByRole("list", { name: "Places" }).getByRole("listitem")).toHaveText(
+  await expect(details(page).getByRole("list", { name: "Places", exact: true }).getByRole("listitem")).toHaveText(
     ["Bakery Storgata 20, Oslo 90 m 1 visit", "Office Karl Johans gate 1, Oslo 310 m 5 visits"], // the nearest first
     { useInnerText: true },
   );
   await search.fill("off");
-  await expect(details(page).getByRole("list", { name: "Places" }).getByRole("listitem")).toHaveText(["Office Karl Johans gate 1, Oslo 310 m 5 visits"], {
+  await expect(details(page).getByRole("list", { name: "Places", exact: true }).getByRole("listitem")).toHaveText(["Office Karl Johans gate 1, Oslo 310 m 5 visits"], {
     useInnerText: true,
   });
   await details(page).getByRole("button", { name: "Office, Karl Johans gate 1, Oslo, 310 m, 5 visits" }).click();
 
-  await expect(details(page).getByText("Merge Office into Corner Café?")).toBeVisible();
+  await expect(details(page).getByText("Merge 1 place into Corner Café?")).toBeVisible();
+  await expect(details(page).getByRole("list", { name: "Places to merge" }).getByRole("listitem")).toHaveText(["Office Remove"], { useInnerText: true });
   const keep = details(page).getByRole("group", { name: "Name to keep" });
   await expect(keep.getByRole("radio", { name: "Corner Café" })).toBeChecked();
   await details(page).getByRole("button", { name: "Merge", exact: true }).click();
@@ -170,7 +172,7 @@ test("rename_a_place_then_merge_another_into_it_and_both_show_in_the_place_and_t
     { useInnerText: true },
   );
   await expect(details(page).getByRole("heading", { level: 1, name: "Corner Café" })).toBeVisible();
-  expect(api.writes.at(-1)).toEqual({ method: "POST", path: "/api/places/2/merge", contentType: "application/json", body: { place: 3, name: "Corner Café" } });
+  expect(api.writes.at(-1)).toEqual({ method: "POST", path: "/api/places/2/merge", contentType: "application/json", body: { places: [3], name: "Corner Café" } });
 
   // The day: both of its stays are at the one place now.
   await back(page).click();
@@ -252,7 +254,7 @@ test("rename_that_fails_says_so_with_a_retry_that_sends_it_again", async ({ page
   expect(api.writes.map((write) => write.body)).toEqual([{ name: "Corner Café" }, { name: "Corner Café" }]);
 });
 
-test("merge_that_the_server_refuses_with_a_409_says_it_in_the_words_of_the_server_with_no_retry_and_goes_back_to_the_picker", async ({ page }) => {
+test("merge_that_the_server_refuses_with_a_409_says_it_in_the_words_of_the_server_with_no_retry_and_keeps_what_was_picked", async ({ page }) => {
   await fixToday(page);
   const server = placeServer();
   const SAME_PLACE = "The place is the one it is to be merged into, or is merged into it already.";
@@ -268,7 +270,9 @@ test("merge_that_the_server_refuses_with_a_409_says_it_in_the_words_of_the_serve
   await page.goto("/place/2");
   await openSheet(page);
   await details(page).getByRole("button", { name: "Merge with…" }).click();
+  await openSheet(page);
   await details(page).getByRole("button", { name: /^Office/ }).click();
+  await details(page).getByRole("button", { name: /^Bakery/ }).click();
 
   await details(page).getByRole("button", { name: "Merge", exact: true }).click();
 
@@ -276,46 +280,44 @@ test("merge_that_the_server_refuses_with_a_409_says_it_in_the_words_of_the_serve
   const alert = details(page).getByRole("alert");
   await expect(alert).toContainText("Could not merge");
   await expect(alert).toContainText(SAME_PLACE);
-  await expect(alert.getByRole("button", { name: "Retry" })).toHaveCount(0);
   await expect(details(page).getByRole("button", { name: "Retry" })).toHaveCount(0);
-  await expect(details(page).getByRole("button", { name: "Merge", exact: true })).toBeDisabled();
-  await expect(details(page).getByText("Merge Office into Café?")).toBeVisible();
+  await expect(details(page).getByText("Merge 2 places into Café?")).toBeVisible(); // what was picked stays
 
-  // Another place can be chosen, and what it is refused with is said in the server's words too.
+  // The owner takes off a place, and what that is refused with is said in the server's words too.
   message = TOO_DEEP;
-  await alert.getByRole("button", { name: "Choose another place" }).click();
-  await expect(details(page).getByRole("searchbox", { name: "Search places" })).toBeFocused();
-  await details(page).getByRole("button", { name: /^Bakery/ }).click();
+  await details(page).getByRole("button", { name: "Remove Office" }).click();
   await details(page).getByRole("button", { name: "Merge", exact: true }).click();
   await expect(alert).toContainText(`Could not merge: ${TOO_DEEP}`);
   await expect(alert).not.toContainText(SAME_PLACE);
-  expect(api.writes.map((write) => write.body)).toEqual([{ place: 3, name: "Café" }, { place: 6, name: "Café" }]);
 
   message = null; // a refusal with nothing to say
-  await alert.getByRole("button", { name: "Choose another place" }).click();
-  await details(page).getByRole("button", { name: /^Bakery/ }).click();
   await details(page).getByRole("button", { name: "Merge", exact: true }).click();
   await expect(alert).toContainText("Could not merge: The server refused it.");
+  expect(api.writes.map((write) => write.body)).toEqual([
+    { places: [3, 6], name: "Café" },
+    { places: [6], name: "Café" },
+    { places: [6], name: "Café" },
+  ]);
 
   // Cancel gives the buttons back, with the focus on the one that opened it.
   await details(page).getByRole("button", { name: "Cancel" }).click();
   await expect(details(page).getByRole("button", { name: "Merge with…" })).toBeFocused();
 });
 
-test("merge_confirm_takes_the_focus_so_that_escape_closes_it_and_the_focus_goes_back_to_the_button", async ({ page }) => {
+test("merge_mode_takes_the_focus_so_that_escape_ends_it_and_the_focus_goes_back_to_the_button", async ({ page }) => {
   await fixToday(page);
   const api = await mockApi(page, placeServer().overrides);
   await page.goto("/place/2");
   await openSheet(page);
   await details(page).getByRole("button", { name: "Merge with…" }).click();
-  await expect(details(page).getByRole("searchbox", { name: "Search places" })).toBeFocused();
+  await expect(details(page).getByText(/^Tap the places on the map/)).toBeFocused();
+  await openSheet(page); // after: the grip that raises the sheet again takes the focus
 
-  await details(page).getByRole("button", { name: /^Office/ }).click();
-
-  await expect(details(page).getByText("Merge Office into Café?")).toBeFocused();
+  await details(page).getByRole("button", { name: /^Office/ }).click(); // the row is a toggle, and keeps the focus
+  await expect(details(page).getByText("Merge 1 place into Café?")).toBeVisible();
   await page.keyboard.press("Escape"); // goes to what has the focus, as it does for the owner
 
-  await expect(details(page).getByText("Merge Office into Café?")).toHaveCount(0);
+  await expect(details(page).getByText("Merge 1 place into Café?")).toHaveCount(0);
   await expect(details(page).getByRole("button", { name: "Merge with…" })).toBeFocused();
   expect(api.writes).toEqual([]);
 });

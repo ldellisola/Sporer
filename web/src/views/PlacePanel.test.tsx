@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { PlaceCandidate, PlaceResponse } from "../api/types";
+import type { MapPlace, PlaceCandidate, PlaceResponse } from "../api/types";
 import { refusal, stubEdits, type Handler } from "../test/stubEdits";
 import cafe from "../../e2e/fixtures/place-cafe.json";
 import { navigate } from "../app/router";
+import { usePlaceMerge } from "../app/usePlaceMerge";
 import { PlacePanel } from "./PlacePanel";
 
 // The Café of the fixture: three visits, the first of which began at 23:30 on the 29th of September in Oslo, which is the 30th in Tokyo,
@@ -28,11 +29,17 @@ function stubApi(places: Record<number, PlaceResponse | Answer>): string[] {
   return paths;
 }
 
+/** The panel with the merge mode the shell gives it, for the place of the address (`id`); the map that picks places in it is the App's (App.test). */
+function WithMerge({ id }: { id: number }) {
+  const merge = usePlaceMerge({ view: "place", id });
+  return <PlacePanel id={id} merge={merge} />;
+}
+
 function mount(id = 2) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
-      <PlacePanel id={id} />
+      <WithMerge id={id} />
     </QueryClientProvider>,
   );
   return { client, ...view };
@@ -345,16 +352,28 @@ describe("PlacePanel rename", () => {
   });
 });
 
+/** The places of the map, with where they are: the Bistro 42 m from the Café (59.914, 10.764), the Bakery 1.2 km off, and one with no name. */
+const ALL_PLACES: MapPlace[] = [
+  { id: 2, name: "Café", lat: 59.914, lon: 10.764, seconds: 8640, visits: 3 },
+  { id: 7, name: "Bistro", lat: 59.914378, lon: 10.764, seconds: 4000, visits: 3 },
+  { id: 8, name: "Bakery", lat: 59.92478, lon: 10.764, seconds: 3000, visits: 2 },
+  { id: 9, name: null, lat: 59.9142, lon: 10.764, seconds: 1000, visits: 1 },
+];
+const BAKERY: PlaceCandidate = { id: 8, name: "Bakery", address: "Torggata 1, Oslo", distanceM: 1200, visits: 2 };
+const NAMELESS: PlaceCandidate = { id: 9, name: null, address: null, distanceM: 22, visits: 1 };
+
 describe("PlacePanel merge", () => {
-  /** A place that merges: the candidates, and what a merge of the place 7 into it does to it. */
+  /** A place that merges: the places of the map, the candidates, and what a merge of the places it is sent into it does to it. */
   function stubMerge(over: Record<string, Handler> = {}) {
     let current: PlaceResponse = CAFE;
     return stubEdits({
       "GET /api/places/2": () => Response.json(current),
-      "GET /api/places/2/candidates": () => Response.json([BISTRO]),
+      "GET /api/places": () => Response.json({ places: ALL_PLACES }),
+      "GET /api/places/2/candidates": () => Response.json([NAMELESS, BISTRO, BAKERY]),
       "POST /api/places/2/merge": (call) => {
-        const { name } = call.body as { name: string | null };
-        current = { ...CAFE, name: name ?? CAFE.name, visits: CAFE.visits + BISTRO.visits, totalSeconds: 9_000, merged: [{ id: BISTRO.id, name: BISTRO.name }] };
+        const { name, places } = call.body as { name: string | null; places: number[] };
+        const merged = ALL_PLACES.filter((place) => places.includes(place.id)).map(({ id, name }) => ({ id, name }));
+        current = { ...CAFE, name: name ?? CAFE.name, visits: CAFE.visits + 5, totalSeconds: 9_000, merged };
         return Response.json(current);
       },
       ...over,
@@ -363,15 +382,20 @@ describe("PlacePanel merge", () => {
 
   const openMerge = async () => fireEvent.click(await screen.findByRole("button", { name: "Merge with…" }));
   const pick = async (name: RegExp) => fireEvent.click(await screen.findByRole("button", { name }));
+  const toMerge = () => within(screen.getByRole("list", { name: "Places to merge" })).getAllByRole("listitem").map((row) => row.firstChild?.textContent);
+  const mergeButton = () => screen.getByRole("button", { name: "Merge" });
+  const names = () => screen.getAllByRole("radio").map((radio) => radio.closest("label")?.textContent);
 
-  test("PlacePanel_merge_with_opens_the_picker_over_the_candidates_of_the_place_and_cancel_closes_it", async () => {
+  test("PlacePanel_merge_with_turns_on_merge_mode_with_the_nearest_places_to_pick_and_cancel_turns_it_off", async () => {
     const api = stubMerge();
     mount();
 
     await openMerge();
 
-    expect(await screen.findByRole("button", { name: /^Bistro/ })).toBeInTheDocument();
-    expect(screen.getByRole("searchbox", { name: "Search places" })).toBeInTheDocument();
+    expect(screen.getByText("Tap the places on the map to merge into Café, or pick them in the list.")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /^Bistro/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("searchbox", { name: "Search places" })).not.toHaveFocus(); // the list does not take the focus: the map is where places are picked
+    expect(mergeButton()).toBeDisabled(); // nothing is picked yet
     expect(screen.queryByRole("button", { name: "Merge with…" })).not.toBeInTheDocument();
     expect(api.reads("/api/places/2/candidates")).toHaveLength(1);
 
@@ -385,6 +409,7 @@ describe("PlacePanel merge", () => {
   test("PlacePanel_merge_asks_the_candidates_of_the_place_that_is_shown_when_the_address_asked_for_one_that_was_merged", async () => {
     const api = stubEdits({
       "GET /api/places/5": () => Response.json(CAFE),
+      "GET /api/places": () => Response.json({ places: ALL_PLACES }),
       "GET /api/places/2/candidates": () => Response.json([BISTRO]),
     });
     mount(5);
@@ -395,41 +420,96 @@ describe("PlacePanel merge", () => {
     expect(api.reads("/api/places/2/candidates")).toHaveLength(1);
   });
 
-  test("PlacePanel_merge_asks_to_confirm_the_place_that_was_picked_into_this_one_and_a_cancel_closes_it_all", async () => {
-    const api = stubMerge();
+  test("PlacePanel_merge_lists_the_places_picked_in_the_list_with_how_far_they_are_and_remove_or_a_second_tap_takes_one_off", async () => {
+    stubMerge();
     mount();
     await openMerge();
 
     await pick(/^Bistro/);
+    await pick(/^Bakery/);
 
-    expect(screen.getByText("Merge Bistro into Café?")).toBeInTheDocument(); // B into A: the place that is open is the one that stays
-    expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+    expect(screen.getByText("Merge 2 places into Café?")).toBeInTheDocument();
+    await waitFor(() => expect(toMerge()).toEqual(["Bistro · 42 m", "Bakery · 1.2 km"])); // how far is known once the places of the map are there
+    expect(screen.getByRole("button", { name: /^Bistro/ })).toHaveAttribute("aria-pressed", "true");
+    expect(mergeButton()).toBeEnabled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Bistro" }));
+    expect(toMerge()).toEqual(["Bakery · 1.2 km"]);
+    expect(screen.getByText("Merge 1 place into Café?")).toBeInTheDocument();
 
-    expect(screen.queryByText("Merge Bistro into Café?")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Merge with…" })).toBeInTheDocument();
-    expect(api.writes()).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: /^Bakery/ })); // the row is a toggle
+    expect(screen.queryByRole("list", { name: "Places to merge" })).not.toBeInTheDocument();
+    expect(mergeButton()).toBeDisabled();
   });
 
-  test("PlacePanel_merge_closes_and_shows_the_survivor_with_what_was_merged_in_without_waiting_for_the_place_to_be_asked_for_again", async () => {
-    const api = stubEdits({
-      "GET /api/places/2": slowAfterTheFirst(CAFE),
-      "GET /api/places/2/candidates": () => Response.json([BISTRO]),
-      "POST /api/places/2/merge": () => Response.json({ ...CAFE, visits: 6, totalSeconds: 9_000, merged: [{ id: 7, name: "Bistro" }] }),
+  test("PlacePanel_merge_offers_each_name_once_with_this_places_chosen_and_none_for_a_place_that_has_none", async () => {
+    // Another Bistro, a little further: two places of one name are one name to keep.
+    stubMerge({
+      "GET /api/places": () => Response.json({ places: [...ALL_PLACES, { ...ALL_PLACES[1]!, id: 10 }] }),
+      "GET /api/places/2/candidates": () => Response.json([NAMELESS, BISTRO, { ...BISTRO, id: 10, distanceM: 60 }]),
     });
     mount();
     await openMerge();
+    for (const bistro of await screen.findAllByRole("button", { name: /^Bistro/ })) fireEvent.click(bistro);
+
+    expect(names()).toEqual(["Café", "Bistro"]);
+    expect(screen.getByRole("radio", { name: "Café" })).toBeChecked();
+
+    await pick(/^Unnamed place/); // a place with no name has none to keep
+    expect(toMerge()).toHaveLength(3);
+    expect(names()).toEqual(["Café", "Bistro"]);
+  });
+
+  test("PlacePanel_merge_posts_all_the_places_picked_at_once_with_the_name_chosen_and_shows_the_survivor_without_waiting_for_it_to_be_asked_for_again", async () => {
+    const api = stubMerge({ "GET /api/places/2": slowAfterTheFirst(CAFE) });
+    mount();
+    await openMerge();
     await pick(/^Bistro/);
+    await pick(/^Bakery/);
+    fireEvent.click(await screen.findByRole("radio", { name: "Bakery" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+    fireEvent.click(mergeButton());
 
-    await waitFor(() => expect(screen.queryByText("Merge Bistro into Café?")).not.toBeInTheDocument());
-    expect(heading()).toHaveTextContent("Café");
-    expect(stats()[1]).toEqual(["Visits", "6"]); // the sum of both
-    expect(within(screen.getByRole("region", { name: "Merged places" })).getByText("Bistro")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Merge 2 places into Café?")).not.toBeInTheDocument());
+    expect(api.writes().map((call) => call.body)).toEqual([{ places: [7, 8], name: "Bakery" }]);
+    expect(heading()).toHaveTextContent("Bakery");
+    expect(stats()[1]).toEqual(["Visits", "8"]);
+    const merged = within(screen.getByRole("region", { name: "Merged places" }));
+    expect(merged.getByText("Bistro")).toBeInTheDocument();
+    expect(merged.getByText("Bakery")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Merge with…" })).toBeInTheDocument();
-    expect(api.writes().map((call) => call.body)).toEqual([{ place: 7, name: "Café" }]);
+  });
+
+  test("PlacePanel_merge_sends_null_for_the_name_when_the_place_has_none_and_it_is_kept", async () => {
+    const api = stubMerge({ "GET /api/places/2": () => Response.json({ ...CAFE, name: null }) });
+    mount();
+    await openMerge();
+    await pick(/^Bistro/);
+    await waitFor(() => expect(names()).toEqual(["Unnamed place", "Bistro"]));
+
+    fireEvent.click(mergeButton());
+
+    await waitFor(() => expect(api.writes()).toHaveLength(1));
+    expect(api.writes()[0]!.body).toEqual({ places: [7], name: null });
+  });
+
+  test("PlacePanel_merge_that_the_server_refuses_says_it_in_its_words_with_no_retry_and_keeps_what_was_picked", async () => {
+    const api = stubMerge({ "POST /api/places/2/merge": () => refusal(409, "No.") });
+    mount();
+    await openMerge();
+    await pick(/^Bistro/);
+    await pick(/^Bakery/);
+
+    fireEvent.click(mergeButton());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not merge: No.");
+    expect(within(screen.getByRole("alert")).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(toMerge()).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove Bistro" })); // the owner takes off the place that is in the way, and tries again
+    fireEvent.click(mergeButton());
+    await waitFor(() => expect(api.writes()).toHaveLength(2));
+    expect(api.writes()[1]!.body).toEqual({ places: [8], name: "Café" });
   });
 });
 
@@ -497,10 +577,11 @@ describe("PlacePanel focus", () => {
     expect(rename()).toHaveFocus();
   });
 
-  test("PlacePanel_puts_the_focus_back_on_merge_with_when_the_picker_or_the_confirm_is_closed_or_the_merge_is_made", async () => {
+  test("PlacePanel_puts_the_focus_on_what_merge_mode_says_and_back_on_merge_with_when_it_is_cancelled_escaped_or_made", async () => {
     let merged = false;
     stubEdits({
       "GET /api/places/2": () => Response.json(merged ? { ...CAFE, merged: [{ id: 7, name: "Bistro" }] } : CAFE),
+      "GET /api/places": () => Response.json({ places: [] }),
       "GET /api/places/2/candidates": () => Response.json([BISTRO]),
       "POST /api/places/2/merge": () => {
         merged = true;
@@ -510,59 +591,21 @@ describe("PlacePanel focus", () => {
     mount();
 
     fireEvent.click(await screen.findByRole("button", { name: "Merge with…" }));
-    expect(screen.getByRole("searchbox", { name: "Search places" })).toHaveFocus();
-    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
-    expect(mergeButton()).toHaveFocus();
-
-    fireEvent.click(mergeButton());
-    fireEvent.click(await screen.findByRole("button", { name: /^Bistro/ }));
+    expect(screen.getByText(/^Tap the places on the map/)).toHaveFocus(); // what it says, which a screen reader reads: not a button that Enter would press
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(mergeButton()).toHaveFocus();
 
     fireEvent.click(mergeButton());
-    fireEvent.click(await screen.findByRole("button", { name: /^Bistro/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
-    await waitFor(() => expect(screen.queryByText("Merge Bistro into Café?")).not.toBeInTheDocument());
-    expect(mergeButton()).toHaveFocus();
-  });
-
-  test("PlacePanel_takes_the_focus_to_the_confirm_when_a_row_is_picked_so_that_escape_closes_it_in_a_browser", async () => {
-    const api = stubEdits({
-      "GET /api/places/2": () => Response.json(CAFE),
-      "GET /api/places/2/candidates": () => Response.json([BISTRO]),
-    });
-    mount();
-    fireEvent.click(await screen.findByRole("button", { name: "Merge with…" }));
-
-    fireEvent.click(await screen.findByRole("button", { name: /^Bistro/ })); // the row that was pressed is gone, and with it the focus
-
-    const confirm = screen.getByRole("button", { name: "Merge" }).closest("form")!;
-    expect(confirm).toContainElement(document.activeElement as HTMLElement);
+    fireEvent.click(await screen.findByRole("button", { name: /^Bistro/ })); // the focus is on the row of the list, which stays
     fireEvent.keyDown(document.activeElement!, { key: "Escape" }); // the key goes to what has the focus, as the browser sends it
-
-    expect(screen.queryByText("Merge Bistro into Café?")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Places to merge" })).not.toBeInTheDocument();
     expect(mergeButton()).toHaveFocus();
-    expect(api.writes()).toEqual([]);
-  });
 
-  test("PlacePanel_goes_back_to_the_picker_from_a_merge_that_the_server_refused", async () => {
-    const api = stubEdits({
-      "GET /api/places/2": () => Response.json(CAFE),
-      "GET /api/places/2/candidates": () => Response.json([BISTRO]),
-      "POST /api/places/2/merge": () => refusal(409, "No."),
-    });
-    mount();
-    fireEvent.click(await screen.findByRole("button", { name: "Merge with…" }));
+    fireEvent.click(mergeButton());
     fireEvent.click(await screen.findByRole("button", { name: /^Bistro/ }));
     fireEvent.click(screen.getByRole("button", { name: "Merge" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not merge: No.");
-
-    fireEvent.click(screen.getByRole("button", { name: "Choose another place" }));
-
-    expect(screen.getByRole("searchbox", { name: "Search places" })).toHaveFocus();
-    expect(await screen.findByRole("button", { name: /^Bistro/ })).toBeInTheDocument();
-    expect(screen.queryByText("Merge Bistro into Café?")).not.toBeInTheDocument();
-    expect(api.writes()).toHaveLength(1);
+    await waitFor(() => expect(screen.queryByText("Merge 1 place into Café?")).not.toBeInTheDocument());
+    expect(mergeButton()).toHaveFocus();
   });
 
   test("PlacePanel_has_the_place_asked_for_again_when_a_write_to_it_is_answered_with_a_404_and_says_it_is_gone", async () => {

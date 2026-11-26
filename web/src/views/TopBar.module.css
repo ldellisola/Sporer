@@ -56,8 +56,8 @@
 }
 
 /*
- * The ways into the trips and the settings, which are not views of time: a button of its own each, as tall as the segmented control, filled
- * when it is the one in use.
+ * The ways into the places, the trips and the settings, which are not views of time: a button of its own each, as tall as the segmented control,
+ * filled when it is the one in use.
  */
 .iconButton {
   display: grid;
@@ -79,6 +79,17 @@
 .iconButton[aria-pressed="true"] {
   background: var(--accent);
   color: #ffffff;
+}
+
+/* On a narrow phone the three buttons give the views some of their room, so that "Month" never touches "Week". Still a 32 px target. */
+@media (max-width: 400px) {
+  .head {
+    gap: 6px;
+  }
+
+  .iconButton {
+    width: 34px;
+  }
 }
 
 .fields {

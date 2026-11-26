@@ -63,6 +63,24 @@ public sealed record PlaceSearchDto(
     int Visits);
 
 /// <summary>
+/// Every place in use, as served by <c>GET /api/places</c>, the most time first: what the map of all of them draws.
+/// </summary>
+public sealed record PlacesResponse(IReadOnlyList<MapPlaceDto> Places);
+
+/// <summary>
+/// A place of <c>GET /api/places</c>: <paramref name="Name"/> is the owner's, else OpenStreetMap's, else null, <paramref name="Lat"/> and
+/// <paramref name="Lon"/> its centre, <paramref name="Seconds"/> the time spent at it and <paramref name="Visits"/> its stays, both over the places
+/// merged into it as well.
+/// </summary>
+public sealed record MapPlaceDto(
+    long Id,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? Name,
+    double Lat,
+    double Lon,
+    double Seconds,
+    int Visits);
+
+/// <summary>
 /// A stay at a place. <paramref name="Date"/> is the local date it started on (<c>yyyy-MM-dd</c>), in <paramref name="TimeZone"/>,
 /// the IANA zone it started in, so that a client shows the times of the visit on the clock of the place it was at.
 /// </summary>

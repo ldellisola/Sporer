@@ -17,12 +17,14 @@ import type {
   TripsResponse,
 } from "../api/types";
 import {
+  allPlacesGeoJson,
   dayGeoJson,
   editPointsGeoJson,
   EDIT_SELECTED_COLOR,
   heatGeoJson,
   layerSpecs,
   LAYER_IDS,
+  MERGE_SELECTED_COLOR,
   MODE_COLORS,
   MODE_WORDS,
   MODES,
@@ -319,6 +321,38 @@ describe("stopOrders", () => {
 
   test("stopOrders_of_an_empty_day_are_none", () => {
     expect(stopOrders(day()).size).toBe(0);
+  });
+});
+
+describe("allPlacesGeoJson", () => {
+  const places = [
+    { id: 1, name: "Home", lat: 59.9, lon: 10.7, seconds: 1_000_000, visits: 300 },
+    { id: 2, name: "Café", lat: 59.91, lon: 10.76, seconds: 250_000, visits: 30 },
+    { id: 3, name: null, lat: 59.92, lon: 10.77, seconds: 10, visits: 1 },
+  ];
+
+  test("allPlacesGeoJson_has_a_dot_for_each_place_in_the_order_of_the_API_sized_by_time_but_never_under_6_px_and_named_by_its_own_name", () => {
+    const dots = allPlacesGeoJson(places);
+
+    expect(dots.type).toBe("FeatureCollection");
+    expect(dots.features.map((dot) => dot.geometry.coordinates)).toEqual([[10.7, 59.9], [10.76, 59.91], [10.77, 59.92]]);
+    expect(dots.features.map((dot) => dot.properties)).toEqual([
+      { id: 1, radius: 16, label: "Home" }, // the most time: the largest dot
+      { id: 2, radius: 10, label: "Café" }, // 4 + 12 * sqrt(1/4)
+      { id: 3, radius: 6 }, // 4 and a bit, made 6 to be tapped; no name, so no label (and no side: every label is at the right)
+    ]);
+  });
+
+  test("allPlacesGeoJson_leaves_out_the_place_on_show_and_marks_the_places_picked", () => {
+    const dots = allPlacesGeoJson(places, 1, new Set([3]));
+
+    expect(dots.features.map((dot) => dot.properties.id)).toEqual([2, 3]);
+    expect(dots.features.map((dot) => dot.properties.selected)).toEqual([undefined, true]);
+    expect(dots.features[0]!.properties).not.toHaveProperty("selected"); // not even as false: the layer asks whether it is there
+  });
+
+  test("allPlacesGeoJson_of_no_places_is_an_empty_collection", () => {
+    expect(allPlacesGeoJson([])).toEqual({ type: "FeatureCollection", features: [] });
   });
 });
 
@@ -798,8 +832,15 @@ function evaluate(expression: unknown, properties: Record<string, unknown>): unk
       return numbers.reduce((product, n) => product * n);
     case "/":
       return numbers[0]! / numbers[1]!;
+    case "-":
+      return numbers.length === 1 ? -numbers[0]! : numbers[0]! - numbers[1]!;
     case "max":
       return Math.max(...numbers);
+    case "case": {
+      // ["case", condition, value, condition, value, ..., fallback]: the value of the first condition that holds
+      for (let i = 0; i + 1 < values.length; i += 2) if (values[i] === true) return values[i + 1];
+      return values[values.length - 1];
+    }
     case "has":
       return Object.hasOwn(properties, values[0] as string);
     case "==":
@@ -978,6 +1019,27 @@ describe("layerSpecs", () => {
     }
   });
 
+  test("layerSpecs_draw_a_place_picked_to_be_merged_larger_in_blue_with_a_wider_ring_and_over_the_others", () => {
+    const dots = find("places", LAYER_IDS.places);
+    const picked = { radius: 6, selected: true };
+
+    expect(evaluate(paint(dots)["circle-color"], picked)).toBe(MERGE_SELECTED_COLOR);
+    expect(evaluate(paint(dots)["circle-radius"], picked)).toBe(10); // at least 10, whatever its time
+    expect(evaluate(paint(dots)["circle-radius"], { radius: 14, selected: true })).toBe(14);
+    expect(evaluate(paint(dots)["circle-stroke-width"], picked)).toBe(3);
+    const key = (properties: Record<string, unknown>) => evaluate(layout(dots)["circle-sort-key"], properties) as number;
+    expect(key(picked)).toBeGreaterThan(key({ radius: 4 })); // the smallest dot that is not picked
+    expect(key({ radius: 4 })).toBeGreaterThan(key({ radius: 16 })); // and the small ones over the big ones, as before
+  });
+
+  test("layerSpecs_places_shows_the_dots_and_their_labels_and_no_route_layers", () => {
+    const specs = layerSpecs("places", false);
+    const visibility = (id: string) => layout(specs.find((spec) => spec.id === id) ?? {})["visibility"] ?? "visible";
+
+    for (const id of ROUTE_LAYERS) expect(visibility(id), id).toBe("none");
+    for (const id of [LAYER_IDS.places, LAYER_IDS.placeLabelsWest, LAYER_IDS.placeLabelsEast, LAYER_IDS.stops]) expect(visibility(id), id).toBe("visible");
+  });
+
   test("layerSpecs_trips_shows_the_dots_and_their_labels_and_no_route_layers", () => {
     const specs = layerSpecs("trips", false);
     const visibility = (id: string) => layout(specs.find((spec) => spec.id === id) ?? {})["visibility"] ?? "visible"; // a layer that says none is shown
@@ -1103,8 +1165,9 @@ describe("layerSpecs", () => {
     const dots = find("range", LAYER_IDS.places);
 
     expect(dots.type).toBe("circle");
-    expect(paint(dots)["circle-radius"]).toEqual(["get", "radius"]);
-    expect(paint(dots)["circle-color"]).toBe(PIN_COLOR);
+    expect(evaluate(paint(dots)["circle-radius"], { radius: 7 })).toBe(7);
+    expect(evaluate(paint(dots)["circle-color"], { radius: 7 })).toBe(PIN_COLOR);
+    expect(evaluate(paint(dots)["circle-stroke-width"], { radius: 7 })).toBe(2);
     for (const id of [LAYER_IDS.placeLabelsWest, LAYER_IDS.placeLabelsEast]) {
       const labels = find("range", id);
       expect(labels.type, id).toBe("symbol");

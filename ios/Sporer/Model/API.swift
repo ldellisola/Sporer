@@ -417,6 +417,22 @@ nonisolated struct PlaceSearchResult: Codable, Hashable, Sendable, Identifiable 
     var visits: Int
 }
 
+/// `GET /api/places`: every place in use, the most time first, for the map that shows all of them.
+nonisolated struct PlacesResponse: Codable, Hashable, Sendable {
+    var places: [MapPlace]
+}
+
+/// A place of `GET /api/places`: where it is, and the time and the stays there, the places merged into it counted in.
+nonisolated struct MapPlace: Codable, Hashable, Sendable, Identifiable {
+    var id: Int
+    var name: String?
+    var lat: Double
+    var lon: Double
+    var seconds: Double
+    var visits: Int
+    var coordinate: CLLocationCoordinate2D { .init(latitude: lat, longitude: lon) }
+}
+
 // MARK: - Trips
 
 nonisolated struct TripCity: Codable, Hashable, Sendable {

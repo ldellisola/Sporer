@@ -18,6 +18,7 @@ struct SporerMapView: UIViewRepresentable {
         map.showsUserLocation = false
         map.register(StopAnnotationView.self, forAnnotationViewWithReuseIdentifier: StopAnnotationView.reuseID)
         map.register(DotLabelAnnotationView.self, forAnnotationViewWithReuseIdentifier: DotLabelAnnotationView.reuseID)
+        map.register(PickedPlaceAnnotationView.self, forAnnotationViewWithReuseIdentifier: PickedPlaceAnnotationView.reuseID)
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tapped(_:)))
         tap.delegate = context.coordinator
         map.addGestureRecognizer(tap)
@@ -42,6 +43,8 @@ struct SporerMapView: UIViewRepresentable {
         weak var map: MKMapView?
 
         private var drawnKey = ""
+        /// The places picked in merge mode that are marked on the map (`markPicked`), which a drawing of its own does not redo.
+        private var pickedKey = ""
         private var fittedKey = ""
         private var fitRequest = 0
         private var focus: MapFocus?
@@ -85,26 +88,38 @@ struct SporerMapView: UIViewRepresentable {
             if key != drawnKey {
                 drawnKey = key
                 draw(model, on: map)
+                pickedKey = ""
+            }
+            let picked = pickedPlaces(model)
+            let pickedNow = picked.map(\.placeID).description
+            if pickedNow != pickedKey {
+                pickedKey = pickedNow
+                map.removeAnnotations(map.annotations.filter { $0 is PickedPlaceAnnotation })
+                map.addAnnotations(picked)
             }
 
             let sceneKey = model.scene.key + (model.editing.map { $0.points.isEmpty ? "|edit-empty" : "|edit" } ?? "")
-            if sceneKey != fittedKey || model.fitRequest != fitRequest {
+            let refitted = sceneKey != fittedKey || model.fitRequest != fitRequest
+            if refitted {
                 fittedKey = sceneKey
                 fitRequest = model.fitRequest
                 focus = nil
                 fit(wholeRect, on: map, animated: true)
-            } else if model.focus != focus {
+            }
+            // A focus asked for in the same update as a new drawing (merge mode begun as the place opens) is brought into view after it.
+            if model.focus != focus {
                 focus = model.focus
                 switch model.focus {
                 case .segment(let id): fit(segmentRects[id], on: map, animated: true, minimumSpan: 600)
                 case .coordinate(let lat, let lon): fit(Geo.rect([CLLocationCoordinate2D(latitude: lat, longitude: lon)]), on: map, animated: true, minimumSpan: 800)
+                case .area(let points): fit(Geo.rect(points.map(\.coordinate)), on: map, animated: true, minimumSpan: 300)
                 case nil: break
                 }
                 for annotation in map.annotations {
                     guard let stop = annotation as? StopAnnotation, let view = map.view(for: stop) as? StopAnnotationView else { continue }
                     if case .segment(let id) = model.focus { view.isStopFocused = stop.segmentIDs.contains(id) } else { view.isStopFocused = false }
                 }
-            } else if insetsChanged, focus == nil {
+            } else if !refitted, insetsChanged, focus == nil {
                 fit(wholeRect, on: map, animated: true)
             }
         }
@@ -209,10 +224,15 @@ struct SporerMapView: UIViewRepresentable {
                 let there = cities + ground.filter { point in cities.contains { Geo.distance($0, point) < 300_000 } }
                 if !there.isEmpty { framed = there }
 
-            case .place(let place):
+            case .place(let place, let around):
+                addAllPlaces(around, except: place.id, on: map)
                 map.addAnnotation(StopAnnotation(coordinate: place.coordinate, placeID: nil, label: "", isHome: false,
                                                  name: Format.placeName(place.name), segmentIDs: []))
-                coords.append(place.coordinate)
+                coords.append(place.coordinate) // the place, not the places round it, is what the map is brought to
+
+            case .places(let all):
+                addAllPlaces(all, except: nil, on: map)
+                coords += all.map(\.coordinate)
             }
 
             if let editing = model.editing {
@@ -255,6 +275,35 @@ struct SporerMapView: UIViewRepresentable {
                 let radius = 4 + 12 * sqrt(item.1 / max(top, 1))
                 map.addAnnotation(DotLabelAnnotation(coordinate: item.0, text: item.2, radius: radius, side: item.0.longitude <= middle ? .right : .left))
             }
+        }
+
+        /// Every place as a dot, sized by its time as a period's are but never under 6 points (each is to be tapped), and named where the name fits:
+        /// the places with more time win where names collide. The places picked in merge mode are marked over their dots (`pickedPlaces`).
+        private func addAllPlaces(_ all: [MapPlace], except: Int?, on map: MKMapView) {
+            let shown = all.filter { $0.id != except }
+            guard !shown.isEmpty else { return }
+            let top = shown.map(\.seconds).max() ?? 1
+            let radius = { (place: MapPlace) -> CGFloat in max(6, 4 + 12 * sqrt(place.seconds / max(top, 1))) }
+            let dots = shown.map { place in
+                MapDot(point: MKMapPoint(place.coordinate), radius: radius(place), fill: UIColor.pin.withAlphaComponent(0.92), stroke: .white, strokeWidth: 2, tag: Int64(place.id))
+            }
+            let overlay = DotsOverlay(dots, tappable: true)
+            tappableDots = overlay
+            map.addOverlay(overlay, level: .aboveLabels)
+            // The most time first (as the server sends them): a name that collides with another gives way to the place with more time. A picked
+            // place's name clears its mark.
+            for (rank, place) in shown.prefix(1_000).enumerated() {
+                guard let name = place.name else { continue }
+                map.addAnnotation(DotLabelAnnotation(coordinate: place.coordinate, text: name, radius: max(12, radius(place)), side: .right,
+                                                     priority: MKFeatureDisplayPriority(rawValue: 740 - 480 * Float(rank) / 1_000)))
+            }
+        }
+
+        /// The places picked in merge mode of the place on show, where they are.
+        private func pickedPlaces(_ model: MapModel) -> [PickedPlaceAnnotation] {
+            guard let merging = model.merging, case .place(let place, let around) = model.scene, merging.into == place.id else { return [] }
+            let byID = Dictionary(around.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return merging.picked.compactMap { id in byID[id].map { PickedPlaceAnnotation(coordinate: $0.coordinate, placeID: id) } }
         }
 
         private func addEditPoints(_ editing: EditPointsModel, on map: MKMapView) {
@@ -351,6 +400,8 @@ struct SporerMapView: UIViewRepresentable {
                 mapView.dequeueReusableAnnotationView(withIdentifier: StopAnnotationView.reuseID, for: annotation)
             case is DotLabelAnnotation:
                 mapView.dequeueReusableAnnotationView(withIdentifier: DotLabelAnnotationView.reuseID, for: annotation)
+            case is PickedPlaceAnnotation:
+                mapView.dequeueReusableAnnotationView(withIdentifier: PickedPlaceAnnotationView.reuseID, for: annotation)
             default:
                 nil
             }

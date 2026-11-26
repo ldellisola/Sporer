@@ -28,10 +28,13 @@ protocol SporerService: Sendable {
     // Places
     func place(_ id: Int) async throws -> PlaceResponse
     func searchPlaces(_ query: String) async throws -> [PlaceSearchResult]
+    /// Every place in use, with where it is: the dots of the Places map.
+    func allPlaces() async throws -> [MapPlace]
     func mergeCandidates(for id: Int, query: String) async throws -> [PlaceCandidate]
     func renamePlace(_ id: Int, name: String?) async throws -> PlaceResponse
-    /// `name`: `.none` leaves the survivor's name as it is, `.some(nil)` or an empty string clears it.
-    func mergePlace(_ other: Int, into id: Int, name: String??) async throws -> PlaceResponse
+    /// Merges all of `others` into `id`, or none of them. `name`: `.none` leaves the survivor's name as it is, `.some(nil)` or an empty
+    /// string clears it.
+    func mergePlaces(_ others: [Int], into id: Int, name: String??) async throws -> PlaceResponse
     func separatePlace(_ other: Int, from id: Int) async throws
 
     // Trips
@@ -54,6 +57,11 @@ protocol SporerService: Sendable {
 
 extension SporerService {
     nonisolated var keepsResponses: Bool { false }
+
+    /// Merges one place into `id`.
+    func mergePlace(_ other: Int, into id: Int, name: String??) async throws -> PlaceResponse {
+        try await mergePlaces([other], into: id, name: name)
+    }
 }
 
 /// What a request can end in, worded for the views.

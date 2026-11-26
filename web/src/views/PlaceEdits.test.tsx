@@ -4,9 +4,9 @@ import type { ReactElement } from "react";
 import { describe, expect, test, vi } from "vitest";
 import cafe from "../../e2e/fixtures/place-cafe.json";
 import { usePlace } from "../api/queries";
-import type { PlaceCandidate, PlaceResponse } from "../api/types";
+import type { MapPlace, PlaceCandidate, PlaceResponse } from "../api/types";
 import { refusal, stubEdits, type Handler } from "../test/stubEdits";
-import { MergeConfirm, MergedPlaces, RenameForm } from "./PlaceEdits";
+import { MergedPlaces, MergeForm, RenameForm } from "./PlaceEdits";
 
 // The forms of the edits, each on its own: the panel that composes them has its own tests (PlacePanel.test.tsx).
 
@@ -197,220 +197,196 @@ describe("RenameForm", () => {
   });
 });
 
-describe("MergeConfirm", () => {
+describe("MergeForm", () => {
   const keepNames = () => screen.getByRole("group", { name: "Name to keep" });
+  const mergeButton = () => screen.getByRole("button", { name: "Merge" });
+  /** The places of the map: the Bistro 42 m from the Café, and a place with no name 1.2 km off. */
+  const ALL: MapPlace[] = [
+    { id: 7, name: "Bistro", lat: 59.914378, lon: 10.764, seconds: 4000, visits: 3 },
+    { id: 8, name: null, lat: 59.925241, lon: 10.764, seconds: 1000, visits: 1 },
+  ];
 
-  function mountConfirm(other: PlaceCandidate = BISTRO, place: PlaceResponse = CAFE) {
+  /** What the form reads beside the write: the places of the map and the nearest places. */
+  const READS: Record<string, Handler> = {
+    "GET /api/places": () => Response.json({ places: ALL }),
+    "GET /api/places/2/candidates": () => Response.json([BISTRO, NAMELESS]),
+  };
+
+  function mountForm(picked: number[] = [7], place: PlaceResponse = CAFE) {
     const onClose = vi.fn();
-    const onChooseAnother = vi.fn();
-    return { onClose, onChooseAnother, ...mount(<MergeConfirm place={place} placeKey={KEY} other={other} onClose={onClose} onChooseAnother={onChooseAnother} />, place) };
+    const onToggle = vi.fn();
+    return { onClose, onToggle, ...mount(<MergeForm place={place} placeKey={KEY} picked={picked} onToggle={onToggle} onClose={onClose} />, place) };
   }
 
   const SURVIVOR = { ...CAFE, visits: 6, totalSeconds: 9_000, merged: [{ id: 7, name: "Bistro" }] };
 
-  test("MergeConfirm_asks_to_merge_the_other_place_into_this_one_with_this_ones_name_chosen_to_keep", () => {
-    stubEdits({});
+  test("MergeForm_says_what_to_do_while_nothing_is_picked_and_has_merge_off", async () => {
+    stubEdits(READS);
+    mountForm([]);
 
-    mountConfirm();
-
-    expect(screen.getByText("Merge Bistro into Café?")).toBeInTheDocument(); // B into A: the place that is open is the one that stays
-    expect(within(keepNames()).getByRole("radio", { name: "Café" })).toBeChecked();
-    expect(within(keepNames()).getByRole("radio", { name: "Bistro" })).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Merge" })).toBeEnabled();
+    expect(screen.getByText("Tap the places on the map to merge into Café, or pick them in the list.")).toBeInTheDocument();
+    expect(mergeButton()).toBeDisabled();
+    expect(screen.queryByRole("list", { name: "Places to merge" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /^Bistro/ })).toHaveAttribute("aria-pressed", "false"); // the nearest places, to pick from
   });
 
-  test("MergeConfirm_cancel_and_escape_close_it_and_write_nothing", () => {
-    const api = stubEdits({});
-    const { onClose } = mountConfirm();
+  test("MergeForm_asks_to_merge_the_places_picked_into_this_one_with_how_far_they_are_and_this_ones_name_chosen_to_keep", async () => {
+    stubEdits(READS);
+    mountForm([7, 8]);
+
+    expect(screen.getByText("Merge 2 places into Café?")).toBeInTheDocument(); // the place that is open is the one that stays
+    const listed = within(screen.getByRole("list", { name: "Places to merge" }));
+    await waitFor(() => expect(listed.getByText("Bistro")).toHaveTextContent("Bistro · 42 m"));
+    expect(listed.getByText("Unnamed place")).toHaveTextContent("Unnamed place · 1.2 km");
+    expect(within(keepNames()).getAllByRole("radio").map((radio) => radio.closest("label")?.textContent)).toEqual(["Café", "Bistro"]);
+    expect(within(keepNames()).getByRole("radio", { name: "Café" })).toBeChecked();
+    expect(await screen.findByRole("button", { name: /^Bistro/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("MergeForm_remove_and_a_row_of_the_list_hand_the_place_to_toggle", async () => {
+    stubEdits(READS);
+    const { onToggle } = mountForm([7]);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Bistro" })); // named once the places of the map are there
+    fireEvent.click(await screen.findByRole("button", { name: /^Unnamed place/ }));
+
+    expect(onToggle.mock.calls).toEqual([[7], [8]]);
+  });
+
+  test("MergeForm_cancel_and_escape_close_it_and_write_nothing", async () => {
+    const api = stubEdits(READS);
+    const { onClose } = mountForm();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    fireEvent.keyDown(keepNames(), { key: "Escape" });
+    fireEvent.keyDown(await screen.findByRole("radio", { name: "Café" }), { key: "Escape" });
+    fireEvent.keyDown(await screen.findByRole("searchbox", { name: "Search places" }), { key: "Escape" }); // the list is part of it
 
-    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(onClose).toHaveBeenCalledTimes(3);
     expect(api.writes()).toEqual([]);
   });
 
-  test("MergeConfirm_keeps_the_name_of_this_place_by_default_and_posts_the_other_place_and_that_name_as_json", async () => {
-    let release: (response: Response) => void = () => undefined;
-    const api = stubEdits({ "POST /api/places/2/merge": () => new Promise<Response>((resolve) => (release = resolve)) });
-    const { client, onClose } = mountConfirm();
+  test("MergeForm_posts_the_places_picked_and_the_name_kept_as_json_shows_it_pending_and_puts_the_answer_in_the_query_of_the_place", async () => {
+    let answer: (value: Response) => void = () => undefined;
+    const api = stubEdits({ ...READS, "POST /api/places/2/merge": () => new Promise<Response>((resolve) => (answer = resolve)) });
+    const { client, onClose } = mountForm([7, 8]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+    fireEvent.click(mergeButton());
 
     expect(await screen.findByRole("button", { name: "Merging…" })).toBeDisabled();
-    expect(api.writes()).toEqual([
-      { method: "POST", path: "/api/places/2/merge", search: "", contentType: "application/json", body: { place: 7, name: "Café" } },
-    ]);
-    expect(onClose).not.toHaveBeenCalled();
+    expect(api.writes()).toEqual([expect.objectContaining({ method: "POST", path: "/api/places/2/merge", contentType: "application/json", body: { places: [7, 8], name: "Café" } })]);
+    answer(Response.json(SURVIVOR));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(client.getQueryData(KEY)).toEqual(SURVIVOR);
+  });
 
-    release(Response.json(SURVIVOR));
+  test("MergeForm_keeps_the_name_of_a_place_picked_when_the_owner_chooses_it", async () => {
+    const api = stubEdits({ ...READS, "POST /api/places/2/merge": () => Response.json(SURVIVOR) });
+    const { onClose } = mountForm([7]);
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Bistro" }));
+    fireEvent.click(mergeButton());
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(client.getQueryData(KEY)).toEqual(SURVIVOR); // the survivor, as the answer has it, is what the place query holds
+    expect(api.writes()[0]?.body).toEqual({ places: [7], name: "Bistro" });
   });
 
-  test("MergeConfirm_keeps_the_name_of_the_other_place_when_the_owner_chooses_it", async () => {
-    const api = stubEdits({ "POST /api/places/2/merge": () => Response.json({ ...SURVIVOR, name: "Bistro" }) });
-    const { onClose } = mountConfirm();
+  test("MergeForm_offers_no_choice_of_name_for_places_of_the_same_name_and_none_for_places_that_have_none_and_sends_null", async () => {
+    stubEdits({ ...READS, "GET /api/places": () => Response.json({ places: [{ ...ALL[0]!, name: "Café" }, ALL[1]] }) });
+    const { unmount } = mountForm([7, 8]);
+    await waitFor(() => expect(screen.getByRole("list", { name: "Places to merge" })).toHaveTextContent("Café"));
+    expect(screen.queryByRole("group", { name: "Name to keep" })).not.toBeInTheDocument(); // nothing to choose between
+    unmount();
 
-    fireEvent.click(within(keepNames()).getByRole("radio", { name: "Bistro" }));
-    expect(within(keepNames()).getByRole("radio", { name: "Café" })).not.toBeChecked();
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
-
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(api.writes().map((call) => call.body)).toEqual([{ place: 7, name: "Bistro" }]);
-  });
-
-  test("MergeConfirm_sends_null_for_a_name_to_keep_when_this_place_has_none", async () => {
-    // Null leaves the survivor's name as it is, which for a place with none is none: "Unnamed place" is not a name to give it.
-    const api = stubEdits({ "POST /api/places/2/merge": () => Response.json(SURVIVOR) });
-    mountConfirm(BISTRO, { ...CAFE, name: null });
-
-    expect(screen.getByText("Merge Bistro into Unnamed place?")).toBeInTheDocument();
-    expect(within(keepNames()).getByRole("radio", { name: "Unnamed place" })).toBeChecked();
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+    const api = stubEdits({ ...READS, "GET /api/places": () => Response.json({ places: [ALL[1]] }), "POST /api/places/2/merge": () => Response.json(SURVIVOR) });
+    mountForm([8], { ...CAFE, name: null });
+    expect(screen.getByText("Merge 1 place into Unnamed place?")).toBeInTheDocument();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    fireEvent.click(mergeButton());
 
     await waitFor(() => expect(api.writes()).toHaveLength(1));
-    expect(api.writes()[0]?.body).toEqual({ place: 7, name: null });
+    expect(api.writes()[0]?.body).toEqual({ places: [8], name: null });
   });
 
-  test("MergeConfirm_cannot_keep_the_name_of_a_place_that_has_none", async () => {
-    const api = stubEdits({ "POST /api/places/2/merge": () => Response.json(SURVIVOR) });
-    mountConfirm(NAMELESS);
-
-    expect(screen.getByText("Merge Unnamed place into Café?")).toBeInTheDocument();
-    expect(within(keepNames()).getByRole("radio", { name: "Unnamed place" })).toBeDisabled(); // there is no name to keep: its radio would only say null
-    expect(within(keepNames()).getByRole("radio", { name: "Café" })).toBeChecked();
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
-
-    await waitFor(() => expect(api.writes()).toHaveLength(1));
-    expect(api.writes()[0]?.body).toEqual({ place: 8, name: "Café" });
-  });
-
-  test("MergeConfirm_says_a_refusal_in_the_words_of_the_server_with_no_retry_and_offers_another_place_or_cancel", async () => {
+  test("MergeForm_says_a_refusal_in_the_words_of_the_server_with_no_retry_and_keeps_what_was_picked", async () => {
     // The form never reads the server's words to decide what to say (P4-R26), and a refusal is not offered a Retry (P4-R28): the same merge
-    // would be refused again. A 409 is shown with whatever message the server gave; a 404 says what is gone.
+    // would be refused again. A 409 is shown with whatever message the server gave; a 404 says what is gone. Merge stays on: the owner may
+    // take off the place that is in the way, and the form sends what is picked then.
     const cases: [number, Response, string][] = [
       [409, refusal(409, SAME_PLACE), `Could not merge: ${SAME_PLACE}`],
       [409, refusal(409, TOO_DEEP), `Could not merge: ${TOO_DEEP}`],
-      [409, refusal(409, "Whatever the server says next."), "Could not merge: Whatever the server says next."],
       [409, new Response("<html>", { status: 409 }), "Could not merge: The server refused it."], // a 409 with no message to show
       [404, new Response("{}", { status: 404 }), "Could not merge: One of the places no longer exists."],
     ];
     for (const [status, response, said] of cases) {
-      const api = stubEdits({ "POST /api/places/2/merge": () => response.clone() });
-      const { onClose, onChooseAnother, unmount } = mountConfirm();
+      const api = stubEdits({ ...READS, "POST /api/places/2/merge": () => response.clone() });
+      const { onClose, unmount } = mountForm([7, 8]);
 
-      fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+      fireEvent.click(mergeButton());
 
       const alert = await screen.findByRole("alert");
       expect(alert, said).toHaveTextContent(said);
       expect(alert).not.toHaveTextContent("Couldn't merge");
       expect(screen.queryByRole("button", { name: "Retry" }), said).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Merge" }), said).toBeDisabled(); // it would send the same again
-      expect(within(alert).getByRole("button", { name: "Choose another place" }), said).toHaveFocus(); // not on Merge, which is off: the focus would be on nothing
-      expect(screen.getByText("Merge Bistro into Café?")).toBeInTheDocument(); // the confirm stays
+      expect(screen.getByText("Merge 2 places into Café?")).toBeInTheDocument(); // the form stays, with what was picked
       expect(onClose).not.toHaveBeenCalled();
       expect(api.writes(), String(status)).toHaveLength(1);
-
-      fireEvent.click(within(alert).getByRole("button", { name: "Choose another place" }));
-      expect(onChooseAnother).toHaveBeenCalledTimes(1);
-      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-      expect(onClose).toHaveBeenCalledTimes(1);
       unmount();
     }
   });
 
-  test("MergeConfirm_says_a_400_in_the_words_of_the_server_with_no_retry_and_lets_the_other_name_be_kept", async () => {
-    // A name that is too long for the server (the place has only a long name of OpenStreetMap): keeping the other one can put it right.
-    const api = stubEdits({ "POST /api/places/2/merge": (call) => ((call.body as { name: string }).name === "Café" ? refusal(400, "The name can be at most 100 characters.") : Response.json(SURVIVOR)) });
-    const { onClose } = mountConfirm();
+  test("MergeForm_says_a_400_in_the_words_of_the_server_with_no_retry_and_lets_another_name_be_kept", async () => {
+    // A name that is too long for the server: keeping another one can put it right.
+    const api = stubEdits({
+      ...READS,
+      "POST /api/places/2/merge": (call) => ((call.body as { name: string }).name === "Café" ? refusal(400, "The name can be at most 100 characters.") : Response.json(SURVIVOR)),
+    });
+    const { onClose } = mountForm([7]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+    fireEvent.click(mergeButton());
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Could not merge: The name can be at most 100 characters.");
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    expect(within(alert).queryByRole("button", { name: "Choose another place" })).not.toBeInTheDocument(); // the places are not the trouble
-    expect(screen.getByRole("button", { name: "Merge" })).toBeEnabled();
+    expect(mergeButton()).toBeEnabled();
 
     fireEvent.click(within(keepNames()).getByRole("radio", { name: "Bistro" }));
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+    fireEvent.click(mergeButton());
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(api.writes().map((call) => call.body)).toEqual([{ place: 7, name: "Café" }, { place: 7, name: "Bistro" }]);
+    expect(api.writes().map((call) => call.body)).toEqual([{ places: [7], name: "Café" }, { places: [7], name: "Bistro" }]);
   });
 
-  test("MergeConfirm_offers_a_retry_for_a_failure_that_may_pass_and_sends_the_same_merge_again", async () => {
+  test("MergeForm_offers_a_retry_for_a_failure_that_may_pass_sends_the_same_merge_again_and_closes_when_it_works", async () => {
     let answer: () => Response | Promise<Response> = () => new Response("<html>", { status: 502 });
-    const api = stubEdits({ "POST /api/places/2/merge": () => answer() });
-    mountConfirm();
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+    const api = stubEdits({ ...READS, "POST /api/places/2/merge": () => answer() });
+    const { onClose } = mountForm([7, 8]);
+    fireEvent.click(mergeButton());
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Couldn't merge — Retry");
     expect(alert).toHaveTextContent("POST /api/places/2/merge failed with status 502");
-    expect(within(alert).queryByRole("button", { name: "Choose another place" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Merge" })).toBeEnabled();
 
     answer = () => Promise.reject(new TypeError("Failed to fetch")); // no answer at all
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(api.writes()).toHaveLength(2));
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't merge — Retry");
 
-    expect(api.writes().map((call) => call.body)).toEqual([{ place: 7, name: "Café" }, { place: 7, name: "Café" }]); // Retry sends the same again
+    answer = () => Response.json(SURVIVOR);
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(api.writes().map((call) => call.body)).toEqual(Array(3).fill({ places: [7, 8], name: "Café" })); // Retry sends the same again
   });
 
-  test("MergeConfirm_takes_the_focus_as_it_opens_on_the_question_so_that_escape_is_cancel_at_once", () => {
-    const api = stubEdits({});
-    const { onClose } = mountConfirm();
+  test("MergeForm_takes_the_focus_as_it_opens_on_what_it_says_so_that_escape_is_cancel_at_once", () => {
+    const api = stubEdits(READS);
+    const { onClose } = mountForm();
 
-    const form = screen.getByRole("button", { name: "Merge" }).closest("form")!;
-    expect(form).toContainElement(document.activeElement as HTMLElement);
-    expect(document.activeElement).toBe(screen.getByText("Merge Bistro into Café?")); // the question, which is read to whoever listens; no button: Enter would merge
+    expect(document.activeElement).toBe(screen.getByText("Merge 1 place into Café?")); // read to whoever listens; no button: Enter would merge
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(api.writes()).toEqual([]);
-  });
-
-  test("MergeConfirm_offers_no_choice_of_name_for_two_places_of_the_same_name_and_says_it_is_the_other_one_that_is_merged_in", async () => {
-    const api = stubEdits({ "POST /api/places/2/merge": () => Response.json(SURVIVOR) });
-    const { onClose } = mountConfirm({ ...BISTRO, name: "Café" });
-
-    expect(screen.getByText("Merge the other “Café” into this one?")).toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: "Name to keep" })).not.toBeInTheDocument(); // nothing to choose between
-    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
-
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(api.writes().map((call) => call.body)).toEqual([{ place: 7, name: "Café" }]);
-  });
-
-  test("MergeConfirm_offers_no_choice_for_two_places_that_have_no_name_and_sends_null", async () => {
-    const api = stubEdits({ "POST /api/places/2/merge": () => Response.json(SURVIVOR) });
-    mountConfirm(NAMELESS, { ...CAFE, name: null });
-
-    expect(screen.getByText("Merge the other “Unnamed place” into this one?")).toBeInTheDocument();
-    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
-
-    await waitFor(() => expect(api.writes()).toHaveLength(1));
-    expect(api.writes()[0]?.body).toEqual({ place: 8, name: null });
-  });
-
-  test("MergeConfirm_that_works_after_a_retry_closes_it_and_the_error", async () => {
-    let failing = true;
-    stubEdits({ "POST /api/places/2/merge": () => (failing ? new Response("{}", { status: 500 }) : Response.json(SURVIVOR)) });
-    const { onClose } = mountConfirm();
-    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
-    const alert = await screen.findByRole("alert");
-
-    failing = false;
-    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
-
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
 
