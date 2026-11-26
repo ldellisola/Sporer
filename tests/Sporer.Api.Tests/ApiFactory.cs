@@ -29,6 +29,7 @@ public sealed class ApiFactory(
             ["TSDB_CONNECTION_STRING"] = connectionString,
             ["Processing:Enabled"] = "false",
             ["Nominatim:Enabled"] = "false",
+            ["Transit:Enabled"] = "false",
             ["OVERLAND_TOKEN"] = "",
             ["Overland:Token"] = "",
         };

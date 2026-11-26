@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// How a move was made. The server tells walk, cycle, drive and flight apart; a mode it could not tell is `nil`.
+/// How a move was made. The server tells walk, cycle, drive, bus, train and flight apart; a mode it could not tell is `nil`, and so
+/// is a mode this app does not know yet (see the decoding below).
 nonisolated enum Mode: String, Codable, Hashable, Sendable, CaseIterable {
-    case walk, cycle, drive, flight
+    case walk, cycle, drive, bus, train, flight
 }
 
 extension Mode {
@@ -11,6 +12,8 @@ extension Mode {
         case .walk: "Walk"
         case .cycle: "Cycle"
         case .drive: "Drive"
+        case .bus: "Bus"
+        case .train: "Train"
         case .flight: "Flight"
         }
     }
@@ -20,16 +23,20 @@ extension Mode {
         case .walk: "figure.walk"
         case .cycle: "bicycle"
         case .drive: "car.fill"
+        case .bus: "bus.fill"
+        case .train: "train.side.front.car"
         case .flight: "airplane"
         }
     }
 
-    /// The colours of the web app's map, which are the system's: green, teal, blue, orange.
+    /// The colours of the web app's map, which are the system's: green, teal, blue, brown, purple, orange.
     var color: Color {
         switch self {
         case .walk: .green
         case .cycle: .teal
         case .drive: .blue
+        case .bus: .brown
+        case .train: .purple
         case .flight: .orange
         }
     }
@@ -39,8 +46,20 @@ extension Mode {
         case .walk: .systemGreen
         case .cycle: .systemTeal
         case .drive: .systemBlue
+        case .bus: .systemBrown
+        case .train: .systemPurple
         case .flight: .systemOrange
         }
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// A mode the app does not know, from a server newer than the app, reads as no mode, so that one move never makes a whole
+    /// day, period or trip unreadable. Every `Mode?` of the API's types is read through here: their synthesized decoders call
+    /// `decodeIfPresent(Mode.self, forKey:)`, which picks this over the generic one (DecodingTests checks the day, range and trip).
+    nonisolated func decodeIfPresent(_ type: Mode.Type, forKey key: Key) throws -> Mode? {
+        guard let raw = try decodeIfPresent(String.self, forKey: key) else { return nil }
+        return Mode(rawValue: raw)
     }
 }
 

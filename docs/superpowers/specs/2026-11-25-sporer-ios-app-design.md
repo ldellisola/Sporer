@@ -84,8 +84,14 @@ clock of the place it happened in.
   `08:34 – 11:55 · 3h 20m` ("Until 07:55" for one that began the day before, "Since 21:40" and a **Now** tag for the stay going on). A move is the
   rail itself drawn in its mode's colour, with the mode's symbol, `Cycle · 2.3 km` and its times. A gap is the rail broken, "No Data" and how long.
 - **Tapping a row** shows it on the map (and lowers a full sheet); **ⓘ** on a stay opens its place; a long press offers both.
-- **Map:** the routes in the mode colours (walk green, cycle teal, drive blue, flight orange dashed along the great circle) on a white casing; a disc
-  per place with the stay numbers ("2 · 4" for a place visited twice) and its name under it.
+- **A move's mode by hand:** a long press on a move (a right click on the Mac) offers *Show on Map* and a *Mode* menu: the six modes with the
+  current one checked, and *Use Detected Mode* when the owner set it (the transit design, §5). Choosing a mode saves it as the owner's, the checked
+  one of a detected move too: that keeps it when detection would change it later, as on the web. The mode the owner set is saved again too: after
+  *Use Detected Mode* the row shows it until the server has rebuilt the stretch, while the edit itself is gone.
+  VoiceOver offers the same as actions ("Keep Mode as Drive" for the detected one). One change at a time: while a mode is being saved, no move
+  offers the menu or the actions.
+- **Map:** the routes in the mode colours (walk green, cycle teal, drive blue, bus brown, train purple, flight orange dashed along the great circle)
+  on a white casing; a disc per place with the stay numbers ("2 · 4" for a place visited twice) and its name under it.
 
 ### 5.2 Explore (week, month, year, range)
 
@@ -137,8 +143,8 @@ swipe to remove yours), **Trips** (the distance that makes a trip, with a steppe
 
 - **Apple's components first:** navigation bars, toolbars, tab bars, sheets, forms, menus, alerts and confirmation dialogs, which take Liquid Glass
   and iOS 27's changes to it by themselves. Custom glass is limited to the buttons floating on the map.
-- **Colour:** the system's mode colours (green, teal, blue, orange); the pink pin and accent; everything else is the system's label and
-  background colours, so light and dark mode are both right.
+- **Colour:** the system's mode colours (green, teal, blue, brown, purple, orange); the pink pin and accent; everything else is the system's
+  label and background colours, so light and dark mode are both right.
 - **One stop, one disc:** the disc on the rail and the pin on the map are the same object, with the same number.
 - **Type:** the system font (SF Pro), rounded digits in the discs, monospaced digits for times and figures; Dynamic Type throughout.
 - **Accessibility:** every row and button is labelled for VoiceOver; nothing depends on colour alone (modes have symbols, stops have numbers).

@@ -4,7 +4,8 @@
 /** `done`, or `pending` while points of the period wait to be processed, so that it may still change. */
 export type LoadState = "done" | "pending";
 
-export type Mode = "walk" | "cycle" | "drive" | "flight";
+/** How a move was made. Every kind of rail (trains, the metro, trams) is `train`; buses and coaches are `bus`. */
+export type Mode = "walk" | "cycle" | "drive" | "bus" | "train" | "flight";
 
 /** A position the way GeoJSON writes it: longitude first. */
 export type LonLat = [lon: number, lat: number];
@@ -60,10 +61,15 @@ export interface StaySegment extends SegmentBase {
   home: boolean;
 }
 
-/** Travel between two stays; `geometry` is the stored (detail) line. A mode the server could not tell is left out of the JSON, as null is. */
+/**
+ * Travel between two stays; `geometry` is the stored (detail) line. A mode the server could not tell is left out of the JSON, as null is.
+ * `modeEdited` is true when the owner set the mode (`PUT /api/moves/{id}/mode`); a server from before that is left out of the JSON, which
+ * is false.
+ */
 export interface MoveSegment extends SegmentBase {
   kind: "move";
   mode?: Mode | null;
+  modeEdited?: boolean;
   distanceMeters: number;
   geometry: LonLat[];
 }
@@ -371,6 +377,18 @@ export interface TripDay {
   highlights: string[];
   groundDistanceMeters: number;
   flights: number;
+}
+
+// --- PUT and DELETE /api/moves/{id}/mode (the owner's mode of a move) ---
+
+/**
+ * The answer to the owner setting the mode of a move: the move (by the id it was asked for by, which a rebuild changes), its mode now, and that the
+ * owner set it. Taking the mode back (`DELETE`) is answered with no body: the mode detected is the move's again once its stretch is rebuilt.
+ */
+export interface MoveModeResponse {
+  id: number;
+  mode: Mode;
+  modeEdited: true;
 }
 
 // --- PUT /api/trips/{id}, GET /api/trips/deleted (Features/Trips/EditTripEndpoint.cs, DeletedTripsEndpoints.cs) ---

@@ -143,6 +143,16 @@
   color: var(--ink-soft);
 }
 
+/* What the row of a move says of its mode besides the mode: that the owner set it, or that a change of it is being saved. */
+.mine {
+  color: var(--ink-muted);
+}
+
+/* A change of the mode of a move that failed, under its row and in line with its text, as its menu is. */
+.note {
+  margin: 2px 0 0 34px;
+}
+
 /* The button that covers a row. How it looks to a finger, a pointer and the keyboard is the rows' style sheet's (`tap`). */
 .fit {
   position: absolute;

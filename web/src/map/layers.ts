@@ -69,19 +69,36 @@ export type HeatCollection = FeatureCollection<Point, HeatProperties>;
 
 // --- Colours (the mockups) ---
 
+/**
+ * The colour of each mode, on the map and in the timeline, in both schemes. Bus and train are the transit spec's (§6): the train is the mockup's
+ * purple, and the bus is the spec's brown, #A2845E, made darker here (the same hue, at a lightness of 47.7 % for 50.2 %) so that its routes keep
+ * 3:1 against the light map (P6-R4): the spec's brown has 2.9:1 on a park and 2.8:1 on the flat map of the tests, this one 3.2:1 and 3.1:1 (and
+ * 3.5:1 on the bare ground of the map). The purple has 3.4:1, 3.3:1 and 3.8:1 as it is.
+ */
 export const MODE_COLORS: Record<Mode, string> = {
   walk: "#34C759",
   cycle: "#30B0C7",
   drive: "#007AFF",
+  bus: "#9A7D59",
+  train: "#AF52DE",
   flight: "#FF9500",
 };
+/** The modes, in the order the menu of a move lists them. */
+export const MODES: readonly Mode[] = ["walk", "cycle", "drive", "bus", "train", "flight"];
 /** The word for each mode of a move, as the app writes it ("Walk · 1.2 km"); an unknown mode is just a "Move". */
-export const MODE_WORDS = { walk: "Walk", cycle: "Cycle", drive: "Drive", flight: "Flight", unknown: "Move" } as const;
+export const MODE_WORDS = { walk: "Walk", cycle: "Cycle", drive: "Drive", bus: "Bus", train: "Train", flight: "Flight", unknown: "Move" } as const;
 const UNKNOWN_MODE_COLOR = "#8E8E93";
 export const PIN_COLOR = "#FF375F";
 /** What a selected point of edit mode is drawn in. */
 export const EDIT_SELECTED_COLOR = "#FF3B30";
 const WHITE = "#FFFFFF";
+
+/**
+ * The mode a move is drawn and named by: its own, or `unknown` for a move whose mode the server could not tell (null, or left out of the JSON) and
+ * for a mode this app does not know, which a server newer than the app may send: it is a "Move", in grey, and not a word or a colour that is missing.
+ */
+export const routeMode = (mode: string | null | undefined): RouteMode =>
+  mode !== null && mode !== undefined && Object.hasOwn(MODE_COLORS, mode) ? (mode as Mode) : "unknown";
 
 /** The colour a move is drawn in on the map and in the timeline; a move whose mode the server could not tell is grey. */
 export const modeColor = (mode: RouteMode): string => (mode === "unknown" ? UNKNOWN_MODE_COLOR : MODE_COLORS[mode]);
@@ -95,7 +112,7 @@ function point<P>(lon: number, lat: number, properties: P): Feature<Point, P> {
 /** A move is a line only with two positions or more; the server never sends fewer, and the map would refuse them. */
 function route(id: number, mode: Mode | null | undefined, geometry: LonLat[]): Feature<LineString, RouteProperties>[] {
   if (geometry.length < 2) return [];
-  return [{ type: "Feature", properties: { id, mode: mode ?? "unknown" }, geometry: { type: "LineString", coordinates: geometry } }];
+  return [{ type: "Feature", properties: { id, mode: routeMode(mode) }, geometry: { type: "LineString", coordinates: geometry } }];
 }
 
 /**
@@ -405,6 +422,8 @@ const MODE_COLOR: LineColor = [
   "walk", MODE_COLORS.walk,
   "cycle", MODE_COLORS.cycle,
   "drive", MODE_COLORS.drive,
+  "bus", MODE_COLORS.bus,
+  "train", MODE_COLORS.train,
   "flight", MODE_COLORS.flight,
   UNKNOWN_MODE_COLOR,
 ];

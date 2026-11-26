@@ -18,6 +18,13 @@ protocol SporerService: Sendable {
     func removedPoints() async throws -> [RemovedBatch]
     func restorePoints(batch: String) async throws
 
+    // Moves
+    /// Sets the mode of the stored move `id` (an id of the day, range or trip answer) by hand. A move rebuilt since has another id:
+    /// `notFound`, and the day is to be loaded again.
+    func setMode(_ mode: Mode, ofMove id: Int) async throws -> MoveModeResponse
+    /// Takes the owner's mode off the move, which gets the detected one back.
+    func clearMode(ofMove id: Int) async throws
+
     // Places
     func place(_ id: Int) async throws -> PlaceResponse
     func searchPlaces(_ query: String) async throws -> [PlaceSearchResult]

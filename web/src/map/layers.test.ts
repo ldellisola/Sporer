@@ -24,10 +24,14 @@ import {
   layerSpecs,
   LAYER_IDS,
   MODE_COLORS,
+  MODE_WORDS,
+  MODES,
+  modeColor,
   PIN_COLOR,
   placeGeoJson,
   rangeGeoJson,
   ROUTE_LAYERS,
+  routeMode,
   routeOpacity,
   SOURCE_IDS,
   stopOrders,
@@ -61,8 +65,28 @@ const OFFICE = place(3, null, 10.2, 59.2, "Oslo");
 
 describe("MODE_COLORS", () => {
   test("MODE_COLORS_use_the_mockup_palette", () => {
-    expect(MODE_COLORS).toEqual({ walk: "#34C759", cycle: "#30B0C7", drive: "#007AFF", flight: "#FF9500" });
+    // The train is the mockup's purple; the bus is the transit spec's brown (#A2845E), darker for 3:1 on the light map (P6-R4).
+    expect(MODE_COLORS).toEqual({ walk: "#34C759", cycle: "#30B0C7", drive: "#007AFF", bus: "#9A7D59", train: "#AF52DE", flight: "#FF9500" });
     expect(PIN_COLOR).toBe("#FF375F");
+  });
+
+  test("MODES_list_the_six_modes_in_the_order_of_the_menu_each_with_a_colour_and_a_word", () => {
+    expect(MODES).toEqual(["walk", "cycle", "drive", "bus", "train", "flight"]);
+    expect(Object.keys(MODE_COLORS).toSorted()).toEqual([...MODES].sort());
+    expect(MODE_WORDS).toEqual({ walk: "Walk", cycle: "Cycle", drive: "Drive", bus: "Bus", train: "Train", flight: "Flight", unknown: "Move" });
+    for (const mode of MODES) expect(modeColor(mode)).toBe(MODE_COLORS[mode]);
+    expect(new Set(MODES.map(modeColor)).size).toBe(MODES.length); // no two the same
+    expect(MODES.map(modeColor)).not.toContain(modeColor("unknown"));
+  });
+
+  test("routeMode_is_unknown_for_no_mode_and_for_a_mode_the_app_does_not_know", () => {
+    for (const mode of MODES) expect(routeMode(mode)).toBe(mode);
+    // A server newer than the app may send a mode it has no word or colour for: a "Move" in grey, and never undefined.
+    for (const other of [null, undefined, "", "ferry", "Train", "toString", "__proto__"]) {
+      expect(routeMode(other), String(other)).toBe("unknown");
+      expect(MODE_WORDS[routeMode(other)], String(other)).toBe("Move");
+      expect(modeColor(routeMode(other)), String(other)).toBe("#8E8E93");
+    }
   });
 });
 
@@ -102,6 +126,18 @@ describe("dayGeoJson", () => {
     const { routes } = dayGeoJson(day(withoutMode));
 
     expect(routes.features.map((feature) => feature.properties)).toEqual([{ id: 5, mode: "unknown" }]);
+  });
+
+  test("dayGeoJson_tags_buses_and_trains_and_a_mode_the_app_does_not_know_as_unknown", () => {
+    const ferry = { ...move(7, null, [[10.7, 59.9], [10.6, 59.85]]), mode: "ferry" } as unknown as MoveSegment; // from a server newer than the app
+
+    const { routes } = dayGeoJson(day(move(5, "bus", [[10, 59], [10.1, 59.1]]), move(6, "train", [[10.1, 59.1], [10.7, 59.9]]), ferry));
+
+    expect(routes.features.map((feature) => feature.properties)).toEqual([
+      { id: 5, mode: "bus" },
+      { id: 6, mode: "train" },
+      { id: 7, mode: "unknown" },
+    ]);
   });
 
   test("dayGeoJson_merges_the_stops_of_one_place_into_one_pin_that_lists_their_numbers", () => {
@@ -744,7 +780,7 @@ describe("heatGeoJson", () => {
   });
 });
 
-/** Evaluates a MapLibre expression for the properties of one feature, for the few operators the pin radius and the filters are made of; any other throws. */
+/** Evaluates a MapLibre expression for the properties of one feature, for the few operators the pin radius, the filters and the colours are made of; any other throws. */
 function evaluate(expression: unknown, properties: Record<string, unknown>): unknown {
   if (!Array.isArray(expression)) return expression;
   const [operator, ...operands] = expression as [string, ...unknown[]];
@@ -772,6 +808,12 @@ function evaluate(expression: unknown, properties: Record<string, unknown>): unk
       return values[0] !== values[1];
     case "all":
       return values.every(Boolean);
+    case "match": {
+      // ["match", input, label, output, label, output, ..., fallback]
+      const [input, ...arms] = values;
+      for (let i = 0; i + 1 < arms.length; i += 2) if (arms[i] === input) return arms[i + 1];
+      return arms.at(-1);
+    }
     default:
       throw new Error(`The test cannot evaluate "${operator}"`);
   }
@@ -893,6 +935,21 @@ describe("layerSpecs", () => {
     for (const colour of Object.values(MODE_COLORS)) expect(JSON.stringify(paint(line)["line-color"])).toContain(colour);
     expect(layout(line)["visibility"]).toBe("visible");
     expect(layout(casing)["visibility"]).toBe("visible");
+  });
+
+  test("layerSpecs_colour_each_route_by_its_mode_and_one_of_no_known_mode_grey_and_draw_buses_and_trains_solid", () => {
+    for (const [view, lineId] of [["day", LAYER_IDS.dayRoute], ["range", LAYER_IDS.rangeRoute], ["trip", LAYER_IDS.dayRoute]] as const) {
+      const line = find(view, lineId);
+      const colour = paint(line)["line-color"];
+      for (const mode of MODES) expect(evaluate(colour, { id: 1, mode }), `${view} ${mode}`).toBe(MODE_COLORS[mode]);
+      for (const other of ["unknown", "ferry"]) expect(evaluate(colour, { id: 1, mode: other }), `${view} ${other}`).toBe("#8E8E93");
+      // Solid, like a drive, and with the casing of a day's routes under them: only a flight is dashed.
+      for (const mode of ["bus", "train"]) {
+        expect(evaluate((line as { filter?: unknown }).filter, { id: 1, mode }), `${view} ${mode}`).toBe(true);
+        expect(evaluate((find(view, view === "range" ? LAYER_IDS.rangeFlight : LAYER_IDS.dayFlight) as { filter?: unknown }).filter, { id: 1, mode })).toBe(false);
+        expect(evaluate((find(view, LAYER_IDS.routeCasing) as { filter?: unknown }).filter, { id: 1, mode })).toBe(true);
+      }
+    }
   });
 
   test("layerSpecs_draw_range_routes_2_4_wide_at_35_percent", () => {

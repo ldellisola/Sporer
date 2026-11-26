@@ -35,6 +35,19 @@ public class DetectionOptionsTests
     }
 
     [Fact]
+    public void DetectionOptions_defaults_for_trains_and_buses()
+    {
+        var o = new DetectionOptions();
+        Assert.Equal(30, o.TransitNearMeters);
+        Assert.Equal(0.8, o.TransitMinShare);
+        Assert.Equal(1, o.TrainMinDistanceKm);
+        Assert.Equal(350, o.TrainMaxKmh);
+        Assert.Equal(500, o.TunnelMinMeters);
+        Assert.Equal(150, o.TunnelEndMeters);
+        Assert.Equal(20, o.BusMaxKm);
+    }
+
+    [Fact]
     public void Values_can_be_overridden_with_init_syntax()
     {
         var o = new DetectionOptions { StayRadiusMeters = 40, GapMinDuration = TimeSpan.FromMinutes(10) };

@@ -228,29 +228,11 @@ struct SporerMapView: UIViewRepresentable {
         }
 
         private func addRoutes(_ lines: [(Mode?, [LonLat], String)], bold: Bool, alpha: CGFloat, on map: MKMapView) {
-            var byMode: [Mode?: [MKPolyline]] = [:]
-            var flights: [MKPolyline] = []
-            for (mode, geometry, id) in lines {
-                let coords = geometry.map(\.coordinate)
-                segmentRects[id] = Geo.rect(coords)
-                if mode == .flight {
-                    for (a, b) in zip(coords, coords.dropFirst()) {
-                        flights.append(MKGeodesicPolyline(coordinates: [a, b], count: 2))
-                    }
-                } else {
-                    byMode[mode, default: []].append(MKPolyline(coordinates: coords, count: coords.count))
-                }
+            for (_, geometry, id) in lines {
+                segmentRects[id] = Geo.rect(geometry.map(\.coordinate))
             }
-            let ground = byMode.values.flatMap { $0 }
-            if bold, !ground.isEmpty {
-                map.addOverlay(RouteOverlay(ground, style: RouteStyle(color: .white, width: 7.5, alpha: alpha)), level: .aboveRoads)
-            }
-            for mode in [Mode.walk, .cycle, .drive, nil] {
-                guard let polylines = byMode[mode], !polylines.isEmpty else { continue }
-                map.addOverlay(RouteOverlay(polylines, style: RouteStyle(color: ModeStyle(mode: mode).uiColor, width: bold ? 4.5 : 2.4, alpha: alpha)), level: .aboveRoads)
-            }
-            if !flights.isEmpty {
-                map.addOverlay(RouteOverlay(flights, style: RouteStyle(color: .systemOrange, width: bold ? 3.5 : 2.4, alpha: alpha, dashed: true)), level: .aboveRoads)
+            for overlay in RouteDrawing.overlays(lines.map { ($0.0, $0.1) }, bold: bold, alpha: alpha) {
+                map.addOverlay(overlay, level: .aboveRoads)
             }
         }
 
@@ -418,5 +400,41 @@ struct SporerMapView: UIViewRepresentable {
                 parent.onOpenPlace(id)
             }
         }
+    }
+}
+
+/// How routes are stroked, in the order they are drawn: under a white casing when they are bold, every mode on the ground in its
+/// colour, one overlay per mode (walk at the bottom, a move of no known mode in grey on top), then the flights, dashed along the
+/// great circle in the flight colour.
+enum RouteDrawing {
+    /// The modes on the ground, bottom first.
+    static let groundOrder: [Mode?] = Mode.allCases.filter { $0 != .flight } + [nil]
+
+    static func overlays(_ lines: [(Mode?, [LonLat])], bold: Bool, alpha: CGFloat) -> [RouteOverlay] {
+        var byMode: [Mode?: [MKPolyline]] = [:]
+        var flights: [MKPolyline] = []
+        for (mode, geometry) in lines {
+            let coords = geometry.map(\.coordinate)
+            if mode == .flight {
+                for (a, b) in zip(coords, coords.dropFirst()) {
+                    flights.append(MKGeodesicPolyline(coordinates: [a, b], count: 2))
+                }
+            } else {
+                byMode[mode, default: []].append(MKPolyline(coordinates: coords, count: coords.count))
+            }
+        }
+        var overlays: [RouteOverlay] = []
+        let ground = groundOrder.flatMap { byMode[$0] ?? [] }
+        if bold, !ground.isEmpty {
+            overlays.append(RouteOverlay(ground, style: RouteStyle(color: .white, width: 7.5, alpha: alpha)))
+        }
+        for mode in groundOrder {
+            guard let polylines = byMode[mode], !polylines.isEmpty else { continue }
+            overlays.append(RouteOverlay(polylines, style: RouteStyle(color: ModeStyle(mode: mode).uiColor, width: bold ? 4.5 : 2.4, alpha: alpha)))
+        }
+        if !flights.isEmpty {
+            overlays.append(RouteOverlay(flights, style: RouteStyle(color: Mode.flight.uiColor, width: bold ? 3.5 : 2.4, alpha: alpha, dashed: true)))
+        }
+        return overlays
     }
 }

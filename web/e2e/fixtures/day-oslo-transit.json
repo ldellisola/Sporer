@@ -1,0 +1,84 @@
+{
+  "date": "2026-11-02",
+  "timeZone": "Europe/Oslo",
+  "state": "done",
+  "summary": { "places": 4, "distanceMeters": 7600, "movingSeconds": 2700 },
+  "segments": [
+    {
+      "kind": "stay",
+      "id": 201,
+      "start": "2026-11-01T20:00:00Z",
+      "end": "2026-11-02T07:30:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "place": { "id": 21, "name": "Home", "city": "Oslo", "country": "Norway", "lat": 59.937, "lon": 10.755 },
+      "home": true
+    },
+    {
+      "kind": "move",
+      "id": 202,
+      "start": "2026-11-02T07:30:00Z",
+      "end": "2026-11-02T07:48:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "mode": "bus",
+      "modeEdited": false,
+      "distanceMeters": 2600,
+      "geometry": [[10.755, 59.937], [10.745, 59.936], [10.735, 59.934], [10.725, 59.932], [10.715, 59.93]]
+    },
+    {
+      "kind": "stay",
+      "id": 203,
+      "start": "2026-11-02T07:48:00Z",
+      "end": "2026-11-02T08:10:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "place": { "id": 22, "name": "Bakery", "city": "Oslo", "country": "Norway", "lat": 59.93, "lon": 10.715 },
+      "home": false
+    },
+    {
+      "kind": "move",
+      "id": 204,
+      "start": "2026-11-02T08:10:00Z",
+      "end": "2026-11-02T08:22:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "mode": "train",
+      "modeEdited": false,
+      "distanceMeters": 3300,
+      "geometry": [[10.715, 59.93], [10.722, 59.925], [10.733, 59.919], [10.743, 59.914], [10.751, 59.911]]
+    },
+    {
+      "kind": "stay",
+      "id": 205,
+      "start": "2026-11-02T08:22:00Z",
+      "end": "2026-11-02T15:30:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "place": { "id": 23, "name": "Office", "city": "Oslo", "country": "Norway", "lat": 59.911, "lon": 10.751 },
+      "home": false
+    },
+    {
+      "kind": "move",
+      "id": 206,
+      "start": "2026-11-02T15:30:00Z",
+      "end": "2026-11-02T15:45:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "mode": "ferry",
+      "modeEdited": false,
+      "distanceMeters": 1700,
+      "geometry": [[10.751, 59.911], [10.745, 59.905], [10.738, 59.899], [10.731, 59.895]]
+    },
+    {
+      "kind": "stay",
+      "id": 207,
+      "start": "2026-11-02T15:45:00Z",
+      "end": "2026-11-02T17:00:00Z",
+      "startTimeZone": "Europe/Oslo",
+      "endTimeZone": "Europe/Oslo",
+      "place": { "id": 24, "name": "Hovedøya", "city": "Oslo", "country": "Norway", "lat": 59.895, "lon": 10.731 },
+      "home": false
+    }
+  ]
+}

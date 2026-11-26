@@ -151,12 +151,19 @@ public class SimulatorTests
 
         var segments = Segmenter.Split(PointCleaner.Clean(points, options), options);
 
+        // The synthetic world has no railways and no bus routes: every tile is cached and empty. Drives shorter than 20 km are
+        // then buses, and the longer ones (to and from the airport) stay drives; no move can be a train.
         var moves = segments.OfType<MoveSegment>().ToList();
-        var modes = moves.Select(m => ModeClassifier.Classify(m, options)).ToHashSet();
+        var results = moves.Select(m => TransitClassifier.Classify(m, options, NoLines.Instance)).ToList();
+        var modes = results.Select(r => r.Mode).ToHashSet();
         Assert.Contains(TravelMode.Walk, modes);
         Assert.Contains(TravelMode.Cycle, modes);
+        Assert.Contains(TravelMode.Bus, modes);
         Assert.Contains(TravelMode.Drive, modes);
         Assert.Contains(TravelMode.Flight, modes);
+        Assert.DoesNotContain(TravelMode.Train, modes);
+        Assert.All(results, r => Assert.Empty(r.Missing));
+        Assert.Equal(moves.Select(m => ModeClassifier.Classify(m, options)), results.Select(r => r.BaseMode));
         Assert.Equal(6, moves.Count(m => m.IsFlight)); // out and back, three times
         Assert.True(segments.OfType<StaySegment>().Count() > 300);
         Assert.NotEmpty(segments.OfType<GapSegment>()); // the phone is off while the person is on the move
@@ -229,6 +236,18 @@ public class SimulatorTests
         var north = Assert.Single(plan.Trips);
         Assert.Equal(("north", new DateOnly(2024, 6, 6), 2), north);
         Assert.Equal(1, Departures(Generate(short20Days)));
+    }
+
+    /// <summary>A cache in which every tile has been fetched and holds no line.</summary>
+    private sealed class NoLines : ITransitLineSource
+    {
+        public static readonly NoLines Instance = new();
+
+        public bool TryGetLines(TransitTile tile, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TransitLines? lines)
+        {
+            lines = TransitLines.Empty;
+            return true;
+        }
     }
 
     /// <summary>Compares fixes field by field (a fix holds an array, which a record compares by reference).</summary>

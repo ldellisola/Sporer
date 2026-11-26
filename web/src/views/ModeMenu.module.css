@@ -1,0 +1,126 @@
+/*
+ * The button of the menu is the word of the mode in the row of a move, in the accent's ink, with a chevron that points down (up while the menu is open).
+ * It is above the button that covers the row, as the name of a place is (DayPanel.module.css), and made taller than its text to be a target for a finger.
+ */
+.modeButton {
+  position: relative;
+  z-index: 1;
+  margin: -6px -4px;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.modeButton::after {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin: 0 1px 2px 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.modeButton[aria-expanded="true"]::after {
+  margin-bottom: -1px;
+  transform: rotate(-135deg);
+}
+
+.modeButton[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .modeButton:not([aria-disabled="true"]):hover {
+    text-decoration: underline;
+  }
+}
+
+.modeButton:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/*
+ * The menu, under the row and in line with its text (the first column is the line of the timeline): the choices side by side, as many to a line as there
+ * is room for, and "As detected" on a line of its own under them.
+ */
+.modeMenu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 8px 34px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--surface-sunken);
+}
+
+/*
+ * A choice: a button of the forms' size, a target for a finger, with the colour of its mode as the row's bar has it. The mode of the move is in the
+ * accent's ink with a tick (no ring, which is the focus's).
+ */
+.modeItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  margin: 0;
+  padding: 6px 12px 6px 10px;
+  border: 0;
+  border-radius: var(--radius-segment);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.modeItem[aria-checked="true"] {
+  color: var(--accent-ink);
+}
+
+.modeItem:active {
+  background: var(--row-hover);
+}
+
+@media (hover: hover) {
+  .modeItem:hover {
+    background: var(--row-hover);
+  }
+}
+
+.modeItem:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.modeSwatch {
+  flex: none;
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+}
+
+.modeCheck {
+  flex: none;
+  fill: none;
+  stroke: var(--accent-ink);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.modeSeparator {
+  flex-basis: 100%;
+  height: 1px;
+  background: var(--line);
+}

@@ -8,11 +8,13 @@ using Npgsql;
 using Sporer.Api.Configuration;
 using Sporer.Api.Database;
 using Sporer.Api.Features.Homes;
+using Sporer.Api.Features.Moves;
 using Sporer.Api.Features.Places;
 using Sporer.Api.Features.Points;
 using Sporer.Api.Features.Range;
 using Sporer.Api.Features.Settings;
 using Sporer.Api.Features.Timeline;
+using Sporer.Api.Features.Transit;
 using Sporer.Api.Features.Trips;
 using Sporer.Api.Http;
 using Sporer.Timeline;
@@ -40,6 +42,8 @@ builder.Services.AddSingleton<SettingsStore>();
 builder.Services.AddSingleton<TripRefresher>();
 builder.Services.AddSingleton<ITripRefresher>(sp => sp.GetRequiredService<TripRefresher>());
 builder.Services.AddSingleton<EditRecompute>();
+builder.Services.AddSingleton<ModeEditStore>();
+builder.Services.AddSingleton<TransitTileStore>();
 builder.Services.AddSingleton<ITimelineProcessor, TimelineProcessor>();
 builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConfiguration>().GetSection("Processing").Get<ProcessingOptions>() ?? new ProcessingOptions());
@@ -74,6 +78,32 @@ var nominatimEnabled = builder.Configuration.GetValue("Nominatim:Enabled", true)
 var nominatimUserAgentSet = !string.IsNullOrWhiteSpace(builder.Configuration["Nominatim:UserAgent"]);
 if (builder.Configuration.GetValue("Processing:Enabled", true) && nominatimEnabled && nominatimUserAgentSet)
     builder.Services.AddHostedService(sp => sp.GetRequiredService<PlaceNamer>());
+// The railway and bus-route lines, from Overpass. None of it is a detection threshold: changing it rebuilds nothing.
+builder.Services.AddSingleton(sp => TransitOptions.From(sp.GetRequiredService<IConfiguration>()));
+builder.Services
+    .AddHttpClient<OverpassClient>((sp, client) =>
+    {
+        // Overpass refuses a client that does not say who it is; nothing is requested without a user agent (see TransitFetcher).
+        var userAgent = sp.GetRequiredService<TransitOptions>().UserAgent;
+        if (!string.IsNullOrWhiteSpace(userAgent) && !client.DefaultRequestHeaders.UserAgent.TryParseAdd(userAgent))
+            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", userAgent);
+        client.Timeout = TimeSpan.FromSeconds(120); // the queries ask the server for at most 90 s
+        client.MaxResponseContentBufferSize = 64 * 1024 * 1024; // a dense city tile is a few MB; a runaway answer is not buffered
+    })
+    // The client lives as long as the TransitFetcher singleton, so its connections must not outlive DNS changes. Answers are asked for
+    // compressed: a tile is a few MB of JSON, which the service's daily allowance counts.
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+        AutomaticDecompression = System.Net.DecompressionMethods.All,
+    });
+builder.Services.AddSingleton<TransitFetcher>();
+// Always registered, so tests can drive it by hand; it runs in the background only when processing and fetching are enabled and there is
+// a user agent to send (Transit:UserAgent, else Nominatim:UserAgent). Lines already cached are used either way.
+var transitEnabled = builder.Configuration.GetValue("Transit:Enabled", true);
+var transitUserAgentSet = !string.IsNullOrWhiteSpace(builder.Configuration["Transit:UserAgent"]) || nominatimUserAgentSet;
+if (builder.Configuration.GetValue("Processing:Enabled", true) && transitEnabled && transitUserAgentSet)
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<TransitFetcher>());
 builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConfiguration>().GetSection("Map").Get<MapOptions>() ?? new MapOptions());
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
@@ -124,6 +154,13 @@ DatabaseMigrator.Migrate(app.Services.GetRequiredService<IOptions<DataBaseOption
 if (nominatimEnabled && !nominatimUserAgentSet)
 {
     const string warning = "Place naming disabled: set Nominatim:UserAgent";
+    databaseWarnings.Add(warning);
+    app.Logger.LogWarning("{Warning}", warning);
+}
+
+if (transitEnabled && !transitUserAgentSet)
+{
+    const string warning = "Railway and bus lines are not fetched: set Transit:UserAgent or Nominatim:UserAgent";
     databaseWarnings.Add(warning);
     app.Logger.LogWarning("{Warning}", warning);
 }

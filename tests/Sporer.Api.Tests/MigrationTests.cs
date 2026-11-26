@@ -53,6 +53,17 @@ public class MigrationTests(DatabaseFixture db)
             .Select(r => ((DateTime)r.time, (double)r.longitude, (double)r.latitude, (string)r.device, (double?)r.speed, (decimal)r.altitude))
             .ToList();
 
+    /// <summary>The checks, keys and other constraints of <paramref name="table"/>, by name, as Postgres would write them.</summary>
+    private static async Task<IReadOnlyList<(string Name, string Definition)>> Constraints(string cs, string table)
+        => (await Sql.QueryAsync(cs,
+                """
+                select conname, pg_get_constraintdef(oid) as definition from pg_constraint
+                where conrelid = to_regclass(@table) order by conname
+                """,
+                new { table }, Ct))
+            .Select(r => ((string)r.conname, (string)r.definition))
+            .ToList();
+
     private static DatabaseWarnings Warnings(ApiFactory api) => api.Services.GetRequiredService<DatabaseWarnings>();
 
     [Fact]
@@ -66,11 +77,13 @@ public class MigrationTests(DatabaseFixture db)
             new[] { "time", "longitude", "latitude", "device", "speed", "altitude", "horizontal_accuracy", "motion" },
             await ColumnNames(cs, "locationlog"));
         Assert.True(await Sql.ScalarAsync<bool>(cs, "select to_regclass('dirty_range') is not null", ct: Ct));
-        foreach (var table in new[] { "place", "segment", "geocode_cache", "processing_state" })
+        foreach (var table in new[] { "place", "segment", "geocode_cache", "processing_state", "mode_edit", "transit_tile" })
             Assert.True(await Sql.ScalarAsync<bool>(cs, $"select to_regclass('{table}') is not null", ct: Ct), table);
         Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from processing_state where id = 1", ct: Ct));
         Assert.Contains(("backfill_chunk_attempts", "integer", "NO"), await Columns(cs, "processing_state"));
         Assert.Equal(0, await Sql.ScalarAsync<int>(cs, "select backfill_chunk_attempts from processing_state where id = 1", ct: Ct));
+        Assert.True(await Sql.ScalarAsync<bool>(cs,
+            "select transit_ready_from is null and transit_ready_to is null and transit_flushed_at is null from processing_state where id = 1", ct: Ct));
         Assert.Empty(Warnings(api).Items);
     }
 
@@ -251,13 +264,128 @@ public class MigrationTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task Migration_0007_lets_moves_be_buses_and_trains_and_leaves_locationlog_alone()
+    {
+        // A database as the owner has it before any migration, with rows in it, as the 0005 test starts.
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await Sql.ExecAsync(cs, OldCreateTableScript, ct: Ct);
+        await Sql.ExecAsync(cs, """
+            insert into locationlog (time, longitude, latitude, device, speed, altitude) values
+              ('2026-01-01T08:00:00Z', 10.10, 59.10, 'phone-a', 1.5, 11),
+              ('2026-02-03T09:00:00Z', 10.30, 59.30, 'phone-b', 0, 13)
+            """, ct: Ct);
+        var columnsBefore = await Columns(cs, "locationlog");
+        var indexesBefore = await Indexes(cs, "locationlog");
+        var rowsBefore = await Rows(cs);
+        Assert.Equal(2, rowsBefore.Count);
+
+        await using (var first = new ApiFactory(cs))
+            _ = first.Services;
+        var segmentColumns = await Columns(cs, "segment");
+        Assert.Equal(("mode_edited", "boolean", "NO"), segmentColumns[^1]);
+        var stateColumns = await Columns(cs, "processing_state");
+        Assert.Equal(
+            new[]
+            {
+                ("transit_ready_from", "timestamp with time zone", "YES"), ("transit_ready_to", "timestamp with time zone", "YES"),
+                ("transit_flushed_at", "timestamp with time zone", "YES"),
+            },
+            stateColumns.TakeLast(3));
+
+        // Take 0007 back out, as it is on a database that has not seen it yet (a move stored with the old check, and no column for the
+        // owner's mode), and let the app apply it to one that has data.
+        await Sql.ExecAsync(cs,
+            """
+            drop table mode_edit, transit_tile;
+            alter table processing_state drop column transit_ready_from, drop column transit_ready_to, drop column transit_flushed_at;
+            alter table segment drop column mode_edited;
+            alter table segment drop constraint segment_mode_check;
+            alter table segment add constraint segment_mode_check check (mode in ('walk','cycle','drive','flight'));
+            insert into segment (kind, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date, mode, distance_m)
+            values ('move', '2026-01-01T08:00:00Z', '2026-01-01T08:30:00Z', 'Europe/Oslo', 'Europe/Oslo', '2026-01-01', '2026-01-01', 'drive', 4000);
+            """, ct: Ct);
+        Assert.Equal(1, await Sql.ScalarAsync<int>(cs, "delete from schemaversions where scriptname like '%0007_transit.sql' returning 1", ct: Ct));
+        await using var api = new ApiFactory(cs);
+        _ = api.Services;
+
+        Assert.Equal(segmentColumns, await Columns(cs, "segment")); // the column, back at the end
+        Assert.Equal(stateColumns, await Columns(cs, "processing_state")); // the three, back at the end
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from segment where mode = 'drive' and mode_edited = false", ct: Ct));
+        Assert.Contains(("segment_mode_check",
+                "CHECK ((mode = ANY (ARRAY['walk'::text, 'cycle'::text, 'drive'::text, 'bus'::text, 'train'::text, 'flight'::text])))"),
+            await Constraints(cs, "segment"));
+        Assert.Equal(
+            new[]
+            {
+                ("id", "bigint", "NO"), ("from_utc", "timestamp with time zone", "NO"), ("to_utc", "timestamp with time zone", "NO"),
+                ("mode", "text", "NO"), ("created_at", "timestamp with time zone", "NO"),
+            },
+            await Columns(cs, "mode_edit"));
+        Assert.Contains("ix_mode_edit_from", (await Indexes(cs, "mode_edit")).Select(i => i.Name));
+        Assert.Equal(
+            new[]
+            {
+                ("kind", "text", "NO"), ("lat_index", "integer", "NO"), ("lon_index", "integer", "NO"), ("state", "text", "NO"),
+                ("lines", "bytea", "YES"), ("line_count", "integer", "NO"), ("attempts", "integer", "NO"),
+                ("next_attempt_at", "timestamp with time zone", "YES"), ("last_error", "text", "YES"),
+                ("fetched_at", "timestamp with time zone", "YES"), ("waiting_from", "timestamp with time zone", "YES"),
+                ("waiting_to", "timestamp with time zone", "YES"),
+            },
+            await Columns(cs, "transit_tile"));
+        Assert.Contains("ix_transit_tile_waiting", (await Indexes(cs, "transit_tile")).Select(i => i.Name));
+        Assert.Contains(("transit_tile_done_has_lines",
+                "CHECK (((state <> 'done'::text) OR ((lines IS NOT NULL) AND (fetched_at IS NOT NULL))))"),
+            await Constraints(cs, "transit_tile"));
+
+        // What the new check and tables accept, default to, and key on.
+        await Sql.ExecAsync(cs,
+            """
+            update segment set mode = 'train';
+            update segment set mode = 'bus';
+            insert into mode_edit (from_utc, to_utc, mode) values ('2026-01-01T08:00:00Z', '2026-01-01T08:30:00Z', 'train');
+            insert into transit_tile (kind, lat_index, lon_index) values ('rail', 599, 107), ('bus', 599, 107);
+            """, ct: Ct);
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from mode_edit where created_at is not null", ct: Ct));
+        Assert.Equal(2, await Sql.ScalarAsync<long>(cs,
+            "select count(*) from transit_tile where state = 'pending' and lines is null and line_count = 0 and attempts = 0 and next_attempt_at is null", ct: Ct));
+        foreach (var refused in new[]
+        {
+            "update segment set mode = 'boat'",
+            "insert into mode_edit (from_utc, to_utc, mode) values ('2026-01-01T08:00:00Z', '2026-01-01T08:30:00Z', 'boat')",
+            "insert into mode_edit (from_utc, to_utc, mode) values ('2026-01-01T08:30:00Z', '2026-01-01T08:00:00Z', 'walk')",
+            "insert into transit_tile (kind, lat_index, lon_index) values ('ferry', 599, 107)",
+            "insert into transit_tile (kind, lat_index, lon_index, state) values ('rail', 600, 107, 'fetching')",
+            "insert into transit_tile (kind, lat_index, lon_index) values ('rail', 900, 107)",
+            "insert into transit_tile (kind, lat_index, lon_index) values ('rail', 599, 1800)",
+            // A fetched tile holds its lines and when they were fetched: without them it would be neither cached nor waiting.
+            "insert into transit_tile (kind, lat_index, lon_index, state, fetched_at) values ('rail', 598, 107, 'done', '2026-01-02T00:00:00Z')",
+            "insert into transit_tile (kind, lat_index, lon_index, state, lines) values ('rail', 598, 107, 'done', '\\x0100000000'::bytea)",
+            "update transit_tile set state = 'done', lines = null, fetched_at = '2026-01-02T00:00:00Z' where lat_index = 599",
+        })
+        {
+            var error = await Assert.ThrowsAsync<PostgresException>(() => Sql.ExecAsync(cs, refused, ct: Ct));
+            Assert.Equal(PostgresErrorCodes.CheckViolation, error.SqlState);
+        }
+        var duplicate = await Assert.ThrowsAsync<PostgresException>(() =>
+            Sql.ExecAsync(cs, "insert into transit_tile (kind, lat_index, lon_index) values ('rail', 599, 107)", ct: Ct));
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, duplicate.SqlState);
+
+        Assert.Equal(
+            columnsBefore.Concat(new[] { ("horizontal_accuracy", "double precision", "YES"), ("motion", "ARRAY", "YES") }),
+            await Columns(cs, "locationlog")); // the two columns of 0002, and nothing from 0007
+        Assert.Equal(indexesBefore, await Indexes(cs, "locationlog"));
+        Assert.Equal(rowsBefore, await Rows(cs));
+        Assert.Empty(Warnings(api).Items);
+    }
+
+    [Fact]
     public async Task Second_startup_does_not_run_migrations_again()
     {
         var cs = await db.CreateDatabaseAsync(Ct);
         await using (var first = new ApiFactory(cs))
             _ = first.Services;
         var applied = await Sql.ScalarAsync<int>(cs, "select count(*) from schemaversions", ct: Ct);
-        Assert.Equal(6, applied);
+        Assert.Equal(7, applied);
 
         await using var second = new ApiFactory(cs);
         _ = second.Services;
@@ -293,33 +421,44 @@ public class MigrationTests(DatabaseFixture db)
             insert into excluded_point (device, time, batch_id) values ('phone', '2026-01-01T08:00:00Z', '3b1d8e0a-6f35-4c43-9e0c-2f6a7d1a9c11');
             insert into trip_edit (detected_id, detected_last_night, name) values ('2026-01-05', '2026-01-06', 'My trip');
             insert into app_setting (key, value) values ('tripMinDistanceKm', '80'::jsonb);
+            insert into segment (kind, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date, mode, mode_edited)
+            values ('move', '2026-01-01T09:00:00Z', '2026-01-01T09:30:00Z', 'Europe/Oslo', 'Europe/Oslo', '2026-01-01', '2026-01-01', 'train', true);
+            insert into mode_edit (from_utc, to_utc, mode) values ('2026-01-01T09:00:00Z', '2026-01-01T09:30:00Z', 'train');
+            insert into transit_tile (kind, lat_index, lon_index, state, lines, line_count, fetched_at)
+            values ('rail', 591, 101, 'done', '\x0100000000'::bytea, 0, '2026-01-02T00:00:00Z');
             """, new { placeId }, Ct);
         var tables = new[]
         {
             "locationlog", "dirty_range", "place", "segment", "geocode_cache", "processing_state",
-            "night", "home_period", "trip", "night_refresh", "excluded_point", "trip_edit", "app_setting",
+            "night", "home_period", "trip", "night_refresh", "excluded_point", "trip_edit", "app_setting", "mode_edit", "transit_tile",
         };
         var columns = new Dictionary<string, IReadOnlyList<(string, string, string)>>();
         var indexes = new Dictionary<string, IReadOnlyList<(string, string)>>();
+        var constraints = new Dictionary<string, IReadOnlyList<(string, string)>>();
         foreach (var table in tables)
         {
             columns[table] = await Columns(cs, table);
             indexes[table] = await Indexes(cs, table);
+            constraints[table] = await Constraints(cs, table);
         }
         await Sql.ExecAsync(cs, "delete from schemaversions", ct: Ct);
 
         await using var second = new ApiFactory(cs);
         _ = second.Services; // does not throw
 
-        Assert.Equal(6, await Sql.ScalarAsync<int>(cs, "select count(*) from schemaversions", ct: Ct));
+        Assert.Equal(7, await Sql.ScalarAsync<int>(cs, "select count(*) from schemaversions", ct: Ct));
         foreach (var table in tables)
         {
             Assert.Equal(columns[table], await Columns(cs, table));
             Assert.Equal(indexes[table], await Indexes(cs, table));
+            Assert.Equal(constraints[table], await Constraints(cs, table));
         }
         Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from locationlog", ct: Ct));
         Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from place where user_name = 'Mine'", ct: Ct));
-        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from segment", ct: Ct));
+        Assert.Equal(2, await Sql.ScalarAsync<long>(cs, "select count(*) from segment", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from segment where mode = 'train' and mode_edited", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from mode_edit where mode = 'train'", ct: Ct));
+        Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from transit_tile where state = 'done' and lines is not null", ct: Ct));
         Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from dirty_range", ct: Ct));
         Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from night", ct: Ct));
         Assert.Equal(1, await Sql.ScalarAsync<long>(cs, "select count(*) from home_period", ct: Ct));

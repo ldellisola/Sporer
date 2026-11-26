@@ -67,6 +67,14 @@ nonisolated final class HTTPService: SporerService {
         try await send("DELETE", "/api/points/removed/\(Self.segment(batch))")
     }
 
+    // MARK: Moves
+
+    func setMode(_ mode: Mode, ofMove id: Int) async throws -> MoveModeResponse {
+        try await send("PUT", "/api/moves/\(id)/mode", body: ModeRequest(mode: mode))
+    }
+
+    func clearMode(ofMove id: Int) async throws { try await send("DELETE", "/api/moves/\(id)/mode") }
+
     // MARK: Places
 
     func place(_ id: Int) async throws -> PlaceResponse { try await get("/api/places/\(id)") }
@@ -280,6 +288,10 @@ private nonisolated final class RedirectRefuser: NSObject, URLSessionTaskDelegat
 
 private nonisolated struct RemovePointsRequest: Encodable {
     var points: [PointRef]
+}
+
+private nonisolated struct ModeRequest: Encodable {
+    var mode: Mode
 }
 
 /// `null` brings OpenStreetMap's name back; the key must be there either way.

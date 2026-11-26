@@ -42,7 +42,8 @@ public sealed class TimelineWorker(
     private string? _refreshError;
 
     /// <summary>
-    /// One pass: starts a backfill if the algorithm version changed, processes the dirty ranges that are due, does
+    /// One pass: starts a backfill if the algorithm version changed, asks for the stretch that waits for the railway and bus-route
+    /// tiles that have arrived when it is time to, processes the dirty ranges that are due, does
     /// one backfill step unless it is paused, and refreshes the nights, homes and trips over everything that was rebuilt
     /// since the last refresh. Returns whether it did any work: a refresh counts only if it succeeded, so that one that keeps
     /// failing does not keep the loop from waiting for the next poll. Times (debounce, backoff) are read from
@@ -63,7 +64,12 @@ public sealed class TimelineWorker(
             didWork = true;
         }
 
-        // 2. Dirty ranges. While the backfill is unfinished, a range that reaches the cursor or beyond waits: processing
+        // 2. The stretch that waits for the railway and bus-route tiles that have arrived, as a dirty range due now, once the backfill is
+        // done and no other tile is coming soon (see ProcessingQueue.FlushTransitReadyAsync). It is then processed with the others below.
+        if (await queue.FlushTransitReadyAsync(Now(), ct) is { } ready)
+            logger.LogInformation("Rebuilding {FromUtc:o} to {ToUtc:o} for the railway and bus-route tiles that have arrived", ready.FromUtc, ready.ToUtc);
+
+        // 3. Dirty ranges. While the backfill is unfinished, a range that reaches the cursor or beyond waits: processing
         // it would anchor across the part nobody has processed yet and load all of that history. Behind the cursor
         // everything is stored, so those are processed as usual.
         var backfillOpen = state is { BackfillCursor: { } position, BackfillTo: { } target } && position < target;
@@ -93,7 +99,7 @@ public sealed class TimelineWorker(
             await queue.CompleteAsync(range.Ids, ct);
         }
 
-        // 3. One backfill step, oldest first.
+        // 4. One backfill step, oldest first.
         var pause = false;
         if (!state.Paused && backfillOpen && Now() >= _backfillRetryAt)
         {
@@ -105,13 +111,13 @@ public sealed class TimelineWorker(
             (state, pause) = await BackfillStepAsync(state, cursor, chunkEnd, backfillTo, ct);
         }
 
-        // 4. Saved before the refresh and the pause, so that a stop during either keeps the cursor. The refresh loads the whole
+        // 5. Saved before the refresh and the pause, so that a stop during either keeps the cursor. The refresh loads the whole
         // history, and a process that is stopped or killed in it must not lose the step that has just been done: the attempt
         // was counted before the step ran, and three of them would set a good chunk aside as one the process cannot get through.
         var saved = CurrentError();
         await queue.SaveStateAsync(state with { LastRunAt = Now(), LastError = saved }, ct);
 
-        // 5. Once per pass, whatever the ranges and the step rebuilt. Its error is saved too, if it changed the last error.
+        // 6. Once per pass, whatever the ranges and the step rebuilt. Its error is saved too, if it changed the last error.
         if (await RefreshTripsAsync(ct))
             didWork = true;
         if (CurrentError() != saved)

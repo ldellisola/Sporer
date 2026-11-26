@@ -171,6 +171,52 @@ struct WriteTests {
         ]] as NSDictionary)
     }
 
+    @Test func setModePutsTheModeAndReadsTheMove() async throws {
+        let rig = Rig()
+        rig.server.respond(text: #"{"id":7839,"mode":"train","modeEdited":true}"#)
+        let response = try await rig.service.setMode(.train, ofMove: 7839)
+        #expect(response == MoveModeResponse(id: 7839, mode: .train, modeEdited: true))
+        let request = try #require(rig.server.requests.first)
+        #expect(request.method == "PUT" && request.path == "/api/moves/7839/mode")
+        #expect(request.header("Content-Type") == "application/json")
+        #expect(request.bodyText == #"{"mode":"train"}"#)
+        _ = try await rig.service.setMode(.bus, ofMove: 7845)
+        #expect(rig.server.requests.last?.bodyJSON == ["mode": "bus"] as NSDictionary)
+    }
+
+    @Test func clearModeDeletesWithAnEmptyObject() async throws {
+        let rig = Rig()
+        rig.server.respond(status: 204)
+        try await rig.service.clearMode(ofMove: 7845)
+        let request = try #require(rig.server.requests.first)
+        #expect(request.method == "DELETE" && request.path == "/api/moves/7845/mode")
+        #expect(request.header("Content-Type") == "application/json")
+        #expect(request.bodyText == "{}")
+    }
+
+    @Test func aModeForAMoveThatIsGoneIsNotFoundAndTheDataChanged() async {
+        let counter = DataChangedCounter()
+        let rig = Rig()
+        rig.server.respond(status: 404, text: #"{"errors":{"id":["No such move."]}}"#)
+        let set = await serviceError { try await rig.service.setMode(.train, ofMove: 7839) }
+        let cleared = await serviceError { try await rig.service.clearMode(ofMove: 7839) }
+        guard case .notFound(let message)? = set, case .notFound? = cleared else {
+            Issue.record("expected notFound, got \(String(describing: set)) and \(String(describing: cleared))")
+            return
+        }
+        #expect(message == "No such move.")
+        // The ids change on every rebuild: what is on screen (the day) is asked for again.
+        #expect(await counter.settle(expected: 2) == 2)
+    }
+
+    @Test func aModeTheServerRefusesIsRefused() async {
+        let rig = Rig()
+        rig.server.respond(status: 400, text: #"{"errors":{"mode":["The mode must be one of walk, cycle, drive, bus, train, flight."]}}"#)
+        let error = await serviceError { try await rig.service.setMode(.train, ofMove: 7839) }
+        guard case .refused(let message)? = error else { Issue.record("expected refused, got \(String(describing: error))"); return }
+        #expect(message.hasPrefix("The mode must be"))
+    }
+
     @Test func removingNothingAnswersANullBatch() async throws {
         let rig = Rig()
         rig.server.respond(text: #"{"batch":null,"count":0}"#)

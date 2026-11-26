@@ -2,7 +2,8 @@ namespace Sporer.Timeline;
 
 /// <summary>
 /// Third detection step: how a move was travelled (walk, cycle, drive or flight) and how far (spec section 6.5).
-/// Thresholds come from <see cref="DetectionOptions"/>.
+/// Thresholds come from <see cref="DetectionOptions"/>. This is the base mode, which <see cref="TransitClassifier"/> may turn
+/// into a bus or a train.
 /// </summary>
 public static class ModeClassifier
 {
@@ -45,23 +46,15 @@ public static class ModeClassifier
 
     /// <summary>
     /// Great-circle distance from the first to the last point for a flight (the route flown is not tracked closely
-    /// enough to add up), otherwise the sum of the distances between consecutive points. Zero below two points.
+    /// enough to add up), otherwise the sum of the distances between consecutive points. Zero below two points. This goes by
+    /// <see cref="MoveSegment.IsFlight"/>; <see cref="MoveGeometry.DistanceMeters"/> goes by the mode a move ended up with (a
+    /// flight that the train rules made a train is the sum of its hops).
     /// </summary>
     public static double DistanceMeters(MoveSegment m)
     {
         ArgumentNullException.ThrowIfNull(m);
 
-        var points = m.Points;
-        if (points.Count < 2)
-            return 0;
-
-        if (m.IsFlight)
-            return Geo.DistanceMeters(points[0].Position, points[^1].Position);
-
-        var total = 0.0;
-        for (var k = 1; k < points.Count; k++)
-            total += Geo.DistanceMeters(points[k - 1].Position, points[k].Position);
-        return total;
+        return MoveGeometry.DistanceMeters(m, m.IsFlight ? TravelMode.Flight : TravelMode.Drive);
     }
 
     /// <summary>

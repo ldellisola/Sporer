@@ -3,17 +3,20 @@ using Microsoft.Extensions.Options;
 using Sporer.Api.Configuration;
 using Sporer.Api.Database;
 using Sporer.Api.Features.Timeline;
+using Sporer.Api.Features.Transit;
 
 namespace Sporer.Api.Features.Status;
 
 /// <summary>
 /// <c>GET /api/status</c>: the owner's window into whether the processing, above all the backfill of years of history, is
-/// healthy. Reads only. The warnings are those recorded at start-up (the database checks, and place naming that is
-/// enabled but has no user agent) plus the one about ingest being open, which is a setting and so read as it stands.
+/// healthy. Reads only. The warnings are those recorded at start-up (the database checks, and place naming or the fetching of
+/// transit lines that is enabled but has no user agent) plus the one about ingest being open, which is a setting and so read as it stands.
 /// </summary>
 internal sealed class GetStatusEndpoint(
     ProcessingQueue queue,
     PlaceStore places,
+    TransitTileStore transitTiles,
+    TransitOptions transit,
     DatabaseWarnings databaseWarnings,
     IOptions<OverlandOptions> overland) : EndpointWithoutRequest<StatusResponse>
 {
@@ -28,6 +31,7 @@ internal sealed class GetStatusEndpoint(
         var state = await queue.GetStateAsync(ct);
         var backlog = await queue.GetBacklogAsync(ct);
         var counts = await places.CountInUseAsync(ct);
+        var tiles = await transitTiles.CountAsync(ct);
 
         List<string> warnings = [.. databaseWarnings.Items];
         if (string.IsNullOrEmpty(overland.Value.Token))
@@ -42,6 +46,7 @@ internal sealed class GetStatusEndpoint(
             state.LastRunAt,
             state.LastError,
             new PlaceStatus(counts.Total, counts.Unnamed, counts.Failed),
+            new TransitStatus(transit.FetchingEnabled, new TransitTilesStatus(tiles.Cached, tiles.Waiting, tiles.Failed)),
             warnings), ct);
     }
 

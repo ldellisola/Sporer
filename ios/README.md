@@ -66,6 +66,10 @@ ios/scripts/run-mac.sh
 local server with the synthetic history, see "Local development" in the main README. The Mac app has no 7-day limit: to keep it, copy
 `ios/build/mac/Build/Products/Debug-maccatalyst/Sporer.app` to Applications.
 
+**After a server update that adds a mode of travel, install again.** Builds from before buses and trains cannot read a day, a period or a
+trip with a bus or a train in it. Run `ios/scripts/install-iphone.sh` again, and copy a new `ios/scripts/build.sh mac` build over the Mac app
+in Applications. Builds from then on read a mode they do not know as no mode, so this is needed only once.
+
 In Xcode, open `ios/Sporer.xcodeproj` and run the Sporer scheme on a simulator, your iPhone or My Mac; options for the app go in the
 scheme's Arguments (Product, Scheme, Edit Scheme, Run).
 

@@ -20,6 +20,7 @@ namespace Sporer.Api.Features.Status;
 /// <paramref name="FailedRanges"/>: this is where it shows.
 /// </param>
 /// <param name="Places">How far the naming of places has come.</param>
+/// <param name="Transit">How far the fetching of railway and bus-route lines has come.</param>
 /// <param name="Warnings">What start-up found that the owner should know about, and an ingest that is open.</param>
 public sealed record StatusResponse(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? AlgorithmVersion,
@@ -29,6 +30,7 @@ public sealed record StatusResponse(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] DateTime? LastRunAt,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? LastError,
     PlaceStatus Places,
+    TransitStatus Transit,
     IReadOnlyList<string> Warnings);
 
 /// <summary>
@@ -56,3 +58,15 @@ public sealed record FailedRangeDto(
 /// <paramref name="Failed"/> could not be named.
 /// </summary>
 public sealed record PlaceStatus(long Total, long Unnamed, long Failed);
+
+/// <summary>
+/// The railway and bus-route lines (transit spec section 4): <paramref name="Enabled"/> is whether they are fetched from Overpass
+/// (<c>Transit:Enabled</c>, and a user agent to send; those already cached are used either way), and <paramref name="Tiles"/> counts the tiles.
+/// </summary>
+public sealed record TransitStatus(bool Enabled, TransitTilesStatus Tiles);
+
+/// <summary>
+/// Tiles of 0.1 by 0.1 degrees, of either kind: <paramref name="Cached"/> have been fetched and are used, <paramref name="Waiting"/> are to be
+/// fetched (some of them after a failure), and <paramref name="Failed"/> failed five times and are tried again once a day.
+/// </summary>
+public sealed record TransitTilesStatus(long Cached, long Waiting, long Failed);

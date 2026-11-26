@@ -85,7 +85,7 @@ internal sealed class GetDayEndpoint(SegmentStore segments, TripStore trips, Pro
         "stay" => new StayDto(s.Id, s.StartUtc, s.EndUtc, s.StartTz, s.EndTz,
             s.Place is { } p ? new PlaceDto(p.Id, p.Name, p.City, p.Country, p.Latitude, p.Longitude) : null,
             Home: IsHome(s.Place, home, radiusMeters)),
-        "move" => new MoveDto(s.Id, s.StartUtc, s.EndUtc, s.StartTz, s.EndTz, s.Mode, s.DistanceM ?? 0, Line(s.GeometryDetailJson)),
+        "move" => new MoveDto(s.Id, s.StartUtc, s.EndUtc, s.StartTz, s.EndTz, s.Mode, s.DistanceM ?? 0, Line(s.GeometryDetailJson), s.ModeEdited),
         "gap" => MapGap(s),
         _ => throw new InvalidOperationException($"Segment {s.Id} has the unknown kind '{s.Kind}'."),
     };

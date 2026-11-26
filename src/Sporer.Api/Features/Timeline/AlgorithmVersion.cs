@@ -16,9 +16,10 @@ public static class AlgorithmVersion
     /// <summary>
     /// Bump this when the detection code changes in a way that changes its output. Version 2 added the nights, homes and trips
     /// that are derived from the segments: the options for them change the thresholds' fingerprint anyway, and the bump says
-    /// that the code changed, so that the first start after the upgrade rebuilds everything once.
+    /// that the code changed, so that the first start after the upgrade rebuilds everything once. Version 3 added buses and trains
+    /// (and the owner's choice of a move's mode): the same holds for their thresholds.
     /// </summary>
-    public const int CodeVersion = 2;
+    public const int CodeVersion = 3;
 
     /// <summary><c>"{CodeVersion}:{first 12 hex digits of the SHA-256 of the options as JSON}"</c>.</summary>
     public static string Compute(DetectionOptions options)

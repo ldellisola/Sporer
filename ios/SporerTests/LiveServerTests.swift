@@ -122,6 +122,34 @@ struct LiveServerTests {
         #expect(try await service.removedPoints().allSatisfy { $0.batch != batch })
     }
 
+    @Test func setAMoveModeAndTakeItBack() async throws {
+        let date = LocalDate("2026-11-10")!
+        // A move on the ground (a flight set to a ground mode would get another line and distance).
+        let move = try #require(try await service.day(date).moves.first { $0.mode != nil && $0.mode != .flight })
+        let other: Mode = move.mode == .bus ? .cycle : .bus
+        let set = try await service.setMode(other, ofMove: move.id)
+        #expect(set.mode == other && set.modeEdited)
+        // The stored move changes at once; its stretch is then rebuilt, under new ids, so it is found again by its start.
+        let edited = try await moveStarting(at: move.start, on: date) { $0.mode == other && $0.modeEdited }
+        #expect(edited.mode == other && edited.modeEdited)
+
+        if move.modeEdited, let mode = move.mode {
+            _ = try await retryingNotFound { try await service.setMode(mode, ofMove: try await moveStarting(at: move.start, on: date).id) }
+        } else {
+            try await retryingNotFound { try await service.clearMode(ofMove: try await moveStarting(at: move.start, on: date).id) }
+        }
+        let back = try await moveStarting(at: move.start, on: date) { $0.mode == move.mode && $0.modeEdited == move.modeEdited }
+        #expect(back.mode == move.mode && back.modeEdited == move.modeEdited)
+    }
+
+    @Test func aModeForAMoveThatIsNotThereIsNotFound() async throws {
+        do {
+            _ = try await service.setMode(.train, ofMove: 999_999_999)
+            Issue.record("expected a 404")
+        } catch ServiceError.notFound {
+        }
+    }
+
     @Test func retryFailedWithNothingFailed() async throws {
         let result = try await service.retryFailed()
         #expect(result.retried >= 0)
@@ -138,6 +166,27 @@ struct LiveServerTests {
     private func busiestPlace() async throws -> PlaceResponse {
         let first = try #require(try await service.searchPlaces("").first)
         return try await service.place(first.id)
+    }
+
+    /// The move of `date` that starts at `start`, once it is as `wanted` says (the server rebuilds the day in the background):
+    /// asked for every second for up to a minute, then the last one seen.
+    private func moveStarting(at start: Date, on date: LocalDate,
+                              until wanted: (DaySegment.Move) -> Bool = { _ in true }) async throws -> DaySegment.Move {
+        var last: DaySegment.Move?
+        for _ in 0..<60 {
+            last = try await service.day(date).moves.first { abs($0.start.timeIntervalSince(start)) < 1 }
+            if let last, wanted(last) { return last }
+            try await Task.sleep(for: .seconds(1))
+        }
+        return try #require(last)
+    }
+
+    /// A write on a move found a moment ago, again if a rebuild gave the move another id meanwhile.
+    private func retryingNotFound<T>(_ write: () async throws -> T) async throws -> T {
+        for _ in 0..<4 {
+            do { return try await write() } catch ServiceError.notFound { try await Task.sleep(for: .seconds(1)) }
+        }
+        return try await write()
     }
 }
 

@@ -47,6 +47,12 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
     /// </summary>
     public const int SetAsideAfterAttempts = 3;
 
+    /// <summary>
+    /// While railway and bus-route tiles are still due to be fetched, the stretch that waits for those that have arrived is asked for at most
+    /// once in this long (see <see cref="FlushTransitReadyAsync"/>).
+    /// </summary>
+    public static readonly TimeSpan TransitHold = TimeSpan.FromMinutes(10);
+
     /// <summary>Ranges that overlap or are at most this far apart are processed as one.</summary>
     private static readonly TimeSpan MergeGap = TimeSpan.FromHours(1);
 
@@ -146,6 +152,74 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
             "insert into dirty_range (from_utc, to_utc, created_at) values (@From, @To, @CreatedAt)",
             new { From = AsUtc(fromUtc), To = AsUtc(toUtc), CreatedAt = AsUtc(nowUtc) - options.Debounce },
             transaction, cancellationToken: ct));
+
+    /// <summary>
+    /// Records that the timeline between <paramref name="fromUtc"/> and <paramref name="toUtc"/> is to be rebuilt because a railway or
+    /// bus-route tile it waited for has arrived: the stretch waiting for the tiles that arrived so far (<c>transit_ready_from</c> to
+    /// <c>transit_ready_to</c>) is widened to take it in, to be asked for by <see cref="FlushTransitReadyAsync"/>. When nothing has been asked
+    /// for yet, the wait of <see cref="TransitHold"/> starts now, as of <paramref name="nowUtc"/>. Written on the connection and in the
+    /// transaction given, so that it is recorded if, and only if, the tile is.
+    /// </summary>
+    public async Task AddTransitReadyAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, DateTime fromUtc, DateTime toUtc, DateTime nowUtc,
+        CancellationToken ct = default)
+        => await connection.ExecuteAsync(new CommandDefinition(
+            """
+            update processing_state
+            set transit_ready_from = least(transit_ready_from, @From), transit_ready_to = greatest(transit_ready_to, @To),
+                transit_flushed_at = coalesce(transit_flushed_at, @Now)
+            where id = 1
+            """,
+            new { From = AsUtc(fromUtc), To = AsUtc(toUtc), Now = AsUtc(nowUtc) },
+            transaction, cancellationToken: ct));
+
+    /// <summary>
+    /// Asks for the stretch that waits for the tiles that have arrived (<see cref="AddTransitReadyAsync"/>) to be rebuilt, as one dirty range
+    /// due at once (<see cref="EnqueueNowAsync"/>), and returns it; or returns null and leaves it waiting. It waits while the backfill is
+    /// unfinished (paused or not), which rebuilds the rest with them anyway, and, while another tile is due to be fetched, until
+    /// <see cref="TransitHold"/> after the last time it was asked for: tiles arrive one every few seconds for an hour or more after the first
+    /// start, and the stretch of each can be years long, so that rebuilding it for each would rebuild the history again and again. One
+    /// transaction, as of <paramref name="nowUtc"/>.
+    /// </summary>
+    public async Task<(DateTime FromUtc, DateTime ToUtc)?> FlushTransitReadyAsync(DateTime nowUtc, CancellationToken ct = default)
+    {
+        var now = AsUtc(nowUtc);
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+
+        // Locked: a tile that arrives meanwhile widens the stretch either before (and is asked for with it) or after (and waits for the next time).
+        var row = await connection.QuerySingleOrDefaultAsync<ReadyRow>(new CommandDefinition(
+            """
+            select transit_ready_from as FromUtc, transit_ready_to as ToUtc, transit_flushed_at as FlushedAt,
+                   coalesce(backfill_cursor < backfill_to, false) as BackfillOpen
+            from processing_state where id = 1
+            for update
+            """,
+            transaction: transaction, cancellationToken: ct));
+        if (row is not { FromUtc: { } from, ToUtc: { } to } || row.BackfillOpen)
+            return null;
+
+        // A last time that is in the future (the clock was set back) holds nothing.
+        var since = row.FlushedAt is { } flushed ? now - AsUtc(flushed) : (TimeSpan?)null;
+        if (since is { } waited && waited >= TimeSpan.Zero && waited < TransitHold)
+        {
+            var tileDue = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+                """
+                select exists (select 1 from transit_tile
+                               where state in ('pending', 'failed') and (next_attempt_at is null or next_attempt_at <= @Now))
+                """,
+                new { Now = now }, transaction, cancellationToken: ct));
+            if (tileDue)
+                return null;
+        }
+
+        await EnqueueNowAsync(connection, transaction, from, to, now, ct);
+        await connection.ExecuteAsync(new CommandDefinition(
+            "update processing_state set transit_ready_from = null, transit_ready_to = null, transit_flushed_at = @Now where id = 1",
+            new { Now = now }, transaction, cancellationToken: ct));
+        await transaction.CommitAsync(ct);
+        return (AsUtc(from), AsUtc(to));
+    }
 
     /// <summary>The rows are done with: they are removed.</summary>
     public async Task CompleteAsync(IReadOnlyList<long> ids, CancellationToken ct = default)
@@ -313,7 +387,8 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
     /// stored segment, in one transaction. The old segments came from another algorithm; if they stayed, the stays among
     /// them would anchor the rebuild (see <see cref="SegmentStore.FindAnchorsAsync"/>) and carry its output into the
     /// new one. The set-aside dirty ranges go too, and the chunk attempts return to zero: the backfill goes over all of that
-    /// history again, and a set-aside range that stayed would be listed twice, and would hold back the new rebuilds.
+    /// history again, and a set-aside range that stayed would be listed twice, and would hold back the new rebuilds. So does the
+    /// stretch waiting for the railway and bus-route tiles that have arrived (<see cref="AddTransitReadyAsync"/>): the backfill reads them.
     /// What is derived from the segments goes with them: every night, every trip and the detected home periods are deleted
     /// (under the advisory lock that whatever writes them holds, see <see cref="TripRefresher.AdvisoryLockKey"/>),
     /// and the window waiting to be refreshed is cleared, because the backfill refreshes it all again as it goes. The
@@ -348,7 +423,7 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
             on conflict (id) do update set
                 algorithm_version = excluded.algorithm_version, backfill_from = excluded.backfill_from,
                 backfill_to = excluded.backfill_to, backfill_cursor = excluded.backfill_cursor, last_error = null,
-                backfill_chunk_attempts = 0
+                backfill_chunk_attempts = 0, transit_ready_from = null, transit_ready_to = null
             """,
             new { AlgorithmVersion = algorithmVersion, From = Utc(fromUtc), To = Utc(toUtc) },
             transaction, cancellationToken: ct));
@@ -395,6 +470,14 @@ public sealed class ProcessingQueue(NpgsqlDataSource dataSource, ProcessingOptio
     {
         public long Id { get; set; }
         public int Attempts { get; set; }
+    }
+
+    private sealed class ReadyRow
+    {
+        public DateTime? FromUtc { get; set; }
+        public DateTime? ToUtc { get; set; }
+        public DateTime? FlushedAt { get; set; }
+        public bool BackfillOpen { get; set; }
     }
 
     private sealed class StateRow

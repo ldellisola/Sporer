@@ -90,6 +90,8 @@ nonisolated enum DaySegment: Codable, Hashable, Sendable, Identifiable {
         var mode: Mode?
         var distanceMeters: Double
         var geometry: [LonLat]
+        /// The owner set the mode by hand. A server older than the mode edits leaves it out: false.
+        var modeEdited = false
     }
 
     struct Gap: Codable, Hashable, Sendable {
@@ -148,6 +150,31 @@ nonisolated enum DaySegment: Codable, Hashable, Sendable, Identifiable {
     }
 
     var duration: TimeInterval { end.timeIntervalSince(start) }
+}
+
+// In an extension, so that the memberwise initializer stays.
+extension DaySegment.Move {
+    nonisolated init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        start = try c.decode(Date.self, forKey: .start)
+        end = try c.decode(Date.self, forKey: .end)
+        startTimeZone = try c.decode(String.self, forKey: .startTimeZone)
+        endTimeZone = try c.decode(String.self, forKey: .endTimeZone)
+        mode = try c.decodeIfPresent(Mode.self, forKey: .mode)
+        distanceMeters = try c.decode(Double.self, forKey: .distanceMeters)
+        geometry = try c.decode([LonLat].self, forKey: .geometry)
+        modeEdited = try c.decodeIfPresent(Bool.self, forKey: .modeEdited) ?? false
+    }
+}
+
+// MARK: - Moves (PUT and DELETE /api/moves/{id}/mode)
+
+/// What setting a move's mode answers: the stored move, with the mode the owner chose.
+nonisolated struct MoveModeResponse: Codable, Hashable, Sendable {
+    var id: Int
+    var mode: Mode?
+    var modeEdited: Bool
 }
 
 // MARK: - GET /api/range

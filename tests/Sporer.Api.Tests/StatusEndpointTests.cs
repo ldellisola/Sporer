@@ -269,6 +269,57 @@ public class StatusEndpointTests(DatabaseFixture db)
     }
 
     [Fact]
+    public async Task Status_counts_the_transit_tiles()
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs, new Dictionary<string, string?> { ["OVERLAND_TOKEN"] = "s3cret" });
+        var client = api.CreateClient();
+
+        using (var empty = await GetStatusAsync(client))
+        {
+            var transit = empty.RootElement.GetProperty("transit");
+            Assert.False(transit.GetProperty("enabled").GetBoolean()); // the tests switch fetching off
+            var tiles = transit.GetProperty("tiles");
+            Assert.Equal((0L, 0L, 0L), (tiles.GetProperty("cached").GetInt64(), tiles.GetProperty("waiting").GetInt64(), tiles.GetProperty("failed").GetInt64()));
+        }
+
+        await Sql.ExecAsync(cs,
+            """
+            insert into transit_tile (kind, lat_index, lon_index, state, lines, line_count, fetched_at) values
+              ('rail', 599, 107, 'done', '\x0100000000'::bytea, 0, '2026-11-01T00:00:00Z'),
+              ('bus', 599, 107, 'done', '\x0100000000'::bytea, 0, '2026-11-01T00:00:00Z');
+            insert into transit_tile (kind, lat_index, lon_index, state, attempts) values
+              ('rail', 599, 108, 'pending', 0), ('rail', 599, 109, 'pending', 2), ('bus', 600, 107, 'pending', 0),
+              ('rail', 387, -92, 'failed', 5);
+            """, ct: Ct);
+
+        using var body = await GetStatusAsync(client);
+        var counts = body.RootElement.GetProperty("transit").GetProperty("tiles");
+        Assert.Equal((2L, 3L, 1L), (counts.GetProperty("cached").GetInt64(), counts.GetProperty("waiting").GetInt64(), counts.GetProperty("failed").GetInt64()));
+    }
+
+    [Theory]
+    [InlineData("true", "Sporer/1.0 (test@example.com)", "", true)]
+    [InlineData("true", "", "Sporer/1.0 (test@example.com)", true)] // the naming user agent will do
+    [InlineData("true", "", "", false)] // nobody to say who asks: nothing is fetched (and start-up warns)
+    [InlineData("false", "Sporer/1.0 (test@example.com)", "", false)]
+    public async Task Status_says_whether_transit_lines_are_fetched(string enabled, string transitUserAgent, string nominatimUserAgent, bool fetched)
+    {
+        var cs = await db.CreateDatabaseAsync(Ct);
+        await using var api = new ApiFactory(cs, new Dictionary<string, string?>
+        {
+            ["OVERLAND_TOKEN"] = "s3cret", ["Transit:Enabled"] = enabled, ["Transit:UserAgent"] = transitUserAgent,
+            ["Nominatim:UserAgent"] = nominatimUserAgent,
+        });
+        var client = api.CreateClient();
+
+        using var body = await GetStatusAsync(client);
+
+        Assert.Equal(fetched, body.RootElement.GetProperty("transit").GetProperty("enabled").GetBoolean());
+        Assert.Equal(enabled == "true" && !fetched ? 1 : 0, Warnings(body.RootElement).Count(w => w.Contains("Transit:UserAgent", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public async Task Status_shows_the_last_worker_error_of_a_backfill_that_cannot_proceed()
     {
         var cs = await db.CreateDatabaseAsync(Ct);

@@ -17,6 +17,20 @@ struct FixtureDecodingTests {
         #expect(rig.server.requests.first?.path == "/api/day/2026-11-24")
     }
 
+    /// day.json as a server with trains and buses writes it: modeEdited on every move, the morning drive a train, the evening drive
+    /// a bus the owner set, and a move in a mode of a newer server (Fixtures/day-transit.json, made from day.json).
+    @Test func dayWithTrainsAndBuses() async throws {
+        let rig = Rig()
+        try rig.server.respond(fixture: "day-transit")
+        let response = try await rig.service.day(theDay)
+        let moves = Dictionary(uniqueKeysWithValues: response.moves.map { ($0.id, $0) })
+        #expect(moves[7839]?.mode == .train && moves[7839]?.modeEdited == false)
+        #expect(moves[7845]?.mode == .bus && moves[7845]?.modeEdited == true)
+        #expect(moves[7847]?.mode == nil, "a mode the app does not know is no mode")
+        #expect(moves[7849]?.mode == .walk)
+        #expect(response.segments.count == 13)
+    }
+
     @Test func dayPoints() async throws {
         let rig = Rig()
         try rig.server.respond(fixture: "day-points")

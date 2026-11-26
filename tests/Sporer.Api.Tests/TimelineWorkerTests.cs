@@ -209,20 +209,22 @@ public class TimelineWorkerTests(DatabaseFixture db)
     {
         var version = AlgorithmVersion.Compute(new DetectionOptions());
 
-        Assert.Matches("^2:[0-9a-f]{12}$", version);
+        Assert.Matches("^3:[0-9a-f]{12}$", version);
         Assert.StartsWith($"{AlgorithmVersion.CodeVersion}:", version);
         Assert.Equal(version, AlgorithmVersion.Compute(new DetectionOptions()));
         Assert.NotEqual(version, AlgorithmVersion.Compute(new DetectionOptions { StayRadiusMeters = 150 }));
         Assert.NotEqual(version, AlgorithmVersion.Compute(new DetectionOptions { StayMinDuration = TimeSpan.FromMinutes(6) }));
         Assert.NotEqual(version, AlgorithmVersion.Compute(new DetectionOptions { HomeMinNights = 61 })); // the home and trip options count too
+        Assert.NotEqual(version, AlgorithmVersion.Compute(new DetectionOptions { BusMaxKm = 15 })); // and the train and bus options
     }
 
     [Fact]
-    public void AlgorithmVersion_code_version_is_2()
+    public void AlgorithmVersion_code_version_is_3()
     {
-        // 2 is the code that derives nights, homes and trips: a database built by version 1 has none, and is rebuilt once.
-        Assert.Equal(2, AlgorithmVersion.CodeVersion);
-        Assert.StartsWith("2:", AlgorithmVersion.Compute(new DetectionOptions()));
+        // 3 is the code that finds buses and trains and puts the owner's modes over them: a database built by version 2 has none, and is
+        // rebuilt once.
+        Assert.Equal(3, AlgorithmVersion.CodeVersion);
+        Assert.StartsWith("3:", AlgorithmVersion.Compute(new DetectionOptions()));
     }
 
     [Fact]

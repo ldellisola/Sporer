@@ -1,5 +1,5 @@
 import type { Page, Request } from "@playwright/test";
-import type { DayResponse, RangeResponse } from "../src/api/types";
+import type { DayResponse, Mode, MoveModeResponse, RangeResponse } from "../src/api/types";
 import config from "./fixtures/config.json" with { type: "json" };
 import heat from "./fixtures/heat.json" with { type: "json" };
 import status from "./fixtures/status.json" with { type: "json" };
@@ -191,4 +191,86 @@ export async function mockApi(page: Page, overrides: Overrides = {}): Promise<Mo
     await (status === 204 ? route.fulfill({ status }) : route.fulfill({ status, json: reply.json ?? {} }));
   });
   return { requests, writes };
+}
+
+/** The modes that the API takes for a move (`PUT /api/moves/{id}/mode`). */
+const MOVE_MODES: readonly string[] = ["walk", "cycle", "drive", "bus", "train", "flight"] satisfies Mode[];
+
+/** A server that keeps the modes the owner sets on the moves of a day: see `moveModeServer`. */
+export interface MoveModeServer {
+  /** The day, and the writes of the modes of its moves: pass them to `mockApi` (with any others). */
+  readonly overrides: Overrides;
+  /** The modes the owner has set, by the time the move began. */
+  edits(): ReadonlyMap<string, string>;
+  /**
+   * Rebuilds the day, as the worker does after an edit: every move has the mode the owner set, else the day's own (the mode detected), the day is done
+   * again, and every segment has a new id from then on (a write to an old one is a 404).
+   */
+  rebuild(): void;
+}
+
+/**
+ * A server of `day` that keeps the modes the owner sets on its moves, as the API does. `PUT moves/{id}/mode` stores the edit, sets the mode of the stored
+ * move `id` at once (`modeEdited` true) and is answered with it (a mode that is not one of the six is a 400, in the server's words). `DELETE moves/{id}/mode`
+ * takes the edit away, with a 204, and leaves the stored move as it was, the mode the owner set and `modeEdited` too: the detected mode is known only once
+ * the stretch is rebuilt. After either the day is pending until `rebuild`. A write to a move the day does not have is a 404, as on the server, where the
+ * ids of the moves change with every rebuild. An edit is kept by the time of the move, which a rebuild does not change.
+ */
+export function moveModeServer(day: DayResponse): MoveModeServer {
+  const edits = new Map<string, string>(); // the owner's edits
+  let stored = new Map<string, string>(); // the modes the owner set as the stored moves have them: a PUT sets one at once, a DELETE leaves it until the rebuild
+  let pending = false; // a write since the last rebuild
+  let shift = 0; // what a rebuild has added to the ids of the day
+  const served = (): DayResponse => ({
+    ...day,
+    state: pending ? "pending" : day.state,
+    segments: day.segments.map((segment) => {
+      if (segment.kind !== "move") return { ...segment, id: segment.id + shift };
+      const mode = stored.get(segment.start);
+      return { ...segment, id: segment.id + shift, mode: (mode ?? segment.mode) as Mode, modeEdited: mode !== undefined };
+    }),
+  });
+  /** The move that a write is to, by the id in its path (`/api/moves/{id}/mode`), if the day has it now. */
+  const moveOf = (request: Request) => {
+    const id = Number(new URL(request.url()).pathname.split("/").at(-2));
+    return day.segments.find((segment) => segment.kind === "move" && segment.id + shift === id);
+  };
+  const overrides: Overrides = { [`day/${day.date}`]: (): Reply => ({ json: served() }) };
+  // The writes of the ids that the day has now: exact keys, which `mockApi` finds in this object at each request (a rebuild adds those of the new ids).
+  const answerWrites = (): void => {
+    for (const segment of day.segments) {
+      if (segment.kind !== "move") continue;
+      overrides[`PUT moves/${segment.id + shift}/mode`] = (request): Reply => {
+        const move = moveOf(request);
+        if (move === undefined) return { status: 404, json: {} };
+        const { mode } = request.postDataJSON() as { mode: string };
+        if (!MOVE_MODES.includes(mode)) {
+          return { status: 400, json: { statusCode: 400, message: "One or more errors occurred!", errors: { mode: ["The mode is not one of walk, cycle, drive, bus, train and flight."] } } };
+        }
+        edits.set(move.start, mode);
+        stored.set(move.start, mode);
+        pending = true;
+        const answer: MoveModeResponse = { id: move.id + shift, mode: mode as Mode, modeEdited: true };
+        return { json: answer };
+      };
+      overrides[`DELETE moves/${segment.id + shift}/mode`] = (request): Reply => {
+        const move = moveOf(request);
+        if (move === undefined) return { status: 404, json: {} };
+        edits.delete(move.start);
+        pending = true;
+        return { status: 204 };
+      };
+    }
+  };
+  answerWrites();
+  return {
+    overrides,
+    edits: () => edits,
+    rebuild: () => {
+      stored = new Map(edits);
+      pending = false;
+      shift += 100;
+      answerWrites();
+    },
+  };
 }

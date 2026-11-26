@@ -9,6 +9,7 @@ namespace Sporer.Api.Features.Timeline;
 /// <c>[[lon,lat],...]</c> with coordinates rounded to 6 decimals; all times are UTC. <paramref name="LocalStartDate"/> and
 /// <paramref name="LocalEndDate"/> are the first and last local calendar day the segment touches: the dates of its two
 /// ends in their own zones, the earlier one first (a westward flight can land on an earlier date than it left on).
+/// <paramref name="ModeEdited"/> is true for a move whose mode is the owner's (see <c>ModeEditStore</c>).
 /// </summary>
 public sealed record StoredSegment(
     string Kind,
@@ -25,12 +26,13 @@ public sealed record StoredSegment(
     double? DistanceM,
     string? GeometryDetailJson,
     string? GeometryCoarseJson,
-    int PointCount);
+    int PointCount,
+    bool ModeEdited = false);
 
 /// <summary>
 /// A segment as the day view needs it. <paramref name="Place"/> is the surviving place of a stay (never a merged-away one),
 /// null for other kinds and for a stay without a place. <paramref name="GeometryDetailJson"/> is the stored
-/// <c>[[lon,lat],...]</c> text of a move, or the two end positions of a gap.
+/// <c>[[lon,lat],...]</c> text of a move, or the two end positions of a gap. <paramref name="ModeEdited"/> says the owner set a move's mode.
 /// </summary>
 public sealed record DaySegment(
     long Id,
@@ -42,7 +44,8 @@ public sealed record DaySegment(
     string? Mode,
     double? DistanceM,
     string? GeometryDetailJson,
-    DayPlace? Place);
+    DayPlace? Place,
+    bool ModeEdited = false);
 
 /// <summary>A place as shown on a stay: <see cref="Name"/> is the owner's name, else the one from OpenStreetMap, else null.</summary>
 public sealed record DayPlace(long Id, string? Name, string? City, string? Country, double Latitude, double Longitude);
@@ -194,9 +197,10 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
             await connection.ExecuteAsync(new CommandDefinition(
                 """
                 insert into segment (kind, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date, place_id,
-                                     latitude, longitude, mode, distance_m, geometry_detail, geometry_coarse, point_count)
+                                     latitude, longitude, mode, distance_m, geometry_detail, geometry_coarse, point_count, mode_edited)
                 values (@Kind, @StartUtc, @EndUtc, @StartTz, @EndTz, @LocalStartDate, @LocalEndDate, @PlaceId,
-                        @Latitude, @Longitude, @Mode, @DistanceM, @GeometryDetailJson::jsonb, @GeometryCoarseJson::jsonb, @PointCount)
+                        @Latitude, @Longitude, @Mode, @DistanceM, @GeometryDetailJson::jsonb, @GeometryCoarseJson::jsonb, @PointCount,
+                        @ModeEdited)
                 """,
                 segments, transaction, cancellationToken: ct));
         }
@@ -219,7 +223,7 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
         var rows = await connection.QueryAsync<DayRow>(new CommandDefinition(
             """
             select s.id as Id, s.kind as Kind, s.start_utc as StartUtc, s.end_utc as EndUtc, s.start_tz as StartTz, s.end_tz as EndTz,
-                   s.mode as Mode, s.distance_m as DistanceM, s.geometry_detail::text as GeometryDetailJson,
+                   s.mode as Mode, s.mode_edited as ModeEdited, s.distance_m as DistanceM, s.geometry_detail::text as GeometryDetailJson,
                    p.id as PlaceId, coalesce(p.user_name, p.osm_name) as PlaceName, p.city as PlaceCity,
                    p.country as PlaceCountry, p.latitude as PlaceLatitude, p.longitude as PlaceLongitude
             from segment s
@@ -243,7 +247,8 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
             r.Id, r.Kind, AsUtc(r.StartUtc), AsUtc(r.EndUtc), r.StartTz, r.EndTz, r.Mode, r.DistanceM, r.GeometryDetailJson,
             r.PlaceId is { } id && r.PlaceLatitude is { } lat && r.PlaceLongitude is { } lon
                 ? new DayPlace(id, r.PlaceName, r.PlaceCity, r.PlaceCountry, lat, lon)
-                : null)).ToList();
+                : null,
+            r.ModeEdited)).ToList();
     }
 
     /// <summary>
@@ -337,6 +342,6 @@ public sealed class SegmentStore(NpgsqlDataSource dataSource)
 
     private sealed record DayRow(
         long Id, string Kind, DateTime StartUtc, DateTime EndUtc, string StartTz, string EndTz,
-        string? Mode, double? DistanceM, string? GeometryDetailJson,
+        string? Mode, bool ModeEdited, double? DistanceM, string? GeometryDetailJson,
         long? PlaceId, string? PlaceName, string? PlaceCity, string? PlaceCountry, double? PlaceLatitude, double? PlaceLongitude);
 }

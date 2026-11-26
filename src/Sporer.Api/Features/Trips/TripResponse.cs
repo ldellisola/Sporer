@@ -29,12 +29,12 @@ public sealed record TripResponse : TripSummary
 
 /// <summary>
 /// What the trip adds up to (see <see cref="TripDays.Stats"/>): the number of flights, of distinct cities and of distinct places
-/// its stays were at, and the distance of the moves that are not flights.
+/// its stays were at, and the distance of the moves that are not flights (ground travel: buses and trains are in it).
 /// </summary>
 public sealed record TripStatsDto(int Flights, int Cities, int Places, double GroundDistanceMeters);
 
 /// <summary>
-/// A move of the trip to draw. <paramref name="Mode"/> is <c>walk</c>, <c>cycle</c>, <c>drive</c> or <c>flight</c>, and null for a
+/// A move of the trip to draw. <paramref name="Mode"/> is <c>walk</c>, <c>cycle</c>, <c>drive</c>, <c>bus</c>, <c>train</c> or <c>flight</c>, and null for a
 /// move whose mode could not be told, as in the range; <paramref name="Geometry"/> is its stored coarse line as <c>[[lon,lat],...]</c>, simplified further when the moves of the
 /// trip together would carry too many vertices (see <see cref="Range.VertexBudget"/>).
 /// </summary>

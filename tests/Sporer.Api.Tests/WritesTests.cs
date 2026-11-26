@@ -240,7 +240,8 @@ public class WritesTests(DatabaseFixture db)
         await using var api = new ApiFactory(cs);
         _ = api.Services; // starting the host runs the migrations
 
-        // What the owner set: a name, a merge, a removed point, an edit of a trip, a home, a setting.
+        // What the owner set: a name, a merge, a removed point, an edit of a trip, a home, a setting, a move's mode. And the railway lines
+        // fetched so far, which are no part of the timeline either.
         var named = await InsertPlaceAsync(cs, userName: "Mine", osmName: "OpenStreetMap's name", city: "Oslo", country: "Norway");
         var merged = await InsertPlaceAsync(cs, mergedInto: named, lat: 59.93, lon: 10.76);
         var home = await InsertPlaceAsync(cs, lat: 60.0, lon: 11.0);
@@ -251,6 +252,10 @@ public class WritesTests(DatabaseFixture db)
             values ('2026-09-12', '2026-09-13', 'Lisbon weekend', '2026-09-11', null, true, 'Lisbon · 12 – 14 Sep 2026');
             insert into home_period (place_id, from_date, to_date, source) values (@home, '2026-01-01', null, 'user');
             insert into app_setting (key, value) values ('tripMinDistanceKm', '80'::jsonb);
+            insert into mode_edit (from_utc, to_utc, mode) values ('2026-10-22T07:00:00Z', '2026-10-22T07:20:00Z', 'train');
+            insert into transit_tile (kind, lat_index, lon_index, state, lines, line_count, fetched_at, waiting_from, waiting_to)
+            values ('rail', 599, 107, 'done', '\x0100000000'::bytea, 0, '2026-10-01T00:00:00Z', null, null),
+                   ('bus', 599, 107, 'pending', null, 0, null, '2026-10-22T07:00:00Z', '2026-10-22T07:20:00Z');
             """, new { home }, Ct);
 
         // What is derived from the timeline, which the rebuild does clear: a segment, a night, a trip, a detected home.
@@ -262,6 +267,9 @@ public class WritesTests(DatabaseFixture db)
             insert into trip (id, last_night, nights, start_utc, end_utc, start_tz, end_tz, local_start_date, local_end_date)
             values ('2026-09-12', '2026-09-13', 2, '2026-09-12T08:00:00Z', '2026-09-14T10:00:00Z', 'Europe/Oslo', 'Europe/Oslo', '2026-09-12', '2026-09-14');
             insert into home_period (place_id, from_date, to_date, source) values (@home, '2025-01-01', '2025-12-31', 'detected');
+            update processing_state
+            set transit_ready_from = '2025-03-01T00:00:00Z', transit_ready_to = '2026-10-22T07:20:00Z', transit_flushed_at = '2026-10-28T09:00:00Z'
+            where id = 1;
             """, new { named, home }, Ct);
 
         // Whole rows, as the database writes them, so that a change to any column shows.
@@ -275,13 +283,15 @@ public class WritesTests(DatabaseFixture db)
                 "select to_jsonb(t)::text from trip_edit t order by detected_id",
                 "select to_jsonb(h)::text from home_period h where source = 'user' order by id",
                 "select to_jsonb(s)::text from app_setting s order by key",
+                "select to_jsonb(m)::text from mode_edit m order by id",
+                "select to_jsonb(t)::text from transit_tile t order by kind, lat_index, lon_index",
             })
                 rows.AddRange(await Sql.QueryAsync<string>(cs, query, ct: Ct));
             return [.. rows];
         }
 
         var before = await OwnerDataAsync();
-        Assert.Equal(3 + 1 + 1 + 1 + 1, before.Length);
+        Assert.Equal(3 + 1 + 1 + 1 + 1 + 1 + 2, before.Length);
 
         await api.Services.GetRequiredService<ProcessingQueue>().RestartBackfillAsync("a new version", Utc(1, 1), Utc(10, 28), Ct);
 
@@ -291,5 +301,8 @@ public class WritesTests(DatabaseFixture db)
             Assert.Equal(0, await Sql.ScalarAsync<long>(cs, $"select count(*) from {table}", ct: Ct));
         Assert.Equal(0, await Sql.ScalarAsync<long>(cs, "select count(*) from home_period where source = 'detected'", ct: Ct));
         Assert.Equal("a new version", await Sql.ScalarAsync<string>(cs, "select algorithm_version from processing_state where id = 1", ct: Ct));
+        // The stretch that waited for the railway and bus-route tiles that arrived: the backfill rebuilds it with them.
+        Assert.True(await Sql.ScalarAsync<bool>(cs,
+            "select transit_ready_from is null and transit_ready_to is null from processing_state where id = 1", ct: Ct));
     }
 }

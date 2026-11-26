@@ -3,7 +3,7 @@ import Foundation
 
 /// Made-up data for previews and the design prototype: a person living in Oslo, with a weekday commute, weekends out,
 /// and a trip to Lisbon and Porto. Routes are real street routes (MockRoutes.json, computed once with MapKit directions).
-/// Edits (renames, merges, removed points, trip edits, homes) are kept in memory, so the prototype behaves like the app.
+/// Edits (renames, merges, removed points, modes, trip edits, homes) are kept in memory, so the prototype behaves like the app.
 actor MockService: SporerService {
     static let shared = MockService()
 
@@ -17,6 +17,8 @@ actor MockService: SporerService {
     private var tripDistance: Double?
     private var userHomes: [HomePeriod] = []
     private var tripEdits: [String: EditTripRequest] = [:]
+    /// The modes the owner set, by move id (the made-up ids never change).
+    private var modeEdits: [Int: Mode] = [:]
     private var failedRetried = false
 
     /// A short pause so that loading states can be seen.
@@ -166,7 +168,7 @@ actor MockService: SporerService {
             accuracyM: p.status == .poorAccuracy ? 140 + rng.jitter(40) : 6 + abs(rng.jitter(10)),
             speedMps: segment.flatMap { if case .move = $0 { 1.4 + abs(rng.jitter(3)) } else { 0 } },
             altitudeM: 12 + abs(rng.jitter(30)),
-            motion: segment.flatMap { if case .move(let m) = $0 { [m.mode == .drive ? "driving" : "walking"] } else { ["stationary"] } },
+            motion: segment.flatMap { if case .move(let m) = $0 { [Self.isMotorised(m.mode) ? "driving" : "walking"] } else { ["stationary"] } },
             status: status, maxAccuracyM: 100,
             previous: neighbour(index - 1), next: neighbour(index + 1), segment: pointSegment
         )
@@ -199,6 +201,30 @@ actor MockService: SporerService {
         defer { Self.didChange() }
         await pause()
         guard removed.removeValue(forKey: batch) != nil else { throw ServiceError.notFound("These points are not removed any more.") }
+    }
+
+    // MARK: Moves
+
+    func setMode(_ mode: Mode, ofMove id: Int) async throws -> MoveModeResponse {
+        defer { Self.didChange() }
+        await pause(300)
+        guard hasMove(id) else { throw ServiceError.notFound("This move no longer exists.") }
+        modeEdits[id] = mode
+        return MoveModeResponse(id: id, mode: mode, modeEdited: true)
+    }
+
+    func clearMode(ofMove id: Int) async throws {
+        defer { Self.didChange() }
+        await pause(300)
+        guard hasMove(id) else { throw ServiceError.notFound("This move no longer exists.") }
+        modeEdits[id] = nil
+    }
+
+    /// Whether a day of the made-up world has a move with this id: a day's ids are its date and the step's number, `yyyyMMddnn`.
+    private func hasMove(_ id: Int) -> Bool {
+        let d = id / 100, month = d / 100 % 100, day = d % 100
+        guard (1...12).contains(month), (1...31).contains(day) else { return false }
+        return buildDayDetailed(LocalDate(year: d / 10_000, month: month, day: day)).contains { if case .move(let m) = $0.segment { m.id == id } else { false } }
     }
 
     // MARK: Places
@@ -516,8 +542,10 @@ actor MockService: SporerService {
                 let geometry = world.route(key)
                 let distance = Geo.length(geometry)
                 let start = cursor!
+                // The owner's mode changes what the move is called, not when it happened.
                 let end = start.addingTimeInterval(Self.travelTime(distance, mode))
-                out.append(Built(segment: .move(.init(id: id, start: start, end: end, startTimeZone: zone, endTimeZone: endZone ?? zone, mode: mode, distanceMeters: distance, geometry: geometry)), routeKey: key))
+                out.append(Built(segment: .move(.init(id: id, start: start, end: end, startTimeZone: zone, endTimeZone: endZone ?? zone, mode: modeEdits[id] ?? mode,
+                                                      distanceMeters: distance, geometry: geometry, modeEdited: modeEdits[id] != nil)), routeKey: key))
                 cursor = end
             case .gap(let until, let zone, let toKey):
                 let start = cursor!
@@ -556,10 +584,19 @@ actor MockService: SporerService {
         case .walk: 4.6
         case .cycle: 15
         case .drive: meters > 20_000 ? 85 : 32
+        case .bus: meters > 20_000 ? 70 : 20
+        case .train: meters > 20_000 ? 100 : 35
         case .flight: 690
         }
         let base = meters / 1000 / kmh * 3600
         return mode == .flight ? base + 1800 : base
+    }
+
+    private nonisolated static func isMotorised(_ mode: Mode?) -> Bool {
+        switch mode {
+        case .drive, .bus, .train: true
+        default: false
+        }
     }
 
     private func buildPoints(_ date: LocalDate) -> [RawPoint] {
@@ -661,7 +698,7 @@ nonisolated struct MockWorld: Sendable {
                         .stay("lis-hotel", until: nil, zone: lis)]
             case 15:
                 return [.stay("lis-hotel", until: "08:20", zone: lis), .move("hotel-station", .walk, zone: lis),
-                        .stay("lis-station", until: "09:09", zone: lis), .move("lis-opo", .drive, zone: lis),
+                        .stay("lis-station", until: "09:09", zone: lis), .move("lis-opo", .train, zone: lis),
                         .stay("opo-station", until: "13:00", zone: lis), .move("opostation-hotel", .drive, zone: lis),
                         .stay("opo-hotel", until: "15:30", zone: lis), .move("hotel-ribeira", .walk, zone: lis),
                         .stay("opo-ribeira", until: "20:10", zone: lis), .move("hotel-ribeira~r", .walk, zone: lis),
@@ -682,7 +719,7 @@ nonisolated struct MockWorld: Sendable {
         switch weekday {
         case 7:
             return [.stay("home", until: "09:40"), .move("home-sognsvann", .drive), .stay("sognsvann", until: "10:25"),
-                    .move("sognsvann-loop", .walk), .stay("frogner", until: "13:40"), .move("frogner-home", .drive),
+                    .move("sognsvann-loop", .walk), .stay("frogner", until: "13:40"), .move("frogner-home", .bus),
                     .stay("home", until: nil)]
         case 1:
             return [.stay("home", until: "10:20"), .move("home-cafe", .walk), .stay("cafe", until: "11:35"),

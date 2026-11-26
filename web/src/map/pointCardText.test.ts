@@ -93,6 +93,9 @@ describe("pointCardText", () => {
     expect(plain(segmentText({ kind: "move", ...times, mode: "walk" }, "Europe/Oslo", AT))).toBe("In a move: Walk (08:00–09:30)");
     expect(plain(segmentText({ kind: "move", ...times }, "Europe/Oslo", AT))).toBe("In a move (08:00–09:30)");
     expect(plain(segmentText({ kind: "move", ...times, mode: "unknown" }, "Europe/Oslo", AT))).toBe("In a move (08:00–09:30)");
+    expect(plain(segmentText({ kind: "move", ...times, mode: "bus" }, "Europe/Oslo", AT))).toBe("In a move: Bus (08:00–09:30)");
+    expect(plain(segmentText({ kind: "move", ...times, mode: "train" }, "Europe/Oslo", AT))).toBe("In a move: Train (08:00–09:30)");
+    expect(plain(segmentText({ kind: "move", ...times, mode: "ferry" }, "Europe/Oslo", AT))).toBe("In a move (08:00–09:30)"); // a mode the app does not know
     expect(plain(segmentText({ kind: "gap", ...times }, "Europe/Oslo", AT))).toBe("In a gap (08:00–09:30)");
     expect(segmentText(null, "Europe/Oslo", AT)).toBeNull();
   });

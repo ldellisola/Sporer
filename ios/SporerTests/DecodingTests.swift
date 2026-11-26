@@ -49,6 +49,76 @@ struct DecodingTests {
         #expect(day.segments[0].id != day.segments[4].id)
     }
 
+    @Test func busAndTrainAndWhetherTheOwnerSetTheMode() throws {
+        let day = try decode(DayResponse.self, dayJSON(moves: [
+            #""mode":"bus","modeEdited":true"#,
+            #""mode":"train","modeEdited":false"#,
+            #""mode":"drive""#,
+        ]))
+        #expect(day.moves.map(\.mode) == [.bus, .train, .drive])
+        #expect(day.moves.map(\.modeEdited) == [true, false, false], "a server older than the mode edits leaves modeEdited out")
+    }
+
+    @Test func aModeTheAppDoesNotKnowIsNoModeAndTheDayStillReads() throws {
+        let day = try decode(DayResponse.self, dayJSON(moves: [
+            #""mode":"hovercraft","modeEdited":false"#,
+            #""mode":null,"modeEdited":false"#,
+            #""modeEdited":false"#,
+            #""mode":"walk","modeEdited":false"#,
+        ]))
+        #expect(day.moves.map(\.mode) == [nil, nil, nil, .walk])
+    }
+
+    @Test(arguments: [#""mode":"hovercraft","#, #""mode":null,"#, ""])
+    func aModeTheAppDoesNotKnowIsNoModeInAPeriod(_ mode: String) throws {
+        let range = try decode(RangeResponse.self, """
+        {"from":"2026-11-01","to":"2026-11-30","state":"done","summary":{"places":0,"distanceMeters":0,"movingSeconds":0,"moves":2},
+         "moves":[{"id":1,\(mode)"start":"2026-11-02T08:00:00Z","end":"2026-11-02T08:30:00Z","geometry":[[10.75,59.92],[10.76,59.91]]},
+                  {"id":2,"mode":"train","start":"2026-11-02T09:00:00Z","end":"2026-11-02T09:30:00Z","geometry":[]}],
+         "places":[],"days":[]}
+        """)
+        #expect(range.moves.map(\.mode) == [nil, .train])
+    }
+
+    @Test(arguments: [#""mode":"hovercraft","#, #""mode":null,"#, ""])
+    func aModeTheAppDoesNotKnowIsNoModeInATrip(_ mode: String) throws {
+        let trip = try decode(TripResponse.self, """
+        {"id":"2026-09-12","name":"Lisbon & Porto","firstNight":"2026-09-12","lastNight":"2026-09-18","nights":7,
+         "start":"2026-09-12T04:05:00Z","end":"2026-09-19T14:00:00Z","startTimeZone":"Europe/Oslo","endTimeZone":"Europe/Oslo",
+         "localStartDate":"2026-09-12","localEndDate":"2026-09-19","ongoing":false,"cities":[],
+         "edited":false,"ownName":null,"startEdited":false,"endEdited":false,
+         "stats":{"flights":1,"cities":2,"places":14,"groundDistanceMeters":317000},
+         "moves":[{"id":1,\(mode)"distanceMeters":10,"geometry":[]},{"id":2,"mode":"bus","distanceMeters":3000,"geometry":[]},
+                  {"id":3,"mode":"train","distanceMeters":314000,"geometry":[]},{"id":4,"mode":"flight","distanceMeters":2700000,"geometry":[]}],
+         "days":[]}
+        """)
+        #expect(trip.moves.map(\.mode) == [nil, .bus, .train, .flight])
+    }
+
+    @Test func aModeThatIsNotAStringIsStillAnError() {
+        #expect(throws: DecodingError.self) {
+            try decode(DayResponse.self, dayJSON(moves: [#""mode":3,"modeEdited":false"#]))
+        }
+    }
+
+    @Test func settingAModeAnswersTheMove() throws {
+        let answer = try decode(MoveModeResponse.self, #"{"id":7839,"mode":"train","modeEdited":true}"#)
+        #expect(answer == MoveModeResponse(id: 7839, mode: .train, modeEdited: true))
+    }
+
+    /// A day of one stay and then moves, each with the JSON members of its `fields` (its mode and modeEdited).
+    private func dayJSON(moves fields: [String]) -> String {
+        let moves = fields.enumerated().map { i, f in
+            #"{"kind":"move","id":\#(i + 2),"start":"2026-10-22T0\#(i):00:00Z","end":"2026-10-22T0\#(i):30:00Z","startTimeZone":"Europe/Oslo","#
+                + #""endTimeZone":"Europe/Oslo",\#(f),"distanceMeters":1000,"geometry":[[10.75,59.92],[10.76,59.91]]}"#
+        }
+        return """
+        {"date":"2026-10-22","timeZone":"Europe/Oslo","state":"done","summary":{"places":1,"distanceMeters":1000,"movingSeconds":1800},
+         "segments":[{"kind":"stay","id":1,"start":"2026-10-21T19:40:00Z","end":"2026-10-22T00:00:00Z","startTimeZone":"Europe/Oslo",
+                      "endTimeZone":"Europe/Oslo","place":null,"home":false},\(moves.joined(separator: ","))]}
+        """
+    }
+
     @Test func rawPointsKeepTheirExactMicroseconds() throws {
         let points = try decode(DayPointsResponse.self, """
         {"date":"2026-10-22","devices":["iPhone","iPad"],"points":[[1790000000123456,10.75,59.92,0,0],[1790000000123457,10.76,59.93,1,2]]}
@@ -93,5 +163,12 @@ struct DecodingTests {
         #expect(status.backfill.percent == 42 && status.failedRanges.first?.attempts == 3 && status.warnings.count == 1)
         let settings = try decode(SettingsResponse.self, #"{"tripMinDistanceKm":80,"tripMinDistanceKmDefault":50}"#)
         #expect(settings.tripMinDistanceKm == 80)
+    }
+}
+
+extension DayResponse {
+    /// The day's moves, in order.
+    var moves: [DaySegment.Move] {
+        segments.compactMap { if case .move(let m) = $0 { m } else { nil } }
     }
 }

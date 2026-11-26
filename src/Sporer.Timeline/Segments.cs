@@ -21,5 +21,9 @@ public sealed record MoveSegment(DateTime StartUtc, DateTime EndUtc, IReadOnlyLi
 public sealed record GapSegment(DateTime StartUtc, DateTime EndUtc, GeoPoint From, GeoPoint To)
     : Segment(StartUtc, EndUtc);
 
-/// <summary>How a move was travelled.</summary>
-public enum TravelMode { Walk, Cycle, Drive, Flight }
+/// <summary>
+/// How a move was travelled. It is stored and sent as the member's name in lower case (<c>walk</c>, <c>cycle</c>, <c>drive</c>,
+/// <c>flight</c>, <c>bus</c>, <c>train</c>), so a member's name must stay one word. <see cref="ModeClassifier"/> gives only the
+/// first four; <see cref="TransitClassifier"/> turns some of them into a <see cref="Bus"/> or a <see cref="Train"/>.
+/// </summary>
+public enum TravelMode { Walk, Cycle, Drive, Flight, Bus, Train }

@@ -2,17 +2,18 @@
 
 Sporer is a (very) simple alternative to Google Timelines. It receives GPS points from the
 [Overland](https://overland.p3k.app/) iOS app, stores them in TimescaleDB, and turns them into a timeline of
-**stays** (matched to named places), **moves** (walk, cycle, drive or flight) and **gaps**, each with its IANA time zone
-and local date. The raw points are the source of truth and are never modified or deleted; the timeline is derived from them and can
-be rebuilt at any time. What you correct by hand in the app (place names and merges, points you remove, trips, homes and the trip distance, see
-"Editing") is kept apart from what is derived and survives every rebuild.
+**stays** (matched to named places), **moves** (walk, cycle, drive, bus, train or flight; trains are told from cars by the OpenStreetMap
+railways they follow, and a drive is a bus when it is short or follows a bus route, see "Transit lines") and **gaps**, each with its IANA time zone and local date. The
+raw points are the source of truth and are never modified or deleted; the timeline is derived from them and can be rebuilt at any time.
+What you correct by hand in the app (place names and merges, points you remove, the mode of a move, trips, homes and the trip distance,
+see "Editing") is kept apart from what is derived and survives every rebuild.
 
 The server is a .NET 10 API, and it also serves the web app that shows the timeline (see "The web app" below). It exposes:
 
 | Endpoint | What it does |
 | --- | --- |
 | `POST /api/overland` | Receives Overland batches. Answers `{"result":"ok"}` once the points are stored. |
-| `GET /api/day/{yyyy-MM-dd}` | One local day of the timeline. A stay at the home in effect on that day, or at a place within `Detection__HomeRadiusMeters` of it (see "Trips and home"), has `"home": true`. `state` is `pending` while work that affects that day is still waiting. |
+| `GET /api/day/{yyyy-MM-dd}` | One local day of the timeline. A stay at the home in effect on that day, or at a place within `Detection__HomeRadiusMeters` of it (see "Trips and home"), has `"home": true`. A move's `mode` is `walk`, `cycle`, `drive`, `bus`, `train` or `flight` (`null` for one stored without a mode), and `modeEdited` is `true` when you set the mode yourself (`PUT /api/moves/{id}/mode`), `false` otherwise. `state` is `pending` while work that affects that day is still waiting. |
 | `GET /api/day/{yyyy-MM-dd}/points` | The raw points of a local day that are not removed, for edit mode to draw: `{"date", "devices": [...], "points": [[t, lon, lat, deviceIndex, status], ...]}`, in time order. `t` is the time in **microseconds** since the epoch, exact, and with the device it is what a removal names a point by; `deviceIndex` is a place in `devices`; `status` is what the timeline made of the point: `0` used, `1` poor accuracy (no GPS fix: worse than `Detection__MaxAccuracyMeters`, or negative), `2` a glitch (an out-and-back jump), `3` a repeat of an earlier point of the same device and time. The points are judged among the 20 not-removed points before the day and the 20 after it, so the points near the start and the end of a day are judged with their neighbours on the day before and the day after. The day is the one the day view shows, in every zone its segments are in (from the earliest local midnight to the latest next one), so on a day of travel the points of the days next to it overlap and no point is on no day. A day with no points has an empty list (a day can have tens of thousands). `400` for a date that is not `yyyy-MM-dd`. |
 | `GET /api/range?from=yyyy-MM-dd&to=yyyy-MM-dd` | A stretch of local days (at most 400, both ends counted) in one answer: every move with its line (simplified further if there would be more than 50 000 vertices), the places with the time spent there inside the range, and a list of the days. `state` is `pending` while work that affects the range is still waiting. |
 | `GET /api/heat?from=yyyy-MM-dd&to=yyyy-MM-dd` | Where the time of a range (the same dates, the same limit as `/api/range`) was spent, for a heat layer: `cells` are `[lon, lat, seconds]`, the most seconds first, one per cell of a grid of 0.001 degrees (about 111 m of latitude; a degree of longitude is shorter the further you are from the equator, so a cell is narrower than it is tall), weighted by the time of the stays in it, not by points; `maxSeconds` is the first one's weight (0 when there are none). |
@@ -23,7 +24,7 @@ The server is a .NET 10 API, and it also serves the web app that shows the timel
 | `POST /api/places/{id}/merge` | Merges the place `{"place": 7}` into the place `id`: the place you are on survives, and everything spent at the other is spent at it from now on, in the day, the range, the place and the trips. An optional `name` becomes the survivor's name (trimmed, at most 100 characters); an empty one clears the survivor's own name, so that OpenStreetMap's shows again, and `null` or none leaves it as it is. The homes and trips are worked out again from the stored nights before the answer. `200` with the survivor, as `GET /api/places/{id}`, merged places and all. `400` for an `id` or a `place` that is missing or not a positive whole number, or a name over 100 characters; `404` for a place that is no place of the timeline; `409` for two that are the same place once their merges are followed (merging a place into itself, or into one it was merged into), or for a merge that would chain more than 32 merges. |
 | `DELETE /api/places/{id}/merged/{other}` | Separates `other`, which must have been merged directly into the place `id`, so that it is a place of its own again, with its own stays; what was merged into it goes with it. The name given to the survivor at the merge stays with the survivor. The homes and trips are worked out again before the answer. `204`; `404` for an `id` that is no place of the timeline or an `other` that is not merged directly into it; `400` for an id that is not a positive whole number. |
 | `GET /api/trips` | The trips, newest first, as `{"trips": [...]}` (an empty list when there are none). Each has its `id` (the date of its first away night, `yyyy-MM-dd`), a `name` (`"Lisbon"`, `"Lisbon & Porto"`; `"Trip"` until its places are named), `firstNight`, `lastNight` and `nights` (every night from the first to the last, those with no known position too), `start` and `end` (when you left and came back, UTC; `end` is `null` while the trip is `ongoing`), `startTimeZone`, `endTimeZone`, `localStartDate` and `localEndDate`, its `cities` (name, country, nights and mean position of each city slept in), and a `thumbnail`: the line `[[lon, lat], ...]` of home, the places it slept at and home again (it stops at the last place while the trip is ongoing). `edited` says you have changed the trip; `ownName` is the name you gave it (`null` when it is the made-up one), and `startEdited` and `endEdited` say that the start and the end date are yours and not detected. There is no `state`: the trips are worked out after the timeline, once per pass of the background worker, so a trip can follow new points by a moment. |
-| `GET /api/trips/{id}` | One trip, `id` being the date of its first away night. The fields of the list (without the thumbnail), its `stats` (`flights`, `cities`, `places`, and `groundDistanceMeters`, the distance of the moves that are not flights), its `moves` (`id`, `mode`, `distanceMeters` and the `geometry` of each, simplified further if all of them together would have more than 50 000 vertices) and its `days`: for each local day of the trip a `description` (`"Oslo → Lisbon"`), up to three `highlights` (the named places with the most time that day, not counting the place slept at the night before or the place slept at that night), `groundDistanceMeters` and `flights`. `404` for an id that is no stored trip (unknown, or not a date). There is no `state`, as for the list. |
+| `GET /api/trips/{id}` | One trip, `id` being the date of its first away night. The fields of the list (without the thumbnail), its `stats` (`flights`, `cities`, `places`, and `groundDistanceMeters`, the distance of the moves that are not flights, buses and trains included), its `moves` (`id`, `mode`, `distanceMeters` and the `geometry` of each, simplified further if all of them together would have more than 50 000 vertices) and its `days`: for each local day of the trip a `description` (`"Oslo → Lisbon"`), up to three `highlights` (the named places with the most time that day, not counting the place slept at the night before or the place slept at that night), `groundDistanceMeters` and `flights`. `404` for an id that is no stored trip (unknown, or not a date). There is no `state`, as for the list. |
 | `PUT /api/trips/{id}` | Says what the trip is, which replaces whatever you said before: body `{"name": "Lisbon", "startDate": "2026-09-10", "endDate": "2026-09-18"}`. All three must be in the body, and `null` for each means as detected (`"name": null` is the automatic name). The start date is the day the trip begins and the end date the day you are back, so its nights run from the evening of the first to the one before the second; the trip begins at midnight at the start of the first date and ends at midnight at the end of the last, so the journey home is in the trip. The edit is kept and put on the trip again whenever the trips are worked out. The trips are worked out again before the answer. `200` with `{"id": "2026-09-10"}`, the trip's id now (its first night, which a new start date moves). `400` for a name over 100 characters, a date that is not `yyyy-MM-dd` (from 1970 to 2099) or a start that is not before the end; `404` for an id that is no stored trip; `409` when the nights it would have are another trip's. |
 | `DELETE /api/trips/{id}` | Says the trip is none. It stays gone when the trips are worked out again, from new data or a rebuild, until it is brought back. `204`; `404` for an id that is no stored trip, or one that is deleted already. |
 | `GET /api/trips/deleted` | The trips you deleted and have not brought back, the one deleted last first, as `[{"key", "label", "deletedAt"}]`: `key` is what restores it (`yyyy-MM-dd`), `label` is what it was shown under (`Lisbon · 12 – 16 Sep 2026`). |
@@ -31,13 +32,15 @@ The server is a .NET 10 API, and it also serves the web app that shows the timel
 | `POST /api/points/remove` | Removes points from the timeline: body `{"points": [{"device": "iPhone", "t": 1790000000000000}, ...]}`, each by its device and its time in microseconds, as `GET /api/day/{date}/points` gives them, at most 50 000. The raw points are **not deleted**: they are left out of every rebuild of the timeline, and the stretch they are in is rebuilt at once. One request is one removal (a batch), which `DELETE /api/points/removed/{batch}` undoes. A point that does not exist, or that is removed already, is ignored and not counted. `200` with `{"batch": "<id>", "count": 3}`; when none was removed `batch` is `null` and nothing is rebuilt. `400` for no `points`, more than 50 000, or a point without a `device` or a `t` that is a time. |
 | `GET /api/points/removed` | The removals you have made and not restored, the newest first: `[{"batch", "removedAt", "count", "from", "to", "localDates"}]`, `from` and `to` being the times of the first and last point and `localDates` the local dates (`yyyy-MM-dd`) the points are on. |
 | `DELETE /api/points/removed/{batch}` | Restores the points of one removal and has the stretch rebuilt at once. `204`; `404` for a batch there is none of, which includes one that was restored already; `400` for a batch that is not the id a removal gave. |
-| `GET /api/points/detail?device=…&t=…` | One raw point in full, named as a removal names it (`device`, and `t` in microseconds): `device`, `t`, `timeUtc`, `localTime` (`yyyy-MM-ddTHH:mm:ss`, the clock of the place it is at) and `zone` (its IANA zone), `lat`, `lon`, `accuracyM`, `speedMps` and `motion` (`null` when the device did not send them), `altitudeM`, and `status`: `used`, `poorAccuracy`, `glitch` (as the day's `0` to `2`, judged the same way) or `removed` (a point you removed, which is still stored). A (device, time) stored twice is described as its first row, so `duplicate` is not answered here. `maxAccuracyM` is the accuracy above which the timeline ignores a point (`Detection__MaxAccuracyMeters`). `previous` and `next` are the nearest points of any device that are not removed, each with `t`, `gapSeconds`, `distanceM` and `speedKmh`, or `null`; `segment` is the stay, move or gap that covers the point (`kind`, `startUtc`, `endUtc`, and the `place` of a stay or the `mode` of a move), or `null`. `400` for a missing or empty `device`, or a `t` that is missing or is not a time in microseconds; `404` for a point that is not stored. |
+| `GET /api/points/detail?device=…&t=…` | One raw point in full, named as a removal names it (`device`, and `t` in microseconds): `device`, `t`, `timeUtc`, `localTime` (`yyyy-MM-ddTHH:mm:ss`, the clock of the place it is at) and `zone` (its IANA zone), `lat`, `lon`, `accuracyM`, `speedMps` and `motion` (`null` when the device did not send them), `altitudeM`, and `status`: `used`, `poorAccuracy`, `glitch` (as the day's `0` to `2`, judged the same way) or `removed` (a point you removed, which is still stored). A (device, time) stored twice is described as its first row, so `duplicate` is not answered here. `maxAccuracyM` is the accuracy above which the timeline ignores a point (`Detection__MaxAccuracyMeters`). `previous` and `next` are the nearest points of any device that are not removed, each with `t`, `gapSeconds`, `distanceM` and `speedKmh`, or `null`; `segment` is the stay, move or gap that covers the point (`kind`, `startUtc`, `endUtc`, and the `place` of a stay or the `mode` of a move, one of the six of the day), or `null`. `400` for a missing or empty `device`, or a `t` that is missing or is not a time in microseconds; `404` for a point that is not stored. |
+| `PUT /api/moves/{id}/mode` | Says how a move was travelled: body `{"mode": "train"}`, one of `walk`, `cycle`, `drive`, `bus`, `train` and `flight`, for the move `id` of the day, the range or a trip. It is kept by the move's time, in place of any mode you set that overlapped it, so it survives every rebuild, a whole one too: a move has the mode you set over more than half of its time. The stored move changes at once, and its stretch is rebuilt at once, so that its line and distance follow a change to or from a flight (a flight is drawn as the arc from take-off to landing, every other mode along its points). `200` with `{"id", "mode", "modeEdited": true}`. `400` for a `mode` that is missing or not one of the six, or an id that is not a positive whole number; `404` for an id that is no stored move (ids change with every rebuild: reload the day). |
+| `DELETE /api/moves/{id}/mode` | Takes back the mode you set: every mode you set that overlaps the move's time is deleted, and the stretch is rebuilt at once, which brings back the detected mode (until then the move shows the mode you had set). `204`, whether or not there was one; `404` for an id that is no stored move; `400` for an id that is not a positive whole number. |
 | `GET /api/homes` | The home periods as they are stored, those detection found and those you set, in date order: `{"periods": [{"id", "placeId", "placeName", "from", "to", "source"}]}`. `from` and `to` are night dates, both counted, `to` is `null` for a home that goes on, and `source` is `detected` or `user`. Where yours covers a detected one both are listed, and yours wins. |
 | `POST /api/homes` | Says a place was home from one night to another, which replaces what detection found for those dates (see "Editing"): body `{"placeId": 53, "from": "2025-10-18", "to": null}`. `from` and `to` are night dates, `yyyy-MM-dd`; `to` must be in the body, and `null` is a home that goes on. A place that was merged into another is the place it was merged into. The trips are worked out again before the answer. `201` with the period, as `GET /api/homes` lists it. `400` for a missing place, a bad date or a `from` after the `to`; `404` for a place that is no place of the timeline; `409` when a night is one of another period you set. |
 | `DELETE /api/homes/{id}` | Takes back a home you set; what detection found for those dates is the home again. The trips are worked out again before the answer. `204`; `404` for an id that is no period; `409` for a detected period, which the next refresh would find again (set a home for its dates instead); `400` for an id that is not a positive whole number. |
 | `GET /api/settings` | Your settings: `{"tripMinDistanceKm": 50, "tripMinDistanceKmDefault": 50}`, the distance from home that makes a night away, in effect and as configured (`Detection__TripMinDistanceKm`). |
 | `PUT /api/settings` | Sets the trip distance: body `{"tripMinDistanceKm": 80}`, from 5 to 1000 (`400` otherwise), or `null` to take your setting back and use `Detection__TripMinDistanceKm`. It must be in the body. The trips are worked out again from the stored nights before the answer: **nothing is rebuilt**. `200` with the settings, as `GET /api/settings`. |
-| `GET /api/status` | Processing health: algorithm version, backfill progress, pending and failed work, place naming progress, warnings. |
+| `GET /api/status` | Processing health: algorithm version, backfill progress, pending and failed work, place naming progress, the railway and bus lines (`transit`: `{"enabled", "tiles": {"cached", "waiting", "failed"}}`, see "Transit lines"), warnings. |
 | `POST /api/status/retry` | Makes every failed range of the processing queue due now, instead of when its backoff is over: the ranges that failed on their own and the backfill steps that were set aside, which are what `GET /api/status` lists as failed. The worker takes them on its next pass. Takes no body (an empty one, or `{}`). `200` with `{"retried": n}`, 0 when none had failed. |
 | `GET /api/config` | What the web app needs to know before it can draw: the map styles for the light and the dark colour scheme (`Map__StyleLight`, `Map__StyleDark`, see below). |
 
@@ -111,13 +114,17 @@ ios/scripts/build.sh             # build for the simulator, the iPhone and the M
 then (it says when). Over Wi-Fi the phone must be unlocked, on the same network as the Mac, and **with its own VPN off** while it installs: a
 VPN that takes all traffic hides the phone from the Mac. The Mac app has no 7-day limit.
 
+**Reinstall it when the server learns a new mode of travel.** A build from before buses and trains came in cannot read a day, a period or a
+trip that has a bus or a train in it, and says it cannot read the answer. Once the server is updated, run `ios/scripts/install-iphone.sh` again,
+and replace the Mac app with a new `ios/scripts/build.sh mac` build. Builds from then on show a mode they do not know as a move with no mode.
+
 - **The server.** The app talks to `https://sporer.lud.ar` (over the VPN); Settings, Server changes the address, which may be plain `http://` on this
   Mac or the local network only. A redirect from the server is taken to be a login in front of it, which the app cannot do yet, and is shown as such.
 - **What the app keeps.** The last answer of every view you open is kept on the device (in its caches, at most about 100 MB, oldest dropped first),
   so a day you looked at opens at once and is refreshed from the server; with no network it is shown with "Offline. Saved 10 minutes ago." and a
   Retry. A day's raw points (edit mode) are never kept. Every read sends the `ETag` of the answer it has, so an unchanged view costs a `304`.
 - **Staying fresh.** As the web app: a day or period that is pending is asked for again every 30 seconds (every 3 seconds for two minutes after you
-  edit its points), today every minute, everything on screen when the app comes back after more than 30 seconds away, and after any edit; at
+  edit its points or a move's mode), today every minute, everything on screen when the app comes back after more than 30 seconds away, and after any edit; at
   midnight the Day tab moves on to the new today.
 
 **Checks** run on this Mac, never on GitHub Actions: the unit tests on a simulator, and, against a local server with the synthetic history
@@ -192,13 +199,22 @@ way, and when it fails says why, with a Retry only where asking again can help.
 - **Set a home** (Settings, Home, Set home). Pick a place and the nights it was home, from a date to a date or still; that replaces what was
   detected for those dates, the trips follow it at once, and Remove takes it back. Use it when a move was not noticed, or was noticed late or
   early. Detected periods are listed with yours but cannot be removed: they are found again.
+- **Set a move's mode** (the day view). On the web, the mode word of a move's row (Drive, Train, …) opens a menu of the six modes with the
+  move's mode checked; choose one, and the row says "· set by you". Choosing the mode a detected move already has also keeps it as yours, so
+  later detection (a railway tile arriving, say) no longer changes it. "As detected" (listed when you set the mode) takes your choice back.
+  In the native app the same is in the move row's context menu (a long press on the iPhone, a right click on the Mac): Mode, then the six
+  modes, and Use Detected Mode; VoiceOver offers them as actions. The move's stretch is rebuilt at once, so its line and distance follow a
+  change to or from a flight; until then, a move whose mode you took back still shows yours. A move is found again by its time, so a choice
+  survives every rebuild: a move has the mode you set over more than half of its time. When the day was rebuilt meanwhile (the move's id is
+  gone), the change is refused and the day is reloaded; choose again.
 - **The trip distance** (Settings, Trips): how far from home a night has to be to be away, from 5 to 1000 km. It is a setting of the app and
   overrides `Detection__TripMinDistanceKm`; Reset to default goes back to that. It changes the trips and **does not rebuild the timeline**,
   because it is no part of the algorithm's version (the `Detection__*` thresholds are, and changing one rebuilds everything).
 
 **What survives.** Every edit survives new data, reprocessing and a rebuild of the whole timeline, such as the one an algorithm or a
 `Detection__*` change makes: the place names and merges (`place.user_name`, `place.merged_into_id`), the removed points (`excluded_point`),
-the edits of trips (`trip_edit`), the homes you set (the rows of `home_period` with `source = 'user'`) and the settings (`app_setting`) are
+the modes you set on moves (`mode_edit`), the edits of trips (`trip_edit`), the homes you set (the rows of `home_period` with
+`source = 'user'`) and the settings (`app_setting`) are
 owner data, and a rebuild keeps all of them. The detected homes and trips are derived and are worked out again, with your edits put over them.
 A trip you edited keeps its name and dates and one you deleted stays deleted; an edit finds its trip again when new data moves a night of it
 (the trip that shares most nights with it), and when there is none it waits and changes nothing until there is.
@@ -265,7 +281,7 @@ Everything is set through environment variables. A `:` in a configuration key is
 | --- | --- | --- |
 | `TSDB_CONNECTION_STRING` | none | Npgsql connection string of the TimescaleDB database. Set it: without it the app falls back to `ConnectionStrings__TSDB`, and that falls back to a `localhost` connection string meant for development. |
 | `OVERLAND_TOKEN` | empty | Shared secret that Overland must send, as `?token=<OVERLAND_TOKEN>` or as an `Authorization: Bearer` header. It can also be set as `Overland__Token` (the `Overland:Token` configuration key); `OVERLAND_TOKEN` is used when both are set. When neither is set the ingest endpoint is **open** and the app logs a warning (also shown in `/api/status`). Set it. |
-| `Nominatim__UserAgent` | empty | Identifies your installation to OpenStreetMap's Nominatim, as its usage policy requires: the app name and a way to reach you, for example `Sporer/1.0 (you@example.com)`. **Places are only named when this is set**; without it Sporer makes no Nominatim requests and warns at start-up. |
+| `Nominatim__UserAgent` | empty | Identifies your installation to OpenStreetMap's Nominatim, as its usage policy requires: the app name and a way to reach you, for example `Sporer/1.0 (you@example.com)`. **Places are only named when this is set**; without it Sporer makes no Nominatim requests and warns at start-up. It is also sent to the Overpass API, for the railway and bus lines, when `Transit__UserAgent` is not set (see "Transit lines"; `Transit__Enabled=false` stops that). |
 
 ### Map (`Map__*`)
 
@@ -291,6 +307,49 @@ OpenStreetMap credit stays on the map whatever the style says: it shows when the
 
 Results are cached in the database, so a place is looked up once.
 
+### Transit lines (`Transit__*`)
+
+Speed alone cannot tell a train from a car, so moves are matched against the lines of OpenStreetMap. A drive that follows a railway for at
+least 80 % of its way (and at least 1 km of railway) is a **train**: every kind of rail is, the metro and trams included. A "flight" that
+is logged densely and slowly enough to be ground travel and follows a railway is a train too, drawn and measured along its points, and the
+pieces of one ride with nothing between them are one move, a stretch shorter than `Detection__TrainMinDistanceKm` where a fast train
+slowed down for a moment included (unless you set its mode). A walk or a ride is a train (the metro, underground) when long, fast hops
+between two points by a railway, as through a tunnel, make at least half of it and 80 % of it is by a railway. A drive that is not a
+train is a **bus** when it is shorter than 20 km, or when it follows a bus route; otherwise it stays a drive. Ferries are not told apart
+(a short one is a bus), and a drive on a road right beside a railway, or a bus on a street with tram tracks, is taken for a train. The
+thresholds are `Detection__*` settings (see "Detection thresholds"), and you can set any move's mode yourself
+(`PUT /api/moves/{id}/mode`).
+
+The lines come from the public [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), one tile of 0.1 by 0.1 degrees (about
+11 km by 6 km in Oslo) and one kind (railways, or bus routes) at a time. They are fetched in the background, only for the moves whose mode
+they could change, the most recent travels first, and kept in the database (`transit_tile`) for good. Processing only ever reads what is
+kept: a move is a train only once its railways are there, and when tiles arrive the stretch of the moves that waited for them is rebuilt,
+so a drive can become a train some time after it was first shown. The tiles that arrive close together are rebuilt for together: at once
+when no other tile is due to be fetched, otherwise at most every 10 minutes, and during a whole rebuild (a backfill) only once it has
+finished. Requests go one at a time, at least `Transit__MinInterval` apart; a
+refusal or a failure makes that tile wait (2, 4, 8 and 16 minutes; after five failures it is set aside and tried once a day) and pauses
+every request (1 minute, doubling up to an hour). `GET /api/status` says whether lines are fetched (`transit.enabled`: switched on, with a
+user agent to send) and counts the tiles: `cached`, `waiting`, and `failed` (set aside). None of these settings rebuilds anything.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `Transit__Enabled` | `true` | Fetch railway and bus lines from Overpass. `false` stops every request; the lines already kept are still used, and the tiles that moves ask for wait until it is `true` again. |
+| `Transit__OverpassUrl` | `https://overpass-api.de/api/interpreter` | The Overpass API to ask. A blank value keeps the default. |
+| `Transit__UserAgent` | (`Nominatim__UserAgent`) | Identifies your installation to Overpass, which refuses requests that do not say who sends them: the app name and a way to reach you, for example `Sporer/1.0 (you@example.com)`. When it is not set, `Nominatim__UserAgent` is sent. **Lines are only fetched when one of the two is set**; without either Sporer makes no Overpass requests and warns at start-up. |
+| `Transit__MinInterval` | `00:00:10` | The least time between two requests. 1 second to 1 hour. |
+
+**Privacy.** The Overpass server learns which tiles were asked for, that is, where you travelled, to about 10 km (Nominatim already
+learns the places themselves). `Transit__Enabled=false` stops that.
+
+**Fresh lines.** Railways change slowly, and a tile is never fetched again on its own. To have tiles fetched again, delete them (the rows:
+the database refuses a fetched tile without its lines) and have the whole timeline rebuilt, which asks again for every tile it needs (a few
+minutes, plus the time to fetch them):
+
+```sql
+delete from transit_tile;                              -- or some of them: where kind = 'bus', where fetched_at < '2027-01-01', ...
+update processing_state set algorithm_version = null;  -- the worker rebuilds everything on its next pass
+```
+
 ### Background processing (`Processing__*`)
 
 Durations are written `hh:mm:ss`. A duration outside its bounds (below) is moved to the nearest bound, so a typo cannot
@@ -298,7 +357,7 @@ stop the worker.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `Processing__Enabled` | `true` | Whether the background processing runs at all. `false` stops everything that runs in the background: the timeline is no longer built or updated, **and places are no longer named** (place naming is part of it, whatever `Nominatim__*` says). Ingest is not affected. |
+| `Processing__Enabled` | `true` | Whether the background processing runs at all. `false` stops everything that runs in the background: the timeline is no longer built or updated, **and places are no longer named** (place naming is part of it, whatever `Nominatim__*` says), nor railway and bus lines fetched (whatever `Transit__*` says). Ingest is not affected. |
 | `Processing__PollInterval` | `00:00:05` | How long the worker sleeps when a pass found nothing to do. 100 ms to 10 minutes. |
 | `Processing__Debounce` | `00:01:00` | New points are processed once the oldest batch of a group of nearby ones has waited this long, and the newer ones are processed with it. While Overland streams, today is rebuilt at most once per debounce. 0 to 1 hour. |
 | `Processing__BackfillChunkDays` | `7` | How many days of history one backfill step processes. Also the longest stretch one rebuild loads: a longer range of new points is processed in pieces of this length, oldest first. |
@@ -323,6 +382,13 @@ start (see "First start" below).
 | `Detection__FlightMinDistanceKm` | `100` | A run of fast hops must cover at least this distance to be a flight. |
 | `Detection__WalkMaxKmh` | `7` | Median speed below this is walking. |
 | `Detection__CycleMaxKmh` | `25` | Median speed below this (and at least the walking limit) is cycling; above it is driving. |
+| `Detection__TransitNearMeters` | `30` | A point this close to a railway or bus route is on it (widened to the point's reported accuracy, up to 75 m). See "Transit lines". |
+| `Detection__TransitMinShare` | `0.8` | The share of a move's path that must be on a railway (or bus route) for it to be a train (or bus). |
+| `Detection__TrainMinDistanceKm` | `1` | A train ride covers at least this much railway. A shorter stretch between two parts of a train ride (a fast train that slowed down for a moment) is part of the ride. |
+| `Detection__TrainMaxKmh` | `350` | A "flight" whose hops are mostly slower than this, and that follows a railway, is a train. |
+| `Detection__TunnelMinMeters` | `500` | A hop at least this long between two points near a railway counts as a ride through a tunnel. |
+| `Detection__TunnelEndMeters` | `150` | How close to a railway both ends of a tunnel hop must be. |
+| `Detection__BusMaxKm` | `20` | A motorised move shorter than this that is not a train is a bus. |
 | `Detection__PlaceRadiusMeters` | `75` | A stay within this distance of a known place is matched to it. |
 | `Detection__DetailToleranceMeters` | `5` | Line simplification tolerance of the detailed track. |
 | `Detection__CoarseToleranceMeters` | `50` | Line simplification tolerance of the coarse track. |
@@ -391,6 +457,13 @@ whenever the detection thresholds or the detection code change, and starts witho
 the version that added trips and home is one of those (the algorithm version changed): it rebuilds the whole timeline
 once, and the home periods and trips appear when it has finished.
 
+The first start of the version that added buses and trains is one too: it rebuilds the whole timeline once (a few minutes), and
+short drives become buses at once. Trains appear over the following hours, as the railway tiles arrive from Overpass (a few hundred
+tiles for years of history in and around Oslo, at one every 10 seconds or so). The stretch of the moves that waited for the tiles
+that have arrived is rebuilt once that first rebuild has finished, and then at most every 10 minutes while more are coming (a few
+times in all, not once per tile), so `pendingRanges` rises and falls while they come in, and `transit.tiles.waiting` in
+`/api/status` counts down. Set `Transit__UserAgent` (or `Nominatim__UserAgent`) before that start, or no tile is fetched (see "Transit lines").
+
 ## Owner's checklist: trips and home
 
 After the first backfill of your real history has finished (`backfill.percent` is 100 at `https://sporer.lud.ar/api/status`), open the app on
@@ -415,6 +488,11 @@ the phone, over the VPN, and check:
   next door, which you never slept at, keeps its number, and the places of your own house, where GPS drift put a night, show a house.
 - [ ] **The day lines of a trip read well**: open a trip and read each day's line (`Oslo → Lisbon`, its highlights, its distance and its
   flights). Say if a line reads wrong for a day you remember.
+- [ ] **Trains and buses.** Once `transit.tiles.waiting` at `/api/status` has come down to 0 (some hours after the first start of the release
+  that added them; `failed` should be 0 too), open days you remember. A train, T-bane or tram ride shows as Train (purple), and a short ride by
+  bus, or by car, as Bus (brown). A car trip on a road right beside a railway may be called a train, and a bus on streets with tram tracks too
+  (see "Transit lines"): say how often you see that. Say also, with the date, if a train ride is still a drive or a bus: the railway may be
+  missing from OpenStreetMap, or the ride logged too far from it. Either way, set the mode by hand (see the checklist of "Editing" below).
 - [ ] **Time the trips list and a trip on the phone**, opened from the home screen, over the VPN. On the synthetic history the cards and
   the days show in about 0.8 seconds on a phone-sized page with the processor held back four times (the target is 2 seconds), without
   the network. Say how long they take on the real device; the first load of the app also fetches half a megabyte of JavaScript. The
@@ -465,10 +543,15 @@ timeline (an algorithm change, or any `Detection__*` change, makes one, and your
 - [ ] **Set a home override and see the trips follow.** In Settings, Home, tap Set home, pick a place (search by name), and the dates it was home
   (leave the end empty for a home that goes on), Save. Trips that were away from the detected home are worked out against yours for those
   dates, so a trip appears, goes, or changes its nights; Remove takes your home back.
+- [ ] **Set a move's mode, and take it back.** In Safari on the phone, open a day with a ride the app got wrong, tap the mode word of its row
+  (Drive, say), choose Train: the row says "Train · set by you" and the route turns purple. Open the menu again and choose As detected: within a few
+  seconds the row shows the detected mode again. In the native app, long-press a move row on the iPhone (right-click it on the Mac): Mode lists the
+  six, with the move's checked; choose one, and the row shows "Set by You"; Use Detected Mode takes it back. Only you can check these
+  on the real devices: the browser tests run the web menu on Safari's engine only in CI, and the native menu was tried by hand in a simulator.
 - [ ] **Change the trip distance.** In Settings, Trips, set 100 km, Save: the trips list shows only the trips that far from home, within a
   moment and with no rebuild (`/api/status` shows no backfill). Reset to default goes back to 50 km (or `Detection__TripMinDistanceKm`).
 - [ ] **The edits stay.** After the next release, or any restart of the container (the timeline is only rebuilt when an algorithm or a
-  `Detection__*` setting changed), your names, merges, removed points, trips, homes and distance are as you left them.
+  `Detection__*` setting changed), your names, merges, removed points, the modes you set, trips, homes and distance are as you left them.
 
 ## Owner's sign-off: the §8 targets
 
@@ -504,8 +587,9 @@ clock, not at the feel.
 - [ ] **Edit mode on the iPhone** is in the editing checklist above, with the edit bar at larger text: the browser tests in CI cannot check it in WebKit.
 - [ ] **Detection quality** is only signed off on real data, so it is yours too: the two checklists above, "Owner's checklist: trips and home" (the home
   periods and any move, each trip you remember and no trip that is not one, a long stay that is not a move, the house on the stops at home, the
-  day lines of a trip) and "Owner's checklist: editing" (a spike removed and undone, two places of one house merged, a trip re-dated and one deleted
-  and restored, a home you set, the trip distance, and that your edits are still there after the next release). Where something is wrong, the
+  day lines of a trip, trains and buses) and "Owner's checklist: editing" (a spike removed and undone, two places of one house merged, a trip
+  re-dated and one deleted and restored, a home you set, a move's mode set and taken back, the trip distance, and that your edits are still there
+  after the next release). Where something is wrong, the
   `Detection__*` settings are in "Detection thresholds", and an edit puts it right in the app.
 
 If a line misses, say which, with the time and the phone, and what you were doing: the performance document says where the time goes.
@@ -634,7 +718,7 @@ together:
   | Run workflow by hand on any other branch or tag | built, not published |
 
 The WebKit smoke set is the tests tagged `{ tag: "@smoke" }`: one or two of each flow (the app opens on today, day navigation, the month, opening a
-trip, renaming a place, Settings, and the service worker installing from a page that is not the app). Three
+trip, renaming a place, setting the mode of a move, Settings, and the service worker installing from a page that is not the app). Three
 kinds of test stay with Chromium. The test of removing points reads the pixels of the points right after edit mode sets them, and headless WebKit
 puts the last frame of a WebGL canvas into a screenshot late (the points are in the canvas, and in the screenshot only after another frame is drawn,
 which an idle map does not do; the trips test, whose map keeps moving, runs on WebKit too). The two service-worker cases that need the page's

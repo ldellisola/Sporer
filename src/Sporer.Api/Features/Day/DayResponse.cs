@@ -47,13 +47,16 @@ public sealed record StayDto(
 
 /// <summary>
 /// Travel between two stays. <paramref name="Geometry"/> is the stored line as <c>[[lon,lat],...]</c>;
-/// <paramref name="Mode"/> is <c>walk</c>, <c>cycle</c>, <c>drive</c> or <c>flight</c>.
+/// <paramref name="Mode"/> is <c>walk</c>, <c>cycle</c>, <c>drive</c>, <c>bus</c>, <c>train</c> or <c>flight</c> (null for a move stored
+/// without one). <paramref name="ModeEdited"/> is true when the owner set the mode (<c>PUT /api/moves/{id}/mode</c>); it is always written, so
+/// that the client reads a boolean and never the lack of one.
 /// </summary>
 public sealed record MoveDto(
     long Id, DateTime Start, DateTime End, string StartTimeZone, string EndTimeZone,
     [property: JsonPropertyOrder(1)] string? Mode,
     [property: JsonPropertyOrder(1)] double DistanceMeters,
-    [property: JsonPropertyOrder(1)] JsonElement Geometry)
+    [property: JsonPropertyOrder(1)] JsonElement Geometry,
+    [property: JsonPropertyOrder(2)] bool ModeEdited)
     : DaySegmentDto(Id, Start, End, StartTimeZone, EndTimeZone);
 
 /// <summary>Time with no data, from the last position known before it (<paramref name="From"/>) to the first one after it (<paramref name="To"/>).</summary>

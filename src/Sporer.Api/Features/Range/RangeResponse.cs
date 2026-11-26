@@ -25,7 +25,7 @@ public sealed record RangeResponse(
 public sealed record RangeSummary(int Places, double DistanceMeters, long MovingSeconds, int Moves);
 
 /// <summary>
-/// A move to draw. <paramref name="Mode"/> is <c>walk</c>, <c>cycle</c>, <c>drive</c> or <c>flight</c>; <paramref name="Geometry"/>
+/// A move to draw. <paramref name="Mode"/> is <c>walk</c>, <c>cycle</c>, <c>drive</c>, <c>bus</c>, <c>train</c> or <c>flight</c>; <paramref name="Geometry"/>
 /// is its stored coarse line as <c>[[lon,lat],...]</c>, simplified further when the response would otherwise carry too many
 /// vertices (see <see cref="VertexBudget"/>).
 /// </summary>

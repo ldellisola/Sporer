@@ -2,7 +2,8 @@ namespace Sporer.Timeline;
 
 /// <summary>
 /// Thresholds for point cleaning, stay/move segmentation, mode classification, place matching and the home and trip
-/// rules (spec section 6). Bound from configuration section <c>Detection</c>; the defaults are the spec's.
+/// rules (spec section 6), and for the train and bus rules (transit spec section 7). Bound from configuration section
+/// <c>Detection</c>; the defaults are the specs'.
 /// </summary>
 public sealed record DetectionOptions
 {
@@ -81,4 +82,39 @@ public sealed record DetectionOptions
 
     /// <summary>A night is away when its location is at least this far from the home in effect that night.</summary>
     public double TripMinDistanceKm { get; init; } = 50;
+
+    /// <summary>
+    /// A point this close to a railway or a bus route is on it. A hop whose points report a worse accuracy widens it to that
+    /// accuracy, up to 75 m (transit spec 2.1).
+    /// </summary>
+    public double TransitNearMeters { get; init; } = 30;
+
+    /// <summary>
+    /// The share of a move's path (0 to 1) that must be on a railway for it to be a train, or on a bus route for it to be a bus.
+    /// </summary>
+    public double TransitMinShare { get; init; } = 0.8;
+
+    /// <summary>
+    /// A train ride covers at least this much railway: a driven move with less on a railway is not a train. A shorter stretch between
+    /// two parts of a train ride (where a fast train slowed down for a moment) is part of that ride (see <see cref="TrainMerger"/>).
+    /// </summary>
+    public double TrainMinDistanceKm { get; init; } = 1;
+
+    /// <summary>
+    /// A "flight" whose hops are mostly (nine in ten) no faster than this, and that follows a railway, is a train. It is also the
+    /// fastest a ride through a tunnel can be.
+    /// </summary>
+    public double TrainMaxKmh { get; init; } = 350;
+
+    /// <summary>A hop at least this long between two points near a railway counts as a ride through a tunnel.</summary>
+    public double TunnelMinMeters { get; init; } = 500;
+
+    /// <summary>
+    /// How close to a railway both ends of a tunnel hop must be. It is also how far around a move the railway and bus lines are
+    /// looked for (the largest distance any rule needs).
+    /// </summary>
+    public double TunnelEndMeters { get; init; } = 150;
+
+    /// <summary>A motorised move shorter than this that is not a train is a bus; a longer one is a bus only on a bus route.</summary>
+    public double BusMaxKm { get; init; } = 20;
 }
